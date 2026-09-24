@@ -4,6 +4,9 @@ import {
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
+import { retryDelayMs } from "./retry";
+import { RETRY_POLICIES } from "./retry-policies";
+import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
 import {
@@ -277,7 +280,7 @@ export class CodexRemoteObserver {
   }
 
   private async runConnections() {
-    let retryMs = 1_000;
+    let failures = 0;
     while (!this.stopped) {
       let generation: number | null = null;
       const unsubscribe = this.appServer.onNotification((event) => {
@@ -286,7 +289,8 @@ export class CodexRemoteObserver {
       try {
         generation = await this.appServer.connect();
         if (!await this.subscribeCurrentMappings(this.appServer, generation)) continue;
-        retryMs = 1_000;
+        failures = 0;
+        clearRetryBreaker("codex-remote-observer:app-server");
         await Promise.race([
           this.appServer.waitForDisconnect(generation),
           this.stoppedSignal,
@@ -297,8 +301,11 @@ export class CodexRemoteObserver {
         unsubscribe();
       }
       if (!this.stopped) {
-        await Promise.race([wait(retryMs), this.stoppedSignal]);
-        retryMs = Math.min(retryMs * 2, 30_000);
+        failures += 1;
+        const decision = recordRetryFailure({ key: "codex-remote-observer:app-server", site: "codex-observer",
+          what: "Codex Remote observation", failure: { kind: "transient",
+            reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } });
+        await Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]);
       }
     }
   }
@@ -390,7 +397,7 @@ export class CodexRemoteObserver {
           provider_item_id: String(params.item?.id || ""),
           failures,
         });
-        const retryMs = Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000);
+        const retryMs = retryDelayMs(RETRY_POLICIES.observer, failures);
         await Promise.race([
           this.waitBeforeObservationRetry(retryMs),
           this.stoppedSignal,

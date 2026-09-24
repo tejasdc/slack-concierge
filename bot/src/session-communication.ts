@@ -7,7 +7,7 @@ import { readInputExecution, resolveSessionAddress, sessionAddress, type Session
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
-import { recordTurnOutcome } from './session-turn-outcome';
+import { recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
@@ -424,6 +424,30 @@ export class SessionCommunicationCoordinator {
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
     }
+    /** A live session declares its turn's outcome as a retained, retry-safe action. */
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);action(input.action_id);
+        if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
+        if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
+        const content=typeof input.text==='string'?input.text.trim():'';
+        if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
+        if(input.outcome!=='done'&&!content)throw new Error(`${input.outcome} requires text.`);
+        return db.transaction(()=>{
+            this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null},
+                sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            if(turnDeclaredByAction(actor.turn))
+                throw new Error('This turn already declared its outcome by action.');
+            recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
+                inputId:actor.inputId,outcome:input.outcome,text:content||null});
+            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
+            return {...receipt,duplicate:false};
+        })();
+    }
     /**
      * `sessions topics …`: the Inbox's own commands over its topics, their requests, the
      * questions waiting on Tejas and what the router says it is working on. Authority is
@@ -809,7 +833,7 @@ export class SessionCommunicationCoordinator {
                 // answer supersedes it. An unclassified work answer declares nothing.
                 const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
                     :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
-                if(declared)recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
+                if(declared&&!turnDeclaredByAction(actor.turn))recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
                     inputId:request.target_input_id!,outcome:declared,text:input.text});
                 // The worker no longer needs the answers it asked for on this request's behalf; a
                 // needs_decision final keeps them, because that reply is the question.

@@ -8,6 +8,36 @@ Routed publication and Slack input classification share the per-channel owner de
 
 Concierge accepts Slack events and authenticated native surface input into the same session ledger and turn FIFO. Slack threads retain adapter bindings; native input requires no Slack message. The [unified session owner](SESSION-OWNER.md) describes native admission, source capabilities and Thinkering observations. The Slack projection behavior below remains specific to Slack-presented turns.
 
+## Continuing work after a provider refusal
+
+When Claude or Codex confirms that a turn failed on usage, rate limiting or sign-in after
+producing assistant content or using tools, the failed turn remains in history. In the
+same ledger transaction, `queueTurnContinuation` accepts one service input whose identity
+comes from that failed turn. It tells the next run when and why work stopped and to check
+its transcript, repository and remote effects before acting. It never resends the original
+input. An ambiguous provider result has no automatic continuation.
+
+The continuation waits in the ordinary per-session FIFO. A known usage reset or rate
+retry time uses the queue's existing deadline; an unknown usage reset waits for the
+existing account-usage reading to show room; a sign-in refusal uses the authentication
+hold released only after the account answers. No second runner or timer is involved.
+The existing provider-free outage notice counts waiting continuations, once per episode.
+Requests owed by the failed run remain open and a later run of that session can answer
+them.
+
+A deliberate Stop never creates a continuation. Pause, archive or a later human or agent
+input cancels one still queued. `queueTurnContinuation` also accepts `boundary`, distinct
+from `provider_refused`; the native deployment safeguard uses it when intentionally
+yielded work is ready to resume, with new guidance rather than a replay. A boundary
+source may have ended `done`, `error` or `cancelled`: work the system cancels at a
+boundary it chose (an allowance or deployment yield) keeps its honest `cancelled`
+status. A person's Stop is recognized by `stop_requested_at`, which only the Stop
+routes set, never by status, so it still never continues. At startup a
+single 24-hour pass offers this same continuation to a session whose latest turn ended
+in a recognized provider refusal, had a retained assistant or tool message, and has no
+Stop, newer input or queued work. This excludes a refusal before the provider did work,
+which keeps its original input under the separate sign-in/usage hold rules.
+
 - `bot/src/index.ts` owns Slack ingress, admission, command and shortcut registration, and routing.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.

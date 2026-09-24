@@ -28,12 +28,14 @@ export function installSessionProjection(owner:SessionOwner) {
     WHERE input.steering_id IS NULL AND input.kind IN ('create','input','consultation','fork')
       AND ((turn.turn_kind='native' AND turn.status IN ('error','parked','interrupted','delivery_parked'))
         OR (input.turn_id IS NULL AND json_extract(input.receipt_json,'$.state') IN ('failed','uncertain')))
+      AND NOT EXISTS(SELECT 1 FROM session_inputs continuation WHERE continuation.id='turn-continuation:' || turn.id)
       AND NOT EXISTS(SELECT 1 FROM session_owner_events event WHERE event.event_id='attention:' || input.id || ':' || COALESCE(turn.dispatch_attempt,0))`).all() as {id:string}[])recordSessionInputAttention(input.id);
   return observeTurnFacts((turnId,kind)=>{
     const turn=db.query('SELECT * FROM turns WHERE id=?').get(turnId) as any;
     if(!turn)return;
     if(turn.turn_kind==='native') {
-      if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status))recordSessionInputAttention(turn.accepted_input_id);
+      if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status)
+        && !db.query('SELECT 1 FROM session_inputs WHERE id=?').get(`turn-continuation:${turnId}`))recordSessionInputAttention(turn.accepted_input_id);
       if(kind==='terminal'&&['done','error','cancelled','interrupted','parked','delivery_parked'].includes(turn.status)) {
         recordUnsaidTurnOutcome(turn);
         // A run that ended, errored or was stopped is not working on a topic any more. No

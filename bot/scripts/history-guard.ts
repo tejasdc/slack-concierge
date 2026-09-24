@@ -11,7 +11,18 @@
  * it as a managed hook (scripts/install-codex-stop-hook.sh). Anything unexpected lets the command
  * through: git's own hook is the backstop, and a guard must never stop unrelated work.
  */
-import { historyRewriteRefusal, toolCommand, type RepositoryProbe } from '../src/history-rewrite-policy';
+import { realpathSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
+
+function selfMatchingWaitRefusal(command: string): string | null {
+  const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
+  if (!loop) return null;
+  const patternWait = /\bpgrep\s+(?:-[\w]*f[\w]*\s+|--full\s+)|\bpkill\s+(?:-[\w]*0[\w]*\s+)?(?:-[\w]*f[\w]*\s+|--full\s+)|\bps\b[^\n;]*\|\s*grep\b/i.test(command);
+  return patternWait
+    ? 'Refused: this wait loop can match its own command and never finish. Wait for exact process IDs with `router-actions.sh wait --pid <pid> [--timeout 30m]`.'
+    : null;
+}
 
 function git(dir: string, args: string[], timeout = 5000): string | null {
   const result = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'ignore', timeout });
@@ -63,7 +74,19 @@ try {
   const command = toolCommand(input);
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
-  if (command) reason = historyRewriteRefusal(command, start, probe);
+  if (command) {
+    reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    if (!reason) {
+      const launch = writableCodexLaunchDirectory(command, start);
+      if (launch) {
+        const top = git(launch, ['rev-parse', '--show-toplevel']);
+        const common = git(launch, ['rev-parse', '--git-common-dir']);
+        if (top && common && realpathSync(top) === realpathSync(dirname(resolve(launch, common)))) {
+          reason = `Refused: writable Codex work would run in the shared checkout ${top}. Run \`wt <task-name>\` there, then launch Codex from the worktree it prints. Read-only Codex reviews remain allowed here.`;
+        }
+      }
+    }
+  }
 } catch { reason = null; }
 if (reason) {
   console.error(JSON.stringify({ event: 'history_rewrite_refused', provider_session: hook.session_id ?? null }));

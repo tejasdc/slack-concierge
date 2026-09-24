@@ -7,7 +7,7 @@ export HOME=${HOME:-/root}
 export GIT_TERMINAL_PROMPT=0
 
 SOURCE_ROOT=${CONCIERGE_DEPLOYMENT_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
-REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
+REPO=${CONCIERGE_REPO:-/var/lib/slack-concierge-deployment/source}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}

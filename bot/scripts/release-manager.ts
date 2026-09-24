@@ -32,7 +32,7 @@ function finish(code: number, payload: Record<string, unknown>): never {
 }
 
 try {
-  const repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
+  const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
   const sourceRoot = process.env.CONCIERGE_DEPLOYMENT_SOURCE_ROOT || repositoryRoot;
   const controlRoot = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT;
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));

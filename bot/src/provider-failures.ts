@@ -1,3 +1,6 @@
+import { retryDelayMs } from './retry';
+import { RETRY_POLICIES } from './retry-policies';
+
 export type ProviderDispatchFailureClass = "retryable" | "parked_access" | "parked_terminal";
 
 export function isClaudeUsageExhaustion(message: string) {
@@ -24,6 +27,8 @@ export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;
   readonly toolsUsed: string[];
+  /** Whether the provider produced assistant content, even if its turn later failed. */
+  readonly assistantOutput: boolean;
   readonly providerSessionId: string | null;
   readonly providerTurnId: string | null;
   /** Retry at once: he chose another model for a message stuck in a provider outage. */
@@ -42,6 +47,7 @@ export class ProviderDispatchError extends Error {
     failureClass?: ProviderDispatchFailureClass;
     terminalConfirmed: boolean;
     toolsUsed?: string[];
+    assistantOutput?: boolean;
     providerSessionId?: string | null;
     providerTurnId?: string | null;
     immediateRetry?: boolean;
@@ -52,6 +58,7 @@ export class ProviderDispatchError extends Error {
     this.failureClass = input.failureClass || classifyProviderDispatchFailure(input.message);
     this.terminalConfirmed = input.terminalConfirmed;
     this.toolsUsed = input.toolsUsed || [];
+    this.assistantOutput = input.assistantOutput === true;
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;
@@ -86,8 +93,23 @@ export function isRefreshableAuthFailure(message: string): boolean {
   return /authenticat|oauth|not logged in|\blog[ -]?in\b|unauthori[sz]ed|\b401\b|session expired|credential|token expired/.test(normalized);
 }
 
+export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in';
+  detail:string;waitUntilMs?:number|null};
+
+/** Shared by live failure handling and the one-time recent-backlog pass. */
+export function providerRefusalContinuationReason(message:string,clearsAtMs:number|null,
+  failedAtMs:number,attempt:number):ProviderRefusalContinuationReason|null {
+  const detail=message.slice(0,500);
+  if(isRefreshableAuthFailure(message))return {kind:'provider_refused',refusal:'sign_in',detail};
+  if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message))
+    return {kind:'provider_refused',refusal:'usage',detail,waitUntilMs:clearsAtMs};
+  if(/\b429\b|rate[ -]?limit|too many requests/i.test(message))return {kind:'provider_refused',
+    refusal:'rate_limit',detail,waitUntilMs:failedAtMs+providerRetryDelayMs(attempt)};
+  return null;
+}
+
 export function providerRetryDelayMs(dispatchAttempt: number) {
-  return Math.min(30 * 60_000, 15_000 * 2 ** Math.max(0, dispatchAttempt - 1));
+  return retryDelayMs(RETRY_POLICIES.providerRequest, dispatchAttempt);
 }
 
 export function providerDispatchError(error: unknown): ProviderDispatchError | null {

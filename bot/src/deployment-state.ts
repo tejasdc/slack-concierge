@@ -683,6 +683,43 @@ export function getDeploymentRun(runId: string): DeploymentRunRow | null {
   return db.query("SELECT * FROM deployment_runs WHERE id=?").get(runId) as DeploymentRunRow | null;
 }
 
+export function recordPreservedCheckout(input: { runId: string; branch: string; worktree: string; commit: string; files: string }) {
+  return writeDeploymentTransaction(() => {
+    const run = getDeploymentRun(input.runId);
+    if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw new Error("No active deployment owns this preserved checkout.");
+    appendRunEvent(input.runId, "shared_checkout_preserved", input);
+    // The same service-origin Inbox/Needs-attention path as key-change-notice: no provider turn.
+    const inbox = db.query(`SELECT id,native_metadata_json FROM sessions
+      WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`)
+      .get() as { id: number; native_metadata_json: string | null } | null;
+    if (!inbox) throw new Error("The preserved checkout has no Inbox destination for its notice.");
+    const inputId = `deployment-preserved:${input.runId}`;
+    const eventId = `checkout-preserved:${input.runId}`;
+    const names = input.files.split("\n").filter(Boolean);
+    const listed = names.slice(0, 20).join(", ");
+    const text = `The pending Concierge update found local work in its shared checkout. I saved ${names.length} changed file${names.length === 1 ? "" : "s"} on branch ${input.branch} at ${input.worktree} before updating. Files: ${listed}${names.length > 20 ? `, and ${names.length - 20} more` : ""}. I could not establish which session made those edits. Open the preserved worktree to review them.`;
+    const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
+      (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
+      VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, "service:deployment-preservation", eventId,
+      "input", "service", JSON.stringify({ text, delivery: "queue" }),
+      JSON.stringify({ state: "completed", imported: true }));
+    if (inserted.changes === 1) {
+      db.query(`INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json)
+        VALUES(?,?,?,NULL,?,?)`).run(`accepted:${inputId}`, inbox.id, inputId, "accepted", JSON.stringify({ origin: "service", text }));
+      db.query(`INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json)
+        VALUES(?,?,?,NULL,?,?)`).run(eventId, inbox.id, inputId, "shared_checkout_preserved", JSON.stringify(input));
+      const meta = JSON.parse(inbox.native_metadata_json || "{}"), generation = (meta.generation ?? 0) + 1;
+      db.query("UPDATE sessions SET native_metadata_json=? WHERE id=?").run(JSON.stringify({ ...meta, generation,
+        needs: [...(meta.needs ?? []), { inputId, outcome: "response", question: text.slice(0, 2000), generation,
+          at: new Date().toISOString(), runId: "", eventId }] }), inbox.id);
+      db.query(`INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json)
+        VALUES(?,?,?,NULL,?,?)`).run(`needs_you:${eventId}`, inbox.id, inputId, "needs_you",
+          JSON.stringify({ outcome: "response", question: text.slice(0, 2000), inputId, generation }));
+    }
+    return run;
+  })();
+}
+
 export function getDeploymentDesiredState(target = "concierge"): DeploymentDesiredStateRow | null {
   return db.query("SELECT * FROM deployment_desired_state WHERE target=?")
     .get(target) as DeploymentDesiredStateRow | null;
@@ -1706,7 +1743,9 @@ export function requestAutomaticDeployment(
       WHERE target=? AND desired_commit=? AND status IN ('failed', 'ambiguous')
       ORDER BY completed_at DESC, created_at DESC LIMIT 1`)
       .get(target, desiredCommit.toLowerCase()) as DeploymentRunRow | null;
-    if (blocked) return { run: blocked, launchRequired: false, reason: "blocked" as const };
+    if (blocked) {
+      return { run: blocked, launchRequired: false, reason: "blocked" as const };
+    }
     const runId = randomUUID();
     const unitName = `concierge-deploy-${runId.slice(0, 12)}`;
     db.query(`INSERT INTO deployment_runs (id, target, unit_name, status, desired_commit)

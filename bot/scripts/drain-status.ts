@@ -39,10 +39,13 @@ try {
   }
 
   const inspect = () => {
+    const hasBackgroundJobs = !!database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='background_job_status'").get();
     const rows = database.query(`
     SELECT t.id AS turn_id, t.status AS turn_status, t.owner_instance_id,
+           t.session_id, s.native_metadata_json,
            p.pid, p.boot_id, p.process_start_ticks
     FROM turns t
+    LEFT JOIN sessions s ON s.id=t.session_id
     LEFT JOIN process_instances p ON p.instance_id=t.owner_instance_id
     WHERE t.status IN ('running', 'delivering')
     ORDER BY t.id
@@ -50,7 +53,18 @@ try {
     const active: any[] = [];
     const stale: any[] = [];
     for (const row of rows) {
-      const summary = { turn_id: row.turn_id, turn_status: row.turn_status, owner_instance_id: row.owner_instance_id };
+      let title: string | null = null;
+      try { title = JSON.parse(row.native_metadata_json || "{}").title || null; } catch {}
+      const jobs = (hasBackgroundJobs ? database.query(`SELECT task_id,description,started_at_ms,told_30,told_60,holding_only
+        FROM background_job_status WHERE turn_id=? ORDER BY started_at_ms`).all(row.turn_id) : []) as Array<{
+        task_id: string; description: string; started_at_ms: number;
+        told_30: number; told_60: number; holding_only: number;
+      }>;
+      const summary = { turn_id: row.turn_id, turn_status: row.turn_status,
+        owner_instance_id: row.owner_instance_id, session_id: row.session_id,
+        title, background_jobs: jobs.map(job => ({ id: job.task_id, description: job.description,
+          started_at: new Date(job.started_at_ms).toISOString(), age_ms: Date.now() - job.started_at_ms,
+          told_30: !!job.told_30, told_60: !!job.told_60, holding_only: !!job.holding_only })) };
       if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
       else stale.push(summary);
     }
@@ -64,6 +78,22 @@ try {
               AND older.status IN ('accepted', 'publishing', 'confirmed', 'parked'))`).all() as any[];
       for (const row of publications) {
         const summary = { request_id: row.request_id, request_status: row.status, owner_instance_id: row.owner_instance_id };
+        if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
+        else stale.push(summary);
+      }
+    }
+    // A sign-in he has started is work in progress. It holds the update the same way a
+    // running turn does, because restarting through it discards the waiting process and his
+    // pasted code then has nowhere to go — which is how many updates tonight each silently
+    // threw a sign-in away. Its own expiry bounds the wait, so an abandoned one holds nothing.
+    if (database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_sign_ins'").get()) {
+      const signIns = database.query(`SELECT sign_in.provider, sign_in.owner_instance_id, sign_in.expires_at_ms,
+        process.pid, process.boot_id, process.process_start_ticks FROM pending_sign_ins sign_in
+        LEFT JOIN process_instances process ON process.instance_id=sign_in.owner_instance_id
+        WHERE sign_in.expires_at_ms > ?`).all(Date.now()) as any[];
+      for (const row of signIns) {
+        const summary = { pending_sign_in: row.provider, owner_instance_id: row.owner_instance_id,
+          expires_at: new Date(row.expires_at_ms).toISOString() };
         if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
         else stale.push(summary);
       }

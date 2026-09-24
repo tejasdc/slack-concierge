@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KEY_FILES, keyFingerprints, type KeyFile } from '../src/key-files';
+import { publishProviderFreeNotice } from '../src/provider-free-notice';
 
 const stateDir = process.env.CONCIERGE_STATE_DIR;
 if (!stateDir) throw new Error('CONCIERGE_STATE_DIR is required.');
@@ -30,8 +31,6 @@ const read = (path: string) => { try { return readFileSync(path, 'utf8'); } catc
 const log = (fields: object) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...fields }));
 const metadataOf = (id: number) => JSON.parse((db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(id) as { native_metadata_json: string | null } | null)?.native_metadata_json || '{}');
 const titleOf = (id: number): string | null => metadataOf(id).title ?? null;
-const event = (eventId: string, sessionId: number, inputId: string, kind: string, payload: object) =>
-  db.query('INSERT OR IGNORE INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,NULL,?,?)').run(eventId, sessionId, inputId, kind, JSON.stringify(payload));
 
 function startedAt(file: KeyFile): string | null {
   if (!file.unit) return null;
@@ -40,19 +39,8 @@ function startedAt(file: KeyFile): string | null {
 
 /** A service message in the Inbox, raised to Needs attention as something to read. */
 function tellHim(eventId: string, text: string, payload: object) {
-  const inbox = db.query(`SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`).get() as { id: number } | null;
-  if (!inbox) { log({ event: 'secrets_rotated_unannounced', reason: 'no Inbox session', eventId }); return; }
-  const inputId = `secrets:${eventId}`;
-  db.transaction(() => {
-    db.query(`INSERT OR IGNORE INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json) VALUES(?,?,?,?,?,?,?,?)`)
-      .run(inputId, inbox.id, 'service:key-change-notice', eventId, 'input', 'service', JSON.stringify({ text, delivery: 'queue' }), JSON.stringify({ state: 'completed', imported: true }));
-    event(`accepted:${inputId}`, inbox.id, inputId, 'accepted', { origin: 'service', text });
-    event(eventId, inbox.id, inputId, 'secrets_rotated', payload);
-    const meta = metadataOf(inbox.id), generation = (meta.generation ?? 0) + 1;
-    db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({ ...meta, generation,
-      needs: [...(meta.needs ?? []), { inputId, outcome: 'response', question: text.slice(0, 2000), generation, at: new Date().toISOString(), runId: '', eventId }] }), inbox.id);
-    event(`needs_you:${eventId}`, inbox.id, inputId, 'needs_you', { outcome: 'response', question: text.slice(0, 2000), inputId, generation });
-  })();
+  try { publishProviderFreeNotice(db, { key: eventId, text, kind: 'secrets_rotated', payload: payload as Record<string, unknown> }); }
+  catch (error) { log({ event: 'secrets_rotated_unannounced', eventId, error: String(error) }); }
 }
 
 for (const file of KEY_FILES) {

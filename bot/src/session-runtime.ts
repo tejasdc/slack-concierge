@@ -13,15 +13,17 @@ import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity'
 import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {reconcileRecoverableTurns} from './turn-recovery';
-import {recordSessionEvent,retainSlackInput} from './session-inputs';
+import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
-import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
+import {watchAuthHeldCredentials} from './provider-activation';
+import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
 import {advanceRepeatingSchedules,reconsiderBankedWork,inspectSavedWork,settleMissedScheduledWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {startBackgroundJobWatch} from './background-waits';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -70,6 +72,8 @@ export async function startSessionRuntime() {
   const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive}):undefined;
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
+  for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
+    provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordSessionEvent);
   const detachProjection=installSessionProjection(host.owner);
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
@@ -107,13 +111,15 @@ export async function startSessionRuntime() {
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
     onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
+  const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
+  const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();queue.wake();});
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     for(const turnId of active){
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}

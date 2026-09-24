@@ -19,7 +19,7 @@ const commitTitles = new Map<string, string | null>();
 const rangeChanges = new Map<string, { revision: string; title: string }[]>();
 
 function repositoryRoot() {
-  return process.env.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge";
+  return process.env.CONCIERGE_REPOSITORY_ROOT || "/var/lib/slack-concierge-deployment/source";
 }
 
 function git(arguments_: string[]): string | null {

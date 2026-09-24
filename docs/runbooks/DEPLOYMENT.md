@@ -5,15 +5,31 @@ copy or edit project files on the service peer. A signed GitHub `push` webhook
 for `tejasdc/slack-concierge` `main` advances one durable desired-state record,
 and the event-driven worker creates at most one active deployment run when that
 commit differs from the immutable last-known-good release. The detached runner
-waits for active provider and capture work, pulls with rebase, installs the
-frozen dependency graph, activates an immutable candidate, restarts Concierge,
-and proves the exact runtime before success. A terminally failed or parked
-desired SHA stays blocked until a later signed push advances the desired state.
+waits for active provider and capture work, fetches the recorded pushed commit
+into `/var/lib/slack-concierge-deployment/source`, installs the frozen dependency
+graph, activates an immutable candidate, restarts Concierge, and proves the
+exact runtime before success. Only the deployment system writes that source.
+The agent checkout under `/root/workspace` is never an update input. A terminally
+failed candidate stays blocked until a later signed push advances the desired
+state or the existing repair owner resolves it. There is no checkout cleanliness
+poll or automatic retry based on agent work in a shared checkout.
 Startup resumes already accepted durable work but deliberately does not scan Git
 history for pushes received while Concierge was offline.
 
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
+
+The runner creates the deployment source from the fixed GitHub origin on its first
+run, verifies its origin on later runs, fetches `main`, checks that the recorded
+desired commit belongs to pushed `main`, and checks out that exact SHA. The
+immutable release bundles the router commands, service-failure and key-change
+notices, and the native continuation command, alongside the
+Claude and Codex hooks; the installed launchers run those bundles from `current`, not
+source files in an agent checkout. The service working directory is the installed
+release. Git history and deployment repair read the deployment-owned source.
+The old shared-checkout preservation events remain historical records only.
+The Codex worktree guard still refuses writable delegated work in the canonical
+agent checkout and continues to protect concurrent agents.
 
 The repair architecture is documented in
 [trusted-root deployment repair](../architecture/DEPLOYMENT-REPAIR.md).
@@ -337,10 +353,11 @@ remains durable, and its delivery gate is not claimed while the deployment is
 merely waiting for providers. Deployment then records the phase sequence
 `prepared → draining → updating → restarting → verifying → releasing`.
 While a run waits, the owner status (`GET /sessions/v1/status` `deployment`) names the
-sessions it is waiting on, since when, and any background job holding a Claude run open,
-and Thinkering shows it. A Claude run stays live while its background work runs (up to
-six hours; see provider sessions), so a release can wait that long. Stopping that session
-is how Tejas lets the release go ahead sooner; nothing forces it automatically.
+sessions it is waiting on, since when, and each background job holding a Claude run open,
+and Thinkering shows it. The owner steers a notice into the run after 30 and 60 minutes.
+After the 60-minute notice and 15 quiet minutes, an abandoned run holding only background
+jobs ends with a boundary continuation, so it can resume after the update. Active work
+continues to hold the release; see [waiting and retrying](../plans/2026-09-24-waiting-and-retrying.md).
 Success additionally requires:
 
 - active capture ingress with its authenticated local health check;
@@ -565,3 +582,18 @@ that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).
 Capture ingress retains the historical `agent-inbox.service` name and its
 separate unprivileged identity. Its security and queue ownership are documented
 in [capture ingress](../architecture/CAPTURE-INGRESS.md).
+
+### Retry and background-job signals
+
+The Concierge service journal records `retry_budget_exhausted` with the operation,
+attempt count, elapsed time and last error. Peer reply deadlines also record
+`session_peer_reply_deadline_exhausted`. The same exhausted episode places one
+service message in the native Inbox's Needs attention list; it starts no provider
+turn. Inspect with `journalctl -u concierge-bot.service -u agent-inbox.service
+--since today` and search those event names. The ledger keeps the one-time notice
+and breaker state; the normal owner of recovery is the agent handling the named
+request or deployment. The status endpoint's `deployment.sessions` lists each
+running session holding an update, with the description, age and last notice for
+each background job. The drain command reports the same jobs. A failed deployment
+run with an uncertain external effect still stops for recovery instead of replaying
+that effect automatically.

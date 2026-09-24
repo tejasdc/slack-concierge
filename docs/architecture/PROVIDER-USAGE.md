@@ -105,6 +105,42 @@ the Slack-enabled runtime in `index.ts`, which also polls every 60 seconds, and 
 native-only runtime in `session-runtime.ts`, which has no poll at all and before this
 change could leave a scheduled retry waiting indefinitely on a quiet machine.
 
+## Sign-in holds
+
+An authentication refusal is held without a guessed reset time when the provider confirmed
+the turn ended, and the adapter observed no assistant content or tool use. The existing
+dispatch safety checks still exclude unsafe steering, artifact activity and ambiguous
+admission. The input remains queued at the head of its own session with its original
+identity; later inputs cannot pass it. Its receipt says the account cannot sign in and
+will resume automatically.
+
+The existing credential activation path releases these holds only after the selected
+account answers a small real request. Owner sign-in, account add and switch call
+activation directly. Directory filesystem events watch the login credential names;
+on the Mac, a login Keychain file event also probes a held Claude account. A Codex
+activation deferred behind running work is retried when execution changes after
+the last running Codex turn. Startup probes held work once. A three-minute check
+runs only while authentication-held work exists as a temporary fallback for
+external sign-ins. Each release records `released_by` as `owner_signin`,
+`file_event`, `keychain_event`, `turn_finished`, `startup` or `interval` in the
+structured log and in a companion resolution event for the one-time outage
+notice. An `interval` release proves a missing event path. Remove the fallback
+only after real external sign-ins on both machines release real held work through
+events within seconds; the required browser approval and expired login cannot be
+simulated by this change. Codex activation
+also restarts its App Server when no turns are running, because that server keeps its
+credential in memory. A failed activation leaves the queue untouched. Claude's macOS
+Keychain login uses the existing sign-in activation path and Keychain change event.
+
+The first held input of an episode publishes one `provider_outage` event with an `auth`
+payload: account, machine and number of held inputs. Thinkering's existing notification
+courier pushes it without a provider turn. `provider_auth_hold_notified` and
+`provider_auth_hold_activation_failed` give the operator the hold and recovery trail
+without logging credentials or request text. This does not replay turns that reached
+assistant output or tools. The September 23 expired-sign-in incident left six Inbox
+inputs terminal despite Claude only writing their input to its transcript; those six
+are handled separately by the Inbox and are not migrated or replayed by this change.
+
 ## Cost, persistence and visibility
 
 There is no poller, probe loop, worker or idle work. Lookup is one small existing-ledger

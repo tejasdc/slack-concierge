@@ -276,6 +276,29 @@ CREATE TABLE IF NOT EXISTS deployment_drain (
   claimed_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- A sign-in he has started and not yet finished. It used to live only in the memory of the
+-- process running it, so an update threw it away mid-flow and his pasted code came back as
+-- "that code didn't work". Here it is work in progress like any other: the drain sees it and
+-- waits, and a reloaded page can find it again. Its expiry bounds that wait, so an
+-- abandoned sign-in cannot hold an update open.
+CREATE TABLE IF NOT EXISTS pending_sign_ins (
+  provider           TEXT PRIMARY KEY,
+  owner_instance_id  TEXT NOT NULL,
+  started_at_ms      INTEGER NOT NULL,
+  expires_at_ms      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS background_job_status (
+  turn_id            INTEGER NOT NULL REFERENCES turns(id),
+  task_id            TEXT NOT NULL,
+  description        TEXT NOT NULL,
+  started_at_ms      INTEGER NOT NULL,
+  told_30            INTEGER NOT NULL DEFAULT 0,
+  told_60            INTEGER NOT NULL DEFAULT 0,
+  holding_only       INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(turn_id, task_id)
+);
+
 CREATE TABLE IF NOT EXISTS turn_delivery_chunks (
   turn_id            INTEGER NOT NULL REFERENCES turns(id),
   chunk_index        INTEGER NOT NULL,
@@ -786,6 +809,17 @@ db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON compar
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
 initializeSessionOwnerSchema(db);
+// Older continuations used retryable for a time deliberately chosen by the agent.
+// Preserve that intent before normalizing the old retry vocabulary. Session inputs
+// are initialized above, so this also works on checkouts with old ledger rows.
+db.exec(`UPDATE turns SET dispatch_failure_class='chosen_time'
+  WHERE status='queued' AND dispatch_failure_class='retryable'
+    AND accepted_input_id IN (
+      SELECT id FROM session_inputs WHERE scope='turn-continuation'
+        AND json_extract(payload_json,'$.continuation.reason.kind')='boundary'
+        AND json_extract(payload_json,'$.continuation.reason.waitUntilMs') IS NOT NULL
+    )`);
+db.exec("UPDATE turns SET dispatch_failure_class='backoff' WHERE dispatch_failure_class='retryable'");
 initializeRouterSearchIndex(db);
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
@@ -922,6 +956,24 @@ export function heartbeatProcessInstance(instanceId: string) {
 
 export function stopProcessInstance(instanceId: string) {
   db.query("UPDATE process_instances SET stopped_at=CURRENT_TIMESTAMP WHERE instance_id=?").run(instanceId);
+}
+
+/** A sign-in he has started is now waiting; nothing may be restarted out from under it. */
+export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number) {
+  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET owner_instance_id=excluded.owner_instance_id,
+      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms`)
+    .run(provider, ownerInstanceId, Date.now(), expiresAtMs);
+}
+
+export function clearPendingSignIn(provider: string) {
+  db.query("DELETE FROM pending_sign_ins WHERE provider=?").run(provider);
+}
+
+/** Only sign-ins that could still be finished; an expired one holds nothing back. */
+export function listPendingSignIns(nowMs = Date.now()): Array<{ provider: string; owner_instance_id: string; started_at_ms: number; expires_at_ms: number }> {
+  return db.query("SELECT * FROM pending_sign_ins WHERE expires_at_ms > ? ORDER BY provider").all(nowMs) as any[];
 }
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
@@ -3696,6 +3748,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
   dispatchAttempt: number;
   error: string;
   nextAttemptMs: number;
+  authWait?: boolean;
 }): boolean {
   return db.transaction(() => {
     const boundary = getRunningTurnDispatchBoundary(
@@ -3718,9 +3771,10 @@ export function retryRunningTurnAfterProviderFailure(input: {
       UPDATE turns
       SET status='queued', owner_instance_id=NULL,
           agent_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END, ended_at=NULL,
-          -- A saved banked wait is chosen by the owner, never released by the
-          -- provider-retry sweep when a credential or usage cache changes.
-          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'retryable' END,
+          -- A saved banked wait is chosen by the owner, so it never carries a provider hold:
+          -- the sweep that releases waiting work on a credential or usage change must not
+          -- move a time he chose.
+          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
           dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
@@ -3733,8 +3787,11 @@ export function retryRunningTurnAfterProviderFailure(input: {
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
+      input.authWait ? 'auth_wait' : 'backoff',
+      // A refused banked attempt keeps the refusal's own clearance instant as a floor, so it
+      // does not drop to a three-minute poll against an account that is still out.
       Math.max(Date.now()+3*60_000,input.nextAttemptMs),
-      input.nextAttemptMs,
+      input.authWait ? null : input.nextAttemptMs,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
       input.ownerInstanceId,
@@ -3773,7 +3830,7 @@ export function requeueOrphanedPreAdmissionTurn(
     const changed = db.query(`
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
-          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'retryable' END,
+          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'backoff' END,
           dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE 0 END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
@@ -4885,9 +4942,33 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  */
 export function releaseScheduledProviderRetries(providerId: ProviderId): number {
   return db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='retryable'
+    WHERE status='queued' AND dispatch_failure_class='backoff'
       AND COALESCE(dispatch_next_attempt_ms,0)>0
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+}
+
+/** Release only the provider inputs that were refused before any work for lack of sign-in. */
+export function releaseAuthHeldWork(providerId: ProviderId): number {
+  const released = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='auth_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  if (released) executionChanged();
+  return released;
+}
+
+export function releaseUsageContinuationHolds(providerId:ProviderId):number {
+  const released=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='usage_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  if(released)executionChanged();
+  return released;
+}
+
+export function authHeldInputCount(providerId: ProviderId): number {
+  const row = db.query(`SELECT count(*) AS held FROM turns
+    WHERE status='queued' AND dispatch_failure_class='auth_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).get(providerId) as {held:number};
+  return row.held;
 }
 
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
@@ -4903,6 +4984,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+          AND COALESCE(turn.dispatch_failure_class,'') NOT IN ('auth_wait','usage_wait')
           AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'scheduled' OR turn.saved_expires_at_ms IS NULL OR turn.saved_expires_at_ms>?)
           AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
           AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
@@ -6453,6 +6535,7 @@ export function failRunningTurnAndReleaseSession(
   ownerInstanceId: string,
   error: string,
   terminalStatusText?: string,
+  afterFailure?: () => void,
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
@@ -6482,6 +6565,7 @@ export function failRunningTurnAndReleaseSession(
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'error' END
               WHERE id=?`).run(turn.session_id);
+    afterFailure?.();
     turnFactChanged(turnId,'terminal');
     return true;
   })();

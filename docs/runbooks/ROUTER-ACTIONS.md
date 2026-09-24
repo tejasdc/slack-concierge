@@ -1,5 +1,13 @@
 # Router action helper
 
+## Waiting for a local process
+
+Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when
+an agent must wait for a shell it started. It checks exact process IDs and returns
+when all have exited. A timeout exits 124 and names any still-running IDs. The
+pre-command guard refuses a loop around a full-command process-name search,
+because such a loop can match itself and hold a run open indefinitely.
+
 ## Current native routing
 
 New work goes to Thinkering native sessions, including requests arriving through

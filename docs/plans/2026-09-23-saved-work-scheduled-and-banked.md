@@ -368,6 +368,82 @@ cleanly, stays resumable, and returns to waiting. Work that cannot tolerate that
 scheduled, not banked — that is the practical difference between the two, and it belongs in the
 first line of the guidance an agent reads.
 
+### What "resumable" means for a run that already shipped something
+
+This was a hole in the first two drafts and it is the sharpest consequence of his "same as
+daytime" answer: a banked run can commit, push and deploy before it is stopped, so **its opening
+message must never be replayed** — replaying it could repeat those effects. That is not a new
+rule invented here; it is the repository's existing invariant (`AGENTS.md`): *"Stop cancels its
+exact run; later messages and returns remain eligible in the same durable session; a new input
+never replays the stopped input or an uncertain effect."*
+
+`concierge:3635` confirmed the shape on 2026-09-23 (request `991c00d6`), and corrected the
+premise this was nearly built on: there is **no** mechanism anywhere by which a resumed turn
+checks what it already did. One is *queued* for them — a request to auto-resume turns that die
+on provider errors, held behind another, so it had not reached them when they answered — and it
+covers turns that **died**, where this design covers a run **stopped on purpose at a boundary**.
+The two do not conflict, and when that request reaches them it is their call whether to reuse
+the continuation input below. Today, Concierge only re-runs an input the provider
+*provably never processed* — no assistant output, no tool call, judged from the turn's own
+record. Nothing keys on external effects at all: a git push or a release activation is recorded
+nowhere a resume could consult. A yielded banked run that did real work falls squarely under
+"never replayed".
+
+So a yield resumes **as a new input in the same session, not as a replay**, which is the
+mechanism this design already has for appending to a saved session:
+
+- The yield stops the run and returns the item to waiting, exactly as described below.
+- When its next opportunity arrives, the saved session receives a **continuation input** — new
+  words saying it was stopped at an allowance or deployment boundary and should carry on from
+  where it got to. The agent reads its own history to know what it already did; nothing
+  reconstructs that for it.
+- The opening input is never queued twice.
+
+Two things make that safe rather than hopeful, and both are `concierge:3635`'s point: effects in
+this workspace are already idempotent under a stable identity — pushing commits already on the
+remote is a no-op, and a release activation is keyed by commit — and the continuation says where
+it stopped rather than asking for the work again.
+
+**One hold, one meaning — `concierge:3635` took this generally.** Wiring the call surfaced a
+collision worth recording because it was invisible: `queueTurnContinuation` marks its new turn
+`retryable` with the wait time, and `releaseScheduledProviderRetries` moves *every* queued
+`retryable` turn with a future instant to now when an account is switched or the usage cache is
+cleared. A continuation waiting until 3am would therefore have run in the middle of his
+afternoon, with nothing logged and nothing failing.
+
+Rather than patch it per caller, they are giving every queued hold a single meaning in
+`docs/plans/2026-09-24-waiting-and-retrying.md`: `backoff` (a transient retry, and the *only*
+thing an account switch or usage clear releases early), `auth_wait`, `usage_wait`, and
+**`chosen_time`** — a time someone chose, released by that time alone. A boundary continuation
+carrying `waitUntilMs` becomes `chosen_time`.
+
+That is strictly better than this design's own rule, and supersedes it: "saved work never
+carries the retry mark" was this design protecting itself from a field with two meanings;
+`chosen_time` removes the second meaning for everyone. **Until it ships**, a boundary
+continuation here is converted to a saved turn with its class cleared immediately after the
+call. **When it ships, that conversion is deleted** — otherwise two owners hold the same timing,
+which is the duplication this repository refuses.
+
+**The entry point exists, and it constrains how a yield must end.** `concierge:3635` shipped
+`queueTurnContinuation(sourceTurnId, {kind:'boundary', detail, waitUntilMs?})`
+(`bot/src/session-inputs.ts`, `a061743`). Three constraints come with it, and the second already
+caught a real defect here: it refuses a turn whose Stop was requested by a person, because a
+deliberate Stop must never continue; it requires the source turn to be the session's latest and
+to have ended `done` or `error`; and a waiting continuation is cancelled when a newer input
+arrives in that session, which is correct for us — if he sends something to a banked session, his
+words win.
+
+The defect: this build's boundary yield ends its turn as `cancelled`, which is neither `done` nor
+`error`, so the call would have returned null **silently** and a yielded run would have sat held
+forever. So a boundary yield must end its turn as `done` — it did finish a unit of work and was
+asked to stop — and must not travel the human Stop path. Found by checking against the
+constraints rather than assuming; it is the kind of failure nobody notices until they ask why
+banked work never picks itself up.
+
+One distinction this design keeps that nothing else models: **stopped on purpose, mid-work** is
+not the same as *died*. A boundary yield is deliberate, its session is healthy, and it is the
+only case where the system stops a run it could have let finish.
+
 **Yielding needs a write of its own, and it is not the retry path.** "Stopped cleanly, resumable,
 returns to waiting" has to name how the row gets back to `queued`: the only existing
 requeue-a-running-turn write is `retryRunningTurnAfterProviderFailure`, which saved work must not

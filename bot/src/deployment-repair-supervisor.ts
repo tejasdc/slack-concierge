@@ -83,7 +83,7 @@ export class DeploymentRepairSupervisor {
 
   constructor(
     readonly incidentId: string,
-    readonly repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+    readonly repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
     readonly services: DeploymentRepairServices = defaultServices(repositoryRoot),
   ) {
     this.incidentRoot = join(

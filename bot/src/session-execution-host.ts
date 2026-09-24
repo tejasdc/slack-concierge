@@ -23,7 +23,7 @@ import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {ATTENTION_INSTRUCTION,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -43,7 +43,18 @@ import {claudeAccountSelection,selectClaudeAccount} from './provider-account-sel
 import {releaseUsageHeldWork} from './provider-usage';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
-export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
+/**
+ * `detail` is one sentence for him about what actually happened, present only when
+ * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
+ * that had been taken away by a restart was reported to him as a wrong code.
+ */
+export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;detail?:string;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
+
+const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
+  no_url_before_timeout:'The sign-in tool did not produce a link. Nothing changed.',
+  cli_exited:'The sign-in tool stopped before it could show a link. Nothing changed.',
+  superseded:'Another sign-in for this provider started, so this one was dropped.',
+};
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
@@ -58,6 +69,11 @@ export class SessionExecutionHost {
     this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
       void (provider==='codex'?this.codexLogin.completed():this.settleCredentialChange(provider as ProviderKey))
         .catch(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});});
+    },onPendingChanged:(provider,expiresAtMs)=>{
+      // A sign-in he has started becomes work in progress the drain can see, so an update
+      // waits for it instead of discarding it while he is fetching the code.
+      if(expiresAtMs===null)clearPendingSignIn(provider);
+      else recordPendingSignIn(provider,this.options.instanceId,expiresAtMs);
     }});
     // A Codex sign-in lands in a home of its own and is only then put in use, so the
     // account already here keeps its token instead of being deleted by the login.
@@ -165,16 +181,20 @@ export class SessionExecutionHost {
     const started=await this.providerLoginManager.start(key,command,homedir(),'paste-code');
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
     if(started.status==='completed')return this.settleCredentialChange(key);
-    log('warn','auth_refresh_failed',{provider:key,output_chars:started.output.length});
-    return {status:'failed'};
+    log('warn','auth_refresh_failed',{provider:key,reason:started.reason,output_chars:started.output.length});
+    return {status:'failed',detail:SIGN_IN_FAILURE_DETAIL[started.reason]??'The sign-in could not be started. Nothing changed.'};
   }
   private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
     const completion=await this.providerLoginManager.complete(key,code);
-    if(completion.status==='no_pending_login')return {status:'no_pending_login'};
+    // Not a wrong code: the waiting sign-in is gone, most often because Concierge updated
+    // between his opening the link and his pasting what it gave him. Telling him the code
+    // was wrong sent him round the same loop again, which is most of why this has felt like
+    // nothing works (2026-09-24).
+    if(completion.status==='no_pending_login')return {status:'no_pending_login',detail:'This sign-in is no longer waiting for a code — it most likely ended when Concierge updated. Start it again and it should go through.'};
     if(completion.status==='completed')return this.settleCredentialChange(key);
-    log('warn','auth_refresh_failed',{provider:key,output_chars:completion.output.length});
-    return {status:'failed'};
+    log('warn','auth_refresh_failed',{provider:key,stage:'complete',output_chars:completion.output.length});
+    return {status:'failed',detail:'The sign-in tool did not accept that code. Nothing changed.'};
   }
   private saveProviderAuthProfile(provider:string,label:string):readonly ProviderProfile[]{
     return saveProfile(this.assertAuthProvider(provider),label);

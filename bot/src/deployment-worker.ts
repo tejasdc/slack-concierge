@@ -47,6 +47,7 @@ const DEPLOYMENT_REACTION_EMOJI: Record<DeploymentTurnReactionState, string> = {
 };
 
 const DEPLOYMENT_REACTION_STATES = Object.keys(DEPLOYMENT_REACTION_EMOJI) as DeploymentTurnReactionState[];
+const sqlTimeMs = (time: string) => Date.parse(time.endsWith("Z") ? time : `${time.replace(" ", "T")}Z`);
 
 function deploymentReactionNoticeShape(row: DeploymentTurnReactionRow) {
   return {
@@ -54,6 +55,7 @@ function deploymentReactionNoticeShape(row: DeploymentTurnReactionRow) {
     noticeStatus: row.projection_status,
     attempts: row.projection_attempts,
     nextAttemptMs: row.projection_next_attempt_ms,
+    startedAtMs: sqlTimeMs(row.created_at),
   };
 }
 
@@ -99,7 +101,7 @@ function registerReactionTargetsForCommitRange(input: {
 }) {
   try {
     const targets = deploymentReactionTargetsForCommitRange(
-      process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+      process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
       input.baseCommit,
       input.candidateCommit,
     );
@@ -182,7 +184,7 @@ export async function reconcileDeploymentWork(input: {
     try {
       const desired = installableDesiredCommit();
       if (desired) {
-        const automatic = requestAutomaticDeployment(desired);
+        const automatic = requestAutomaticDeployment(desired, "concierge");
         automaticDeploymentPrepared = automatic.reason === "prepared";
       }
     } catch (error) {
@@ -291,7 +293,8 @@ export async function reconcileDeploymentWork(input: {
       },
       isRetryable: isTransientSlackError,
       shouldStop: input.shouldStop,
-      maximumAttempts: 8,
+      breakerKey: `deployment-reaction:${reaction.run_id}:${reaction.turn_id}`,
+      breakerWhat: "A deployment status update",
     });
     log(outcome === "delivered" ? "info" : "warn", "deployment_turn_reaction_settled", {
       deployment_run_id: reaction.run_id,
@@ -310,6 +313,7 @@ export async function reconcileDeploymentWork(input: {
           noticeStatus: current.status,
           attempts: current.attempts,
           nextAttemptMs: current.next_attempt_ms,
+          startedAtMs: sqlTimeMs(current.created_at),
         };
       },
       claim: (nowMs) => {
@@ -318,6 +322,7 @@ export async function reconcileDeploymentWork(input: {
           noticeStatus: claimed.status,
           attempts: claimed.attempts,
           nextAttemptMs: claimed.next_attempt_ms,
+          startedAtMs: sqlTimeMs(claimed.created_at),
         };
       },
       deliver: async () => {
@@ -342,7 +347,8 @@ export async function reconcileDeploymentWork(input: {
       markParked: (error) => parkDeploymentNotice(notice.id, input.ownerInstanceId, error),
       isRetryable: isTransientSlackError,
       shouldStop: input.shouldStop,
-      maximumAttempts: 8,
+      breakerKey: `deployment-notice:${notice.id}`,
+      breakerWhat: "A deployment notice",
     });
     log(outcome === "delivered" ? "info" : "warn", "deployment_notice_settled", {
       deployment_run_id: notice.run_id,

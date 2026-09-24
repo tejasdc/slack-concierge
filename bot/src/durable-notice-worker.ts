@@ -1,7 +1,12 @@
+import { clearRetryBreaker, recordRetryFailure, type RetrySite } from "./retry-breaker";
+import { nextRetry, withRetry } from "./retry";
+import { RETRY_POLICY_FOR_SITE, RETRY_POLICIES } from "./retry-policies";
+
 export interface DurableNoticeRow {
   noticeStatus: "pending" | "sending" | "delivered" | "parked";
   attempts: number;
   nextAttemptMs: number | null;
+  startedAtMs?: number;
 }
 
 export function createKeyedTaskScheduler(
@@ -34,23 +39,14 @@ export async function retryTransientDatabaseOperation<T>(input: {
   isRetryable?: (error: unknown) => boolean;
   shouldStop?: () => boolean;
   wait?: (milliseconds: number) => Promise<void>;
-  initialDelayMs?: number;
-  maximumDelayMs?: number;
 }): Promise<{ stopped: true } | { stopped: false; value: T }> {
   const isRetryable = input.isRetryable || isTransientDatabaseError;
-  const wait = input.wait || ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  let retryDelayMs = input.initialDelayMs ?? 50;
-  const maximumDelayMs = input.maximumDelayMs ?? 1_000;
-  while (!input.shouldStop?.()) {
-    try {
-      return { stopped: false, value: input.operation() };
-    } catch (error) {
-      if (!isRetryable(error)) throw error;
-      await wait(retryDelayMs);
-      retryDelayMs = Math.min(retryDelayMs * 2, maximumDelayMs);
-    }
-  }
-  return { stopped: true };
+  if (input.shouldStop?.()) return { stopped: true };
+  return withRetry({ operation: "notice-ledger-write", key: "sqlite-writer", policy: RETRY_POLICIES.ledgerWrite,
+    wait: input.wait,
+    run: async () => input.shouldStop?.() ? { stopped: true as const } : { stopped: false as const, value: input.operation() },
+    classifyError: (error) => isRetryable(error) ? "transient" : "permanent",
+  });
 }
 
 export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input: {
@@ -68,11 +64,13 @@ export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input
   initialDelayMs?: number;
   maximumDelayMs?: number;
   maximumAttempts?: number;
+  retrySite?: RetrySite;
+  onBreakerTrip?: (error: unknown, sinceMs: number) => void;
+  breakerKey?: string;
+  breakerWhat?: string;
 }): Promise<"delivered" | "stopped" | "permanent_failure"> {
   const now = input.now || Date.now;
   const wait = input.wait || ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const initialDelayMs = input.initialDelayMs ?? 1_000;
-  const maximumDelayMs = input.maximumDelayMs ?? 30_000;
 
   const retryPersistence = <T>(operation: () => T) => retryTransientDatabaseOperation({
     operation,
@@ -111,23 +109,25 @@ export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input
     if (deliveryError === null) {
       const delivered = await retryPersistence(input.markDelivered);
       if (delivered.stopped) return "stopped";
+      if (input.breakerKey) clearRetryBreaker(input.breakerKey);
       return "delivered";
     }
-    if (!input.isRetryable(deliveryError)) {
+    const retryable = input.isRetryable(deliveryError);
+    const failure = { kind: retryable ? "transient" as const : "permanent" as const, reason: String(deliveryError),
+      restartSignal: "the notice is retried explicitly" };
+    const decision = input.breakerKey ? recordRetryFailure({ key: input.breakerKey,
+      site: input.retrySite ?? "notice", what: input.breakerWhat ?? "A service notice", failure }) : nextRetry({
+      policy: RETRY_POLICY_FOR_SITE[input.retrySite ?? "notice"], attempt: claimed.attempts,
+      startedAtMs: claimed.startedAtMs ?? now(), nowMs: now(), classification: failure.kind,
+    });
+    if (decision.action !== "retry" || claimed.attempts >= (input.maximumAttempts ?? RETRY_POLICY_FOR_SITE[input.retrySite ?? "notice"].maxAttempts)) {
       const parked = await retryPersistence(() => input.markParked(String(deliveryError)));
       if (parked.stopped) return "stopped";
+      input.onBreakerTrip?.(deliveryError, now());
       return "permanent_failure";
     }
-    if (claimed.attempts >= (input.maximumAttempts ?? Number.POSITIVE_INFINITY)) {
-      const parked = await retryPersistence(() => input.markParked(String(deliveryError)));
-      if (parked.stopped) return "stopped";
-      return "permanent_failure";
-    }
-    const retryDelayMs = Math.min(
-      initialDelayMs * (2 ** Math.max(0, claimed.attempts - 1)),
-      maximumDelayMs,
-    );
-    const retried = await retryPersistence(() => input.markRetry(String(deliveryError), now() + retryDelayMs));
+    const retryAtMs = decision.atMs;
+    const retried = await retryPersistence(() => input.markRetry(String(deliveryError), retryAtMs));
     if (retried.stopped) return "stopped";
   }
   return "stopped";

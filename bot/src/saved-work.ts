@@ -1,5 +1,5 @@
 import {db,executionChanged,getSessionById} from './state';
-import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
 import type {ProviderKey} from './provider-accounts';
@@ -135,8 +135,11 @@ export function yieldBankedTurn(turnId:number,owner:string,nextMs=Date.now()+3*6
 }
 
 export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'|'deployment_boundary'):boolean {
-  // An admitted provider may already have performed effects. Preserve the stopped turn
-  // for reconciliation; re-enqueueing its opening input would replay those effects.
+  // An admitted provider may already have pushed or deployed, so its opening input is never
+  // queued again. The stopped turn is kept as the record of what happened, and the work
+  // continues as a new message that says where it got to — which is what the entry point
+  // below is for. Its ordering requirement is satisfied by construction: this runs after the
+  // turn has ended, and a source without an end is refused, leaving the run held.
   const changed=db.transaction(()=>{
     const row=savedTurn(turnId);
     if(!row||row.status!=='cancelled'||!row.accepted_input_id)return false;
@@ -150,6 +153,16 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
     // the row reads it from this event and the retained text above.
     recordSessionEvent({eventId:`saved-yield:${turnId}`,sessionId:row.session_id,inputId:row.accepted_input_id,
       turnId,kind:'saved_control',payload:{action:'stopped_at_boundary',reason,text:question}});
+    // Continue with new words, never a replay: this run may already have pushed or deployed.
+    // The entry point refuses a source it cannot safely continue — a deliberate human Stop, a
+    // session that has moved on, a status it does not accept — and a refusal is not a failure
+    // here: the run stays held for him, which is what happened before this existed.
+    const continued=queueTurnContinuation(turnId,{kind:'boundary',
+      detail:reason==='deployment_boundary'?'a Concierge update was waiting':'the allowance it was spending reset',
+      ...(row.dispatch_next_attempt_ms?{waitUntilMs:row.dispatch_next_attempt_ms}:{})});
+    // A continuation of banked work is still banked work: without this it would be ordinary
+    // work that simply runs at its time, unbound to an account and outside the reserve.
+    if(continued?.turn_id)saveQueuedTurn(continued.turn_id,'banked');
     return true;
   })();
   return changed;

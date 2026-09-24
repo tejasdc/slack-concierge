@@ -6,12 +6,14 @@ function routerBotDirectory(environment: NodeJS.ProcessEnv, moduleDirectory: str
   const sourceBot = resolve(moduleDirectory, "..");
   if (existsSync(join(sourceBot, "scripts/router-sessions.ts"))) return realpathSync(sourceBot);
 
-  // Immutable release bundles intentionally use the installed checkout's helpers.
+  // A release carries its own router and hook bundles. Never execute helpers from
+  // the writable developer checkout while serving an installed release.
   const configuredBot = environment.CONCIERGE_ROUTER_BOT_DIR
     || (installedProduction && environment.CONCIERGE_RELEASE_MANIFEST
-      ? join(environment.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge", "bot")
+      ? join(environment.CONCIERGE_DEPLOYMENT_RELEASE_ROOT || "/var/lib/slack-concierge-deployment", "current", "bot")
       : null);
-  if (!configuredBot || !existsSync(join(configuredBot, "scripts/router-sessions.ts"))) {
+  if (!configuredBot || !(existsSync(join(configuredBot, "scripts/router-sessions.js"))
+    || existsSync(join(configuredBot, "scripts/router-sessions.ts")))) {
     throw new Error("Concierge provider execution requires its owning router helper directory.");
   }
   return realpathSync(configuredBot);
@@ -33,7 +35,7 @@ export function providerOwnerEnvironment(
     CONCIERGE_STATE_DIR: stateDirectory,
     CONCIERGE_STATE_DB: join(stateDirectory, "state.db"),
     CONCIERGE_ROUTER_BOT_DIR: routerBotDirectory(environment, moduleDirectory,
-      runtime.profile === "production" && runtime.slackConfigPath !== null),
+      runtime.profile === "production"),
     CONCIERGE_RUNTIME_PROFILE: runtime.profile,
     CONCIERGE_SLACK_ENABLED: runtime.slackConfigPath === null ? "0" : "1",
     CONCIERGE_SLACK_CONFIG: runtime.slackConfigPath ?? "/dev/null",

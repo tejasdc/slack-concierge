@@ -4,6 +4,8 @@ import {
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
+import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
+import { RETRY_POLICIES } from "./retry-policies";
 import { codexHistoryMessages } from "./provider-history";
 import { projectSessionProviderMessage } from "./session-projection";
 import { recordSessionEvent } from "./session-inputs";
@@ -66,14 +68,15 @@ export class CodexSessionObserver {
   }
 
   private async runConnections() {
-    let retryMs = 1_000;
+    let failures = 0;
     while (!this.stopped) {
       let generation: number | null = null;
       const unsubscribe = this.appServer.onNotification((event) => this.queueNotification(event));
       try {
         generation = await this.appServer.connect();
         if (!await this.subscribeCurrentBindings(this.appServer, generation)) continue;
-        retryMs = 1_000;
+        failures = 0;
+        clearRetryBreaker("codex-session-observer:app-server");
         await Promise.race([this.appServer.waitForDisconnect(generation), this.stoppedSignal]);
       } catch (error) {
         if (!this.stopped) log("warn", "codex_session_observer_disconnected", errorFields(error));
@@ -84,8 +87,11 @@ export class CodexSessionObserver {
         this.subscribedThreadIds.clear();
       }
       if (!this.stopped) {
-        await Promise.race([wait(retryMs), this.stoppedSignal]);
-        retryMs = Math.min(retryMs * 2, 30_000);
+        failures += 1;
+        const decision = recordRetryFailure({ key: "codex-session-observer:app-server", site: "codex-observer",
+          what: "Codex conversation observation", failure: { kind: "transient",
+            reason: "The Codex App Server did not answer.", restartSignal: "the Codex App Server answers a capped probe" } });
+        await Promise.race([wait(decision.action === "retry" ? Math.max(0, decision.atMs - Date.now()) : RETRY_POLICIES.observer.capDelayMs), this.stoppedSignal]);
       }
     }
   }

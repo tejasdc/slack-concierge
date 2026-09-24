@@ -84,6 +84,7 @@ and mandatory review requirements in this repository and linked historical mater
   before provider admission still increments the queue's claim counter. Repeating schedules
   use fixed intervals rather than calendar dates. See
   [saved work design](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md).
+- Waiting and retrying follow [the waiting protocol](docs/plans/2026-09-24-waiting-and-retrying.md) and [Tejas's retry spec](docs/plans/2026-09-24-retry-spec-tejas.md): each named policy has attempt and age limits with jitter, and exhaustion produces one provider-free Inbox notice. Sign-in, usage, and chosen-time holds each release only on their matching condition. A chosen-time continuation must not be released by an account change. Claude background jobs are named in the deployment drain and receive 30- and 60-minute prompts in their owning run; an abandoned job may be ended with a boundary continuation after the quiet period. Use exact process IDs through `router-actions.sh wait --pid` rather than a pattern-matching wait loop.
 
 Original Thinkering report `5eaa0768-0321-49cc-a3e0-25159b40ba6e` (retained capture
 `27a881e393f0057c878be09c340b4f43e7bd8bbcfbbf667fd474fa3053dfece2`) explicitly
@@ -351,18 +352,20 @@ authorization or a change to the default rapid-iteration policy.
   Provider observation never creates an owner input/run or overwrites its terminal receipt;
   see [external lifecycle](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns).
 - Keep unread activity, declared attention, read/dismiss and outcome separate.
-  Ordinary responses and failures do not set Needs attention. Every working turn ends its
-  answer with one exact `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`):
-  done, response, needs_you with the question, or failed with why. Tejas rejected the
-  provider-enforced form (it doubled Claude turns and one schema rule failed every Claude
-  turn) and chose this single line. Only needs_you and response (an answer he must
+  Ordinary responses and failures do not set Needs attention. Every working turn declares
+  once with `sessions outcome` and its exact source input/run and stable action ID: done,
+  response with what to read, needs_you with the question, or failed with why. A turn that
+  posted its answer needs no closing text. Older sessions still use the exact final
+  `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`) when they have not declared
+  by action. Tejas rejected a provider-enforced form because it doubled Claude turns.
+  Only needs_you and response (an answer he must
   read, not routine replies), or a hand-off reply's
   `needs_decision`, raises attention, cleared by his reply, a later declaration or
   dismiss, never by reading. In the Inbox that attention is a question record in its
   topic, with a kind (decision or reading), an owner and an explicit recorded end; a
-  marker the run did not declare as a question is held unfiled until the router files it,
+  outcome the run did not declare as a question is held unfiled until the router files it,
   never guessed into a thread ([design](docs/plans/2026-09-23-attention-that-ends.md),
-  [contract](docs/contracts/native-inbox.md#topics)). The marker is stripped before display; a turn without one is
+  [contract](docs/contracts/native-inbox.md#topics)). The legacy marker is stripped before display; a turn without a declaration is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to
@@ -410,6 +413,14 @@ authorization or a change to the default rapid-iteration policy.
 - Use isolated task worktrees for concurrent changes. Code and host configuration travel
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
+- The managed pre-command guard refuses writable delegated Codex CLI launches from a
+  repository's canonical checkout and gives `wt <task-name>` as the recovery command.
+  Read-only reviews remain allowed. During deployment, the runner commits modified
+  and untracked shared-checkout files to a timestamped preservation branch and linked
+  worktree before pulling and posts the file list and location to the native Inbox's
+  Needs attention path without a provider turn; a failed preservation stops the
+  update with its Git stash retained. A recorded Git-update failure gets one retry
+  after the checkout is clean, checked by the owner once per minute without a push.
 - **Every commit carries an `Update-note:` line — one sentence in product language about what
   that change does, addressed to him, no code terms. Documentation is included: an instruction
   change alters how agents behave, which is exactly what he wants to know about. `internal` is
@@ -583,6 +594,25 @@ authorization or a change to the default rapid-iteration policy.
   the native-only runtime has no periodic poll, so without that timer a wait with a known
   end has nobody to come back for it. A refusal with no stated reset stays terminal;
   never guess a clearance time. Never widen this to an acknowledged or ambiguous failure.
+- A sign-in refusal before any assistant output or tool work is also a wait, even when the
+  provider cannot say when the credential will recover. The exact input stays at the head
+  of its own queue and resumes only after the selected account answers following sign-in,
+  activation or a credential file change. A provider-free outage event tells Tejas once
+  which account and machine stopped and how much work is waiting. Ambiguous or worked-on
+  turns remain outside this path. See [provider usage](docs/architecture/PROVIDER-USAGE.md).
+  Owner sign-in, add and switch activate directly; external credential files and the Mac
+  login Keychain use filesystem events, and a deferred Codex activation follows the
+  execution-change event. Startup checks once. The three-minute fallback exists only
+  while work is held until real external sign-ins on both machines prove event release;
+  every release records its signal in the log and the outage resolution event.
+- A confirmed provider refusal after assistant output or tools keeps the failed turn in
+  history and queues one new service continuation under that turn's identity. The original
+  input is never replayed: the next run checks its transcript and external effects before
+  resuming. Usage, rate and sign-in continuations use the same queue releases and
+  provider-free episode notices as holds. Stop, pause, archive or a later human/agent
+  input cancel a queued continuation. The same `queueTurnContinuation` entry point takes
+  a distinct boundary reason for work intentionally yielded before deployment. Startup
+  catches only recent, evidenced worked-on provider refusals. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
 - Work that stops must say so on a path that does not depend on what broke. A usage hold
   publishes one `provider_outage` event per episode (`provider-usage-notice.ts`) naming
   the reset, how much is waiting and which other accounts have room; Thinkering pushes it
@@ -629,6 +659,15 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
+- Deployment builds use only the pushed desired commit in the deployment-owned source
+  under `/var/lib/slack-concierge-deployment/source`; the agent checkout is not pulled,
+  stashed, checked for cleanliness or used by live router and hook launchers. Installed
+  release bundles own those entrypoints. Shared-checkout preservation events are
+  historical; the Codex worktree guard remains for concurrent agent writes. See the
+  [deployment runbook](docs/runbooks/DEPLOYMENT.md).
+  Host-owned one-shot callers use the release's bundled router, notice and native
+  continuation commands. Declare a new caller's bundle in the artifact file before
+  pointing a host unit or script at it; the agent checkout is never a runtime path.
 - **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
   amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
   commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:

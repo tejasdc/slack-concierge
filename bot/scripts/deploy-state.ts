@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { readFileSync } from "node:fs";
 import {
   beginDeploymentRepair,
   claimDeploymentRun,
@@ -10,6 +11,7 @@ import {
   getDeploymentRepairIncident,
   deploymentContinuationForAgent,
   recordDeploymentRunPhase,
+  recordPreservedCheckout,
   requestDeployment,
   requestOperatorDeployment,
 } from "../src/deployment-state";
@@ -104,7 +106,8 @@ try {
       }
       throw error;
     }
-    finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name });
+    finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name,
+      desired_commit: run.desired_commit });
   }
 
   if (command === "operator-request") {
@@ -130,6 +133,16 @@ try {
       jsonOption("--detail"),
     );
     finish(0, { status: run.status, run_id: run.id });
+  }
+
+  if (command === "preserved-checkout") {
+    const run = recordPreservedCheckout({
+      runId: requiredOption("--run-id"), branch: requiredOption("--branch"),
+      worktree: requiredOption("--worktree"), commit: requiredOption("--commit"),
+      files: readFileSync(requiredOption("--files-path"), "utf8"),
+    });
+    notifyDeploymentWorker();
+    finish(0, { status: "preserved", run_id: run.id });
   }
 
   if (command === "succeed") {

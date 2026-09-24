@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
@@ -25,10 +26,12 @@ import {
 import { errorFields, log } from "./log";
 import {
   isRefreshableAuthFailure,
+  providerRefusalContinuationReason,
   providerDispatchError,
   providerRetryDelayMs,
   ProviderTurnCancelledError,
 } from "./provider-failures";
+import {queueTurnContinuation} from './session-inputs';
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
@@ -105,10 +108,10 @@ import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
-import { recordTurnBackgroundWait } from "./background-waits";
+import { recordTurnBackgroundWait, registerBackgroundRelease, takeBackgroundReleaseDetail } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
-import { noticeUsageHold, useResetIfWorkStopped } from "./provider-usage-notice";
+import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
@@ -292,6 +295,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
     ?? 0;
+  const providerBreakerKey = `provider:${input.providerId}:${input.providerId === 'chatgpt'
+    ? 'profile' : currentAccount(input.providerId)?.label ?? 'unavailable'}`;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let attachmentRoot: string | null = null;
   let deliveryStarted = false;
@@ -304,6 +309,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let artifactBatchCreated = false;
   let providerStarted = false;
   let observedToolCount = 0;
+  let observedAssistantOutput = false;
   let preserveWorkingReaction = false;
   const useAgentExperience = input.projectionMode === "agent";
   const initialAgentSessionTitle = input.presentation === "native" ? "" : slackAgentSessionTitle(
@@ -568,6 +574,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
       ),
       onProviderMessage: (message) => {
+        if(message.role==='assistant' && message.content.trim())observedAssistantOutput=true;
         try { projectSessionProviderMessage(input.turnId,message); }
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
@@ -604,6 +611,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
+      onBackgroundReleaseReady: (release) => registerBackgroundRelease(input.turnId, release),
       onProviderRetry: (retry) => {
         recordTurnProviderRetry(input.turnId, retry);
         // A minute of the provider's own retries is an outage worth telling him about.
@@ -616,6 +624,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordProviderStarted();
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
+    clearRetryBreaker(providerBreakerKey);
 
     if (artifactDirectory) {
       const artifacts = findTurnArtifacts(artifactDirectory);
@@ -675,6 +684,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       markTurnResponseDelivered(input.turnId);
       if (!finishDeliveredTurn(input.turnId)) throw new Error("Delivered turn could not release its session lock.");
       deliveryCompleted = true;
+      const backgroundRelease = takeBackgroundReleaseDetail(input.turnId);
+      if (backgroundRelease) queueTurnContinuation(input.turnId, { kind: "boundary", detail: backgroundRelease });
       return { status: "delivered", turnId: input.turnId };
     }
 
@@ -987,6 +998,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const preserveDispatchFailure = !deliveryStarted
       && (input.turnKind === "slack_user" || input.turnKind === "comparison" || input.presentation === "native")
       && observedToolCount === 0
+      && !observedAssistantOutput
+      && !structuredFailure?.assistantOutput
       && (structuredFailure?.toolsUsed.length || 0) === 0
       && !artifactActivity
       && dispatchBoundary !== null
@@ -1013,8 +1026,26 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch { /* every account is spent; keep the existing usage hold */ }
       }
       const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
-      const retryable = replaySafe
-        && (structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+      const authWait = replaySafe && input.providerId !== 'chatgpt'
+        && isRefreshableAuthFailure(message)
+        && !structuredFailure?.assistantOutput
+        && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
+      let retryable = replaySafe
+        && (authWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+      let policyRetryAtMs: number | null = null;
+      // Sign-in and allowance holds have their own release signals, so they do not
+      // consume a timed provider-request retry budget.
+      if (replaySafe && !authWait && heldUntilMs === null && !switchClaudeAccount) {
+        const failure = retryable
+          ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
+              restartSignal: 'the account answers or a retry is requested' }
+          : { kind: 'permanent' as const, reason: message,
+              restartSignal: 'the request is corrected and retried' };
+        const decision = recordRetryFailure({ key: providerBreakerKey, site: 'provider',
+          what: `The ${input.providerId} account's work`, failure });
+        if (decision.action === 'stop') retryable = false;
+        if (decision.action === 'retry') policyRetryAtMs = decision.atMs;
+      }
       const ambiguous = !replaySafe;
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
@@ -1030,8 +1061,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
             error: message,
-            nextAttemptMs: switchClaudeAccount?Date.now():heldUntilMs
-              ?? Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
+            authWait,
+            nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
+              ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
         : parkRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -1103,13 +1135,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
+      if (authWait) noticeAuthHold({provider: input.providerId as 'codex'|'claude-code',
+        model: input.model ?? null, turnId: input.turnId,
+        account: input.providerId==='claude-code'?runningClaudeAccount:null}, recordSessionEvent);
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),
         turn_id: input.turnId,
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? "retryable"
+          ? authWait ? "auth_wait" : "backoff"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",
@@ -1178,9 +1213,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
     } else {
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
-      if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error))) {
+      const refusal=structuredFailure?.terminalConfirmed && input.providerId!=='chatgpt'
+        && (observedAssistantOutput || observedToolCount>0 || structuredFailure.assistantOutput
+          || structuredFailure.toolsUsed.length>0 || artifactActivity)
+        ? providerRefusalContinuationReason(String(error),structuredFailure.clearsAtMs,Date.now(),dispatchAttempt):null;
+      let continuationTurnId:number|null=null;
+      if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
+        refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}:undefined)) {
         throw new Error("Failed turn could not atomically release its session lock.");
       }
+      if(refusal && continuationTurnId!==null)noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',
+        model:input.model??null,turnId:continuationTurnId,reason:refusal,
+        account:input.providerId==='claude-code'?runningClaudeAccount:null},recordSessionEvent);
     }
     log("info", deliveryStarted ? "turn_delivery_relinquished" : "session_turn_lock_released", {
       session_id: input.session.id,

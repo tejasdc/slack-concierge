@@ -55,7 +55,7 @@ function successful(result: GitResult, operation: string) {
 
 export async function acceptGitHubDeploymentPush(
   push: GitHubDeploymentPush,
-  repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+  repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
   services = defaultServices(repositoryRoot),
 ) {
   successful(services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");

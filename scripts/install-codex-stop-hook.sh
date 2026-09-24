@@ -18,17 +18,25 @@
 # Usage: install-codex-stop-hook.sh --bun <bun> --bot <repo>/bot --state <concierge state dir>
 set -euo pipefail
 
-bun= bot= state=
+bun= bot= state= release=
 while [ $# -gt 0 ]; do
   case "$1" in
     --bun) bun=$2; shift 2 ;;
     --bot) bot=$2; shift 2 ;;
+    --release) release=$2; shift 2 ;;
     --state) state=$2; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
-[ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] || { echo "No Concierge hooks under: $bot" >&2; exit 2; }
+if [ -n "$release" ]; then
+  [ -f "$release/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/bot/scripts/history-guard.js" ] || { echo "No release hooks under: $release" >&2; exit 2; }
+  bot="$release/bot"
+  suffix=js
+else
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] || { echo "No Concierge hooks under: $bot" >&2; exit 2; }
+  suffix=ts
+fi
 [ -d "$state" ] || { echo "No Concierge state directory: $state" >&2; exit 2; }
 
 etc=${CODEX_SYSTEM_DIR:-/etc/codex}
@@ -50,7 +58,7 @@ cat > "$tmp" <<EOF
 #!/bin/sh
 $marker
 # Codex runs this as a managed Stop hook; it asks Concierge whether the agent still owes a reply.
-CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run '$bot/scripts/owed-reply-stop-hook.ts' codex
+CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run '$bot/scripts/owed-reply-stop-hook.$suffix' codex
 EOF
 install -m 0755 "$tmp" "$hook"
 
@@ -65,7 +73,7 @@ cat > "$tmp" <<EOF
 #!/bin/sh
 $marker
 # Codex and Claude run this before every command; it refuses one that rewrites pushed history.
-exec '$bun' run '$bot/scripts/history-guard.ts'
+exec '$bun' run '$bot/scripts/history-guard.$suffix'
 EOF
 install -m 0755 "$tmp" "$guard"
 cat > "$tmp" <<EOF

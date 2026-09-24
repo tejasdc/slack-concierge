@@ -12,7 +12,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -97,14 +97,14 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     if(after.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
-  // A retryable failure keeps its reason on the turn until the next attempt starts; it is
+  // A backoff failure keeps its reason on the turn until the next attempt starts; it is
   // shown until then, including the moment between the scheduled time and pickup.
   const deliberate=savedTurn(turn.id);
-  if(deliberate&&turn.status==='queued'&&(deliberate.saved_kind==='banked'||turn.dispatch_failure_class!=='retryable'))return {
+  if(deliberate&&turn.status==='queued'&&(deliberate.saved_kind==='banked'||turn.dispatch_failure_class!=='backoff'))return {
     code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
     message:deliberate.saved_kind==='scheduled'?'This work is scheduled for the time below.':'This work is waiting for a safe allowance window; no start time has been chosen.',
     clearsAt:savedStartAt(deliberate),automaticRetry:true};
-  if(turn.dispatch_failure_class==='retryable'&&turn.dispatch_next_attempt_ms!==null) {
+  if(turn.dispatch_failure_class==='backoff'&&turn.dispatch_next_attempt_ms!==null) {
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
@@ -117,6 +117,15 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status,outageOfferForTurn(turn.id)):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
       clearsAt:next,automaticRetry:true};
   }
+  if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',
+    message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',
+    clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',
+    message:'The provider stopped earlier work at a usage limit. This continuation is waiting for an account with room; completed work stays in its earlier turn.',
+    clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='chosen_time')return {code:'CHOSEN_TIME_HELD',
+    message:'This continuation is waiting until its chosen time.',
+    clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
@@ -836,7 +845,11 @@ export class SessionOwner {
     const turns=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
     const sessions=turns.flatMap(turn=>{
       const session=getSessionById(turn.session_id);
-      return session?[{id:`concierge:${session.id}`,title:this.catalogueLabels(session).title,runId:nativeRunId(turn.id),backgroundWait:turnBackgroundWait(turn.id)}]:[];
+      if(!session)return [];
+      const wait=turnBackgroundWait(turn.id);
+      return [{sessionId:`concierge:${session.id}`,title:this.catalogueLabels(session).title,
+        jobs:(wait?.jobs??[]).map(job=>({description:job.description,ageMs:job.ageMs,
+          told:job.told60?60:job.told30?30:null}))}];
     });
     const commit=run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, never its commit subjects, and no change is
@@ -1188,7 +1201,11 @@ export class SessionOwner {
         if(action.kind==='dismiss'&&meta.inbox)inboxDismiss(session,Math.min(action.generation,ceiling));
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
-      } else if(action.kind==='pause'||action.kind==='continue')updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
+        if(action.kind==='archive')discardQueuedTurnContinuations(session.id,'archive');
+      } else if(action.kind==='pause'||action.kind==='continue'){
+        updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
+        if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
+      }
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
     });
     if(action.kind==='continue'||action.kind==='restore') {
@@ -1311,7 +1328,7 @@ export class SessionOwner {
       recordOutageChoice(turn.id,input.choice,rerunSessionId);
       if(chosen&&chosen.provider===session.provider_id) {
         db.query("UPDATE turns SET provider_model=? WHERE id=? AND status IN ('queued','running')").run(chosen.model,turn.id);
-        db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='retryable'").run(turn.id);
+        db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='backoff'").run(turn.id);
       } else if(chosen&&turn.status==='queued') {
         finishTurn(turn.id,'cancelled',null);settleTurnDependencies(turn.id);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'canceled',movedTo:rerunSessionId}),target.id);
