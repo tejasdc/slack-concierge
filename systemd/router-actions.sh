@@ -16,6 +16,7 @@
 #   router-actions.sh threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
 #   router-actions.sh threads stats
 #   router-actions.sh sessions <search|context|ask|reply|get> <args>
+#   router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout <30s|5m|2h>]
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to <concierge:N>] -- <text>
@@ -38,6 +39,44 @@ export CONCIERGE_STATE_DB="$STATE_DB"
 BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/root/workspace/slack-concierge/bot}
 
 case "${1:-}" in
+  wait)
+    shift
+    pids=()
+    timeout_seconds=0
+    while (($#)); do
+      case "$1" in
+        --pid)
+          [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || { echo "wait: --pid requires a positive process ID" >&2; exit 2; }
+          pids+=("$2")
+          shift 2
+          ;;
+        --timeout)
+          [[ ${2:-} =~ ^([1-9][0-9]*)([smh]?)$ ]] || { echo "wait: --timeout requires a duration such as 30s, 5m, or 2h" >&2; exit 2; }
+          timeout_seconds=${BASH_REMATCH[1]}
+          case "${BASH_REMATCH[2]}" in m) timeout_seconds=$((timeout_seconds * 60));; h) timeout_seconds=$((timeout_seconds * 3600));; esac
+          shift 2
+          ;;
+        *) echo "wait: unknown option $1" >&2; exit 2 ;;
+      esac
+    done
+    ((${#pids[@]})) || { echo "wait: at least one --pid is required" >&2; exit 2; }
+    deadline=$((SECONDS + timeout_seconds))
+    while :; do
+      alive=()
+      for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
+          [[ "$state" == Z* ]] || alive+=("$pid")
+        fi
+      done
+      ((${#alive[@]})) || { echo "exited: ${pids[*]}"; exit 0; }
+      if ((timeout_seconds > 0 && SECONDS >= deadline)); then
+        echo "timed out; still running: ${alive[*]}" >&2
+        exit 124
+      fi
+      sleep 1
+    done
+    ;;
   sessions)
     shift
     exec bun run "$BOT_DIR/scripts/router-sessions.ts" "$@"
@@ -81,7 +120,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

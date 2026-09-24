@@ -276,6 +276,17 @@ CREATE TABLE IF NOT EXISTS deployment_drain (
   claimed_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS background_job_status (
+  turn_id            INTEGER NOT NULL REFERENCES turns(id),
+  task_id            TEXT NOT NULL,
+  description        TEXT NOT NULL,
+  started_at_ms      INTEGER NOT NULL,
+  told_30            INTEGER NOT NULL DEFAULT 0,
+  told_60            INTEGER NOT NULL DEFAULT 0,
+  holding_only       INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(turn_id, task_id)
+);
+
 CREATE TABLE IF NOT EXISTS turn_delivery_chunks (
   turn_id            INTEGER NOT NULL REFERENCES turns(id),
   chunk_index        INTEGER NOT NULL,
@@ -764,6 +775,17 @@ db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON compar
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
 initializeSessionOwnerSchema(db);
+// Older continuations used retryable for a time deliberately chosen by the agent.
+// Preserve that intent before normalizing the old retry vocabulary. Session inputs
+// are initialized above, so this also works on checkouts with old ledger rows.
+db.exec(`UPDATE turns SET dispatch_failure_class='chosen_time'
+  WHERE status='queued' AND dispatch_failure_class='retryable'
+    AND accepted_input_id IN (
+      SELECT id FROM session_inputs WHERE scope='turn-continuation'
+        AND json_extract(payload_json,'$.continuation.reason.kind')='boundary'
+        AND json_extract(payload_json,'$.continuation.reason.waitUntilMs') IS NOT NULL
+    )`);
+db.exec("UPDATE turns SET dispatch_failure_class='backoff' WHERE dispatch_failure_class='retryable'");
 initializeRouterSearchIndex(db);
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
@@ -3704,7 +3726,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
-      input.authWait ? 'auth_wait' : 'retryable',
+      input.authWait ? 'auth_wait' : 'backoff',
       input.authWait ? null : input.nextAttemptMs,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
@@ -3744,7 +3766,7 @@ export function requeueOrphanedPreAdmissionTurn(
     const changed = db.query(`
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
-          dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
+          dispatch_failure_class='backoff', dispatch_next_attempt_ms=0,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -4848,14 +4870,14 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  */
 export function releaseScheduledProviderRetries(providerId: ProviderId): number {
   return db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='retryable'
+    WHERE status='queued' AND dispatch_failure_class='backoff'
       AND COALESCE(dispatch_next_attempt_ms,0)>0
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
 }
 
 /** Release only the provider inputs that were refused before any work for lack of sign-in. */
 export function releaseAuthHeldWork(providerId: ProviderId): number {
-  const released = db.query(`UPDATE turns SET dispatch_failure_class='retryable', dispatch_next_attempt_ms=0
+  const released = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0
     WHERE status='queued' AND dispatch_failure_class='auth_wait'
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
   if (released) executionChanged();
@@ -4863,7 +4885,7 @@ export function releaseAuthHeldWork(providerId: ProviderId): number {
 }
 
 export function releaseUsageContinuationHolds(providerId:ProviderId):number {
-  const released=db.query(`UPDATE turns SET dispatch_failure_class='retryable',dispatch_next_attempt_ms=0
+  const released=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0
     WHERE status='queued' AND dispatch_failure_class='usage_wait'
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
   if(released)executionChanged();

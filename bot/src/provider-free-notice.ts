@@ -1,0 +1,38 @@
+import type { Database } from "bun:sqlite";
+
+/** Publish one service-authored Inbox message and reading notice without starting a provider. */
+export function publishProviderFreeNotice(db: Database, input: {
+  key: string;
+  text: string;
+  kind: string;
+  payload?: Record<string, unknown>;
+}): boolean {
+  const inbox = db.query(`SELECT id,native_metadata_json FROM sessions
+    WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`)
+    .get() as { id: number; native_metadata_json: string | null } | null;
+  if (!inbox) throw new Error("No Inbox session exists for the service notice.");
+  const eventId = `service-notice:${input.key}`;
+  const inputId = `service:${eventId}`;
+  return db.transaction(() => {
+    const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
+      (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
+      VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, "service:provider-free-notice", eventId,
+        "input", "service", JSON.stringify({ text: input.text, delivery: "queue" }),
+        JSON.stringify({ state: "completed", imported: true }));
+    if (inserted.changes !== 1) return false;
+    const addEvent = (id: string, kind: string, payload: unknown) => db.query(`INSERT INTO session_owner_events
+      (event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,NULL,?,?)`)
+      .run(id, inbox.id, inputId, kind, JSON.stringify(payload));
+    addEvent(`accepted:${inputId}`, "accepted", { origin: "service", text: input.text });
+    addEvent(eventId, input.kind, input.payload ?? {});
+    const meta = JSON.parse(inbox.native_metadata_json || "{}");
+    const generation = (meta.generation ?? 0) + 1;
+    const question = input.text.slice(0, 2000);
+    db.query("UPDATE sessions SET native_metadata_json=? WHERE id=?")
+      .run(JSON.stringify({ ...meta, generation, needs: [...(meta.needs ?? []), {
+        inputId, outcome: "response", question, generation, at: new Date().toISOString(), runId: "", eventId,
+      }] }), inbox.id);
+    addEvent(`needs_you:${eventId}`, "needs_you", { outcome: "response", question, inputId, generation });
+    return true;
+  })();
+}

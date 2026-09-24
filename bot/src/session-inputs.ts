@@ -282,7 +282,8 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     if(queued.turn_id!==null){
       const wait=reason.waitUntilMs && reason.waitUntilMs>Date.now()?reason.waitUntilMs:0;
       const hold=reason.kind==='provider_refused'&&reason.refusal==='sign_in'?'auth_wait'
-        :reason.kind==='provider_refused'&&reason.refusal==='usage'&&!wait?'usage_wait':'retryable';
+        :reason.kind==='provider_refused'&&reason.refusal==='usage'&&!wait?'usage_wait'
+        :reason.kind==='boundary'&&wait?'chosen_time':'backoff';
       db.query(`UPDATE turns SET dispatch_failure_class=?,dispatch_next_attempt_ms=? WHERE id=? AND status='queued'`)
         .run(hold,hold==='auth_wait'||hold==='usage_wait'?null:wait,queued.turn_id);
     }

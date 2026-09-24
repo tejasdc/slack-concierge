@@ -568,7 +568,7 @@ install_systemd_unit() {
 
 install_systemd_units() {
   local unit
-  for unit in concierge-bot.service agent-inbox.service concierge-deployment-repair@.service; do
+  for unit in concierge-bot.service agent-inbox.service concierge-deployment-repair@.service concierge-service-failure@.service; do
     install_systemd_unit "$unit"
   done
   systemctl daemon-reload
@@ -625,6 +625,7 @@ install_router_actions() {
 
 install_capture_runtime() {
   local bundle_tmp bun_tmp
+  "$BUN_BIN" run "$REPO/bot/scripts/retry-architecture-lint.ts"
   install -d -m 0755 "$CAPTURE_RUNTIME_DIR" "$(dirname "$CAPTURE_CONFIG_DEST")"
   bundle_tmp="$CAPTURE_RUNTIME_DIR/.capture-ingress.$$.js"
   bun_tmp="$CAPTURE_RUNTIME_DIR/.bun.$$"

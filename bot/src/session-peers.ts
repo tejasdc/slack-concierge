@@ -10,6 +10,9 @@ import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,record
 import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
+import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
+import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
+import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -48,13 +51,16 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
 export class PeerError extends Error {
   constructor(message:string,readonly kind:'unreachable'|'unauthorized'|'refused',readonly status:number|null=null,readonly code:string|null=null){super(message);}
 }
+class PeerReplyContractError extends Error {}
 export class PeerClient {
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
-  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000):Promise<T> {
+  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000,trackAvailability=true):Promise<T> {
     let response:Response;
     try {
       response=await fetch(this.url+path,{method,signal:AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     } catch(error) {
+      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,
+        failure:{kind:'unknown',reason:`Peer ${this.name} is unreachable.`,waitForSignal:`${this.name} next contacts this instance`,restartSignal:`${this.name} next contacts this instance`}});
       throw new PeerError(`Peer ${this.name} is unreachable.`,'unreachable',null,'PEER_UNREACHABLE');
     }
     let value:any=null;
@@ -64,6 +70,7 @@ export class PeerClient {
       const message=typeof value?.error==='string'?value.error:value?.error?.message??`Peer ${this.name} answered ${response.status}.`;
       throw new PeerError(message,'refused',response.status,value?.error?.code??'PEER_REFUSED');
     }
+    if(trackAvailability)clearRetryBreaker(`peer:${this.name}`);
     return value as T;
   }
 }
@@ -579,8 +586,16 @@ export class SessionPeers {
       .run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
-    for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId))
+    for(const reply of (remote.replies as any[])??[]){
+      // A legacy peer can record the reply while answering with the old acknowledgement
+      // shape. The exact retained event is stronger evidence than the sender's timeout.
+      if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId))continue;
+      if(reply.status==='failed_deadline'||reply.status==='failed_budget'){
+        this.settle(row,'failed',`The peer could not return its answer: ${reply.status==='failed_deadline'?'delivery reached its deadline':'delivery exhausted its retry budget'}. ${reply.eventId}`);
+        return;
+      }
       await this.pullReply(client,row,reply,false);
+    }
     row=this.row(row.request_id);
     if(row.outcome)return;
     const effect=JSON.parse(row.payload_json).requestedEffect;
@@ -863,9 +878,19 @@ export class SessionPeers {
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
-      const payload=JSON.parse(reply.payload_json);
       try {
-        const answer=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply));
+        const answer=await withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
+          startedAtMs:reply.created_at_ms,
+          run:async()=>{
+            const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
+            if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused'].includes(response.recorded??''))
+              throw new PeerReplyContractError('The peer answered, but did not confirm this reply by event ID and recorded status.');
+            return response;
+          },
+          classifyError:(error,attempt)=>error instanceof PeerReplyContractError
+            ?attempt>=PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS?'permanent':'unknown'
+            :error instanceof PeerError&&error.kind==='refused'&&error.status!==null&&error.status<500?'permanent':'transient',
+        });
         // Forwarded means the origin confirmed it holds this exact event. A refusal is recorded as
         // one; any other answer (an origin from before confirmations) leaves it pending and resent.
         // A plain success used to count as delivery while the origin discarded the reply.
@@ -874,20 +899,16 @@ export class SessionPeers {
           log('warn','session_peer_reply_refused_by_origin',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind,reason:answer.reason??null});
           continue;
         }
-        if(answer?.eventId!==reply.event_id||!['recorded','duplicate'].includes(answer.recorded??'')){
-          db.query('UPDATE session_peer_replies SET error=? WHERE event_id=?').run('The origin did not confirm it recorded this reply; it will be sent again.',reply.event_id);
-          log('warn','session_peer_reply_unconfirmed',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
-          return;
-        }
         db.query("UPDATE session_peer_replies SET status='forwarded',error=NULL WHERE event_id=?").run(reply.event_id);
         this.unreachable.delete(row.peer);
         log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
       } catch(error) {
         this.note(row.peer,error);
-        const permanent=error instanceof PeerError&&error.kind==='refused';
-        db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(permanent?'refused':'pending',error instanceof Error?error.message:String(error),reply.event_id);
-        log('warn','session_peer_reply_forward_failed',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,permanent,...errorFields(error)});
-        if(!permanent)return;
+        const deadline=error instanceof RetryBudgetExhaustedError&&error.reason==='deadline';
+        const status=deadline?'failed_deadline':'failed_budget';
+        db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(status,error instanceof Error?error.message:String(error),reply.event_id);
+        log('error',deadline?'session_peer_reply_deadline_exhausted':'session_peer_reply_budget_exhausted',
+          {request_id:row.request_id,peer:row.peer,event_id:reply.event_id,attempts:error instanceof RetryBudgetExhaustedError?error.attempts:null,...errorFields(error)});
       }
     }
     if(row.closed_at_ms)return;
@@ -897,7 +918,12 @@ export class SessionPeers {
     const fingerprint=JSON.stringify([status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
     if(fingerprint===row.notified_fingerprint)return;
     try {
-      const answer=await client.request<{outcome:string|null}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/notify`,{});
+      const answer=await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
+        policy:RETRY_POLICIES.peerNotify,
+        run:()=>client.request<{outcome:string|null}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/notify`,{},undefined,false),
+        classifyError:(error)=>error instanceof PeerError&&error.kind==='refused'
+          &&!(error.status===404&&this.now()-row.created_at_ms<=PEER_REQUEST_ORPHAN_GRACE_MS)?'permanent':'transient',
+      });
       this.unreachable.delete(row.peer);
       db.query('UPDATE session_peer_deliveries SET notified_fingerprint=?,closed_at_ms=CASE WHEN ? THEN ? ELSE closed_at_ms END WHERE request_id=?').run(fingerprint,answer?.outcome?1:0,this.now(),row.request_id);
       if(answer?.outcome==='canceled'&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))
@@ -906,9 +932,14 @@ export class SessionPeers {
       this.note(row.peer,error);
       // The origin commits its request only after this instance accepted it, so a 404 within
       // the first minutes is a race, not an orphan; an old delivery the origin never learned of is.
-      const orphan=error instanceof PeerError&&error.kind==='refused'&&error.status===404&&this.now()-row.created_at_ms>10*60*1000;
+      const orphan=error instanceof PeerError&&error.kind==='refused'&&error.status===404&&this.now()-row.created_at_ms>PEER_REQUEST_ORPHAN_GRACE_MS;
       if(orphan)db.query('UPDATE session_peer_deliveries SET closed_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
-      else log('warn','session_peer_notify_failed',{request_id:row.request_id,peer:row.peer,status:error instanceof PeerError?error.status:null,...errorFields(error)});
+      else {
+        // This exact status projection is exhausted. A later state change has a new fingerprint;
+        // the origin can also pull the retained request without a push notification.
+        db.query('UPDATE session_peer_deliveries SET notified_fingerprint=? WHERE request_id=?').run(fingerprint,row.request_id);
+        log('warn','session_peer_notify_failed',{request_id:row.request_id,peer:row.peer,status:error instanceof PeerError?error.status:null,...errorFields(error)});
+      }
     }
   }
 
@@ -950,7 +981,7 @@ export class SessionPeers {
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
-    const delays=[...(owed?[60_000]:[]),...(due===null?[]:[Math.max(0,due-this.now())])];
+    const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())])];
     if(!delays.length)return;
     const timer=setTimeout(()=>this.wake(),Math.min(...delays));
     timer.unref();

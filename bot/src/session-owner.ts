@@ -96,9 +96,9 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     if(after.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
-  // A retryable failure keeps its reason on the turn until the next attempt starts; it is
+  // A backoff failure keeps its reason on the turn until the next attempt starts; it is
   // shown until then, including the moment between the scheduled time and pickup.
-  if(turn.dispatch_failure_class==='retryable'&&turn.dispatch_next_attempt_ms!==null) {
+  if(turn.dispatch_failure_class==='backoff'&&turn.dispatch_next_attempt_ms!==null) {
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
@@ -117,6 +117,9 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',
     message:'The provider stopped earlier work at a usage limit. This continuation is waiting for an account with room; completed work stays in its earlier turn.',
     clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='chosen_time')return {code:'CHOSEN_TIME_HELD',
+    message:'This continuation is waiting until its chosen time.',
+    clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
@@ -816,7 +819,11 @@ export class SessionOwner {
     const turns=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
     const sessions=turns.flatMap(turn=>{
       const session=getSessionById(turn.session_id);
-      return session?[{id:`concierge:${session.id}`,title:this.catalogueLabels(session).title,runId:nativeRunId(turn.id),backgroundWait:turnBackgroundWait(turn.id)}]:[];
+      if(!session)return [];
+      const wait=turnBackgroundWait(turn.id);
+      return [{sessionId:`concierge:${session.id}`,title:this.catalogueLabels(session).title,
+        jobs:(wait?.jobs??[]).map(job=>({description:job.description,ageMs:job.ageMs,
+          told:job.told60?60:job.told30?30:null}))}];
     });
     const commit=run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, never its commit subjects, and no change is
@@ -1285,7 +1292,7 @@ export class SessionOwner {
       recordOutageChoice(turn.id,input.choice,rerunSessionId);
       if(chosen&&chosen.provider===session.provider_id) {
         db.query("UPDATE turns SET provider_model=? WHERE id=? AND status IN ('queued','running')").run(chosen.model,turn.id);
-        db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='retryable'").run(turn.id);
+        db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='backoff'").run(turn.id);
       } else if(chosen&&turn.status==='queued') {
         finishTurn(turn.id,'cancelled',null);settleTurnDependencies(turn.id);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'canceled',movedTo:rerunSessionId}),target.id);

@@ -46,6 +46,7 @@ export interface AgentProvider {
     onCancellationReady?: (cancel: () => Promise<void>) => void;
     onProviderTerminal?: () => void;
     onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+    onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;
     onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
     onRetryRestartReady?: (restart: (() => boolean) | null) => void;
     onInputAcknowledged?: () => void;

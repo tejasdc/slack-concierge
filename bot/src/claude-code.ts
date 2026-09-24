@@ -37,7 +37,8 @@ const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
 
 export interface ClaudeBackgroundWait {
   since: number;
-  tasks: string[];
+  tasks: Array<{ id: string; description: string; startedAt: number }>;
+  lastAssistantOutputAt: number;
 }
 
 /** Claude's own retry of a failed API call inside a live run (its `api_retry` event). */
@@ -412,6 +413,7 @@ export async function runClaudeCodeTurn(input: {
   onProviderTerminal?: () => void;
   /** The run finished answering but stays live for unfinished background work; null when that ends. */
   onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+  onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;
   /** Claude is retrying a failed API call on its own; null once a call gets through. */
   onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
   /** While retrying, a way to end this attempt so the next one starts at once; null after. */
@@ -500,6 +502,7 @@ export async function runClaudeCodeTurn(input: {
     ceiling: ReturnType<typeof setTimeout> } | null = null;
   let backgroundSettle: ReturnType<typeof setTimeout> | null = null;
   let activitySinceResult = false;
+  let lastAssistantOutputAt = Date.now();
   let steeringSenderRegistered = false;
   let eventBuffer = "";
   let providerProducedResult = false;
@@ -577,9 +580,13 @@ export async function runClaudeCodeTurn(input: {
     input.onProviderTerminal?.();
   };
   const backgroundTaskDescriptions = () => [...backgroundTasks.values()].map((task) => task.description);
+  const backgroundWaitSnapshot = (since: number): ClaudeBackgroundWait => ({
+    since, lastAssistantOutputAt,
+    tasks: [...backgroundTasks].map(([id, task]) => ({ id, ...task })),
+  });
   const beginBackgroundWait = () => {
     if (backgroundWait) return;
-    const since = Date.now();
+    const since = Math.min(...[...backgroundTasks.values()].map(task => task.startedAt));
     // A quiet wait is not a stalled provider; the ceiling bounds a job that never ends.
     const keepAlive = setInterval(() => recordProtocolActivity(), 60_000);
     const ceilingMs = backgroundWaitCeilingMs();
@@ -592,7 +599,15 @@ export async function runClaudeCodeTurn(input: {
     backgroundWait = { since, keepAlive, ceiling };
     log("info", "claude_code_background_wait_started", { session_uuid: observedSessionUuid,
       tasks: backgroundTaskDescriptions(), ceiling_ms: ceilingMs });
-    input.onBackgroundWait?.({ since, tasks: backgroundTaskDescriptions() });
+    input.onBackgroundWait?.(backgroundWaitSnapshot(since));
+    input.onBackgroundReleaseReady?.(() => {
+      if (!backgroundWait || inputClosed || !providerProducedResult) return false;
+      log("warn", "claude_code_background_wait_released", { session_uuid: observedSessionUuid,
+        waited_ms: Date.now() - backgroundWait.since, tasks: backgroundTaskDescriptions() });
+      reportProviderTerminal();
+      closeProviderInput();
+      return true;
+    });
   };
   function endBackgroundWait() {
     if (backgroundSettle) clearTimeout(backgroundSettle);
@@ -603,6 +618,7 @@ export async function runClaudeCodeTurn(input: {
     log("info", "claude_code_background_wait_ended", { session_uuid: observedSessionUuid,
       waited_ms: Date.now() - backgroundWait.since, outstanding: backgroundTasks.size });
     backgroundWait = null;
+    input.onBackgroundReleaseReady?.(null);
     input.onBackgroundWait?.(null);
   }
   // While Claude's API is overloaded or erroring, the CLI retries each call for minutes
@@ -646,12 +662,16 @@ export async function runClaudeCodeTurn(input: {
           ? event.description.trim() : String(event.task_type || "background task"),
         startedAt: Date.now(),
       });
-      if (backgroundWait) input.onBackgroundWait?.({ since: backgroundWait.since, tasks: backgroundTaskDescriptions() });
+      input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait?.since ?? Math.min(...[...backgroundTasks.values()].map(task => task.startedAt))));
       return;
     }
     if (event.subtype !== "task_notification" || !backgroundTasks.delete(event.task_id)) return;
     if (backgroundWait && backgroundTasks.size > 0) {
-      input.onBackgroundWait?.({ since: backgroundWait.since, tasks: backgroundTaskDescriptions() });
+      input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait.since));
+    } else if (!backgroundWait && backgroundTasks.size > 0) {
+      input.onBackgroundWait?.(backgroundWaitSnapshot(Math.min(...[...backgroundTasks.values()].map(task => task.startedAt))));
+    } else if (!backgroundWait) {
+      input.onBackgroundWait?.(null);
     }
     if (backgroundTasks.size > 0 || !backgroundWait) return;
     // Claude normally answers the finished task in a new turn, whose result closes the run.
@@ -861,6 +881,10 @@ export async function runClaudeCodeTurn(input: {
     recordBackgroundTaskEvent(event);
     recordProviderRetryEvent(event);
     if (event.type === "assistant" || event.type === "user" || event.type === "stream_event") activitySinceResult = true;
+    if (event.type === "assistant" || event.type === "stream_event") {
+      lastAssistantOutputAt = Date.now();
+      if (backgroundWait) input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait.since));
+    }
     if (!observedSessionUuid && event.type === "system" && event.subtype === "init"
       && typeof event.session_id === "string" && event.session_id) {
       observedSessionUuid = event.session_id;

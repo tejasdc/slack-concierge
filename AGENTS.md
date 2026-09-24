@@ -43,6 +43,8 @@ and mandatory review requirements in this repository and linked historical mater
 
 ## Working boundaries
 
+- Waiting and retrying follow [the waiting protocol](docs/plans/2026-09-24-waiting-and-retrying.md) and [Tejas's retry spec](docs/plans/2026-09-24-retry-spec-tejas.md): each named policy has attempt and age limits with jitter, and exhaustion produces one provider-free Inbox notice. Sign-in, usage, and chosen-time holds each release only on their matching condition. A chosen-time continuation must not be released by an account change. Claude background jobs are named in the deployment drain and receive 30- and 60-minute prompts in their owning run; an abandoned job may be ended with a boundary continuation after the quiet period. Use exact process IDs through `router-actions.sh wait --pid` rather than a pattern-matching wait loop.
+
 Original Thinkering report `5eaa0768-0321-49cc-a3e0-25159b40ba6e` (retained capture
 `27a881e393f0057c878be09c340b4f43e7bd8bbcfbbf667fd474fa3053dfece2`) explicitly
 authorizes comprehensive native communication review and live multi-agent testing,

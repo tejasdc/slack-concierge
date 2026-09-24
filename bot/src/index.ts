@@ -4,6 +4,8 @@ import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi, requestApiHandler } from "./routed-request-api";
 import { peerSettings, PeerClient, SessionPeers, startPeerListener } from "./session-peers";
+import { withRetry } from './retry';
+import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
@@ -325,6 +327,7 @@ import {SessionExecutionHost} from './session-execution-host';
 import {scheduleProviderAccountUsageRefresh, startProviderUsageWatch, USAGE_REFRESH_MS} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
+import {startBackgroundJobWatch} from './background-waits';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
@@ -1602,18 +1605,9 @@ function isSqliteContention(error: unknown) {
 }
 
 async function persistSteeringTransition(label: string, callback: () => void) {
-  let delayMs = 50;
-  while (true) {
-    try {
-      callback();
-      return;
-    } catch (error) {
-      if (!isSqliteContention(error)) throw error;
-      log("warn", "turn_steering_persistence_retry", { label, delay_ms: delayMs, ...errorFields(error) });
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * 2, 1_000);
-    }
-  }
+  await withRetry({ key: `turn-steering-persistence:${label}`, operation: `turn-steering-persistence:${label}`, policy: RETRY_POLICIES.ledgerWrite,
+    run: async () => callback(),
+    classifyError: error => isSqliteContention(error) ? 'transient' : 'permanent' });
 }
 
 function runHostCommand(input: { command: string; cwd: string; timeoutMs: number }) {
@@ -3868,6 +3862,7 @@ async function reconcilePriorInstanceTurns() {
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
 startProviderUsageWatch({ stopped: () => draining, onReading: () => { publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 watchAuthHeldCredentials();
 
 // Which Claude account this host is signed in as, from Claude Code itself. A host that
@@ -3935,6 +3930,7 @@ setInterval(() => {
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
+  stopBackgroundJobWatch();
   serviceOnline = false;
   try {
     clearSandboxReadyReceipt(runtime);

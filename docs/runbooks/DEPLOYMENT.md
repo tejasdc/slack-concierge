@@ -355,10 +355,11 @@ remains durable, and its delivery gate is not claimed while the deployment is
 merely waiting for providers. Deployment then records the phase sequence
 `prepared → draining → updating → restarting → verifying → releasing`.
 While a run waits, the owner status (`GET /sessions/v1/status` `deployment`) names the
-sessions it is waiting on, since when, and any background job holding a Claude run open,
-and Thinkering shows it. A Claude run stays live while its background work runs (up to
-six hours; see provider sessions), so a release can wait that long. Stopping that session
-is how Tejas lets the release go ahead sooner; nothing forces it automatically.
+sessions it is waiting on, since when, and each background job holding a Claude run open,
+and Thinkering shows it. The owner steers a notice into the run after 30 and 60 minutes.
+After the 60-minute notice and 15 quiet minutes, an abandoned run holding only background
+jobs ends with a boundary continuation, so it can resume after the update. Active work
+continues to hold the release; see [waiting and retrying](../plans/2026-09-24-waiting-and-retrying.md).
 Success additionally requires:
 
 - active capture ingress with its authenticated local health check;
@@ -583,3 +584,18 @@ that daemon. See [Codex App Server lifecycle](CODEX-APP-SERVER.md).
 Capture ingress retains the historical `agent-inbox.service` name and its
 separate unprivileged identity. Its security and queue ownership are documented
 in [capture ingress](../architecture/CAPTURE-INGRESS.md).
+
+### Retry and background-job signals
+
+The Concierge service journal records `retry_budget_exhausted` with the operation,
+attempt count, elapsed time and last error. Peer reply deadlines also record
+`session_peer_reply_deadline_exhausted`. The same exhausted episode places one
+service message in the native Inbox's Needs attention list; it starts no provider
+turn. Inspect with `journalctl -u concierge-bot.service -u agent-inbox.service
+--since today` and search those event names. The ledger keeps the one-time notice
+and breaker state; the normal owner of recovery is the agent handling the named
+request or deployment. The status endpoint's `deployment.sessions` lists each
+running session holding an update, with the description, age and last notice for
+each background job. The drain command reports the same jobs. A failed deployment
+run with an uncertain external effect still stops for recovery instead of replaying
+that effect automatically.

@@ -18,6 +18,9 @@ import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
 import type { CaptureEventRow, CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
+import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
+import { withRetry } from "./retry";
+import { RETRY_POLICIES } from "./retry-policies";
 
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -69,10 +72,6 @@ export interface CaptureDeliveryWorkerOptions {
 
 function defaultWait(milliseconds: number) {
   return new Promise<void>((resolveWait) => setTimeout(resolveWait, milliseconds));
-}
-
-function retryDelay(attempt: number, override: number | null): number {
-  return override ?? Math.min(1_000 * (2 ** Math.max(0, attempt - 1)), 30_000);
 }
 
 function ownerPayload(owner: ProcessIdentity) {
@@ -324,8 +323,10 @@ export class CaptureDeliveryWorker {
   }
 
   private async queueRequest(path: string, body?: Record<string, unknown>): Promise<Response> {
-    while (!this.stopping) {
-      try {
+    if (this.stopping) throw new CaptureWorkerStopped();
+    return withRetry({ operation: "capture-queue", key: this.options.queueUrl, policy: RETRY_POLICIES.captureDelivery,
+      wait: this.wait,
+      run: async () => {
         const response = await this.fetchImpl(`${this.options.queueUrl}${path}`, {
           method: body ? "POST" : "GET",
           headers: {
@@ -335,14 +336,11 @@ export class CaptureDeliveryWorker {
           ...(body ? { body: JSON.stringify(body) } : {}),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
-        if (response.status < 500) return response;
-        log("warn", "capture_queue_request_retry", { path, status: response.status });
-      } catch (error) {
-        log("warn", "capture_queue_transport_retry", { path, ...errorFields(error) });
-      }
-      await this.wait(this.pollIntervalMs);
-    }
-    throw new CaptureWorkerStopped();
+        if (response.status >= 500) throw new Error(`Capture queue answered ${response.status}.`);
+        return response;
+      },
+      classifyError: () => "transient",
+    });
   }
 
   private async claimNext(claimId: string): Promise<CaptureEventRow | null> {
@@ -407,6 +405,7 @@ export class CaptureDeliveryWorker {
         await this.acknowledge("delivered", claimId, event, {
           session_id: result.inbox.sessionId, session_input_id: result.operation.id,
         });
+        clearRetryBreaker(`capture:${event.event_id}`);
         log("info", "capture_delivery_ok", { event_id: event.event_id, route_id: event.route_id,
           destination_kind: "session", terminal_receipt: result.operation.id, session_id: result.inbox.sessionId });
         return;
@@ -428,6 +427,7 @@ export class CaptureDeliveryWorker {
         }),
       };
       await this.acknowledge("delivered", claimId, event, { [receipt.field]: receipt.value });
+      clearRetryBreaker(`capture:${event.event_id}`);
       log("info", "capture_delivery_ok", {
         event_id: event.event_id,
         route_id: event.route_id,
@@ -439,12 +439,17 @@ export class CaptureDeliveryWorker {
         ? error
         : null;
       if (!deliveryError) throw error;
-      if (!deliveryError.retryable) {
+      const decision = recordRetryFailure({ key: `capture:${event.event_id}`, site: "capture", what: "An Inbox capture",
+        failure: { kind: deliveryError.retryable ? "transient" : "permanent", reason: deliveryError.message,
+          retryAfterMs: deliveryError.retryAfterMs,
+          restartSignal: "the capture is retried explicitly" },
+      });
+      if (decision.action !== "retry") {
         await this.acknowledge("park", claimId, event, { error: deliveryError.message });
         log("error", "capture_delivery_parked", { event_id: event.event_id, route_id: event.route_id, error: deliveryError.message });
         return;
       }
-      const delayMs = retryDelay(event.delivery_attempts, deliveryError.retryAfterMs);
+      const delayMs = decision.atMs - Date.now();
       await this.acknowledge("retry", claimId, event, {
         error: deliveryError.message,
         next_attempt_ms: Date.now() + delayMs,

@@ -20,6 +20,7 @@ import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
+import {startBackgroundJobWatch} from './background-waits';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -73,6 +74,7 @@ export async function startSessionRuntime() {
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,onReading:()=>{publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
+  const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>queue.wake());
   codexSessionObserver.start();communication.start();queue.wake();
@@ -80,7 +82,7 @@ export async function startSessionRuntime() {
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     for(const turnId of active){
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}

@@ -2,6 +2,9 @@
 Description=Concierge Slack bot
 After=network-online.target agent-inbox.service
 Wants=network-online.target agent-inbox.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=concierge-service-failure@%n.service
 
 [Service]
 Type=simple

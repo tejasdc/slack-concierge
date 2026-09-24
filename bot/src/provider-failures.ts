@@ -1,3 +1,6 @@
+import { retryDelayMs } from './retry';
+import { RETRY_POLICIES } from './retry-policies';
+
 export type ProviderDispatchFailureClass = "retryable" | "parked_access" | "parked_terminal";
 
 export function isClaudeUsageExhaustion(message: string) {
@@ -106,7 +109,7 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
 }
 
 export function providerRetryDelayMs(dispatchAttempt: number) {
-  return Math.min(30 * 60_000, 15_000 * 2 ** Math.max(0, dispatchAttempt - 1));
+  return retryDelayMs(RETRY_POLICIES.providerRequest, dispatchAttempt);
 }
 
 export function providerDispatchError(error: unknown): ProviderDispatchError | null {

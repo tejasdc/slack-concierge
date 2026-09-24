@@ -15,6 +15,15 @@ import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
 
+function selfMatchingWaitRefusal(command: string): string | null {
+  const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
+  if (!loop) return null;
+  const patternWait = /\bpgrep\s+(?:-[\w]*f[\w]*\s+|--full\s+)|\bpkill\s+(?:-[\w]*0[\w]*\s+)?(?:-[\w]*f[\w]*\s+|--full\s+)|\bps\b[^\n;]*\|\s*grep\b/i.test(command);
+  return patternWait
+    ? 'Refused: this wait loop can match its own command and never finish. Wait for exact process IDs with `router-actions.sh wait --pid <pid> [--timeout 30m]`.'
+    : null;
+}
+
 function git(dir: string, args: string[], timeout = 5000): string | null {
   const result = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'ignore', timeout });
   return result.exitCode === 0 ? result.stdout.toString().trim() : null;
@@ -66,7 +75,7 @@ try {
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command) {
-    reason = historyRewriteRefusal(command, start, probe);
+    reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {

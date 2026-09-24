@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "build": "bun run scripts/retry-architecture-lint.ts && bun build src/index.ts src/capture-ingress.ts --target bun --outdir /tmp/concierge-build",
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
     "test": "bun run scripts/testing-disabled.ts",

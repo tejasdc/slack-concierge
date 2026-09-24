@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -105,7 +106,7 @@ import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
-import { recordTurnBackgroundWait } from "./background-waits";
+import { recordTurnBackgroundWait, registerBackgroundRelease, takeBackgroundReleaseDetail } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
@@ -291,6 +292,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
     ?? 0;
+  const providerBreakerKey = `provider:${input.providerId}:${input.providerId === 'chatgpt'
+    ? 'profile' : currentAccount(input.providerId)?.label ?? 'unavailable'}`;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let attachmentRoot: string | null = null;
   let deliveryStarted = false;
@@ -601,6 +604,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
+      onBackgroundReleaseReady: (release) => registerBackgroundRelease(input.turnId, release),
       onProviderRetry: (retry) => {
         recordTurnProviderRetry(input.turnId, retry);
         // A minute of the provider's own retries is an outage worth telling him about.
@@ -613,6 +617,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordProviderStarted();
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
+    clearRetryBreaker(providerBreakerKey);
 
     if (artifactDirectory) {
       const artifacts = findTurnArtifacts(artifactDirectory);
@@ -672,6 +677,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       markTurnResponseDelivered(input.turnId);
       if (!finishDeliveredTurn(input.turnId)) throw new Error("Delivered turn could not release its session lock.");
       deliveryCompleted = true;
+      const backgroundRelease = takeBackgroundReleaseDetail(input.turnId);
+      if (backgroundRelease) queueTurnContinuation(input.turnId, { kind: "boundary", detail: backgroundRelease });
       return { status: "delivered", turnId: input.turnId };
     }
 
@@ -1008,8 +1015,22 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
-      const retryable = replaySafe
+      let retryable = replaySafe
         && (authWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+      let policyRetryAtMs: number | null = null;
+      // Sign-in and allowance holds have their own release signals, so they do not
+      // consume a timed provider-request retry budget.
+      if (replaySafe && !authWait && heldUntilMs === null && !switchClaudeAccount) {
+        const failure = retryable
+          ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
+              restartSignal: 'the account answers or a retry is requested' }
+          : { kind: 'permanent' as const, reason: message,
+              restartSignal: 'the request is corrected and retried' };
+        const decision = recordRetryFailure({ key: providerBreakerKey, site: 'provider',
+          what: `The ${input.providerId} account's work`, failure });
+        if (decision.action === 'stop') retryable = false;
+        if (decision.action === 'retry') policyRetryAtMs = decision.atMs;
+      }
       const ambiguous = !replaySafe;
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
@@ -1026,8 +1047,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             dispatchAttempt,
             error: message,
             authWait,
-            nextAttemptMs: switchClaudeAccount?Date.now():heldUntilMs
-              ?? Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
+            nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
+              ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
         : parkRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -1107,7 +1128,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? authWait ? "auth_wait" : "retryable"
+          ? authWait ? "auth_wait" : "backoff"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",

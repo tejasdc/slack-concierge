@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { log } from "./log";
 import { toMrkdwn } from "./mrkdwn";
+import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
 
 // Slack chat methods whose `text` arg is user-visible content that must be
 // mrkdwn (bold=`*x*`, links=`<url|label>`, no `##` headers, no `---` rules).
@@ -101,29 +102,26 @@ async function rateLimitedSlackCall<T>(
 ): Promise<T> {
   const call = slackMethod(client, method);
   const outgoing = applyMrkdwn(method, args);
-  await bucket.take();
-  try {
-    return assertSlackOk(await call(outgoing));
-  } catch (err: any) {
-    const rateLimited = err?.code === "slack_webapi_rate_limited_error" || err?.statusCode === 429
-      || ["ratelimited", "rate_limited"].includes(err?.data?.error);
-    const retry = !retryOnlyRateLimit || rateLimited ? retryAfterSeconds(err) : null;
-    if (!retry) throw err;
-    log("warn", "slack_rate_limited", { method, retry_after: retry, channel: context.channel });
-    if (context.channel && context.user) {
-      try {
-        await client.chat.postEphemeral({
-          channel: context.channel,
-          user: context.user,
-          text: `Slack rate-limited Concierge, retrying in ${retry}s.`,
-        });
-      } catch (warningErr) {
-        log("warn", "slack_rate_limit_warning_failed", { method, error: String(warningErr) });
-      }
-    }
-    await sleep(retry * 1000);
+  const key = `slack:${method}:${context.channel ?? "global"}`;
+  for (;;) {
     await bucket.take();
-    return assertSlackOk(await call(outgoing));
+    try {
+      const result = assertSlackOk(await call(outgoing));
+      clearRetryBreaker(key);
+      return result;
+    } catch (err: any) {
+      const rateLimited = err?.code === "slack_webapi_rate_limited_error" || err?.statusCode === 429
+        || ["ratelimited", "rate_limited"].includes(err?.data?.error);
+      if (retryOnlyRateLimit && !rateLimited) throw err;
+      const retry = retryAfterSeconds(err);
+      if (!rateLimited && !retry) throw err;
+      const decision = recordRetryFailure({ key, site: "slack", what: `Slack ${method}`,
+        failure: { kind: "transient", reason: String(err), retryAfterMs: retry === null ? null : retry * 1000,
+          restartSignal: "Slack's rate limit clears or the call is retried explicitly" } });
+      if (decision.action !== "retry") throw err;
+      log("warn", "slack_rate_limited", { method, retry_after: retry, channel: context.channel });
+      await sleep(Math.max(0, decision.atMs - Date.now()));
+    }
   }
 }
 

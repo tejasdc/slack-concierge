@@ -80,7 +80,7 @@ type RecordEvent = (event: {
 /** How many accepted inputs are waiting on this same reset instant, this one included. */
 function heldInputCount(clearsAtMs: number): number {
   const row = db.query(`SELECT count(*) AS held FROM turns
-    WHERE status='queued' AND dispatch_failure_class='retryable' AND dispatch_next_attempt_ms=?`)
+    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_next_attempt_ms=?`)
     .get(clearsAtMs) as { held: number };
   return Math.max(1, row.held);
 }
@@ -170,7 +170,7 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
     {session_id:number;accepted_input_id:string|null}|null;
   if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
   const head=db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
-    WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('usage_wait','retryable')
+    WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('usage_wait','backoff')
       AND sessions.provider_id=?`).get(input.provider) as {id:number|null};
   const eventId=`provider-continuation-hold:${input.provider}:${input.reason.refusal}:${head.id??input.turnId}`;
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;

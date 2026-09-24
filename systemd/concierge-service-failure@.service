@@ -1,0 +1,9 @@
+[Unit]
+Description=Tell Tejas when %I stops after repeated failures
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+ExecStart=/root/workspace/slack-concierge/bot/scripts/service-failure-notice.sh %I
