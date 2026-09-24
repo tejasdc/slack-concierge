@@ -311,18 +311,20 @@ authorization or a change to the default rapid-iteration policy.
   Provider observation never creates an owner input/run or overwrites its terminal receipt;
   see [external lifecycle](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns).
 - Keep unread activity, declared attention, read/dismiss and outcome separate.
-  Ordinary responses and failures do not set Needs attention. Every working turn ends its
-  answer with one exact `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`):
-  done, response, needs_you with the question, or failed with why. Tejas rejected the
-  provider-enforced form (it doubled Claude turns and one schema rule failed every Claude
-  turn) and chose this single line. Only needs_you and response (an answer he must
+  Ordinary responses and failures do not set Needs attention. Every working turn declares
+  once with `sessions outcome` and its exact source input/run and stable action ID: done,
+  response with what to read, needs_you with the question, or failed with why. A turn that
+  posted its answer needs no closing text. Older sessions still use the exact final
+  `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`) when they have not declared
+  by action. Tejas rejected a provider-enforced form because it doubled Claude turns.
+  Only needs_you and response (an answer he must
   read, not routine replies), or a hand-off reply's
   `needs_decision`, raises attention, cleared by his reply, a later declaration or
   dismiss, never by reading. In the Inbox that attention is a question record in its
   topic, with a kind (decision or reading), an owner and an explicit recorded end; a
-  marker the run did not declare as a question is held unfiled until the router files it,
+  outcome the run did not declare as a question is held unfiled until the router files it,
   never guessed into a thread ([design](docs/plans/2026-09-23-attention-that-ends.md),
-  [contract](docs/contracts/native-inbox.md#topics)). The marker is stripped before display; a turn without one is
+  [contract](docs/contracts/native-inbox.md#topics)). The legacy marker is stripped before display; a turn without a declaration is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to

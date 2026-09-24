@@ -70,8 +70,8 @@ export function inboxMessage(row:any) {
   const link=!agent&&row.input_id?inboxThreadLink(row.session_id,row.input_id):null;
   // A turn's closing words belong to one thread or none: a turn that asked or posted for
   // another thread has its result marked, and a thread's conversation leaves it out.
-  const mixed=result&&typeof row.turn_id==='number'?turnMixesThreads(row.session_id,row.turn_id,row.input_id):false;
-  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(mixed?{mixedThreads:true}:{}),
+  const threads=result&&typeof row.turn_id==='number'?turnThreadActions(row.session_id,row.turn_id,row.input_id):null;
+  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const}}:{}),
@@ -170,18 +170,20 @@ export function inboxRequestThread(session:SessionRow,thread:unknown):string|nul
   if(!db.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(root))throw new Error('That thread is still being sorted; place it first (sessions topics place or create). Nothing was sent.');
   return root;
 }
-/** Whether a turn's asks and posts named a thread other than the one its own input is in. */
-export function turnMixesThreads(sessionId:number,turnId:number,ownInputId:string|null):boolean {
+/** Threads named by a turn's requests and posts, compared with its result's thread. */
+export function turnThreadActions(sessionId:number,turnId:number,ownInputId:string|null):{mixedThreads:boolean;answeredByPost:boolean} {
   const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
   const named=new Set<string>();
   for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
+  let answeredByPost=false;
   for(const row of db.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {input_id:string|null}[])
-    if(row.input_id)named.add(row.input_id);
-  return [...named].some(root=>root!==own);
+    if(row.input_id){named.add(row.input_id);if(row.input_id===own)answeredByPost=true;}
+  return {mixedThreads:[...named].some(root=>root!==own),answeredByPost};
 }
+export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|null)=>turnThreadActions(sessionId,turnId,ownInputId).mixedThreads;
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {
   const row=inboxRowByMessageId(sessionId,messageId);

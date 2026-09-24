@@ -26,8 +26,9 @@ page and its `history?after=` delta expose `attachments:[{id,name,contentType}]`
 message. A result row exposes attachments when its own retained result payload names them.
 A post with at least one file needs no text; one with neither text nor a file is refused.
 
-A turn that produced no text of its own is not a message here. When a turn's whole answer
-was its outcome marker, nothing survives stripping it, and that result carries neither text
+A turn that produced no text of its own is not a message here. After a `sessions outcome`
+action, a turn may end without closing text; an older turn may answer only with its outcome
+marker. Either way, that result carries neither text
 nor files: the shared Inbox query leaves it out, so the thread shows no reply rather than a
 sentence nobody wrote. A result that carries files is still a message. Tejas read one such
 placeholder as speech from Claude on 2026-09-22 ("(agent completed without a text reply)");
@@ -228,8 +229,10 @@ no threads and name none. The root is recorded on the request (`thread_root_inpu
 and peer rows), so progress and final returns file under that thread and its Timeline lists
 the dispatch, whatever input started the turn that sent it. A post's `--topic` must be the
 topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
-a thread other than its own input's; Thinkering keeps such closing text out of every thread's
-conversation. Tejas asked for this after a turn handling several topics filed another topic's
+a thread other than its own input's, and `answeredByPost` when it posted into its own thread.
+Thinkering keeps either closing text out of that thread's conversation. Both facts come
+from that turn's recorded requests and posts, rather than comparing the post's root input
+with a later reply's distinct input ID. Tejas asked for `mixedThreads` after a turn handling several topics filed another topic's
 results and its closing note under the Questions-redesign thread (2026-09-23): "if you're
 going to send this request, you have to tell me which thread it's for … Stop relying on good
 intentions".

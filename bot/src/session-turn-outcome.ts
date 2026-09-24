@@ -5,14 +5,15 @@ import {questionsDeclaredByRun} from './session-topics';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
- * Every turn says whether it needs Tejas. Its answer ends with an exact outcome marker
- * line (`turn-outcome-marker.ts`), and a final hand-off reply's work disposition counts
- * too. `needs_you` blocks work on his answer; `response` is an answer he should read
+ * Every turn says whether it needs Tejas through an outcome action. Older turns may
+ * end their answer with an exact marker line (`turn-outcome-marker.ts`), and a final
+ * hand-off reply's work disposition counts too. `needs_you` blocks work on his answer;
+ * `response` is an answer he should read
  * (not every reply — the agent marks the ones that matter). Both raise attention. Needs attention comes only from these declarations, never from
  * reading the agent's text. See thinkering docs/plans/2026-09-18-turn-outcome.md.
  *
  * `finished_without_saying` is recorded by the owner, never declared: the turn ended
- * without an outcome marker. It is quiet — it neither raises nor clears
+ * without an outcome action or marker. It is quiet — it neither raises nor clears
  * attention — so a missed declaration points at the provider path, not at him.
  */
 export type DeclaredTurnOutcome='done'|'response'|'needs_you'|'failed';
@@ -35,6 +36,10 @@ export function outcomeInputFor(sessionId:number,inputId:string):string {
 
 export function turnDeclared(turnId:number):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' LIMIT 1").get(turnId);
+}
+
+export function turnDeclaredByAction(turnId:number):boolean {
+  return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' AND substr(event_id,1,20)='turn_outcome:action:' LIMIT 1").get(turnId);
 }
 
 /**
@@ -92,12 +97,13 @@ function answeredInput(turnId:number,openingInputId:string):string {
 
 /**
  * A delivered result declares its turn's outcome through the marker its answer ended
- * with. ChatGPT is not given the marker, so its answer is done. A consultation is information
- * only and declares nothing. A later structured outcome supersedes a reply disposition
- * the same turn recorded, because it is the turn's own final word. A needs_you marker
+ * with only when no outcome action already declared it. ChatGPT is not given the marker,
+ * so its answer is done. A consultation is information only and declares nothing.
+ * A legacy marker supersedes a reply disposition in the same turn. A needs_you marker
  * without a question on its line keeps the answer itself as the question.
  */
 export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;inputId:string;text:string;turnOutcome?:TurnOutcomeMark}) {
+  if(turnDeclaredByAction(result.turnId))return;
   const session=getSessionById(result.sessionId);
   if(!session||sessionMetadata(session).interactionPolicy==='consultation-only')return;
   const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
@@ -109,7 +115,7 @@ export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;i
 }
 
 /**
- * A native turn that ended without declaring — no marker, a crash, or a stop — is
+ * A native turn that ended without declaring — no action or marker, a crash, or a stop — is
  * recorded as such. Never
  * inferred from text, and quiet: it neither raises nor clears attention.
  */

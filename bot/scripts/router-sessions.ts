@@ -18,6 +18,7 @@ router-actions.sh sessions ask <peer-address> <source-flags> --action-id A [--re
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
@@ -59,6 +60,7 @@ Copy results[i].session.address and returned request IDs exactly. A concierge:<i
 Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider cc-opus to create a fresh native session and first input. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
+Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. A turn that already answered with sessions post and declared its outcome needs no closing text.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, so progress and final returns file under that thread and its Timeline lists the dispatch, whatever input started the turn that sent it. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
@@ -81,6 +83,7 @@ export type SessionCommunicationRequest =
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
+  | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -216,15 +219,17 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
+  const outcome = operation === 'outcome' ? args.shift() : undefined;
+  if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, reply, get, or cancel.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -261,7 +266,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
-      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "thread" || operation === "cancel"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -270,7 +275,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
-      || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post'))
+      || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
       || (flag === '--work-disposition' && operation === 'reply');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -334,6 +339,19 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');
     return {operation,body:{source,action_id:actionId,captureId:identity!}};
+  }
+  if(operation==='outcome') {
+    const textFile=flags.get('--text-file');
+    if(textFile) {
+      if(separator>=0)invalid('Choose --text-file or text after --.');
+      content.push(readFileSync(textFile,'utf8'));
+    }
+    if(outcome==='done') {
+      if(separator>=0||textFile||content.length)invalid('done takes no text.');
+      return {operation,body:{source,action_id:actionId,outcome}};
+    }
+    if((!textFile&&separator<0)||content.length!==1||!content[0]?.trim())invalid(`${outcome} requires one nonempty text argument.`);
+    return {operation,body:{source,action_id:actionId,outcome:outcome as 'response'|'needs_you'|'failed',text:content[0]!.trim()}};
   }
   const textFile=flags.get('--text-file');
   if(textFile) {

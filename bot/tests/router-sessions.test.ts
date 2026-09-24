@@ -40,6 +40,15 @@ test("omits optional fields and preserves source timestamps as strings", () => {
   });
 });
 
+test('parses outcome declarations and their exact text rules', () => {
+  expect(parseRouterSessionsArgs(['outcome','done',...nativeSourceFlags,'--action-id','turn-done']))
+    .toEqual({operation:'outcome',body:{source:nativeSource,action_id:'turn-done',outcome:'done'}});
+  expect(parseRouterSessionsArgs(['outcome','needs_you',...nativeSourceFlags,'--action-id','turn-question','--','Which version?']))
+    .toEqual({operation:'outcome',body:{source:nativeSource,action_id:'turn-question',outcome:'needs_you',text:'Which version?'}});
+  expect(()=>parseRouterSessionsArgs(['outcome','done',...nativeSourceFlags,'--action-id','turn-done','--','extra'])).toThrow();
+  expect(()=>parseRouterSessionsArgs(['outcome','response',...nativeSourceFlags,'--action-id','turn-response'])).toThrow();
+});
+
 const invalidCommands = [
   [], ["steer"], ["resume"], ["search"], ["search", "--", "concept"],
   ["search", ...sourceFlags, "concept"],
