@@ -33,6 +33,12 @@ unit owns standalone CLI execution, diagnosis, Git integration, and retry. It is
 outside Concierge's managed provider queue and does not borrow a managed session.
 Deployment machinery records evidence and available commit-to-task authorship
 mappings but never infers causality or selects a feature task as the culprit.
+Candidate preparation is an evidence boundary too. The release builder returns a
+bounded structured error before activation; the deploy runner prints that result
+and retains it in the failed run and repair incident. Shell fail-fast handling
+must not exit from the command substitution before that evidence is recorded.
+Without the builder's error, repair can prove only the failed stage and must not
+guess at an application correction or repeat the candidate for diagnostics.
 The same mappings drive the durable Slack status projection on each turn's first
 delivered final response and mirror each lifecycle reaction onto the exact
 originating user input so Slack can place every transition in that user's

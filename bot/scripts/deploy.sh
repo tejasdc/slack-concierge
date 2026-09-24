@@ -462,7 +462,7 @@ handoff_failed_deployment_to_repair() {
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
   [[ "$failed_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
-  failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. The immutable last-known-good pointer was restored to $restored_commit."
+  failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. $DEPLOY_FAILURE_REASON The immutable last-known-good pointer was restored to $restored_commit."
   fingerprint=$(printf '%s' "$CURRENT_DEPLOY_STAGE|$deploy_status|$LAST_FAILED_COMMAND" \
     | sha256sum | awk '{print $1}')
 
@@ -571,11 +571,20 @@ require_last_known_good_release() {
 }
 
 prepare_candidate_release() {
-  local output
+  local output status detail
   [ -n "$DEPLOY_RUN_ID" ] || return 0
+  set +e
   output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" prepare \
     --run-id "$DEPLOY_RUN_ID" --commit "$DEPLOYED_COMMIT")
-  echo "$output"
+  status=$?
+  set -e
+  printf '%s\n' "$output"
+  if [ "$status" -ne 0 ]; then
+    detail=$(printf '%s\n' "$output" | jq -c '{status,error}' 2>/dev/null || printf '%s' "$output")
+    detail=${detail:0:1200}
+    DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared. Candidate preparation reported: $detail"
+    return "$status"
+  fi
   CANDIDATE_ARTIFACT_PATH=$(printf '%s\n' "$output" | jq -er '.artifact_path')
   CANDIDATE_ARTIFACT_DIGEST=$(printf '%s\n' "$output" | jq -er '.artifact_digest')
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
