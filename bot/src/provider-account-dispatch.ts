@@ -1,21 +1,49 @@
-import {existsSync,realpathSync} from 'node:fs';
+import {existsSync,realpathSync,symlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,accountChosenSentence,accountMovedSentence} from './provider-account-choice';
-import {accountHome,currentAccount,profileId} from './provider-accounts';
+import {accountHome,currentAccount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
+import type {ProviderUsage} from './provider-account-usage';
+import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset} from './provider-usage';
 import {claudeAccountSelection} from './provider-account-selection';
 
 /** Only launch from an extra home when it sees the same conversation history. */
-function sharedClaudeHome(account:string):string|null {
-  const home=accountHome('claude-code',profileId(account));
+function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account))):string|null {
   const projects=join(home,'projects');
   try {
     return existsSync(join(home,'.credentials.json'))&&existsSync(projects)
       &&realpathSync(projects)===realpathSync(join(homedir(),'.claude','projects'))?home:null;
   } catch {return null;}
+}
+
+/** An extra Codex process must see the same conversation files as the default daemon. */
+function sharedCodexHome(home:string):string|null {
+  if(!existsSync(join(home,'auth.json')))return null;
+  const sessions=join(homedir(),'.codex','sessions'),borrowed=join(home,'sessions');
+  try {
+    if(!existsSync(sessions))return null;
+    if(!existsSync(borrowed))symlinkSync(sessions,borrowed,'dir');
+    return realpathSync(borrowed)===realpathSync(sessions)?home:null;
+  } catch {return null;}
+}
+
+/** Homes with credentials that this owner can use without switching a live login. */
+export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
+  const defaultLabel=currentAccount(provider)?.label;
+  const profiles=listProfiles(provider);
+  return usage.accounts.map(account=>{
+    const isDefault=account.label===defaultLabel;
+    const profile=profiles.find(item=>item.label===account.label);
+    const home=isDefault?null:profile?accountHome(provider,profile.id):null;
+    const ready=home&&(provider==='claude-code'?sharedClaudeHome(account.label,home)===home:sharedCodexHome(home)===home);
+    const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
+    return {account:account.label,home:ready?home:null,isDefault,
+      tightestUsedPercent:fresh&&account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null,
+      problem:!fresh?'Usage reading is stale.':account.problem};
+  });
 }
 
 export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0):{account:string;home:string|null;notice:string|null;selectionRevision:number}|null {

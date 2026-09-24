@@ -600,7 +600,7 @@ export class SessionOwner {
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0,
         open:attentionOpen},
       needsAttention:meta.inbox?attentionOpen.length>0:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
-      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,originKind:saved.saved_origin_kind??saved.saved_kind,
+      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
         startsAt:saved.dispatch_next_attempt_ms?new Date(saved.dispatch_next_attempt_ms).toISOString():null,
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
@@ -750,7 +750,7 @@ export class SessionOwner {
   }
   savedWorkList(){
     return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
-      savedWork:{kind:turn.saved_kind,originKind:turn.saved_origin_kind??turn.saved_kind,status:turn.status,startsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,
+      savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,
         expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
         account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}}))};
   }

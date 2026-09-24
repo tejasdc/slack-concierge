@@ -2,11 +2,12 @@ import {db,executionChanged,getSessionById} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
-import {currentAccount} from './provider-accounts';
 import type {ProviderKey} from './provider-accounts';
+import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {chooseAccountForTurn} from './provider-account-choice';
 
 export type SavedKind='scheduled'|'banked';
-export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_origin_kind:SavedKind|null;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
+export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;saved_alerted_at_ms:number|null;accepted_input_id:string|null};
 
@@ -42,9 +43,9 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
     const other=db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(turn.session_id,turnId);
     if(other)throw new Error('Saved work needs its own session.');
     const next=kind==='scheduled'?atMs!:now+3*60_000;
-    db.query(`UPDATE turns SET saved_kind=?,saved_origin_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,
+    db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
       saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=?`)
-      .run(kind,kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,
+      .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,
         repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,turnId);
   })();
   executionChanged();
@@ -90,18 +91,15 @@ export function reconsiderBankedWork(now=Date.now()):number {
     if(!session||!['codex','claude-code'].includes(session.provider_id))continue;
     const provider=session.provider_id as ProviderKey;
     const usage=providerAccountUsage(provider);
-    // The current launcher can use only its current login. A remembered credential without
-    // an isolated provider process is not a safe bank destination.
-    const account=currentAccount(provider)?.label;
-    const accountReading=usage?.accounts.find(item=>item.label===account);
-    const fresh=usage&&accountReading&&Date.parse(accountReading.readAt??usage.observedAt)>=now-6*60_000
-      &&!usage.problem&&!accountReading.problem;
-    const candidate=fresh&&account?usageForecasts(provider).filter(window=>window.account===account&&window.resetsAt
-      && (usage.accounts.find(item=>item.label===account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
+    const rooms=usage?savedWorkAccountRooms(provider,usage,now):[];
+    const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
+      && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
+      && (usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
         ||window.source!=='unknown'&&!window.runsOutBeforeReset)
       && !window.runsOutBeforeReset&&window.usedPercent<100-settings.reserve_percent
       && Date.parse(window.resetsAt)>=now+HOUR)
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
+    const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
     const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quiet(now,settings)||reset!-now<=2*HOUR);
     const next=eligible?0:reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
@@ -120,7 +118,7 @@ export function reconsiderBankedWork(now=Date.now()):number {
 /** A declined or boundary-yielded banked run remains saved without a retry failure. */
 export function yieldBankedTurn(turnId:number,owner:string,nextMs=Date.now()+3*60_000):boolean {
   const result=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,
-    dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL,
+    dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL,
     ended_at=NULL
     WHERE id=? AND owner_instance_id=? AND status='running' AND saved_kind='banked'
       AND provider_admission_intended_at IS NULL`).run(nextMs,turnId,owner);
@@ -277,9 +275,9 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
       const queued=enqueueSessionInput(input.id);
       if(queued.turn_id===null)throw new Error('Repeating firing could not enter its session queue.');
       const expiry=current.saved_expires_at_ms===null?null:nextAt+(current.saved_expires_at_ms-current.dispatch_next_attempt_ms!);
-      db.query(`UPDATE turns SET saved_kind='scheduled',saved_origin_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,
+      db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,
         saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=? AND status='queued'`)
-        .run(current.saved_origin_kind??'scheduled',now,expiry,nextAt,interval,root,nextSequence,queued.turn_id);
+        .run(now,expiry,nextAt,interval,root,nextSequence,queued.turn_id);
       advanced++;
     })();
   }

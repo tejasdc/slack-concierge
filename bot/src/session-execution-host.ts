@@ -32,6 +32,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
+import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
@@ -331,13 +332,12 @@ export class SessionExecutionHost {
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController) {
     const saved=savedTurn(claim.turn_id);
+    let boundAccount:{account:string;home:string|null}|null=null;
     if(saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'?providerAccountUsage(session.provider_id):null;
-      const current=session.provider_id==='codex'||session.provider_id==='claude-code'?currentAccount(session.provider_id):null;
-      const reading=usage?.accounts.find(account=>account.label===current?.label);
-      const fresh=usage&&reading&&Date.parse(reading.readAt??usage.observedAt)>=Date.now()-6*60_000;
-      const choice=chooseAccountForTurn({accounts:reading&&fresh&&current?[{account:current.label,home:null,isDefault:true,
-        tightestUsedPercent:reading.problem||!reading.windows.length?null:Math.max(...reading.windows.map(window=>window.usedPercent)),problem:reading.problem}]:[],
+      const rooms=usage&&['codex','claude-code'].includes(session.provider_id)
+        ?savedWorkAccountRooms(session.provider_id as ProviderKey,usage):[];
+      const choice=chooseAccountForTurn({accounts:rooms,
         bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
       if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()
         ||choice.account!==saved.saved_account) {
@@ -345,6 +345,7 @@ export class SessionExecutionHost {
         closeSteering();
         return;
       }
+      boundAccount={account:choice.account,home:choice.home};
     }
     const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
@@ -385,6 +386,7 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id)},
+      ...(boundAccount?{boundAccount}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         if(provider==='codex')void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));

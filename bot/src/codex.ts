@@ -422,6 +422,7 @@ export interface RunCodexTurnInput {
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
+  accountLabel?: string;
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
@@ -1464,7 +1465,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
   assertProviderInteractionPolicy(input.interactionPolicy);
-  const attempt = usageAttempt("codex");
+  const attempt = usageAttempt("codex", undefined, input.accountLabel);
   assertUsageAvailable(attempt);
   let resetAt: number | null = null;
   const onRateLimits = input.onRateLimits;

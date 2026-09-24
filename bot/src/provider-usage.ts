@@ -41,16 +41,18 @@ export function usageScope(provider: UsageProvider, model?: string): string {
   return provider === "codex" ? account : `${account}:${canonicalClaudeUsageModel(model!.trim())}`;
 }
 
-export function usageAttempt(provider: UsageProvider, model?: string, claudeAccount?:string): UsageAttempt {
+export function usageAttempt(provider: UsageProvider, model?: string, selectedAccount?:string): UsageAttempt {
   if (provider === "claude-code" && !model?.trim()) throw new Error("Claude usage scope requires an exact model.");
   const state = read(provider);
   const account = currentAccount(provider);
-  const accountKey=claudeAccount?createHash('sha256').update(claudeAccount.toLowerCase()).digest('hex').slice(0,24):null;
-  return { provider, scope:accountKey?`${accountKey}:${canonicalClaudeUsageModel(model!.trim())}`:usageScope(provider, model),
+  const accountKey=selectedAccount?createHash('sha256').update(selectedAccount.toLowerCase()).digest('hex').slice(0,24):null;
+  const scope=provider==='codex'&&selectedAccount&&selectedAccount!==account?.label?`account:${accountKey}`
+    :accountKey&&provider==='claude-code'?`${accountKey}:${canonicalClaudeUsageModel(model!.trim())}`:usageScope(provider, model);
+  return { provider, scope,
     // What a person should be told the limit applies to. The scope carries a
     // credential fingerprint and never belongs in a message.
-    label: provider === "codex" ? account?.label ?? "this Codex account"
-      : `${canonicalClaudeUsageModel(model!.trim())} on ${claudeAccount??account?.label ?? "this Claude account"}`,
+    label: provider === "codex" ? selectedAccount??account?.label ?? "this Codex account"
+      : `${canonicalClaudeUsageModel(model!.trim())} on ${selectedAccount??account?.label ?? "this Claude account"}`,
     generation: state.generation, revision: state.revision };
 }
 

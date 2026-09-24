@@ -4,6 +4,7 @@ import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {homedir} from 'node:os';
 import {
   artifactDirectoryForTurn,
   buildArtifactPromptContext,
@@ -226,6 +227,7 @@ export interface SlackTurnExecutionInput {
   turnKind?: "slack_user" | "comparison" | "deployment_verification" | "machine_alert";
   dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
+  boundAccount?: {account:string;home:string|null};
   interactionPolicy?: 'standard' | 'consultation-only';
   beforeProviderAdmission?: () => void;
   steeringController: TurnSteeringController;
@@ -525,7 +527,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
-    const claudeChoice=input.providerId==='claude-code'?chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0):null;
+    const claudeChoice=input.providerId==='claude-code'
+      ?input.boundAccount?{...input.boundAccount,notice:null,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
+        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0)
+      :null;
     const runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     let accountRecorded=false;
     const result = await input.provider.run({
@@ -542,6 +547,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       environment: {
         ...input.providerEnvironment,
         ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
+        ...(input.providerId==='codex'&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
         CONCIERGE_SESSION_ID: String(input.session.id),
         CONCIERGE_TURN_KIND: input.turnKind || "slack_user",
@@ -554,7 +560,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }),
         CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
       },
-      ...(claudeChoice?{accountLabel:claudeChoice.account}:{}),
+      ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
@@ -992,7 +998,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // 2026-09-23 this fell through to a terminal failure, and one five-hour Claude limit
       // destroyed nine of the Inbox's inputs in 43 seconds with nothing left to resume.
       let switchClaudeAccount=false;
-      if(replaySafe&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
+      if(replaySafe&&!input.boundAccount&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
         const spent=sessionMetadata(input.session).claudeAccount??null;
         try {const next=chooseClaudeDispatch(spent);switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
         catch { /* every account is spent; keep the existing usage hold */ }

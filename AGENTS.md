@@ -45,17 +45,27 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Scheduled and banked work use the existing queued turn and wake timer. A saved item starts
   in its own named session, so later inputs follow its FIFO. `saved_kind` and the saved rule
-  survive provider requeues; the retry failure class describes only provider refusals.
+  survive provider requeues. A banked item waiting for its chosen time has no provider-retry
+  mark, including after a safe pre-admission refusal; clearing usage or switching accounts
+  cannot release it early. Its current kind has one durable home; converting banked work to a
+  schedule changes that kind.
   `sessions schedule --at` (optionally `--expires` and `--every-ms`) and `sessions bank`
   create saved agent requests, and Thinkering
   creation may supply `savedWork`; both require a registered project and an available provider.
   `sessions saved list|start|cancel` uses an exact source and stable action identity for changes;
   the owner lists waiting items at `/saved-work` and controls them at
   `/saved-work/<turn-id>/<start|time|schedule|drop>`. `time` changes only a schedule;
-  `schedule` explicitly converts a banked item and retains its original kind.
+  `schedule` explicitly converts a banked item.
   Banked work is released
-  only against fresh usage on this machine's current account, and claim checks for ordinary
-  queued or running work again. The saved work settings belong to the owner at
+  against fresh usage on any account this machine can launch for the provider. The account
+  choice is bound to the saved window: if that account has no room at dispatch, the turn
+  waits rather than spending another account's allowance. A bound Codex turn runs in its
+  account home through a turn-owned process, including the default home, so it cannot inherit
+  a different login held by the shared daemon. An extra home's sessions path borrows the default Codex history so later
+  turns and history reads keep the conversation. An existing incompatible sessions path is
+  left untouched and that home is not selected. The shared Codex daemon keeps its existing
+  default-account work.
+  Claim checks for ordinary queued or running work again. The saved work settings belong to the owner at
   `/saved-work/settings`. The usage watch
   recalculates banked instants and records overdue attention once; the queue also settles
   scheduled work at its optional expiry. The queue remains the
@@ -63,7 +73,10 @@ and mandatory review requirements in this repository and linked historical mater
   root and sequence; an overlap skips and records that firing. A banked run stops at an allowance or deployment boundary.
   If the provider already admitted it, the cancelled turn remains held for reconciliation instead of replaying
   its input; automatic continuation and a shipped-work checkpoint are not yet implemented.
-  Boundary checks follow the existing usage reading cadence. See
+  Idleness uses this machine's work only; a busy peer is not visible to this gate. Allowance
+  boundary stops follow existing usage readings, not an independent timer. A claim declined
+  before provider admission still increments the queue's claim counter. Repeating schedules
+  use fixed intervals rather than calendar dates. See
   [saved work design](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md).
 
 Original Thinkering report `5eaa0768-0321-49cc-a3e0-25159b40ba6e` (retained capture

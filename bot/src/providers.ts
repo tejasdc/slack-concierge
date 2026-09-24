@@ -7,6 +7,7 @@ import { assertProviderForkPolicy, ProviderCapabilityUnavailableError, type Prov
 import { forkClaudeHistory, readClaudeHistory, readClaudeHistoryDetail, readCodexHistory, readCodexHistoryDetail,
   type ProviderHistoryInput, type ProviderHistoryPage, type ProviderDetailInput } from "./provider-history";
 import type { ProviderMessageCallback } from "./provider-history";
+import {MANAGED_CODEX} from './provider-activation';
 
 export type { ProviderInteractionPolicy } from "./provider-policy";
 export type { ProviderHistoryInput, ProviderHistoryMessage, ProviderHistoryPage, ProviderDetailInput } from "./provider-history";
@@ -74,6 +75,7 @@ class CodexProvider implements AgentProvider {
     return runCodexTurn({
       ...input,
       applicationInstructions: input.systemPrompt,
+      ...(input.environment?.CODEX_HOME?{executable:MANAGED_CODEX}:{}),
     });
   }
 

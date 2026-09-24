@@ -706,7 +706,8 @@ addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
 // A deliberate saved wait is not a provider retry. These fields survive every requeue.
 addColumn("turns", "saved_kind", "saved_kind TEXT CHECK(saved_kind IN ('scheduled','banked'))");
-addColumn("turns", "saved_origin_kind", "saved_origin_kind TEXT CHECK(saved_origin_kind IN ('scheduled','banked'))");
+// Earlier saved-work drafts stored the same kind twice. Keep only the current rule.
+if (columns("turns").has("saved_origin_kind")) db.exec("ALTER TABLE turns DROP COLUMN saved_origin_kind");
 addColumn("turns", "saved_at_ms", "saved_at_ms INTEGER");
 addColumn("turns", "saved_expires_at_ms", "saved_expires_at_ms INTEGER");
 addColumn("turns", "saved_account", "saved_account TEXT");
@@ -717,6 +718,7 @@ addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DE
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
+db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
@@ -3713,18 +3715,24 @@ export function retryRunningTurnAfterProviderFailure(input: {
     if (!turn) return false;
     const changed = db.query(`
       UPDATE turns
-      SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
-          dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
+      SET status='queued', owner_instance_id=NULL,
+          agent_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END, ended_at=NULL,
+          -- A saved banked wait is chosen by the owner, never released by the
+          -- provider-retry sweep when a credential or usage cache changes.
+          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'retryable' END,
+          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
-          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_desired_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
+          status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
+      Date.now()+3*60_000,
       input.nextAttemptMs,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
@@ -3764,17 +3772,19 @@ export function requeueOrphanedPreAdmissionTurn(
     const changed = db.query(`
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
-          dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
+          dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE 'retryable' END,
+          dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE 0 END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
-          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_desired_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
+          status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND provider_admission_intended_at IS NULL
-    `).run(RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
+    `).run(Date.now()+3*60_000, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
     if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {
       db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
