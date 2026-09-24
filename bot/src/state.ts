@@ -279,7 +279,7 @@ CREATE TABLE IF NOT EXISTS deployment_drain (
 -- A sign-in he has started and not yet finished. It used to live only in the memory of the
 -- process running it, so an update threw it away mid-flow and his pasted code came back as
 -- "that code didn't work". Here it is work in progress like any other: the drain sees it and
--- waits, and a reloaded page can find it again. `expires_at_ms` bounds that wait, so an
+-- waits, and a reloaded page can find it again. Its expiry bounds that wait, so an
 -- abandoned sign-in cannot hold an update open.
 CREATE TABLE IF NOT EXISTS pending_sign_ins (
   provider           TEXT PRIMARY KEY,
