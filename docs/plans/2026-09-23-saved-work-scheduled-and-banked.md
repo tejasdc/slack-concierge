@@ -368,6 +368,42 @@ cleanly, stays resumable, and returns to waiting. Work that cannot tolerate that
 scheduled, not banked — that is the practical difference between the two, and it belongs in the
 first line of the guidance an agent reads.
 
+### What "resumable" means for a run that already shipped something
+
+This was a hole in the first two drafts and it is the sharpest consequence of his "same as
+daytime" answer: a banked run can commit, push and deploy before it is stopped, so **its opening
+message must never be replayed** — replaying it could repeat those effects. That is not a new
+rule invented here; it is the repository's existing invariant (`AGENTS.md`): *"Stop cancels its
+exact run; later messages and returns remain eligible in the same durable session; a new input
+never replays the stopped input or an uncertain effect."*
+
+`concierge:3635` confirmed the shape on 2026-09-23 (request `991c00d6`), and corrected the
+premise this was nearly built on: there is **no** mechanism anywhere by which a resumed turn
+checks what it already did, and none is planned. Concierge only re-runs an input the provider
+*provably never processed* — no assistant output, no tool call, judged from the turn's own
+record. Nothing keys on external effects at all: a git push or a release activation is recorded
+nowhere a resume could consult. A yielded banked run that did real work falls squarely under
+"never replayed".
+
+So a yield resumes **as a new input in the same session, not as a replay**, which is the
+mechanism this design already has for appending to a saved session:
+
+- The yield stops the run and returns the item to waiting, exactly as described below.
+- When its next opportunity arrives, the saved session receives a **continuation input** — new
+  words saying it was stopped at an allowance or deployment boundary and should carry on from
+  where it got to. The agent reads its own history to know what it already did; nothing
+  reconstructs that for it.
+- The opening input is never queued twice.
+
+Two things make that safe rather than hopeful, and both are `concierge:3635`'s point: effects in
+this workspace are already idempotent under a stable identity — pushing commits already on the
+remote is a no-op, and a release activation is keyed by commit — and the continuation says where
+it stopped rather than asking for the work again.
+
+One distinction this design keeps that nothing else models: **stopped on purpose, mid-work** is
+not the same as *died*. A boundary yield is deliberate, its session is healthy, and it is the
+only case where the system stops a run it could have let finish.
+
 **Yielding needs a write of its own, and it is not the retry path.** "Stopped cleanly, resumable,
 returns to waiting" has to name how the row gets back to `queued`: the only existing
 requeue-a-running-turn write is `retryRunningTurnAfterProviderFailure`, which saved work must not
