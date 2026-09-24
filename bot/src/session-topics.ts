@@ -64,8 +64,70 @@ const questionReadiness=(question:{context:string;brief:any;origin?:QuestionOrig
  * a client displays this answer and never recomputes it. */
 const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any;kind?:QuestionKind})=>
   (question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'&&(question.blocking||!question.optional)&&!question.pendingReply;
-/** A reading item still unread: it is listed for him, counted separately, and ends only with his own Read. */
-const toReadByHim=(question:{state:string;kind?:QuestionKind})=>question.kind==='reading'&&OPEN_QUESTION_STATES.includes(question.state);
+/**
+ * What a reading item is for him to read, resolved from the owner's own records and never
+ * copied: the messages the turn that raised it wrote into this thread — its posts there, else
+ * its closing text when that text belongs to this thread. The message ids are the fact and the
+ * text is read from the retained message, so an item can never say more than the thread does.
+ * A router may name the messages itself (`reads` on a `topics questions` declaration); they
+ * still have to be messages in this thread. Tejas, 2026-09-24, on an item that carried only
+ * the turn's one-line outcome and a link back to his own message: "I literally cannot read
+ * this … I want the answer I have to actually read".
+ */
+export type ReadingText={messageId:string;text:string;at:string};
+export function readsForTurn(sessionId:number,turnId:number,roots:ReadonlySet<string>):ReadingText[] {
+  const posts=db.query(`SELECT event_id,input_id,created_at,json_extract(payload_json,'$.text') AS text
+    FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as {event_id:string;input_id:string|null;created_at:string;text:string|null}[];
+  const here=posts.filter(post=>!!post.input_id&&roots.has(post.input_id)&&String(post.text??'').trim());
+  if(here.length)return here.map(post=>({messageId:post.event_id,text:String(post.text),at:iso(post.created_at)!}));
+  // No post: the turn's closing text, only when the input it answered is in this thread — a
+  // turn can work for several threads, and another thread's answer is not his to read here.
+  const result=db.query(`SELECT event.event_id,event.input_id,event.created_at,COALESCE(json_extract(event.payload_json,'$.text'),turn.agent_text,'') AS text
+    FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+    WHERE event.session_id=? AND event.turn_id=? AND event.kind='result' LIMIT 1`).get(sessionId,turnId) as {event_id:string;input_id:string|null;created_at:string;text:string}|null;
+  if(!result||!String(result.text).trim()||!result.input_id)return [];
+  const root=inboxThreadRoot(sessionId,result.input_id);
+  return root&&roots.has(root)?[{messageId:result.event_id,text:String(result.text),at:iso(result.created_at)!}]:[];
+}
+/** The turn that raised a question: the outcome event it was filed from, else the run that declared it. */
+function turnOfQuestion(question:{legacyNeedEventId:string|null;owner:any}):number|null {
+  if(question.legacyNeedEventId) {
+    const row=db.query('SELECT turn_id FROM session_owner_events WHERE event_id=?').get(question.legacyNeedEventId) as {turn_id:number|null}|null;
+    if(typeof row?.turn_id==='number')return row.turn_id;
+  }
+  const runId=question.owner?.runId;
+  if(typeof runId!=='string'||!runId)return null;
+  const turn=db.query('SELECT id FROM turns WHERE native_run_id=?').get(runId) as {id:number}|null;
+  return turn?.id??null;
+}
+export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
+  if((question.kind??'decision')!=='reading')return [];
+  const topic=db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(question.topicId) as {session_id:number}|null;
+  if(!topic)return [];
+  // The threads an answer may sit in: this topic's, and the thread of the message that raised
+  // the item — a router files an item under the topic it belongs to, which is not always the
+  // thread the turn answered in (the two items of 2026-09-24 were filed that way).
+  const roots=new Set([...topicRoots(question.topicId),...(question.sources??[]).map(source=>inboxThreadRoot(topic.session_id,source)??source)]);
+  const named:string[]=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown):id is string=>typeof id==='string'&&!!id.trim()):[];
+  if(named.length) {
+    const found:ReadingText[]=[];
+    for(const id of named) {
+      const message=inboxMessageById(topic.session_id,id) as {content?:string;createdAt?:string;inputId?:string}|null;
+      const root=message?.inputId?inboxThreadRoot(topic.session_id,message.inputId):null;
+      if(message&&String(message.content??'').trim()&&root&&roots.has(root))found.push({messageId:id,text:String(message.content),at:message.createdAt??''});
+    }
+    return found;
+  }
+  const turnId=turnOfQuestion(question);
+  return turnId===null?[]:readsForTurn(topic.session_id,turnId,roots);
+}
+const NOTHING_TO_READ='Nothing to read: the turn that raised this posted nothing into this thread and left no closing text there. Post the answer first (sessions post), then declare it.';
+/** A reading item still unread and with something to read: it is listed for him, counted separately,
+ * and ends only with his own Read. One with nothing to read is nobody's: it is never listed, and
+ * `expireUnreadableReadingItems` ends it with its reason at startup. */
+const toReadByHim=(question:{state:string;kind?:QuestionKind;reads?:ReadingText[];topicId:string;legacyNeedEventId?:string|null;owner?:any;brief?:any;sources?:string[]})=>
+  question.kind==='reading'&&OPEN_QUESTION_STATES.includes(question.state)
+  &&(question.reads?question.reads.length>0:readsFor({topicId:question.topicId,kind:question.kind,legacyNeedEventId:question.legacyNeedEventId??null,owner:question.owner,brief:question.brief,sources:question.sources}).length>0);
 const preparingForHim=(question:{state:string;context:string;brief:any;kind?:QuestionKind})=>(question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='preparing';
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
@@ -498,7 +560,9 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
   const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
   const view={id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
     optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:missingFor(question),
-    kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief};
+    kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief,
+    // What a reading item is for him to read, in full, from the thread's own messages.
+    reads:readsFor(question)};
   return {...view,
     // The owner's own answer to "is this his to act on", so no surface recomputes it.
     waiting:awaitingHim(view)||toReadByHim(view),
@@ -595,10 +659,13 @@ function fileNeed(session:SessionRow,topic:StoredTopic,eventId:string,by:TopicBy
   const at=nowIso();
   const kind:QuestionKind=need.outcome==='response'?'reading':'decision';
   const filed=brief??{decision:need.question,why:{text:'',sources:[need.inputId]},known:'',choices:[],uncertain:[],answerable:'',recoveredFrom:'Filed from the turn that asked'};
-  return {questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state:'open',blocking:kind==='decision',optional:false,
+  const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state:'open',blocking:kind==='decision',optional:false,
     context:kind==='reading'||!briefMissing(filed).length?'ready':'agent_checking',brief:filed,
     owner:by.sessionId?{sessionId:by.sessionId}:null,sources:[need.inputId],replaces:null,replacedBy:null,answer:null,recovered:false,
     legacyNeedEventId:need.eventId,kind,origin:'marker',generation:need.generation,createdAt:need.at??at,updatedAt:at};
+  // A reading item is filed only when its turn left him something to read in this thread.
+  if(kind==='reading'&&!readsFor(question).length)throw new TopicError(NOTHING_TO_READ,409,'NOTHING_TO_READ');
+  return question;
 }
 
 /** The next attention generation on the Inbox, so a new question counts as new the way a marker did. */
@@ -670,7 +737,8 @@ export function inboxAttention(session:SessionRow):OpenNeed[] {
     const view=questionView(question,latestHumanReply(read,topicRoots(question.topicId)));
     if(!view.waiting)continue;
     items.push({inputId:question.sources[0]??question.topicId,outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',
-      generation:question.generation??0,at:question.createdAt,runId:question.owner?.runId??'',eventId:question.questionId});
+      generation:question.generation??0,at:question.createdAt,runId:question.owner?.runId??'',eventId:question.questionId,
+      ...(view.reads.length?{reads:view.reads}:{})});
   }
   return [...needs,...items].sort((first,second)=>first.generation-second.generation);
 }
@@ -818,7 +886,8 @@ export function resolveTopicMessage(messageId:string) {
 export function crossTopicQuestions(state:string|null) {
   const session=inboxOrThrow();
   const selected=state??'open';
-  if(!['open','history','deferred','checking'].includes(selected))throw new TopicError('Unknown question filter.');
+  // One list: a four-value copy in front of this one refused `reading`, so All questions →
+  // To read could never load (found by the 2026-09-24 investigation).
   if(!['open','history','deferred','checking','reading'].includes(selected))throw new TopicError('Unknown question filter.');
   const matches=(question:StoredQuestion)=>selected==='open'?awaitingHim(question)
     :selected==='reading'?toReadByHim(question)
@@ -930,7 +999,10 @@ function questionBrief(item:any) {
     why:{text:typeof why.text==='string'?why.text:'',sources:idList(why.sources,'why.sources')},
     known:typeof item.known==='string'?item.known:'',
     choices,uncertain,
-    answerable:typeof item.answerable==='string'?item.answerable:''};
+    answerable:typeof item.answerable==='string'?item.answerable:'',
+    // A reading item may name the exact messages he is to read; otherwise they are resolved
+    // from the declaring run's own posts into this thread.
+    ...(item.reads!==undefined?{reads:idList(item.reads,'reads')}:{})};
 }
 /** `ready`, `agent_checking`, its plain spelling `checking`, or nothing; anything else is a mistake, not a default. */
 function questionContext(value:unknown):'ready'|'agent_checking'|undefined {
@@ -981,6 +1053,7 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
         state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
         revision:changed?existing.revision+1:existing.revision,updatedAt:at,
         ...(typeof item.changedBecause==='string'?{brief:{...brief,changedBecause:item.changedBecause}}:{})};
+      if(next.kind==='reading'&&OPEN_QUESTION_STATES.includes(next.state)&&!readsFor(next).length)throw new TopicError(NOTHING_TO_READ,409,'NOTHING_TO_READ');
       seen.set(next.questionId,next);written.push(next);
       continue;
     }
@@ -999,6 +1072,8 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:filed?.legacyNeedEventId??null,
       kind,origin:filed?'marker':'declared',generation:filed?.generation??raiseGeneration(session),
       createdAt:filed?.createdAt??at,updatedAt:at};
+    // A declared reading item names, or is resolved to, messages in this thread he can read.
+    if(kind==='reading'&&!readsFor(question).length)throw new TopicError(NOTHING_TO_READ,409,'NOTHING_TO_READ');
     if(question.replaces) {
       const replaced=current(question.replaces);
       if(replaced.topicId!==topic.topicId)throw new TopicError('A replacement must supersede a question in the same topic.',409,'QUESTION_TOPIC_MISMATCH');
@@ -1741,6 +1816,35 @@ export function migrateInboxAttention() {
   })();
   log('info','inbox_attention_migrated',{session_id:session.id,...manifest});
   return {migrated:true,manifest};
+}
+/**
+ * Ends every open reading item that has nothing to read, with its reason, so nothing labelled
+ * "to read" exists without something in it. Runs at every start and changes nothing once the
+ * list is clean; new items are refused at the door (`NOTHING_TO_READ`), so this only clears
+ * what was filed before the rule. Tejas met two such items on 2026-09-24: a heading, a link
+ * back to his own message, and a Read that failed.
+ */
+export function expireUnreadableReadingItems() {
+  const session=inboxSession();
+  if(!session)return {expired:0};
+  refreshRootMemo();
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const at=nowIso();
+  const reason='Nothing to read was recorded with this: the turn that raised it left no post or closing text in this thread. The answer, if any, is in the thread.';
+  const unreadable=(db.query(`SELECT * FROM inbox_questions WHERE kind='reading' AND state IN ('open','partial')`).all() as any[]).map(toStoredQuestion)
+    .filter(question=>!readsFor(question).length);
+  db.transaction(()=>{
+    for(const question of unreadable) {
+      const topic=topicRow(question.topicId);
+      const next=bumped(topic);
+      const ended:StoredQuestion={...question,state:'expired',brief:{...question.brief,endedBecause:reason},updatedAt:at};
+      const payload={change:'settled',topicId:topic.topicId,topic:next,questions:[ended],by,reason,revision:next.revision};
+      recordSessionEvent({eventId:`topic-unreadable-expiry:${question.questionId}`,sessionId:session.id,kind:'topic_question',payload});
+      applyTopicChange('topic_question',payload);
+    }
+  })();
+  if(unreadable.length)log('info','inbox_unreadable_reading_items_expired',{session_id:session.id,expired:unreadable.length,question_ids:unreadable.map(question=>question.questionId)});
+  return {expired:unreadable.length};
 }
 function migrationDispatches(sessionId:number,root:string) {
   const dispatches:any[]=[];

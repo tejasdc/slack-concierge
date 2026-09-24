@@ -252,7 +252,18 @@ unsettled dispatch from this topic, else `idle`.
 `response`; waits on nobody); an `origin` (`declared` with `topics questions`, `marker`
 filed from a turn's end-of-turn marker, `recovered` by a migration); a `generation` (the
 Inbox attention generation it was raised at); and an `owner` — the session that asked and
-can retire it. `needsYou` counts decisions that are open or partially answered, **ready**,
+can retire it. **A reading item carries what he is to read**: `reads:[{messageId,text,at}]`
+on the question view and on the Inbox's Needs-attention entry, resolved by the owner from its
+own records and never copied — the posts the raising turn made into that thread, else the
+turn's closing text when the input it answered is in that thread; a `topics questions`
+declaration may name the messages itself (`reads:[messageId…]`, which must be in that
+thread). A reading item with nothing to read is refused at every door (`NOTHING_TO_READ`:
+filing a turn's outcome, declaring or revising a question, and `sessions outcome response`
+before any post into the thread, while a finished turn's unreadable `response` is recorded
+`done`), and any left from before the rule are `expired` at startup with that reason. Tejas met
+two on 2026-09-24 that showed a heading, a link to his own message and a failing Read: "I
+literally cannot read this … I want the answer I have to actually read".
+`needsYou` counts decisions that are open or partially answered, **ready**,
 blocking or not optional, and not `pendingReply`; `toRead` lists open reading items; both
 are on every topic summary, and `questions.open`, `questions-read open|reading|checking`
 and every question view's `waiting` come from the same two predicates, so no surface
