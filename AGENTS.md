@@ -444,7 +444,7 @@ authorization or a change to the default rapid-iteration policy.
   than none (his question, 2026-09-22: "I can't tell how important it is for us to install
   that"). thnkr.ing shows those sentences,
   and only those, while a Concierge update waits for his sessions to finish, so he knows
-  what is about to be applied; commit subjects are never shown to him. A note can be added
+  what is about to be applied; commit subjects are shown only when a change has no sentence. A note can be added
   to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
   <commit>` followed by `git push origin refs/notes/update`, and that note wins.
   `release-history.ts` reads them, never remembering one, so a note written or corrected while
@@ -455,8 +455,8 @@ authorization or a change to the default rapid-iteration policy.
   on 2026-09-22 that ask sat in the queue of a session whose running work was itself blocking the
   release, so he was shown a waiting update and nothing about it, twice in one evening (captures
   `d0781019`, `d5881417`). That mechanism is removed. **An update is never hidden from him**: a
-  change still missing its sentence is counted and shown as undescribed, which is ours to close,
-  not a reason for his notice to stay silent. A note pushed from another machine is not
+  change still missing its sentence is shown with its own commit summary instead, which is ours to
+  close, not a reason for his notice to stay silent. A note pushed from another machine is not
   readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
   an editor wraps a long sentence at the commit margin, and reading only its first line published
   half a sentence to him three times in one evening.

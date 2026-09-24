@@ -852,11 +852,10 @@ export class SessionOwner {
           told:job.told60?60:job.told30?30:null}))}];
     });
     const commit=run.desired_commit??run.candidate_commit;
-    // He is told what every change in the update does, never its commit subjects, and no change is
-    // exempt for being invisible on a screen; `undescribed` counts the ones still missing their
-    // sentence, which is ours to close and never a reason to hide the update (2026-09-23).
-    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],undescribed:0};
-    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes:holds.notes,undescribed:holds.undescribed};
+    // He is told what every change in the update does, including the commit subject when its
+    // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
+    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes:holds.notes,subjects:holds.subjects};
   }
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every
@@ -874,8 +873,8 @@ export class SessionOwner {
     // What has not installed is the whole gap between what is running and what should be, not
     // only the attempt that failed last: later commits queue up behind a failing update.
     const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
-    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],undescribed:0};
-    return {runId:latest.id,commit,notes:holds.notes,undescribed:holds.undescribed,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
+    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    return {runId:latest.id,commit,notes:holds.notes,subjects:holds.subjects,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
       repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
   }
   /**
@@ -895,7 +894,7 @@ export class SessionOwner {
     const observed=iso(desiredState.observed_at);
     if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
     const holds=pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
-    return {runId:null,commit:desired,notes:holds.notes,undescribed:holds.undescribed,
+    return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
       tries:0,since:observed,failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {

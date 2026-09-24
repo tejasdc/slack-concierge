@@ -89,8 +89,8 @@ function noteInMessage(message: string) {
 }
 
 /**
- * What a pending update holds: the sentence written for each of its changes, and how many have
- * none. **Every change gets one, including work he cannot see on a screen.** The old `internal`
+ * What a pending update holds: the sentences written for its changes, and the commit subjects
+ * for changes that have none. **Every change gets one, including work he cannot see on a screen.** The old `internal`
  * marker is retired and counts here as no description at all, because he threw it out
  * (2026-09-23): "I'm not asking for updates only in the visual aspects of it. I need to
  * understand, look, what the back end is going … every single thing that is, we are changing,
@@ -98,19 +98,22 @@ function noteInMessage(message: string) {
  */
 export function pendingUpdateSummary(previous: string | null, revision: string): {
   notes: string[];
-  undescribed: number;
+  subjects: string[];
 } {
-  if (!previous || previous === revision) return { notes: [], undescribed: 0 };
+  if (!previous || previous === revision) return { notes: [], subjects: [] };
   const notes: string[] = [];
-  let undescribed = 0;
+  const subjects: string[] = [];
   for (const change of changesBetween(previous, revision)) {
     const note = updateNote(change.revision);
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
-    if (!note || /^internal\.?$/i.test(note)) { undescribed += 1; continue; }
+    if (!note || /^internal\.?$/i.test(note)) {
+      if (!subjects.includes(change.title)) subjects.push(change.title);
+      continue;
+    }
     if (!notes.includes(note)) notes.push(note);
   }
-  return { notes, undescribed };
+  return { notes, subjects };
 }
 
 /** The notes for every change between the running release and a pending one, in order. */
