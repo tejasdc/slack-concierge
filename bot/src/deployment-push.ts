@@ -3,6 +3,7 @@ import {
   observeDeploymentDesiredCommit,
 } from "./deployment-state";
 import type { GitHubDeploymentPush } from "./github-deployment-webhook";
+import { ensureDeploymentSource } from "./deployment-source";
 
 interface GitResult {
   exitCode: number;
@@ -12,6 +13,7 @@ interface GitResult {
 
 export interface DeploymentPushServices {
   git(arguments_: string[]): GitResult;
+  ensureSource?(): void;
   getLastKnownGoodCommit(): string | null;
   observe(input: {
     desiredCommit: string;
@@ -43,6 +45,7 @@ function defaultServices(repositoryRoot: string): DeploymentPushServices {
   );
   return {
     git,
+    ensureSource: () => ensureDeploymentSource(repositoryRoot),
     getLastKnownGoodCommit: () => getLastKnownGoodRelease()?.git_commit || null,
     observe: (input) => observeDeploymentDesiredCommit({ ...input, isAncestor }),
   };
@@ -58,6 +61,7 @@ export async function acceptGitHubDeploymentPush(
   repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
   services = defaultServices(repositoryRoot),
 ) {
+  if (services.ensureSource) services.ensureSource();
   successful(services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");
   const desiredCommit = successful(services.git(["rev-parse", "origin/main"]), "git rev-parse origin/main");
   if (!/^[0-9a-f]{40}$/.test(desiredCommit)) throw new Error("origin/main did not resolve to a full Git commit");

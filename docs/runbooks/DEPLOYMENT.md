@@ -9,6 +9,14 @@ waits for active provider and capture work, fetches the recorded pushed commit
 into `/var/lib/slack-concierge-deployment/source`, installs the frozen dependency
 graph, activates an immutable candidate, restarts Concierge, and proves the
 exact runtime before success. Only the deployment system writes that source.
+Its readers create it when it is missing, with the same `git clone --no-checkout`
+of `CONCIERGE_DEPLOY_ORIGIN` that `deploy.sh` makes: the bot's minute-by-minute
+check for a new version (`ensureDeploymentSource` in `deployment-source.ts`) and the
+push handler, as well as `deploy.sh`. The bot's check runs first on a fresh box or
+after a restart before any update, and on September 24, 2026, when only `deploy.sh`
+created the folder, that check failed every minute (`automatic_deployment_request_failed`)
+and could never ask for the update that would have created it. A path that exists
+without its own Git repository is refused, never overwritten.
 The agent checkout under `/root/workspace` is never an update input. A terminally
 failed candidate stays blocked until a later signed push advances the desired
 state or the existing repair owner resolves it. There is no checkout cleanliness

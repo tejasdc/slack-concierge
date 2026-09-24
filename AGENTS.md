@@ -674,7 +674,10 @@ authorization or a change to the default rapid-iteration policy.
   stashed, checked for cleanliness or used by live router and hook launchers. Installed
   release bundles own those entrypoints. Shared-checkout preservation events are
   historical; the Codex worktree guard remains for concurrent agent writes. See the
-  [deployment runbook](docs/runbooks/DEPLOYMENT.md).
+  [deployment runbook](docs/runbooks/DEPLOYMENT.md). Every reader of that source creates it
+  when missing (`ensureDeploymentSource`), because the bot's check for a new version runs
+  before any deploy and, when only `deploy.sh` created it, could never request the update that
+  would (September 24, 2026). Never create or edit it by hand.
   Host-owned one-shot callers use the release's bundled router, notice and native
   continuation commands. Declare a new caller's bundle in the artifact file before
   pointing a host unit or script at it; the agent checkout is never a runtime path.

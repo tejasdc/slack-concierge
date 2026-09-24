@@ -35,6 +35,7 @@ import { deploymentReactionTargetsForCommitRange } from "./deployment-reaction-p
 import { commitMainHas } from "./release-history";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
+import { ensureDeploymentSource } from "./deployment-source";
 import { slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
 import { isTransientSlackError, slackErrorCode } from "./slack-errors";
@@ -149,6 +150,7 @@ export interface DeploymentWorkerServices {
 function installableDesiredCommit(): string | null {
   const desired = getDeploymentDesiredState();
   if (!desired) return null;
+  ensureDeploymentSource();
   const main = commitMainHas(desired.desired_commit);
   if (!main || !main.rewritten) return desired.desired_commit;
   const adopted = adoptRewrittenDesiredCommit({ head: main.head, rewrittenFrom: desired.desired_commit });
