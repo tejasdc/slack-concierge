@@ -92,6 +92,21 @@ from ever stranding deployments:
   compares a release with the current code's list, so later code that adds or removes a file
   cannot invalidate a release that was correct when built. The manifest cannot change without
   changing its digest, which is the directory's name.
+- **Every declared destination lives under `control/`.** The declaration's own check refuses
+  anything else, and the *running* control applies that check to the candidate before building
+  it. So a destination outside `control/` is refused by the very code that would have to
+  install a control able to accept it, and no later push can get past it. Router and hook
+  bundles therefore install at `control/bot/scripts/*.js`, and consumers use
+  `current/control/bot` as their bot directory (`systemd/router-actions.sh`,
+  `provider-owner-environment.ts`, `install-codex-stop-hook.sh --release`, the service failure
+  notice, remote-box's callers).
+
+Incident, September 24, 2026: 8f2b35c declared those bundles at `bot/scripts/*.js`. The
+installed control (9f188fa) refused every candidate from that commit on with "Candidate
+artifact declaration controlBundles entry bot/scripts/router-sessions.js is not a safe release
+path.", captured inside a shell variable that discarded it, so three updates failed and repair
+parked without the message. The new control's own check would have refused its own list too.
+Moving the destinations under `control/` fixed it with an ordinary push.
 
 Incident, September 21, 2026: a commit added `control/parakeet-server.cpp` to the list. The
 running control built that commit's release from its older list, so the release lacked the

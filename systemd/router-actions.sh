@@ -26,7 +26,7 @@
 # Posting verbs return JSON with the exact message ts and Slack permalink.
 # React returns JSON identifying the exact message and both reaction outcomes.
 # All posting verbs shell into the SAME router-post.ts script under
-# the installed release's bot/scripts/, so all message-visible text
+# the installed release's control/bot/scripts/, so all message-visible text
 # goes through the same `toMrkdwn` converter the bot itself uses. Text that
 # Slack would split is uploaded once as the exact `routed-request.txt` body,
 # with a converted short comment. Any format regression (** headers, [x](y)
@@ -39,7 +39,7 @@ export CONCIERGE_STATE_DB="$STATE_DB"
 if [ "$(uname -s)" = Darwin ]; then
   BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-$HOME/workspace/slack-concierge/bot}
 else
-  BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/var/lib/slack-concierge-deployment/current/bot}
+  BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/var/lib/slack-concierge-deployment/current/control/bot}
 fi
 ROUTER_SUFFIX=js
 if [ ! -f "$BOT_DIR/scripts/router-sessions.js" ]; then ROUTER_SUFFIX=ts; fi

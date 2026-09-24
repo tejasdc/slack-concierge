@@ -661,6 +661,11 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
+  Every declared destination stays under `control/` (bundles for agents' router and hooks
+  live at `control/bot/scripts/`): the installed control checks the candidate's list before it
+  builds anything, so a destination it refuses stops every later update. That happened to
+  three updates on September 24, 2026; see "Artifact contents" in
+  [deployment repair](docs/architecture/DEPLOYMENT-REPAIR.md).
 - Deployment builds use only the pushed desired commit in the deployment-owned source
   under `/var/lib/slack-concierge-deployment/source`; the agent checkout is not pulled,
   stashed, checked for cleanliness or used by live router and hook launchers. Installed

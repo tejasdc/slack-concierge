@@ -10,7 +10,7 @@ function routerBotDirectory(environment: NodeJS.ProcessEnv, moduleDirectory: str
   // the writable developer checkout while serving an installed release.
   const configuredBot = environment.CONCIERGE_ROUTER_BOT_DIR
     || (installedProduction && environment.CONCIERGE_RELEASE_MANIFEST
-      ? join(environment.CONCIERGE_DEPLOYMENT_RELEASE_ROOT || "/var/lib/slack-concierge-deployment", "current", "bot")
+      ? join(environment.CONCIERGE_DEPLOYMENT_RELEASE_ROOT || "/var/lib/slack-concierge-deployment", "current", "control", "bot")
       : null);
   if (!configuredBot || !(existsSync(join(configuredBot, "scripts/router-sessions.js"))
     || existsSync(join(configuredBot, "scripts/router-sessions.ts")))) {

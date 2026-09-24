@@ -30,8 +30,8 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/bot/scripts/history-guard.js" ] || { echo "No release hooks under: $release" >&2; exit 2; }
-  bot="$release/bot"
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] || { echo "No release hooks under: $release" >&2; exit 2; }
+  bot="$release/control/bot"
   suffix=js
 else
   [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] || { echo "No Concierge hooks under: $bot" >&2; exit 2; }
