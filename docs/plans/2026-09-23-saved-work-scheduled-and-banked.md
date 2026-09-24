@@ -379,7 +379,11 @@ never replays the stopped input or an uncertain effect."*
 
 `concierge:3635` confirmed the shape on 2026-09-23 (request `991c00d6`), and corrected the
 premise this was nearly built on: there is **no** mechanism anywhere by which a resumed turn
-checks what it already did, and none is planned. Concierge only re-runs an input the provider
+checks what it already did. One is *queued* for them — a request to auto-resume turns that die
+on provider errors, held behind another, so it had not reached them when they answered — and it
+covers turns that **died**, where this design covers a run **stopped on purpose at a boundary**.
+The two do not conflict, and when that request reaches them it is their call whether to reuse
+the continuation input below. Today, Concierge only re-runs an input the provider
 *provably never processed* — no assistant output, no tool call, judged from the turn's own
 record. Nothing keys on external effects at all: a git push or a release activation is recorded
 nowhere a resume could consult. A yielded banked run that did real work falls squarely under
