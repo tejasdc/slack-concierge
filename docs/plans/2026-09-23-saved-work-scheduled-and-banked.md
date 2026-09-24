@@ -404,6 +404,26 @@ this workspace are already idempotent under a stable identity — pushing commit
 remote is a no-op, and a release activation is keyed by commit — and the continuation says where
 it stopped rather than asking for the work again.
 
+**One hold, one meaning — `concierge:3635` took this generally.** Wiring the call surfaced a
+collision worth recording because it was invisible: `queueTurnContinuation` marks its new turn
+`retryable` with the wait time, and `releaseScheduledProviderRetries` moves *every* queued
+`retryable` turn with a future instant to now when an account is switched or the usage cache is
+cleared. A continuation waiting until 3am would therefore have run in the middle of his
+afternoon, with nothing logged and nothing failing.
+
+Rather than patch it per caller, they are giving every queued hold a single meaning in
+`docs/plans/2026-09-24-waiting-and-retrying.md`: `backoff` (a transient retry, and the *only*
+thing an account switch or usage clear releases early), `auth_wait`, `usage_wait`, and
+**`chosen_time`** — a time someone chose, released by that time alone. A boundary continuation
+carrying `waitUntilMs` becomes `chosen_time`.
+
+That is strictly better than this design's own rule, and supersedes it: "saved work never
+carries the retry mark" was this design protecting itself from a field with two meanings;
+`chosen_time` removes the second meaning for everyone. **Until it ships**, a boundary
+continuation here is converted to a saved turn with its class cleared immediately after the
+call. **When it ships, that conversion is deleted** — otherwise two owners hold the same timing,
+which is the duplication this repository refuses.
+
 **The entry point exists, and it constrains how a yield must end.** `concierge:3635` shipped
 `queueTurnContinuation(sourceTurnId, {kind:'boundary', detail, waitUntilMs?})`
 (`bot/src/session-inputs.ts`, `a061743`). Three constraints come with it, and the second already
