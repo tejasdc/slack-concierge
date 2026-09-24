@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { log } from "./log";
-import { nextRetry } from "./retry";
+import { nextRetry } from "./retry-core";
 import { RETRY_POLICY_FOR_SITE } from "./retry-policies";
 
 export type RetrySite = keyof typeof RETRY_POLICY_FOR_SITE;

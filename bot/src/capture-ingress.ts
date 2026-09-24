@@ -17,7 +17,7 @@ import { createCaptureEvent, getCaptureEvent, type CaptureEventRow } from "./cap
 import { captureAttachmentSnapshot, retainedCaptureAttachments, type CaptureAttachment } from "./capture-attachments";
 import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { errorFields, log } from "./log";
-import { retryTransientDatabaseOperation } from "./durable-notice-worker";
+import { retryTransientDatabaseOperation } from "./database-retry";
 import { DEPLOYMENT_EVENT_PATH } from "./deployment-event-ingress";
 import { createGrafanaWebhookHandler, grafanaBearer, grafanaEnvelope, GRAFANA_ALERT_PATH } from "./grafana-webhook";
 import {

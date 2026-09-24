@@ -487,16 +487,20 @@ deployment ownership. Journald remains the source for the exact SQLite error and
 stage; a repair commit alone is not activation evidence.
 
 Incident `43d9f51c-b949-459f-b759-29d75a0b6128` failed while restarting capture
-ingress for candidate `096797d8`. The new capture retry path imported the
-application retry-breaker adapter, which opens the Concierge ledger at module load.
+ingress for candidates `096797d8` and `a93231b`. The capture executable imported a
+database-retry helper from the application notice worker. That worker imports the
+application retry breaker and therefore opens the Concierge ledger at module load.
 The isolated capture service intentionally has no `CONCIERGE_STATE_DIR`, so its
-candidate bundle exited before listening. Restoring the application release pointer
-could not restore health because capture ingress is installed separately from that
-pointer. The retry-breaker engine is now storage-independent: the application adapter
-uses the Concierge ledger and publishes Inbox notices, while capture delivery binds
-the same retry policy to its capture-owned database without gaining application-ledger
-access. Journald at `2026-09-24T04:01:29-04:00` retained the missing-state-path error;
-the external controller still owns restart and health proof.
+candidate bundle exited before listening. The first repair separated capture delivery's
+breaker storage, but capture delivery is part of the main application and was not the
+failing executable; the intake executable's notice-worker dependency remained, and
+`a93231b` failed with the same error. Restoring the application release pointer could
+not restore health because capture ingress is installed separately from that pointer.
+Retry timing and bounded database retries are now storage-neutral primitives. Capture
+intake imports only those primitives; the application adapter still adds its durable
+Inbox notice and ledger-backed breaker. Journald at `2026-09-24T04:01:29-04:00` and
+`04:07:14-04:00` retained the identical missing-state-path error. The external
+controller still owns restart and health proof.
 
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
