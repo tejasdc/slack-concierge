@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { log } from "./log";
 
 // Interactive provider logins on this headless host print an authorization URL
 // and then wait on stdin for the code the provider shows after approval. The
@@ -6,11 +7,22 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 // login and the follow-up command that supplies the code, so the whole OAuth
 // round trip can be completed from Slack without an SSH session.
 
+/**
+ * Why a sign-in ended the way it did, in a word that can be logged and shown.
+ *
+ * Never the URL, the code or the output: those carry a one-time credential. The reason is
+ * a fixed token chosen from this list, so it is safe everywhere and identical everywhere.
+ */
+export type AuthLoginFailure =
+  | "no_url_before_timeout"   // the CLI ran but never printed a link we could read
+  | "cli_exited"              // the CLI gave up or refused before presenting anything
+  | "superseded";             // another sign-in for the same provider replaced this one
+
 export type AuthLoginStartResult =
   | { status: "awaiting_code"; url: string }
   | { status: "awaiting_approval"; url: string; userCode: string | null }
   | { status: "completed"; output: string }
-  | { status: "failed"; output: string };
+  | { status: "failed"; output: string; reason: AuthLoginFailure };
 
 /**
  * How a provider's CLI finishes a login.
@@ -160,19 +172,19 @@ export class ProviderLoginManager {
 
     // The login may have been superseded by a concurrent start while awaiting.
     if (this.pending.get(provider) !== login) {
-      return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
+      return this.record(provider, flow, { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "superseded" });
     }
 
     const url = extractLoginUrl(login.output);
     if (exitCode !== undefined) {
       this.pending.delete(provider);
-      return exitCode === 0
+      return this.record(provider, flow, exitCode === 0
         ? { status: "completed", output: stripTerminalEscapes(login.output).trim() }
-        : { status: "failed", output: stripTerminalEscapes(login.output).trim() };
+        : { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "cli_exited" }, exitCode);
     }
     if (!url) {
       await this.abandon(provider);
-      return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
+      return this.record(provider, flow, { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "no_url_before_timeout" });
     }
     login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
     login.expiry = setTimeout(() => { void this.abandon(provider); }, this.options.pendingTtlMs ?? 10 * 60_000);
@@ -184,14 +196,43 @@ export class ProviderLoginManager {
       if (login.expiry) clearTimeout(login.expiry);
       if (code === 0) this.options.onUnattendedCompletion?.(provider);
     });
-    return flow === "device"
+    return this.record(provider, flow, flow === "device"
       ? { status: "awaiting_approval", url, userCode: extractUserCode(login.output) }
-      : { status: "awaiting_code", url };
+      : { status: "awaiting_code", url });
+  }
+
+  /**
+   * Every sign-in leaves a record of how it ended.
+   *
+   * It left none until 2026-09-24, and that is why this has been fixed twice and stayed
+   * broken: the only trace of an attempt was a request line the owner writes solely when a
+   * request is slow, so a fast failure was invisible on both machines, and "none of my tries
+   * have been successful" could not be answered from anything but guesses. What is recorded
+   * is the shape of the outcome — never the link, the code or the CLI's output, each of
+   * which carries a one-time credential.
+   */
+  private record(provider: string, flow: AuthLoginFlow, result: AuthLoginStartResult, exitCode?: number | null): AuthLoginStartResult {
+    log(result.status === "failed" ? "warn" : "info", "provider_signin_attempt", {
+      provider,
+      flow,
+      outcome: result.status,
+      reason: result.status === "failed" ? result.reason : null,
+      url_presented: result.status === "awaiting_code" || result.status === "awaiting_approval",
+      user_code_presented: result.status === "awaiting_approval" ? !!result.userCode : null,
+      exit_code: exitCode ?? null,
+    });
+    return result;
   }
 
   async complete(provider: string, code: string): Promise<AuthLoginCompleteResult> {
     const login = this.pending.get(provider);
-    if (!login || login.state !== "awaiting_code") return { status: "no_pending_login" };
+    if (!login || login.state !== "awaiting_code") {
+      // The commonest way this happens is a Concierge update between his opening the link
+      // and his pasting the code: the waiting CLI lives in this process, so a restart takes
+      // it with it. He is not told his code was wrong, because it was not.
+      log("warn", "provider_signin_code_had_nowhere_to_go", { provider, had_login: !!login, state: login?.state ?? null });
+      return { status: "no_pending_login" };
+    }
     this.pending.delete(provider);
     if (login.expiry) clearTimeout(login.expiry);
     try {
@@ -207,8 +248,15 @@ export class ProviderLoginManager {
     ]);
     if (exitCode === "timeout") {
       await this.killChild(login);
+      log("warn", "provider_signin_completed", { provider, outcome: "failed", reason: "cli_never_settled" });
       return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
     }
+    log(exitCode === 0 ? "info" : "warn", "provider_signin_completed", {
+      provider,
+      outcome: exitCode === 0 ? "completed" : "failed",
+      reason: exitCode === 0 ? null : "cli_rejected_code",
+      exit_code: exitCode,
+    });
     return exitCode === 0
       ? { status: "completed", output: stripTerminalEscapes(login.output).trim() }
       : { status: "failed", output: stripTerminalEscapes(login.output).trim() };
