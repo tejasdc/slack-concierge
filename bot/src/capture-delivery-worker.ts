@@ -16,14 +16,15 @@ import {
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
-import type { CaptureEventRow, CaptureSource } from "./capture-state";
+import { captureDb, type CaptureEventRow, type CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
-import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
+import { createRetryBreaker } from "./retry-breaker-core";
 import { withRetry } from "./retry";
 import { RETRY_POLICIES } from "./retry-policies";
 
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const { clearRetryBreaker, recordRetryFailure } = createRetryBreaker(captureDb);
 export const JOURNALMAXX_INBOX_SINK = "journalmaxx-inbox";
 export const PRODUCTION_JOURNALMAXX_INBOX = "/root/workspace/vault/inbox";
 export const THINKERING_INBOX_SINK = "thinkering-inbox";
