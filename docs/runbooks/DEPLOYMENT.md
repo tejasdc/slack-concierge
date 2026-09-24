@@ -510,6 +510,16 @@ Inbox notice and ledger-backed breaker. Journald at `2026-09-24T04:01:29-04:00` 
 `04:07:14-04:00` retained the identical missing-state-path error. The external
 controller still owns restart and health proof.
 
+Incident `46e03e3f-ecc4-4f38-a2c9-4f2d8d21e77b` failed before the capture bundle or
+route configuration was installed. The release-boundary retry lint correctly saw the
+storage-neutral breaker's `nextRetry` call, but its allowed typed-policy derivation was
+coupled to the module's former filename. The preceding capture repair had renamed that
+module to `retry-breaker-core.ts` while preserving its canonical
+`RETRY_POLICY_FOR_SITE` lookup, so the lint rejected a bounded named policy at the next
+deployment. The lint now recognizes the source-level policy derivation and shorthand
+argument instead of a filename. The candidate's deployment-source bootstrap change did
+not touch this path; the detached controller still owns retry, restart, and health proof.
+
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
 readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched

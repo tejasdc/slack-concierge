@@ -134,7 +134,9 @@ half. It came after the design below and is the authority where the two differ. 
   primitive and policies are exported for other packages to import. Refuse: a lint rule, run with
   the build and not as a test, rejects a raw `setTimeout` inside `catch`, a `status='pending'`
   reset re-read by a wake loop, and `queueMicrotask`-based retry outside `retry.ts`, each exception
-  named with its reason. **Deliberate-break proof**: add a call site with no policy and an unbounded
+  named with its reason. A wrapper that resolves a typed site through `RETRY_POLICY_FOR_SITE`
+  is recognized from that source-level assignment and the policy passed to `nextRetry`, not from
+  the wrapper's filename. **Deliberate-break proof**: add a call site with no policy and an unbounded
   policy, show the build or lint rejecting both in `tmp/reviews/retry-guard-proof.md`, then remove
   them.
 - **Across repositories.** TypeScript cannot import across the three repositories without a

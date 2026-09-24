@@ -34,9 +34,10 @@ function hasRetryWithoutNamedPolicy(source: string, name: string): boolean {
     }
     const call = source.slice(start, end);
     const named = /\bpolicy\s*:\s*(?:RETRY_POLICIES\.[A-Za-z]+\b|RETRY_POLICY_FOR_SITE\[)/.test(call);
-    // The durable breaker resolves its typed site through RETRY_POLICY_FOR_SITE before
-    // calling nextRetry; the variable is derived from that map in the same module.
-    const derived = name === 'src/retry-breaker.ts' && /\bpolicy\s*,/.test(call);
+    // A wrapper may derive its typed policy from the canonical site map before calling
+    // nextRetry. Recognize that data flow instead of coupling the exception to a filename.
+    const derived = /\bpolicy\s*,/.test(call)
+      && /\bconst\s+policy\s*=\s*RETRY_POLICY_FOR_SITE\s*\[[^\]]+\]\s*;/.test(source.slice(0, match.index));
     if (!named && !derived) return true;
   }
   return false;
