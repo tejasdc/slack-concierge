@@ -260,8 +260,10 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     const source=db.query(`SELECT id,session_id,status,accepted_input_id,native_run_id,ended_at,stop_requested_at
       FROM turns WHERE id=?`).get(sourceTurnId) as {id:number;session_id:number;status:string;accepted_input_id:string|null;
         native_run_id:string|null;ended_at:string|null;stop_requested_at:string|null}|null;
+    // A person's Stop is stop_requested_at, never the status: the system cancelling its own
+    // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
-      || (reason.kind==='provider_refused'?source.status!=='error':!['done','error'].includes(source.status)))return null;
+      || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
     const session=getSessionById(source.session_id);
     if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
     if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND id>? LIMIT 1`).get(source.session_id,sourceTurnId))return null;

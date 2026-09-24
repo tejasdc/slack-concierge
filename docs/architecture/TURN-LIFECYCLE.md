@@ -28,7 +28,11 @@ them.
 A deliberate Stop never creates a continuation. Pause, archive or a later human or agent
 input cancels one still queued. `queueTurnContinuation` also accepts `boundary`, distinct
 from `provider_refused`; the native deployment safeguard uses it when intentionally
-yielded work is ready to resume, with new guidance rather than a replay. At startup a
+yielded work is ready to resume, with new guidance rather than a replay. A boundary
+source may have ended `done`, `error` or `cancelled`: work the system cancels at a
+boundary it chose (an allowance or deployment yield) keeps its honest `cancelled`
+status. A person's Stop is recognized by `stop_requested_at`, which only the Stop
+routes set, never by status, so it still never continues. At startup a
 single 24-hour pass offers this same continuation to a session whose latest turn ended
 in a recognized provider refusal, had a retained assistant or tool message, and has no
 Stop, newer input or queued work. This excludes a refusal before the provider did work,
