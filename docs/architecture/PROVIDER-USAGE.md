@@ -105,6 +105,34 @@ the Slack-enabled runtime in `index.ts`, which also polls every 60 seconds, and 
 native-only runtime in `session-runtime.ts`, which has no poll at all and before this
 change could leave a scheduled retry waiting indefinitely on a quiet machine.
 
+## Sign-in holds
+
+An authentication refusal is held without a guessed reset time when the provider confirmed
+the turn ended, and the adapter observed no assistant content or tool use. The existing
+dispatch safety checks still exclude unsafe steering, artifact activity and ambiguous
+admission. The input remains queued at the head of its own session with its original
+identity; later inputs cannot pass it. Its receipt says the account cannot sign in and
+will resume automatically.
+
+The existing credential activation path releases these holds only after the selected
+account answers a small real request. A watcher handles credential file changes made
+outside Concierge, checks a hold left from before an owner restart, and revisits held
+work periodically when a credential lives in macOS Keychain or Codex activation was
+deferred behind running work. Codex activation
+also restarts its App Server when no turns are running, because that server keeps its
+credential in memory. A failed activation leaves the queue untouched. Claude's macOS
+Keychain login uses the existing sign-in activation path and periodic held-work check
+rather than a credential file.
+
+The first held input of an episode publishes one `provider_outage` event with an `auth`
+payload: account, machine and number of held inputs. Thinkering's existing notification
+courier pushes it without a provider turn. `provider_auth_hold_notified` and
+`provider_auth_hold_activation_failed` give the operator the hold and recovery trail
+without logging credentials or request text. This does not replay turns that reached
+assistant output or tools. The September 23 expired-sign-in incident left six Inbox
+inputs terminal despite Claude only writing their input to its transcript; those six
+are handled separately by the Inbox and are not migrated or replayed by this change.
+
 ## Cost, persistence and visibility
 
 There is no poller, probe loop, worker or idle work. Lookup is one small existing-ledger

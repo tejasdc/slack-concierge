@@ -1127,6 +1127,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         message: turn.error?.message || `Codex turn ended with status ${turn.status}.`,
         terminalConfirmed: true,
         toolsUsed,
+        assistantOutput: messageParts.some(part => part.trim().length > 0),
         providerSessionId: activeThreadId,
         providerTurnId: activeTurnId,
       }));

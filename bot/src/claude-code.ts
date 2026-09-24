@@ -180,6 +180,7 @@ export interface ClaudeCodeParseResult {
   model?: string;
   sessionUUID: string | null;
   toolsUsed: string[];
+  assistantOutput: boolean;
   isError: boolean;
   durationMs?: number;
   /** The outcome marker the latest response ended with, removed from `text`. */
@@ -255,7 +256,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   if (events.length === 0 && stdout.trim()) {
     sessionUUID = sessionUUID || extractUuid(stdout);
   }
-  return { text, sessionUUID, toolsUsed, isError, ...(turnOutcome ? { turnOutcome } : {}), ...(model ? { model } : {}), ...(durationMs !== undefined ? { durationMs } : {}) };
+  return { text, sessionUUID, toolsUsed, assistantOutput: messageParts.some(part => part.trim().length > 0), isError, ...(turnOutcome ? { turnOutcome } : {}), ...(model ? { model } : {}), ...(durationMs !== undefined ? { durationMs } : {}) };
 }
 
 function parseClaudeEvents(stdout: string): JsonValue[] {
@@ -1093,6 +1094,7 @@ export async function runClaudeCodeTurn(input: {
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,
       toolsUsed: parsed.toolsUsed,
+      assistantOutput: parsed.assistantOutput,
       providerSessionId: parsed.sessionUUID,
       ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
     });

@@ -24,6 +24,8 @@ export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;
   readonly toolsUsed: string[];
+  /** Whether the provider produced assistant content, even if its turn later failed. */
+  readonly assistantOutput: boolean;
   readonly providerSessionId: string | null;
   readonly providerTurnId: string | null;
   /** Retry at once: he chose another model for a message stuck in a provider outage. */
@@ -42,6 +44,7 @@ export class ProviderDispatchError extends Error {
     failureClass?: ProviderDispatchFailureClass;
     terminalConfirmed: boolean;
     toolsUsed?: string[];
+    assistantOutput?: boolean;
     providerSessionId?: string | null;
     providerTurnId?: string | null;
     immediateRetry?: boolean;
@@ -52,6 +55,7 @@ export class ProviderDispatchError extends Error {
     this.failureClass = input.failureClass || classifyProviderDispatchFailure(input.message);
     this.terminalConfirmed = input.terminalConfirmed;
     this.toolsUsed = input.toolsUsed || [];
+    this.assistantOutput = input.assistantOutput === true;
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;

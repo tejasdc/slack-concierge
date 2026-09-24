@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
-import { db } from "./state";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { watchFile, unwatchFile } from "node:fs";
+import { authHeldInputCount, db, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { releaseUsageHeldWork } from "./provider-usage";
-import type { ProviderKey } from "./provider-accounts";
+import { credentialPath, type ProviderKey } from "./provider-accounts";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -16,7 +19,8 @@ import type { ProviderKey } from "./provider-accounts";
 
 export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
 
-export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim() || "/root/.codex/packages/standalone/current/codex";
+export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
+  || (process.platform==='darwin'?join(homedir(),'.local','bin','codex'):'/root/.codex/packages/standalone/current/codex');
 
 /**
  * Codex turns still executing. Restarting under them would cut work that is
@@ -100,6 +104,14 @@ async function claudeCredentialsAnswer(): Promise<boolean> {
   return ok;
 }
 
+async function codexCredentialsAnswer():Promise<boolean>{
+  const probe=await run(MANAGED_CODEX,['-s','read-only','-a','never','exec','--skip-git-repo-check',
+    '-m','gpt-6-luna','Reply with the single word OK.'],90_000);
+  const ok=probe.code===0 && /\bOK\b/.test(probe.output);
+  log('info','provider_activation_probed',{provider:'codex',ok});
+  return ok;
+}
+
 /**
  * Make the credentials currently on disk the ones the provider actually uses.
  * Safe to call after either a fresh login or a profile switch.
@@ -122,10 +134,44 @@ export async function activateCredentials(provider: ProviderKey): Promise<Activa
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
     }
     releaseUsageHeldWork(provider);
+    releaseAuthHeldWork(provider);
     return { status: "applied", detail: "Done. This machine is using the new account now." };
   }
   const report = await activateCodex();
   // Codex only actually changes account when its App Server comes back on the new token.
-  if (report.status === "applied") releaseUsageHeldWork(provider);
+  if (report.status === "applied") {
+    const held=authHeldInputCount(provider)>0;
+    if(held && !await codexCredentialsAnswer())return {status:'failed',
+      detail:'Codex restarted, but this account did not answer. Your waiting messages remain held.'};
+    releaseUsageHeldWork(provider);
+    if(held)releaseAuthHeldWork(provider);
+  }
   return report;
+}
+
+/** A login done outside Concierge still releases held inputs once its credentials answer. */
+export function watchAuthHeldCredentials(): () => void {
+  const providers:ProviderKey[]=['claude-code','codex'];
+  let stopped=false;
+  const checking=new Set<ProviderKey>();
+  const check=(provider:ProviderKey)=>{
+    if(stopped || checking.has(provider) || !authHeldInputCount(provider))return;
+    checking.add(provider);
+    void activateCredentials(provider).catch(error=>log('error','provider_auth_hold_activation_failed',{
+      provider,error:error instanceof Error?error.message:String(error)})).finally(()=>checking.delete(provider));
+  };
+  for(const provider of providers){
+    const path=credentialPath(provider);
+    watchFile(path,{interval:5_000},(current,previous)=>{
+      if(current.mtimeMs!==previous.mtimeMs || current.size!==previous.size)check(provider);
+    });
+    // Covers a credential updated while the owner was stopped. A failed probe retains
+    // the hold; it never retries the original provider turn on faith in file contents.
+    check(provider);
+  }
+  // Also notices macOS Keychain sign-in, which has no credential file to watch, and
+  // retries a deferred Codex activation after other running turns finish.
+  const interval=setInterval(()=>{for(const provider of providers)check(provider);},180_000);
+  interval.unref?.();
+  return ()=>{stopped=true;clearInterval(interval);for(const provider of providers)unwatchFile(credentialPath(provider));};
 }

@@ -3674,6 +3674,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
   dispatchAttempt: number;
   error: string;
   nextAttemptMs: number;
+  authWait?: boolean;
 }): boolean {
   return db.transaction(() => {
     const boundary = getRunningTurnDispatchBoundary(
@@ -3695,7 +3696,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
     const changed = db.query(`
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
-          dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
+          dispatch_failure_class=?, dispatch_next_attempt_ms=?,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -3703,7 +3704,8 @@ export function retryRunningTurnAfterProviderFailure(input: {
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
-      input.nextAttemptMs,
+      input.authWait ? 'auth_wait' : 'retryable',
+      input.authWait ? null : input.nextAttemptMs,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
       input.ownerInstanceId,
@@ -4851,6 +4853,22 @@ export function releaseScheduledProviderRetries(providerId: ProviderId): number 
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
 }
 
+/** Release only the provider inputs that were refused before any work for lack of sign-in. */
+export function releaseAuthHeldWork(providerId: ProviderId): number {
+  const released = db.query(`UPDATE turns SET dispatch_failure_class='retryable', dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='auth_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  if (released) executionChanged();
+  return released;
+}
+
+export function authHeldInputCount(providerId: ProviderId): number {
+  const row = db.query(`SELECT count(*) AS held FROM turns
+    WHERE status='queued' AND dispatch_failure_class='auth_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).get(providerId) as {held:number};
+  return row.held;
+}
+
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     settleTurnDependencies();
@@ -4864,6 +4882,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+          AND COALESCE(turn.dispatch_failure_class,'')<>'auth_wait'
           AND turn.session_id NOT IN (SELECT value FROM json_each(?))
           AND NOT EXISTS (
             SELECT 1 FROM turns older

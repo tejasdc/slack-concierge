@@ -541,6 +541,12 @@ authorization or a change to the default rapid-iteration policy.
   the native-only runtime has no periodic poll, so without that timer a wait with a known
   end has nobody to come back for it. A refusal with no stated reset stays terminal;
   never guess a clearance time. Never widen this to an acknowledged or ambiguous failure.
+- A sign-in refusal before any assistant output or tool work is also a wait, even when the
+  provider cannot say when the credential will recover. The exact input stays at the head
+  of its own queue and resumes only after the selected account answers following sign-in,
+  activation or a credential file change. A provider-free outage event tells Tejas once
+  which account and machine stopped and how much work is waiting. Ambiguous or worked-on
+  turns remain outside this path. See [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - Work that stops must say so on a path that does not depend on what broke. A usage hold
   publishes one `provider_outage` event per episode (`provider-usage-notice.ts`) naming
   the reset, how much is waiting and which other accounts have room; Thinkering pushes it

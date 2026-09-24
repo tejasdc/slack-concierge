@@ -106,7 +106,7 @@ import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
-import { noticeUsageHold, useResetIfWorkStopped } from "./provider-usage-notice";
+import { noticeUsageHold, noticeAuthHold, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
@@ -998,8 +998,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch { /* every account is spent; keep the existing usage hold */ }
       }
       const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
+      const authWait = replaySafe && input.providerId !== 'chatgpt'
+        && isRefreshableAuthFailure(message)
+        && !structuredFailure?.assistantOutput
+        && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
       const retryable = replaySafe
-        && (structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+        && (authWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
       const ambiguous = !replaySafe;
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
@@ -1015,6 +1019,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
             error: message,
+            authWait,
             nextAttemptMs: switchClaudeAccount?Date.now():heldUntilMs
               ?? Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
           })
@@ -1087,13 +1092,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
+      if (authWait) noticeAuthHold({provider: input.providerId as 'codex'|'claude-code',
+        model: input.model ?? null, turnId: input.turnId,
+        account: input.providerId==='claude-code'?runningClaudeAccount:null}, recordSessionEvent);
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),
         turn_id: input.turnId,
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? "retryable"
+          ? authWait ? "auth_wait" : "retryable"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",

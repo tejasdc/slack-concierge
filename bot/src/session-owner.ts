@@ -111,6 +111,9 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status,outageOfferForTurn(turn.id)):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
       clearsAt:next,automaticRetry:true};
   }
+  if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',
+    message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',
+    clearsAt:null,automaticRetry:true};
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};

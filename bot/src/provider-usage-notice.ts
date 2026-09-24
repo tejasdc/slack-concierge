@@ -1,4 +1,4 @@
-import { db, getSessionById } from "./state";
+import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { currentAccount } from "./provider-accounts";
 import { modelLabel } from "./provider-outage";
@@ -8,6 +8,7 @@ import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
+import { hostname } from "node:os";
 
 /** A day, in the milliseconds the expiry arithmetic below counts in. */
 const DAY_MS = 24 * 60 * 60_000;
@@ -119,6 +120,36 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
   } catch (error) {
     log("error", "provider_usage_hold_notice_failed", { provider: input.provider, turn_id: input.turnId,
       error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** The provider never worked on this input; tell Tejas through the same provider-free courier. */
+export function noticeAuthHold(input: {provider: UsageProvider; model:string|null; turnId:number; account:string|null}, record:RecordEvent):void {
+  const turn = db.query('SELECT session_id, accepted_input_id FROM turns WHERE id=?')
+    .get(input.turnId) as {session_id:number; accepted_input_id:string|null}|null;
+  if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
+  const account=input.account??currentAccount(input.provider)?.label??'the signed-in account';
+  const machine=hostname();
+  const head=db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
+    .get(input.provider) as {id:number|null};
+  const episode=`provider-auth-hold:${input.provider}:${head.id??input.turnId}`;
+  // The oldest held turn names the episode. Once authentication works, the queue
+  // releases it and a later refusal has a new oldest turn and a new notice.
+  const previous=db.query(`SELECT 1 FROM session_owner_events WHERE event_id=?`).get(episode);
+  if(previous)return;
+  const waiting=db.query(`SELECT count(*) AS held FROM turns JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND sessions.provider_id=?`).get(input.provider) as {held:number};
+  const heldInputs=Math.max(authHeldInputCount(input.provider),waiting.held);
+  try {
+    record({eventId:episode,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId:input.turnId,
+      kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
+        model:input.model,modelLabel:modelLabel(input.model),status:null,incident:null,alternatives:[],
+        auth:{account,machine,heldInputs}}});
+    log('warn','provider_auth_hold_notified',{provider:input.provider,machine,held_inputs:heldInputs});
+  } catch(error) {
+    log('error','provider_auth_hold_notice_failed',{provider:input.provider,turn_id:input.turnId,
+      error:error instanceof Error?error.message:String(error)});
   }
 }
 
