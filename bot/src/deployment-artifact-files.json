@@ -11,6 +11,8 @@
     "bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
     "bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
     "bot/scripts/service-notice.js": "bot/scripts/service-notice.ts",
+    "bot/scripts/native-pipeline-continuation.js": "bot/scripts/native-pipeline-continuation.ts",
+    "bot/scripts/key-change-notice.js": "bot/scripts/key-change-notice.ts",
     "control/deploy-state.js": "bot/scripts/deploy-state.ts",
     "control/release-manager.js": "bot/scripts/release-manager.ts",
     "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",

@@ -624,6 +624,9 @@ authorization or a change to the default rapid-iteration policy.
   release bundles own those entrypoints. Shared-checkout preservation events are
   historical; the Codex worktree guard remains for concurrent agent writes. See the
   [deployment runbook](docs/runbooks/DEPLOYMENT.md).
+  Host-owned one-shot callers use the release's bundled router, notice and native
+  continuation commands. Declare a new caller's bundle in the artifact file before
+  pointing a host unit or script at it; the agent checkout is never a runtime path.
 - **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
   amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
   commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:

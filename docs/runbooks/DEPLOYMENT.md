@@ -22,7 +22,8 @@ entrypoint. Ordinary agents do not invoke it or register deployment requests.
 The runner creates the deployment source from the fixed GitHub origin on its first
 run, verifies its origin on later runs, fetches `main`, checks that the recorded
 desired commit belongs to pushed `main`, and checks out that exact SHA. The
-immutable release bundles the router commands, service-failure notice, and the
+immutable release bundles the router commands, service-failure and key-change
+notices, and the native continuation command, alongside the
 Claude and Codex hooks; the installed launchers run those bundles from `current`, not
 source files in an agent checkout. The service working directory is the installed
 release. Git history and deployment repair read the deployment-owned source.
