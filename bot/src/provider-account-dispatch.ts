@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {chooseAccountForTurn,accountChosenSentence,accountMovedSentence} from './provider-account-choice';
 import {accountHome,currentAccount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
-import type {ProviderUsage} from './provider-account-usage';
+import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset} from './provider-usage';
@@ -31,6 +31,11 @@ function sharedCodexHome(home:string):string|null {
 }
 
 /** Homes with credentials that this owner can use without switching a live login. */
+function accountUsedPercent(provider:ProviderKey,account:AccountUsage):number|null {
+  if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
+  return account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null;
+}
+
 export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
   const defaultLabel=currentAccount(provider)?.label;
   const profiles=listProfiles(provider);
@@ -41,7 +46,7 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
     const ready=home&&(provider==='claude-code'?sharedClaudeHome(account.label,home)===home:sharedCodexHome(home)===home);
     const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
     return {account:account.label,home:ready?home:null,isDefault,
-      tightestUsedPercent:fresh&&account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null,
+      tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
       problem:!fresh?'Usage reading is stale.':account.problem};
   });
 }
@@ -58,8 +63,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
   if(!extraHomes.length)return null;
   const rooms=usage.accounts.map(account=>({
     account:account.label,
-    tightestUsedPercent:claudeAccountCachedReset(account.label)?100:
-      account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null,
+    tightestUsedPercent:accountUsedPercent('claude-code',account),
     home:account.label===defaultAccount?null:sharedClaudeHome(account.label),
     isDefault:account.label===defaultAccount,
     problem:account.problem,

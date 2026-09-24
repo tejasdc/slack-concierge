@@ -21,6 +21,7 @@ import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
 import {advanceRepeatingSchedules,reconsiderBankedWork,inspectSavedWork,settleMissedScheduledWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
+import {savedWorkAccountRooms} from './provider-account-dispatch';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -52,8 +53,10 @@ export async function startSessionRuntime() {
       const usage=providerAccountUsage(session.provider_id as 'codex'|'claude-code');
       const account=usage?.accounts.find(item=>item.label===row.saved_account);
       const window=account?.windows.find(item=>item.name===row.saved_window);
+      const room=usage?savedWorkAccountRooms(session.provider_id as 'codex'|'claude-code',usage).find(item=>item.account===row.saved_account):null;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
-        !usage||!account||Date.parse(account.readAt??usage.observedAt)<Date.now()-6*60_000||account.problem||!window||window.usedPercent>=100-reserve)
+        !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
+        ||!window||window.usedPercent>=100-reserve)
         requestBankedYield(turnId,'allowance_boundary');
     }
   };

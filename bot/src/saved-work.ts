@@ -5,16 +5,23 @@ import {usageForecasts} from './provider-usage-forecast';
 import type {ProviderKey} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {chooseAccountForTurn} from './provider-account-choice';
+import {recordTurnOutcome} from './session-turn-outcome';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;
-  saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;saved_alerted_at_ms:number|null;accepted_input_id:string|null};
+  saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
+  saved_alerted_at_ms:number|null;accepted_input_id:string|null};
+
+export function savedStartAt(turn:SavedTurn):string|null {
+  return turn.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='retryable'&&turn.dispatch_next_attempt_ms
+    ?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
+}
 
 const DAY=24*60*60_000, HOUR=60*60_000;
-export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number};
+export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};
 export function savedWorkSettings():SavedWorkSettings {
-  return db.query('SELECT quiet_start_hour,quiet_end_hour,reserve_percent,wait_days FROM saved_work_settings WHERE singleton=1').get() as SavedWorkSettings;
+  return db.query('SELECT quiet_start_hour,quiet_end_hour,reserve_percent,wait_days,time_zone FROM saved_work_settings WHERE singleton=1').get() as SavedWorkSettings;
 }
 export function changeSavedWorkSettings(value:Partial<SavedWorkSettings>):SavedWorkSettings {
   const before=savedWorkSettings(),next={...before,...value};
@@ -22,9 +29,11 @@ export function changeSavedWorkSettings(value:Partial<SavedWorkSettings>):SavedW
     !Number.isInteger(next.quiet_end_hour)||next.quiet_end_hour<0||next.quiet_end_hour>23||
     next.quiet_start_hour===next.quiet_end_hour||!Number.isInteger(next.reserve_percent)||
     next.reserve_percent<0||next.reserve_percent>=100||!Number.isInteger(next.wait_days)||
-    next.wait_days<1||next.wait_days>365)throw new Error('Invalid saved work settings.');
-  db.query(`UPDATE saved_work_settings SET quiet_start_hour=?,quiet_end_hour=?,reserve_percent=?,wait_days=? WHERE singleton=1`)
-    .run(next.quiet_start_hour,next.quiet_end_hour,next.reserve_percent,next.wait_days);
+    next.wait_days<1||next.wait_days>365||typeof next.time_zone!=='string')throw new Error('Invalid saved work settings.');
+  try {new Intl.DateTimeFormat('en-US',{timeZone:next.time_zone});}
+  catch {throw new Error('Choose a valid time zone.');}
+  db.query(`UPDATE saved_work_settings SET quiet_start_hour=?,quiet_end_hour=?,reserve_percent=?,wait_days=?,time_zone=? WHERE singleton=1`)
+    .run(next.quiet_start_hour,next.quiet_end_hour,next.reserve_percent,next.wait_days,next.time_zone);
   if(next.wait_days!==before.wait_days)db.query(`UPDATE turns SET saved_expires_at_ms=saved_at_ms+? WHERE saved_kind='banked' AND status='queued'`)
     .run(next.wait_days*DAY);
   reconsiderBankedWork();
@@ -42,7 +51,7 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
     if(!turn||turn.status!=='queued'||turn.saved_kind)throw new Error('Only a new queued turn can be saved.');
     const other=db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(turn.session_id,turnId);
     if(other)throw new Error('Saved work needs its own session.');
-    const next=kind==='scheduled'?atMs!:now+3*60_000;
+    const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
       saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=?`)
       .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,
@@ -51,28 +60,27 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
   executionChanged();
 }
 
-const LOCAL_ZONE=process.env.CONCIERGE_LOCAL_TIME_ZONE||'America/New_York';
-const localClock=new Intl.DateTimeFormat('en-US',{timeZone:LOCAL_ZONE,year:'numeric',month:'numeric',day:'numeric',hour:'numeric',hourCycle:'h23',minute:'numeric',second:'numeric'});
-function localParts(ms:number) {
-  const parts=Object.fromEntries(localClock.formatToParts(new Date(ms)).filter(part=>part.type!=='literal').map(part=>[part.type,Number(part.value)]));
+function localParts(ms:number,settings:SavedWorkSettings) {
+  const clock=new Intl.DateTimeFormat('en-US',{timeZone:settings.time_zone,year:'numeric',month:'numeric',day:'numeric',hour:'numeric',hourCycle:'h23',minute:'numeric',second:'numeric'});
+  const parts=Object.fromEntries(clock.formatToParts(new Date(ms)).filter(part=>part.type!=='literal').map(part=>[part.type,Number(part.value)]));
   return {year:parts.year!,month:parts.month!,day:parts.day!,hour:parts.hour!,minute:parts.minute!,second:parts.second!};
 }
-function localOffset(ms:number) {
-  const p=localParts(ms);
+function localOffset(ms:number,settings:SavedWorkSettings) {
+  const p=localParts(ms,settings);
   return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)-Math.floor(ms/1000)*1000;
 }
 function quiet(now:number,settings:SavedWorkSettings):boolean {
-  const hour=localParts(now).hour;
+  const hour=localParts(now,settings).hour;
   return settings.quiet_start_hour<settings.quiet_end_hour
     ?hour>=settings.quiet_start_hour&&hour<settings.quiet_end_hour
     :hour>=settings.quiet_start_hour||hour<settings.quiet_end_hour;
 }
 function nextQuietStart(now:number,settings:SavedWorkSettings):number {
-  const p=localParts(now);
+  const p=localParts(now,settings);
   for(let day=0;day<3;day++) {
     const wall=Date.UTC(p.year,p.month-1,p.day+day,settings.quiet_start_hour);
-    let candidate=wall-localOffset(wall);
-    candidate=wall-localOffset(candidate);
+    let candidate=wall-localOffset(wall,settings);
+    candidate=wall-localOffset(candidate,settings);
     if(candidate>now)return candidate;
   }
   return now+DAY;
@@ -97,13 +105,14 @@ export function reconsiderBankedWork(now=Date.now()):number {
       && (usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
         ||window.source!=='unknown'&&!window.runsOutBeforeReset)
       && !window.runsOutBeforeReset&&window.usedPercent<100-settings.reserve_percent
+      && (rooms.find(room=>room.account===window.account)?.tightestUsedPercent??100)<100-settings.reserve_percent
       && Date.parse(window.resetsAt)>=now+HOUR)
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
     const eligible=!!candidate&&!fleetBusy(row.session_id)&&(quiet(now,settings)||reset!-now<=2*HOUR);
     const next=eligible?0:reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
-      :Math.ceil((now+3*60_000)/(3*60_000))*(3*60_000);
+      :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
     const boundary=eligible?reset:null;
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;
@@ -129,15 +138,18 @@ export function yieldBankedTurn(turnId:number,owner:string,nextMs=Date.now()+3*6
 export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'|'deployment_boundary'):boolean {
   // An admitted provider may already have performed effects. Preserve the stopped turn
   // for reconciliation; re-enqueueing its opening input would replay those effects.
-  const result=db.query(`UPDATE turns SET agent_text=COALESCE(agent_text,'Banked work stopped at a boundary; reconcile the provider run before continuing.')
-    WHERE id=? AND status='cancelled' AND saved_kind='banked'`).run(turnId);
-  if(result.changes){
-    const row=savedTurn(turnId)!;
-    recordSessionEvent({eventId:`saved-yield:${turnId}:${Date.now()}`,sessionId:row.session_id,inputId:row.accepted_input_id,turnId,kind:'run',
-      payload:{savedYield:reason,message:'Stopped at the boundary. Check the provider run before continuing this work.'}});
-    executionChanged();
-  }
-  return !!result.changes;
+  const changed=db.transaction(()=>{
+    const row=savedTurn(turnId);
+    if(!row||row.status!=='cancelled'||!row.accepted_input_id)return false;
+    const question=reason==='deployment_boundary'
+      ?'Banked work stopped for a deployment after it started. Check what the agent completed before deciding how to continue.'
+      :'Banked work stopped at its allowance boundary after it started. Check what the agent completed before deciding how to continue.';
+    db.query(`UPDATE turns SET agent_text=COALESCE(agent_text,?) WHERE id=? AND status='cancelled'`).run(question,turnId);
+    recordTurnOutcome({eventId:`saved-yield:${turnId}`,sessionId:row.session_id,turnId,inputId:row.accepted_input_id,
+      outcome:'needs_you',text:question});
+    return true;
+  })();
+  return changed;
 }
 
 export function updateSavedTurn(turnId:number,action:string,body:Record<string,unknown>) {

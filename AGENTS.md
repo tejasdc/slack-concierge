@@ -51,13 +51,17 @@ and mandatory review requirements in this repository and linked historical mater
   schedule changes that kind.
   `sessions schedule --at` (optionally `--expires` and `--every-ms`) and `sessions bank`
   create saved agent requests, and Thinkering
-  creation may supply `savedWork`; both require a registered project and an available provider.
+  creation may supply `savedWork`. The router requires a registered project; Thinkering's
+  creation path currently does not enforce that requirement. Both require an available provider.
   `sessions saved list|start|cancel` uses an exact source and stable action identity for changes;
   the owner lists waiting items at `/saved-work` and controls them at
   `/saved-work/<turn-id>/<start|time|schedule|drop>`. `time` changes only a schedule;
   `schedule` explicitly converts a banked item.
   Banked work is released
-  against fresh usage on any account this machine can launch for the provider. The account
+  against fresh usage on any account this machine can launch for the provider, only while
+  its most-spent allowance window remains below the reserve. A live Claude refusal makes
+  that account ineligible even when its reported percentages look available. At most one
+  automatic banked run may be active across sessions. The account
   choice is bound to the saved window: if that account has no room at dispatch, the turn
   waits rather than spending another account's allowance. A bound Codex turn runs in its
   account home through a turn-owned process, including the default home, so it cannot inherit
@@ -65,14 +69,16 @@ and mandatory review requirements in this repository and linked historical mater
   turns and history reads keep the conversation. An existing incompatible sessions path is
   left untouched and that home is not selected. The shared Codex daemon keeps its existing
   default-account work.
-  Claim checks for ordinary queued or running work again. The saved work settings belong to the owner at
-  `/saved-work/settings`. The usage watch
+  Claim checks for ordinary queued or running work again. The saved work settings, including
+  the quiet-hours time zone, belong to the owner at `/saved-work/settings`. When no safe window
+  is known, a banked item has no advertised start time and no three-minute wake. The usage watch
   recalculates banked instants and records overdue attention once; the queue also settles
   scheduled work at its optional expiry. The queue remains the
   only timer that admits work. Repeating schedules create one future firing under a stable
   root and sequence; an overlap skips and records that firing. A banked run stops at an allowance or deployment boundary.
-  If the provider already admitted it, the cancelled turn remains held for reconciliation instead of replaying
-  its input; automatic continuation and a shipped-work checkpoint are not yet implemented.
+  If the provider already admitted it, the cancelled turn is retained without replaying
+  its input and raises one question for Tejas to inspect what completed. There is no automatic
+  reconciliation, continuation or shipped-work checkpoint yet.
   Idleness uses this machine's work only; a busy peer is not visible to this gate. Allowance
   boundary stops follow existing usage readings, not an independent timer. A claim declined
   before provider admission still increments the queue's claim counter. Repeating schedules

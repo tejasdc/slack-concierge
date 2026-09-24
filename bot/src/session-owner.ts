@@ -30,7 +30,7 @@ import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {appendTodoFile} from './todo-file';
-import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,updateSavedTurn,waitingSavedWork} from './saved-work';
+import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -100,9 +100,10 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   // A retryable failure keeps its reason on the turn until the next attempt starts; it is
   // shown until then, including the moment between the scheduled time and pickup.
   const deliberate=savedTurn(turn.id);
-  if(deliberate&&turn.status==='queued')return {code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
-    message:deliberate.saved_kind==='scheduled'?'This work is scheduled for the time below.':'This work is banked until a safe allowance window opens.',
-    clearsAt:deliberate.dispatch_next_attempt_ms?new Date(deliberate.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
+  if(deliberate&&turn.status==='queued'&&(deliberate.saved_kind==='banked'||turn.dispatch_failure_class!=='retryable'))return {
+    code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
+    message:deliberate.saved_kind==='scheduled'?'This work is scheduled for the time below.':'This work is waiting for a safe allowance window; no start time has been chosen.',
+    clearsAt:savedStartAt(deliberate),automaticRetry:true};
   if(turn.dispatch_failure_class==='retryable'&&turn.dispatch_next_attempt_ms!==null) {
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
@@ -601,7 +602,7 @@ export class SessionOwner {
         open:attentionOpen},
       needsAttention:meta.inbox?attentionOpen.length>0:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
-        startsAt:saved.dispatch_next_attempt_ms?new Date(saved.dispatch_next_attempt_ms).toISOString():null,
+        startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
         sequence:saved.saved_sequence,status:saved.status}:null;})(),
@@ -750,7 +751,8 @@ export class SessionOwner {
   }
   savedWorkList(){
     return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
-      savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,
+      savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:savedStartAt(turn),
+        savedAt:new Date(turn.saved_at_ms).toISOString(),
         expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
         account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}}))};
   }

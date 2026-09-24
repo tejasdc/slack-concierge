@@ -1081,7 +1081,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // for the whole episode rather than per message, and it names no model to switch to.
       if (heldUntilMs !== null && input.providerId !== "chatgpt") {
         const hold = { provider: (input.providerId === "codex" ? "codex" : "claude-code") as "codex" | "claude-code",
-          model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs };
+          model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs,
+          account:input.boundAccount?.account??null };
         noticeUsageHold(hold, recordSessionEvent);
         // Work has actually stopped, so a banked reset is spent if the rule in
         // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on

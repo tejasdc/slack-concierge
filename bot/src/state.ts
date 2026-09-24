@@ -723,8 +723,9 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
   quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,
-  wait_days INTEGER NOT NULL DEFAULT 7
+  wait_days INTEGER NOT NULL DEFAULT 7, time_zone TEXT NOT NULL DEFAULT 'America/New_York'
 ); INSERT OR IGNORE INTO saved_work_settings(singleton) VALUES(1)`);
+addColumn("saved_work_settings", "time_zone", "time_zone TEXT NOT NULL DEFAULT 'America/New_York'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_trigger_key ON turns(turn_kind, trigger_key) WHERE trigger_key IS NOT NULL");
 addColumn("todo_sync_state", "historical_migration_complete", "historical_migration_complete INTEGER NOT NULL DEFAULT 0");
 addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
@@ -3732,7 +3733,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
-      Date.now()+3*60_000,
+      Math.max(Date.now()+3*60_000,input.nextAttemptMs),
       input.nextAttemptMs,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
@@ -4907,7 +4908,9 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
             (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
               AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-                AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)))
+                AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
+                AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
           AND turn.session_id NOT IN (SELECT value FROM json_each(?))
           AND NOT EXISTS (
             SELECT 1 FROM turns older
