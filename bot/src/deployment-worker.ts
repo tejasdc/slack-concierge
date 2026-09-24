@@ -101,7 +101,7 @@ function registerReactionTargetsForCommitRange(input: {
 }) {
   try {
     const targets = deploymentReactionTargetsForCommitRange(
-      process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+      process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
       input.baseCommit,
       input.candidateCommit,
     );
@@ -160,15 +160,6 @@ function installableDesiredCommit(): string | null {
   return adopted?.desired_commit ?? null;
 }
 
-function sharedCheckoutClean(): boolean {
-  const result = Bun.spawnSync({
-    cmd: ["git", "status", "--porcelain", "--untracked-files=all"],
-    cwd: process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
-    stdout: "pipe", stderr: "ignore", timeout: 5000,
-  });
-  return result.exitCode === 0 && result.stdout.length === 0;
-}
-
 export async function reconcileDeploymentWork(input: {
   client: any;
   ownerInstanceId: string;
@@ -193,7 +184,7 @@ export async function reconcileDeploymentWork(input: {
     try {
       const desired = installableDesiredCommit();
       if (desired) {
-        const automatic = requestAutomaticDeployment(desired, "concierge", sharedCheckoutClean());
+        const automatic = requestAutomaticDeployment(desired, "concierge");
         automaticDeploymentPrepared = automatic.reason === "prepared";
       }
     } catch (error) {

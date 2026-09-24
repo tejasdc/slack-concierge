@@ -106,7 +106,8 @@ try {
       }
       throw error;
     }
-    finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name });
+    finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name,
+      desired_commit: run.desired_commit });
   }
 
   if (command === "operator-request") {

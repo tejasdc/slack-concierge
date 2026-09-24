@@ -3577,7 +3577,7 @@ async function launchDeploymentRepair(incidentId: string) {
   }
 }
 
-const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
+const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
 type DeploymentWorkReason = "startup" | "github-push" | "turn-settled" | "state-change";
 const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
   shouldStop: () => draining,
@@ -3612,9 +3612,6 @@ function scheduleDeploymentWork(reason: DeploymentWorkReason) {
   if (!runtime.ownership.deployment || !serviceOnline || draining) return;
   void deploymentWorkRunner.request(reason);
 }
-
-// A cleared checkout blocker has no GitHub push to wake the durable owner.
-setInterval(() => scheduleDeploymentWork("state-change"), 60_000);
 
 async function reconcilePriorInstanceTurns() {
   if (runtime.ownership.deployment) {

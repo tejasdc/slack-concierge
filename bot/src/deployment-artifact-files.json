@@ -1,6 +1,16 @@
 {
   "format": 1,
   "controlBundles": {
+    "bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
+    "bot/scripts/router-request-client.js": "bot/scripts/router-request-client.ts",
+    "bot/scripts/router-threads.js": "bot/scripts/router-threads.ts",
+    "bot/scripts/router-post.js": "bot/scripts/router-post.ts",
+    "bot/scripts/router-react.js": "bot/scripts/router-react.ts",
+    "bot/scripts/router-todo.js": "bot/scripts/router-todo.ts",
+    "bot/scripts/agent-test-capture.js": "bot/scripts/agent-test-capture.ts",
+    "bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
+    "bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
+    "bot/scripts/service-notice.js": "bot/scripts/service-notice.ts",
     "control/deploy-state.js": "bot/scripts/deploy-state.ts",
     "control/release-manager.js": "bot/scripts/release-manager.ts",
     "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",
@@ -13,6 +23,12 @@
     "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts"
   },
   "controlFiles": {
+    "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
+    "control/install-git-history-guard.sh": "scripts/install-git-history-guard.sh",
+    "control/git-hooks/dispatch": "scripts/git-hooks/dispatch",
+    "control/git-hooks/refuse-history-rewrite": "scripts/git-hooks/refuse-history-rewrite",
+    "control/service-failure-notice.sh": "bot/scripts/service-failure-notice.sh",
+    "control/systemd/concierge-service-failure@.service": "systemd/concierge-service-failure@.service",
     "control/deploy.sh": "bot/scripts/deploy.sh",
     "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
     "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",

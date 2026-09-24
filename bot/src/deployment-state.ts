@@ -1725,7 +1725,6 @@ export function failControlRecovery(runId: string, error: string) {
 export function requestAutomaticDeployment(
   desiredCommit: string,
   target = "concierge",
-  checkoutClean = false,
 ): {
   run: DeploymentRunRow | null;
   launchRequired: boolean;
@@ -1745,17 +1744,7 @@ export function requestAutomaticDeployment(
       ORDER BY completed_at DESC, created_at DESC LIMIT 1`)
       .get(target, desiredCommit.toLowerCase()) as DeploymentRunRow | null;
     if (blocked) {
-      const failure = db.query(`SELECT detail_json FROM deployment_run_events
-        WHERE run_id=? AND event='failed' ORDER BY sequence DESC LIMIT 1`).get(blocked.id) as { detail_json: string } | null;
-      const detail = failure ? JSON.parse(failure.detail_json) as { diagnostics?: { stage?: string } } : null;
-      const priorClearance = db.query(`SELECT 1 FROM deployment_run_events event
-        JOIN deployment_runs run ON run.id=event.run_id
-        WHERE run.target=? AND run.desired_commit=? AND event.event='precondition_cleared' LIMIT 1`)
-        .get(target, desiredCommit.toLowerCase());
-      if (!checkoutClean || detail?.diagnostics?.stage !== "git-update" || priorClearance) {
-        return { run: blocked, launchRequired: false, reason: "blocked" as const };
-      }
-      appendRunEvent(blocked.id, "precondition_cleared", { blocker: "shared-checkout-dirty", desired_commit: desiredCommit });
+      return { run: blocked, launchRequired: false, reason: "blocked" as const };
     }
     const runId = randomUUID();
     const unitName = `concierge-deploy-${runId.slice(0, 12)}`;

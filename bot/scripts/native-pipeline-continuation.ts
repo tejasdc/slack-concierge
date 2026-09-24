@@ -56,7 +56,7 @@ if (command === 'enroll') {
       try {
         const manifest = JSON.parse(readFileSync('/var/lib/slack-concierge-deployment/current/manifest.json','utf8'));
         const run = db.query("SELECT id,status,deployed_commit,service_invocation_id FROM deployment_runs WHERE status='succeeded' AND deployed_commit=? ORDER BY completed_at DESC LIMIT 1").get(manifest.git_commit) as any;
-        const contains = Bun.spawnSync(['git','-C',process.env.CONCIERGE_REPO || '/root/workspace/slack-concierge','merge-base','--is-ancestor',payload.requiredCommit,manifest.git_commit]);
+        const contains = Bun.spawnSync(['git','-C',process.env.CONCIERGE_REPO || '/var/lib/slack-concierge-deployment/source','merge-base','--is-ancestor',payload.requiredCommit,manifest.git_commit]);
         if (run && contains.exitCode === 0) {
           const response = await fetch('http://localhost/sessions/v1/inbox', {unix:`${process.env.CONCIERGE_STATE_DIR}/requests.sock`,signal:AbortSignal.timeout(5000)} as any);
           const body = response.ok ? await response.json() as any : null;

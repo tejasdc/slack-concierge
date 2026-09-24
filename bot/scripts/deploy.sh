@@ -6,7 +6,8 @@ set -euo pipefail
 export HOME=${HOME:-/root}
 export GIT_TERMINAL_PROMPT=0
 
-REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
+REPO=${CONCIERGE_REPO:-/var/lib/slack-concierge-deployment/source}
+DEPLOY_ORIGIN=${CONCIERGE_DEPLOY_ORIGIN:-https://github.com/tejasdc/slack-concierge.git}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
 CAPTURE_SERVICE=${CONCIERGE_CAPTURE_SERVICE:-agent-inbox.service}
@@ -48,12 +49,13 @@ else
   CAPTURE_INSTALL_SCRIPT="$CONTROL_DIR/install-capture-ingress.ts"
 fi
 DEPLOY_CONTROL_COMMAND=${CONCIERGE_DEPLOY_COMMAND:-/usr/local/lib/slack-concierge-deployment/control}
-DEPLOY_COMMAND=("$REPO/bot/scripts/deploy.sh")
+DEPLOY_COMMAND=("$CONTROL_DIR/deploy.sh")
 if [ -x "$DEPLOY_CONTROL_COMMAND" ]; then DEPLOY_COMMAND=("$DEPLOY_CONTROL_COMMAND" deploy); fi
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
+DEPLOY_DESIRED_COMMIT=""
 FAILED_CANDIDATE_COMMIT=""
 DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
@@ -85,49 +87,28 @@ verify_git_origin() {
   return 1
 }
 
-# Move local work into its own durable Git branch before updating the shared checkout.
-# Keep the stash until the worktree commit has been verified; any failed step stops the rollout.
-preserve_shared_checkout() {
-  [ -n "$(git status --porcelain --untracked-files=all)" ] || return 0
-  local stamp branch location stash_before stash_after preserved_commit files files_path
-  stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  branch="preserved/deploy-$(hostname -s | tr -c '[:alnum:]-' '-')-${stamp}-${DEPLOY_RUN_ID:-operator}"
-  location="$REPO/.worktrees/${branch//\//-}"
-  files=$(git status --porcelain --untracked-files=all)
-  stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
-  git stash push --include-untracked -m "$branch" >/dev/null || return 1
-  stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
-  if [ -z "$stash_after" ] || [ "$stash_after" = "$stash_before" ] || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-    echo "DEPLOY FAILED: local work was not fully captured; inspect the retained stash before continuing." >&2
-    return 1
+ensure_deployment_source() {
+  if [ ! -d "$REPO/.git" ]; then
+    [ ! -e "$REPO" ] || { echo "DEPLOY FAILED: deployment source path exists without its own Git repository: $REPO" >&2; return 1; }
+    install -d -m 0755 "$(dirname "$REPO")"
+    git clone --no-checkout "$DEPLOY_ORIGIN" "$REPO"
   fi
-  if ! git worktree add -b "$branch" "$location" HEAD \
-    || ! git -C "$location" stash apply --index "$stash_after" \
-    || ! git -C "$location" add -A \
-    || ! git -C "$location" commit -m "Preserve shared checkout work before deployment" -m "Update-note: Work left in the shared checkout is saved on its own branch before the pending update proceeds." \
-    || [ -n "$(git -C "$location" status --porcelain --untracked-files=all)" ]; then
-    git stash apply --index "$stash_after" || true
-    echo "DEPLOY FAILED: preservation did not produce a clean committed branch; the stash remains available." >&2
-    return 1
-  fi
-  preserved_commit=$(git -C "$location" rev-parse HEAD)
-  [ -n "$preserved_commit" ] || return 1
-  echo "PRESERVED SHARED CHECKOUT: branch=$branch worktree=$location commit=$preserved_commit"
-  printf 'PRESERVED FILES:\n%s\n' "$files"
-  if [ -n "$DEPLOY_RUN_ID" ]; then
-    files_path=$(mktemp "$STATE_DIR/checkout-preserved.XXXXXXXX")
-    printf '%s\n' "$files" > "$files_path"
-    if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" preserved-checkout \
-      --run-id "$DEPLOY_RUN_ID" --branch "$branch" --worktree "$location" \
-      --commit "$preserved_commit" --files-path "$files_path"; then
-      unlink "$files_path"
-      git stash apply --index "$stash_after" || true
-      return 1
-    fi
-    unlink "$files_path"
-  fi
-  # The committed branch is authoritative now; dropping the redundant stash is safe.
-  if [ "$(git rev-parse -q --verify refs/stash 2>/dev/null || true)" = "$stash_after" ]; then git stash drop stash@{0} >/dev/null; fi
+  [ "$(git -C "$REPO" remote get-url origin)" = "$DEPLOY_ORIGIN" ] || {
+    echo "DEPLOY FAILED: deployment source has an unexpected origin." >&2; return 1;
+  }
+}
+
+checkout_deployment_commit() {
+  local target
+  git -C "$REPO" fetch origin main
+  target=${DEPLOY_DESIRED_COMMIT:-$(git -C "$REPO" rev-parse origin/main)}
+  [[ "$target" =~ ^[0-9a-f]{40}$ ]] || { echo "DEPLOY FAILED: desired commit is invalid." >&2; return 1; }
+  git -C "$REPO" merge-base --is-ancestor "$target" origin/main || {
+    echo "DEPLOY FAILED: desired commit is not on pushed main." >&2; return 1;
+  }
+  git -C "$REPO" checkout --detach --force "$target"
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$target" ] || return 1
+  DEPLOYED_COMMIT=$target
 }
 
 validate_bootstrap_handoff() {
@@ -179,6 +160,7 @@ claim_deployment_run() {
     --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
+  DEPLOY_DESIRED_COMMIT=$(printf '%s\n' "$claim_output" | jq -r '.desired_commit // empty')
   if [ "$claim_status" = "terminal" ]; then
     DEPLOY_RUN_TERMINAL=1
     INTERRUPTED_RECOVERY_HANDLED=1
@@ -569,6 +551,9 @@ install_systemd_unit() {
 install_systemd_units() {
   local unit
   for unit in concierge-bot.service agent-inbox.service concierge-deployment-repair@.service concierge-service-failure@.service; do
+    # The running control release may predate the failure-notice unit. The
+    # candidate carries it and is installed again before its service restart.
+    if [ "$unit" = concierge-service-failure@.service ] && [ ! -f "$CONTROL_SYSTEMD_DIR/$unit" ]; then continue; fi
     install_systemd_unit "$unit"
   done
   systemctl daemon-reload
@@ -576,15 +561,6 @@ install_systemd_units() {
 
 install_deployment_runtime() {
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
-}
-
-install_repository_git_hooks() {
-  local hook_path="$REPO/.githooks/prepare-commit-msg"
-  if [ ! -x "$hook_path" ]; then
-    echo "DEPLOY FAILED: tracked commit provenance hook is missing or not executable: $hook_path" >&2
-    return 1
-  fi
-  git -C "$REPO" config core.hooksPath "$REPO/.githooks"
 }
 
 require_last_known_good_release() {
@@ -803,7 +779,6 @@ claim_run_and_enable_recovery() {
 }
 
 deploy() {
-  cd "$REPO"
   trap wake_deployment_waiter USR1
   if [ -n "$DEPLOY_RUN_ID" ]; then
     claim_run_and_enable_recovery
@@ -813,6 +788,9 @@ deploy() {
     fi
   fi
   CURRENT_DEPLOY_STAGE=origin-verification
+  DEPLOY_FAILURE_REASON="The deployment-owned Git source could not be created or verified."
+  ensure_deployment_source
+  cd "$REPO"
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     DEPLOY_FAILURE_REASON="The one-time bootstrap handoff could not be validated."
     validate_bootstrap_handoff
@@ -860,25 +838,11 @@ deploy() {
 
     DEPLOY_FAILURE_REASON="The durable updating checkpoint could not be recorded after admission closed."
     record_deployment_phase updating "{\"gate\":\"claimed\"}"
-    echo "=== git pull --rebase origin main ==="
+    echo "=== fetch exact pushed commit into deployment-owned source ==="
     CURRENT_DEPLOY_STAGE=git-update
-    DEPLOY_FAILURE_REASON="The latest origin refs could not be fetched."
-    git fetch origin
-    DEPLOY_FAILURE_REASON="Shared checkout preservation failed; the original work remains in the checkout or Git stash for recovery."
-    preserve_shared_checkout
-    DEPLOY_FAILURE_REASON="The canonical checkout could not be rebased cleanly onto origin/main."
-    if ! git pull --rebase origin main; then
-      echo "DEPLOY FAILED: git pull could not rebase cleanly. Fix it in git; never copy files around git." >&2
-      return 1
-    fi
-    DEPLOY_FAILURE_REASON="The deployed Git commit could not be resolved after updating the checkout."
-    DEPLOYED_COMMIT=$(git rev-parse HEAD)
+    DEPLOY_FAILURE_REASON="The exact pushed commit could not be fetched and selected in the deployment-owned source."
+    checkout_deployment_commit
   fi
-
-  echo "=== install tracked commit provenance hook ==="
-  CURRENT_DEPLOY_STAGE=git-hook-install
-  DEPLOY_FAILURE_REASON="The tracked commit provenance hook could not be installed."
-  install_repository_git_hooks
 
   echo "=== install frozen production dependencies ==="
   CURRENT_DEPLOY_STAGE=dependency-install
@@ -912,6 +876,12 @@ deploy() {
     CURRENT_DEPLOY_STAGE=candidate-activation
     DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared or activated."
     prepare_candidate_release
+    DEPLOY_FAILURE_REASON="The candidate release's service units could not be installed."
+    CONTROL_SYSTEMD_DIR="$CANDIDATE_ARTIFACT_PATH/control/systemd"
+    install_systemd_units
+    DEPLOY_FAILURE_REASON="The installed release hooks could not be enabled."
+    /usr/bin/bash "$CANDIDATE_ARTIFACT_PATH/control/install-codex-stop-hook.sh" \
+      --bun "$BUN_BIN" --release "${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-/var/lib/slack-concierge-deployment}/current" --state "$STATE_DIR"
   fi
 
   echo "=== install router action helper ==="

@@ -10,7 +10,7 @@ import {
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isProcessIdentityAlive } from "../src/runtime-identity";
 
-const repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
+const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
 const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
 const interrupted = listDeadCandidateDeploymentRuns(isProcessIdentityAlive);
 

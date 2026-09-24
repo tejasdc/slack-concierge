@@ -11,9 +11,9 @@ User=root
 Group=root
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
-Environment=CONCIERGE_REPO=/root/workspace/slack-concierge
+Environment=CONCIERGE_REPO=/var/lib/slack-concierge-deployment/source
 Environment=CONCIERGE_DEPLOY_COMMAND=/usr/local/lib/slack-concierge-deployment/control
-WorkingDirectory=/root/workspace/slack-concierge
+WorkingDirectory=/var/lib/slack-concierge-deployment/source
 ExecStart=/usr/local/lib/slack-concierge-deployment/control repair %i
 Restart=on-failure
 RestartSec=10

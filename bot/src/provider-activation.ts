@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { watchFile, unwatchFile } from "node:fs";
-import { authHeldInputCount, db, releaseAuthHeldWork } from "./state";
+import { basename, dirname, join } from "node:path";
+import { watch, type FSWatcher } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { authHeldInputCount, db, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
+import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { credentialPath, type ProviderKey } from "./provider-accounts";
 
@@ -18,6 +20,30 @@ import { credentialPath, type ProviderKey } from "./provider-accounts";
 // remembered ritual; keeping them together is what removes it.
 
 export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
+type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval";
+let pendingCodexActivation = false;
+const activationFlights = new Map<ProviderKey, Promise<ActivationReport>>();
+
+function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
+  const head = db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
+    .get(provider) as { id: number | null };
+  const episode = head.id === null ? null : `provider-auth-hold:${provider}:${head.id}`;
+  const notice = episode ? db.query(`SELECT session_id,input_id,turn_id FROM session_owner_events WHERE event_id=?`)
+    .get(episode) as {session_id:number;input_id:string|null;turn_id:number|null}|null : null;
+  const released = releaseAuthHeldWork(provider);
+  if (!released) return 0;
+  log("info", "provider_auth_hold_released", { provider, released_inputs: released, released_by: releasedBy });
+  if (notice && episode) {
+    try {
+      recordSessionEvent({ eventId: `${episode}:resolved`,
+        sessionId: notice.session_id, inputId: notice.input_id, turnId: notice.turn_id,
+        kind: "provider_outage_resolved", payload: { provider, auth: { released_by: releasedBy, released_inputs: released } } });
+    } catch(error) { log("error", "provider_auth_hold_resolution_failed", { provider, released_by: releasedBy,
+      error: error instanceof Error ? error.message : String(error) }); }
+  }
+  return released;
+}
 
 export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
   || (process.platform==='darwin'?join(homedir(),'.local','bin','codex'):'/root/.codex/packages/standalone/current/codex');
@@ -124,7 +150,7 @@ async function codexCredentialsAnswer():Promise<boolean>{
  * is waiting is in a good state; nothing may take it out of that state on the strength of a
  * file copy.
  */
-export async function activateCredentials(provider: ProviderKey): Promise<ActivationReport> {
+async function performActivation(provider: ProviderKey, releasedBy: ReleaseSource): Promise<ActivationReport> {
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no loaded copy to
     // invalidate — but the file being readable says nothing about it being usable.
@@ -134,19 +160,28 @@ export async function activateCredentials(provider: ProviderKey): Promise<Activa
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
     }
     releaseUsageHeldWork(provider);
-    releaseAuthHeldWork(provider);
+    releaseAuthHold(provider, releasedBy);
     return { status: "applied", detail: "Done. This machine is using the new account now." };
   }
   const report = await activateCodex();
+  pendingCodexActivation = report.status === "deferred";
   // Codex only actually changes account when its App Server comes back on the new token.
   if (report.status === "applied") {
     const held=authHeldInputCount(provider)>0;
     if(held && !await codexCredentialsAnswer())return {status:'failed',
       detail:'Codex restarted, but this account did not answer. Your waiting messages remain held.'};
     releaseUsageHeldWork(provider);
-    if(held)releaseAuthHeldWork(provider);
+    if(held)releaseAuthHold(provider, releasedBy);
   }
   return report;
+}
+
+export function activateCredentials(provider: ProviderKey, releasedBy: ReleaseSource = "owner_signin"): Promise<ActivationReport> {
+  const existing = activationFlights.get(provider);
+  if (existing) return existing;
+  const flight = performActivation(provider, releasedBy).finally(() => activationFlights.delete(provider));
+  activationFlights.set(provider, flight);
+  return flight;
 }
 
 /** A login done outside Concierge still releases held inputs once its credentials answer. */
@@ -154,24 +189,45 @@ export function watchAuthHeldCredentials(): () => void {
   const providers:ProviderKey[]=['claude-code','codex'];
   let stopped=false;
   const checking=new Set<ProviderKey>();
-  const check=(provider:ProviderKey)=>{
-    if(stopped || checking.has(provider) || !authHeldInputCount(provider))return;
-    checking.add(provider);
-    void activateCredentials(provider).catch(error=>log('error','provider_auth_hold_activation_failed',{
-      provider,error:error instanceof Error?error.message:String(error)})).finally(()=>checking.delete(provider));
+  const watchers:FSWatcher[]=[];
+  const debounce=new Map<ProviderKey,ReturnType<typeof setTimeout>>();
+  let interval:ReturnType<typeof setInterval>|null=null;
+  const held=()=>providers.some(provider=>authHeldInputCount(provider)>0);
+  const updateInterval=()=>{
+    if(stopped || !held()) { if(interval)clearInterval(interval);interval=null;return; }
+    if(!interval){interval=setInterval(()=>{for(const provider of providers)check(provider,"interval");},180_000);interval.unref?.();}
   };
-  for(const provider of providers){
-    const path=credentialPath(provider);
-    watchFile(path,{interval:5_000},(current,previous)=>{
-      if(current.mtimeMs!==previous.mtimeMs || current.size!==previous.size)check(provider);
-    });
-    // Covers a credential updated while the owner was stopped. A failed probe retains
-    // the hold; it never retries the original provider turn on faith in file contents.
-    check(provider);
+  const check=(provider:ProviderKey,source:ReleaseSource)=>{
+    if(stopped || checking.has(provider) || (!authHeldInputCount(provider) && !(provider==='codex'&&pendingCodexActivation)))return;
+    checking.add(provider);
+    void activateCredentials(provider,source).catch(error=>log('error','provider_auth_hold_activation_failed',{
+      provider,source,error:error instanceof Error?error.message:String(error)})).finally(()=>{checking.delete(provider);updateInterval();});
+  };
+  const watchCredential=(path:string,provider:ProviderKey,source:ReleaseSource)=>{
+    try {
+      const filename=basename(path);
+      const watcher=watch(dirname(path),(event,changed)=>{
+        if(changed && String(changed)!==filename)return;
+        const prior=debounce.get(provider);if(prior)clearTimeout(prior);
+        debounce.set(provider,setTimeout(()=>{debounce.delete(provider);check(provider,source);},350));
+      });
+      watcher.on('error',error=>log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)}));
+      watchers.push(watcher);
+    } catch(error){log('error','provider_auth_hold_watch_failed',{provider,source,error:String(error)});}
+  };
+  for(const provider of providers)watchCredential(credentialPath(provider),provider,'file_event');
+  if(process.platform==='darwin'){
+    try {
+      const keychain=execFileSync('/usr/bin/security',['login-keychain','-d','user'],{encoding:'utf8'}).trim().replace(/^"|"$/g,'');
+      if(keychain)watchCredential(keychain,'claude-code','keychain_event');
+    } catch(error){log('error','provider_auth_hold_watch_failed',{provider:'claude-code',source:'keychain_event',error:String(error)});}
   }
-  // Also notices macOS Keychain sign-in, which has no credential file to watch, and
-  // retries a deferred Codex activation after other running turns finish.
-  const interval=setInterval(()=>{for(const provider of providers)check(provider);},180_000);
-  interval.unref?.();
-  return ()=>{stopped=true;clearInterval(interval);for(const provider of providers)unwatchFile(credentialPath(provider));};
+  const detach=observeExecutionChanges(()=>{
+    updateInterval();
+    if(pendingCodexActivation && runningCodexTurns()===0)check('codex','turn_finished');
+  });
+  for(const provider of providers)check(provider,'startup');
+  updateInterval();
+  return ()=>{stopped=true;detach();if(interval)clearInterval(interval);
+    for(const timer of debounce.values())clearTimeout(timer);for(const watcher of watchers)watcher.close();};
 }

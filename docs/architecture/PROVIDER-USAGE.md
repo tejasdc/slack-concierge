@@ -115,14 +115,22 @@ identity; later inputs cannot pass it. Its receipt says the account cannot sign 
 will resume automatically.
 
 The existing credential activation path releases these holds only after the selected
-account answers a small real request. A watcher handles credential file changes made
-outside Concierge, checks a hold left from before an owner restart, and revisits held
-work periodically when a credential lives in macOS Keychain or Codex activation was
-deferred behind running work. Codex activation
+account answers a small real request. Owner sign-in, account add and switch call
+activation directly. Directory filesystem events watch the login credential names;
+on the Mac, a login Keychain file event also probes a held Claude account. A Codex
+activation deferred behind running work is retried when execution changes after
+the last running Codex turn. Startup probes held work once. A three-minute check
+runs only while authentication-held work exists as a temporary fallback for
+external sign-ins. Each release records `released_by` as `owner_signin`,
+`file_event`, `keychain_event`, `turn_finished`, `startup` or `interval` in the
+structured log and in a companion resolution event for the one-time outage
+notice. An `interval` release proves a missing event path. Remove the fallback
+only after real external sign-ins on both machines release real held work through
+events within seconds; the required browser approval and expired login cannot be
+simulated by this change. Codex activation
 also restarts its App Server when no turns are running, because that server keeps its
 credential in memory. A failed activation leaves the queue untouched. Claude's macOS
-Keychain login uses the existing sign-in activation path and periodic held-work check
-rather than a credential file.
+Keychain login uses the existing sign-in activation path and Keychain change event.
 
 The first held input of an episode publishes one `provider_outage` event with an `auth`
 payload: account, machine and number of held inputs. Thinkering's existing notification

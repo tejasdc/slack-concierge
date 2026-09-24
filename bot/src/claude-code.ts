@@ -386,11 +386,12 @@ export function claudeCodeArgs(input: {
  * (bot/scripts/history-guard.ts); it travels here because Claude's own settings file is
  * machine-local, so every agent this owner starts carries it on either machine.
  */
+const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
 const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }],
+    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.ts"`, timeout: 20 }] }],
+    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"`, timeout: 20 }] }],
 } });
 
 export async function runClaudeCodeTurn(input: {

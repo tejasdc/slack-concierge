@@ -557,6 +557,11 @@ authorization or a change to the default rapid-iteration policy.
   activation or a credential file change. A provider-free outage event tells Tejas once
   which account and machine stopped and how much work is waiting. Ambiguous or worked-on
   turns remain outside this path. See [provider usage](docs/architecture/PROVIDER-USAGE.md).
+  Owner sign-in, add and switch activate directly; external credential files and the Mac
+  login Keychain use filesystem events, and a deferred Codex activation follows the
+  execution-change event. Startup checks once. The three-minute fallback exists only
+  while work is held until real external sign-ins on both machines prove event release;
+  every release records its signal in the log and the outage resolution event.
 - A confirmed provider refusal after assistant output or tools keeps the failed turn in
   history and queues one new service continuation under that turn's identity. The original
   input is never replayed: the next run checks its transcript and external effects before
@@ -611,6 +616,12 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
+- Deployment builds use only the pushed desired commit in the deployment-owned source
+  under `/var/lib/slack-concierge-deployment/source`; the agent checkout is not pulled,
+  stashed, checked for cleanliness or used by live router and hook launchers. Installed
+  release bundles own those entrypoints. Shared-checkout preservation events are
+  historical; the Codex worktree guard remains for concurrent agent writes. See the
+  [deployment runbook](docs/runbooks/DEPLOYMENT.md).
 - **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
   amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
   commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:

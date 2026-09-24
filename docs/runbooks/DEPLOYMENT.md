@@ -5,33 +5,30 @@ copy or edit project files on the service peer. A signed GitHub `push` webhook
 for `tejasdc/slack-concierge` `main` advances one durable desired-state record,
 and the event-driven worker creates at most one active deployment run when that
 commit differs from the immutable last-known-good release. The detached runner
-waits for active provider and capture work, pulls with rebase, installs the
-frozen dependency graph, activates an immutable candidate, restarts Concierge,
-and proves the exact runtime before success. A terminally failed candidate
-stays blocked until a later signed push advances the desired state. A failed
-Git update gets one new attempt after the shared checkout becomes clean; the
-owner checks once a minute even without a new push.
+waits for active provider and capture work, fetches the recorded pushed commit
+into `/var/lib/slack-concierge-deployment/source`, installs the frozen dependency
+graph, activates an immutable candidate, restarts Concierge, and proves the
+exact runtime before success. Only the deployment system writes that source.
+The agent checkout under `/root/workspace` is never an update input. A terminally
+failed candidate stays blocked until a later signed push advances the desired
+state or the existing repair owner resolves it. There is no checkout cleanliness
+poll or automatic retry based on agent work in a shared checkout.
 Startup resumes already accepted durable work but deliberately does not scan Git
 history for pushes received while Concierge was offline.
 
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
-Before the canonical checkout pulls, the runner moves all modified and untracked
-files into a timestamped `preserved/deploy-*` branch and a linked worktree under
-`.worktrees/`. It stages and commits the exact captured state there, verifies
-the worktree is clean, then records the branch, worktree, commit and file list in
-the durable deployment run. It immediately posts a service message in the
-native Inbox and raises it to Needs attention through the same path as the key
-change notice. The message gives the file list, branch and worktree and says
-when the editing session cannot be established. No provider turn or Thinkering
-UI change is required for the notice. The Git stash remains until that proof
-succeeds; if preservation fails, the runner stops and attempts to restore the shared
-checkout, retaining the stash for manual recovery. The structured unit journal
-prints the same location and file list immediately. Ignored files are outside
-Git's untracked set. A writable delegated Codex CLI command in a canonical
-checkout is refused by the managed pre-command hook with `wt <task-name>`;
-read-only review commands remain allowed.
+The runner creates the deployment source from the fixed GitHub origin on its first
+run, verifies its origin on later runs, fetches `main`, checks that the recorded
+desired commit belongs to pushed `main`, and checks out that exact SHA. The
+immutable release bundles the router commands, service-failure notice, and the
+Claude and Codex hooks; the installed launchers run those bundles from `current`, not
+source files in an agent checkout. The service working directory is the installed
+release. Git history and deployment repair read the deployment-owned source.
+The old shared-checkout preservation events remain historical records only.
+The Codex worktree guard still refuses writable delegated work in the canonical
+agent checkout and continues to protect concurrent agents.
 
 The repair architecture is documented in
 [trusted-root deployment repair](../architecture/DEPLOYMENT-REPAIR.md).

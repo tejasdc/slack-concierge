@@ -15,7 +15,7 @@ ExecStartPre=/usr/bin/install -d -m 0700 -o root -g root /root/.codex/app-server
 ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start
 ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover
 ExecStart=/usr/local/lib/slack-concierge-deployment/launch
-WorkingDirectory=/root/workspace/slack-concierge
+WorkingDirectory=/var/lib/slack-concierge-deployment/current
 Restart=always
 RestartSec=5
 TimeoutStopSec=5min
@@ -23,6 +23,8 @@ KillMode=mixed
 LimitNOFILE=1048576
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+Environment=CONCIERGE_REPO=/var/lib/slack-concierge-deployment/source
+Environment=CONCIERGE_REPOSITORY_ROOT=/var/lib/slack-concierge-deployment/source
 Environment=CONCIERGE_SESSION_CAPABILITY_SOCKET=/run/thinkering/session-capabilities.sock
 Environment=CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081
 Environment=CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=C0BNNP6U6GN,D0BMWUJ3RD5,slack-inbox
