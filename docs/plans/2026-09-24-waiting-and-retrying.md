@@ -105,6 +105,47 @@ Claude, the better answer is usually no waiter at all: start the work itself wit
 `pgrep -f` or `pkill -0 -f`, or around `ps … | grep`). The refusal says why the pattern matches its
 own loop and gives the `wait --pid` command. A one-off `pgrep -f` outside a loop stays allowed.
 
+## Reconciled with Tejas's spec (report 8262a191, 2026-09-24 04:33 UTC)
+
+His written spec (verbatim in `2026-09-24-retry-spec-tejas.md`) is the requirement for the retry
+half. It came after the design below and is the authority where the two differ. What changed:
+
+- **Names and homes.** The primitive is `withRetry` in `bot/src/retry.ts`. Every named policy lives
+  in `bot/src/retry-policies.ts` (peer reply, peer notify, provider request, external HTTP, deploy
+  health probe, capture delivery, notice delivery, observers), with no numbers at call sites. This
+  replaces the `retry-policy.ts` named below.
+- **A policy is bounded twice**: max attempts and a hard max-age deadline, plus base, cap and a
+  jitter fraction (±25% by default; the peer-reply policy is 1 s to 60 s, ±25%, 15 minutes).
+- **The classifier returns `transient | permanent | unknown`**, as he wrote. `permanent` is the
+  `refused` kind below. `unknown` retries within the budget and escalates when the budget ends. The
+  queue holds for signals (`auth_wait`, `usage_wait`) stay as they are, for provider turns; they are
+  not HTTP retries.
+- **Every exhausted budget emits `retry_budget_exhausted`** (operation, attempts, elapsed, last
+  error) and also sends the one-time Inbox notice below, so it surfaces within minutes.
+- **Peer replies**: a response that arrives but does not match `{eventId, recorded}` is version
+  skew. It is permanent after a small attempt count, never retried for ever. At 15 minutes the reply
+  row gets the new terminal state `failed_deadline`, the owner emits
+  `session_peer_reply_deadline_exhausted`, and attention is raised on the parent request. That
+  terminal state goes through the existing settled-request machinery and emits the return to the
+  requester, like any settlement. On his open points: the 15-minute limit stays, and the thnkr.ing
+  "can't reach the server, reconnecting…" loop is in scope.
+- **Enforcement, in the skill's order.** Derive: the wake loop registers retries only through a
+  `Retryable<T>` that carries a policy, so a retry without one does not compile. Publish: the
+  primitive and policies are exported for other packages to import. Refuse: a lint rule, run with
+  the build and not as a test, rejects a raw `setTimeout` inside `catch`, a `status='pending'`
+  reset re-read by a wake loop, and `queueMicrotask`-based retry outside `retry.ts`, each exception
+  named with its reason. **Deliberate-break proof**: add a call site with no policy and an unbounded
+  policy, show the build or lint rejecting both in `tmp/reviews/retry-guard-proof.md`, then remove
+  them.
+- **Across repositories.** TypeScript cannot import across the three repositories without a
+  package, so the "mirrored or re-exported" branch of his spec applies. Thinkering keeps one
+  `withRetry` and one policies module for its own client sites, with the same shape and the same
+  lint rule. remote-box's Python poller keeps its own bounded attempt state (fad4133). This is one
+  home per repository, not one for all three, and it is the deviation to name in the final report.
+- **Inventory**: `tmp/reviews/retry-inventory.md` (GPT-6 Luna, 2026-09-24) holds each site with its
+  current bound and risk. Section 4 is its summary. It missed the peer-reply loop that caused the
+  incident (`session-peers.ts`, `report()`), which is migrated first.
+
 ## 3. One retry policy
 
 One module, `bot/src/retry-policy.ts`, used by every retrying site. A site describes its failure;
