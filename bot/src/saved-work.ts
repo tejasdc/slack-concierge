@@ -129,6 +129,11 @@ export function yieldBankedTurn(turnId:number,owner:string,nextMs=Date.now()+3*6
     dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL,
     ended_at=NULL
     WHERE id=? AND owner_instance_id=? AND status='running' AND saved_kind='banked'
+      -- A Stop he asked for must stay stopped. The same cancellation arrives here whether the
+      -- system paused its own work at a boundary or he pressed Stop, and only this tells them
+      -- apart: without it his Stop is discarded on the next claim and a manually started run
+      -- restarts itself minutes later, spending the allowance he just declined.
+      AND stop_requested_at IS NULL
       AND provider_admission_intended_at IS NULL`).run(nextMs,turnId,owner);
   if(result.changes)executionChanged();
   return !!result.changes;
