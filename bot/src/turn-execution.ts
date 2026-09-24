@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {currentAccount} from './provider-accounts';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
+import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -941,6 +942,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivery_stopped", turnId: input.turnId };
     }
     if (error instanceof ProviderTurnCancelledError && !deliveryStarted) {
+      // A banked run cancelled before the provider was ever asked did no work and left no
+      // effects, so it returns to waiting rather than being destroyed. Losing it here meant a
+      // deployment drain landing in a run's first seconds threw the work away and then told
+      // him to inspect a provider run that never started.
+      if (yieldBankedTurn(input.turnId, input.ownerInstanceId)) {
+        log("info", "banked_turn_yielded_before_admission", { turn_id: input.turnId });
+        return { status: "cancelled", turnId: input.turnId };
+      }
       await progressController?.finish("cancelled");
       const terminalProjectionOutcome = await reportTerminalAgentStatusFailure(
         await setAgentSessionStatus("active"),

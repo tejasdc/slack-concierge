@@ -5,7 +5,6 @@ import {usageForecasts} from './provider-usage-forecast';
 import type {ProviderKey} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {recordTurnOutcome} from './session-turn-outcome';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
@@ -145,8 +144,12 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
       ?'Banked work stopped for a deployment after it started. Check what the agent completed before deciding how to continue.'
       :'Banked work stopped at its allowance boundary after it started. Check what the agent completed before deciding how to continue.';
     db.query(`UPDATE turns SET agent_text=COALESCE(agent_text,?) WHERE id=? AND status='cancelled'`).run(question,turnId);
-    recordTurnOutcome({eventId:`saved-yield:${turnId}`,sessionId:row.session_id,turnId,inputId:row.accepted_input_id,
-      outcome:'needs_you',text:question});
+    // Deliberately not an attention declaration. A boundary stop happens at 3am, and a
+    // needs_you here reaches the notifier and wakes him for something he cannot act on
+    // until morning. The design says a banked run leaves a record, not a notification;
+    // the row reads it from this event and the retained text above.
+    recordSessionEvent({eventId:`saved-yield:${turnId}`,sessionId:row.session_id,inputId:row.accepted_input_id,
+      turnId,kind:'saved_control',payload:{action:'stopped_at_boundary',reason,text:question}});
     return true;
   })();
   return changed;
@@ -241,9 +244,15 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
 export function savedTurn(turnId:number):SavedTurn|null {
   return db.query('SELECT * FROM turns WHERE id=? AND saved_kind IS NOT NULL').get(turnId) as SavedTurn|null;
 }
+/**
+ * The saved turn a session is *currently* waiting on, and nothing else. A session that once
+ * held saved work and has since run it is an ordinary session again: keeping the finished row
+ * here made `savedWork` non-null forever, which silently removed that session's running
+ * indicator for the rest of its life.
+ */
 export function savedSessionTurn(sessionId:number):SavedTurn|null {
   return db.query(`SELECT * FROM turns WHERE session_id=? AND saved_kind IS NOT NULL
-    ORDER BY CASE WHEN status='queued' THEN 0 ELSE 1 END,id DESC LIMIT 1`).get(sessionId) as SavedTurn|null;
+    AND status='queued' ORDER BY id DESC LIMIT 1`).get(sessionId) as SavedTurn|null;
 }
 export function waitingSavedWork():SavedTurn[] {return savedRows();}
 
