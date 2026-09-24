@@ -3617,6 +3617,9 @@ function scheduleDeploymentWork(reason: DeploymentWorkReason) {
   void deploymentWorkRunner.request(reason);
 }
 
+// A cleared checkout blocker has no GitHub push to wake the durable owner.
+setInterval(() => scheduleDeploymentWork("state-change"), 60_000);
+
 async function reconcilePriorInstanceTurns() {
   if (runtime.ownership.deployment) {
     const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);

@@ -368,6 +368,14 @@ authorization or a change to the default rapid-iteration policy.
 - Use isolated task worktrees for concurrent changes. Code and host configuration travel
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
+- The managed pre-command guard refuses writable delegated Codex CLI launches from a
+  repository's canonical checkout and gives `wt <task-name>` as the recovery command.
+  Read-only reviews remain allowed. During deployment, the runner commits modified
+  and untracked shared-checkout files to a timestamped preservation branch and linked
+  worktree before pulling and posts the file list and location to the native Inbox's
+  Needs attention path without a provider turn; a failed preservation stops the
+  update with its Git stash retained. A recorded Git-update failure gets one retry
+  after the checkout is clean, checked by the owner once per minute without a push.
 - **Every commit carries an `Update-note:` line — one sentence in product language about what
   that change does, addressed to him, no code terms. Documentation is included: an instruction
   change alters how agents behave, which is exactly what he wants to know about. `internal` is

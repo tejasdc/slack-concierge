@@ -201,3 +201,40 @@ export function toolCommand(input: Record<string, any>): string | null {
   if (typeof input.cmd === 'string') return input.cmd;
   return null;
 }
+
+/** A writable delegated Codex process must not inherit a repository's canonical checkout. */
+export function writableCodexLaunchDirectory(source: string, cwd: string, home = process.env.HOME ?? '/', depth = 0): string | null {
+  if (depth > 4) return null;
+  let dir = cwd;
+  for (const command of parseShell(source)) {
+    for (const substitution of command.substitutions) {
+      const nested = writableCodexLaunchDirectory(substitution, dir, home, depth + 1);
+      if (nested) return nested;
+    }
+    const words = command.words.map(word => word.text);
+    if (words[0] === 'cd') {
+      dir = resolveDir(dir, words[1] ?? home, home);
+      continue;
+    }
+    let codex = 0;
+    while (codex < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[codex]!)
+      || WRAPPERS.has(words[codex]!.split('/').pop()!))) codex++;
+    if (SHELLS.has(words[codex]?.split('/').pop() ?? '')) {
+      const flag = words.findIndex(word => /^-[a-z]*c[a-z]*$/.test(word));
+      for (const script of flag >= 0 ? [words[flag + 1] ?? ''] : command.bodies) {
+        const nested = writableCodexLaunchDirectory(script, dir, home, depth + 1);
+        if (nested) return nested;
+      }
+      continue;
+    }
+    if (words[codex]?.split('/').pop() !== 'codex') continue;
+    const args = words.slice(codex + 1);
+    if (!args.includes('exec') || args.includes('resume')) continue;
+    const sandbox = args.findIndex(word => word === '-s' || word === '--sandbox');
+    const mode = sandbox < 0 ? null : args[sandbox + 1];
+    if (mode === 'read-only') continue;
+    const workdir = args.findIndex(word => word === '-C' || word === '--cd');
+    return workdir < 0 ? dir : resolveDir(dir, args[workdir + 1] ?? '.', home);
+  }
+  return null;
+}

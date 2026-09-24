@@ -85,6 +85,51 @@ verify_git_origin() {
   return 1
 }
 
+# Move local work into its own durable Git branch before updating the shared checkout.
+# Keep the stash until the worktree commit has been verified; any failed step stops the rollout.
+preserve_shared_checkout() {
+  [ -n "$(git status --porcelain --untracked-files=all)" ] || return 0
+  local stamp branch location stash_before stash_after preserved_commit files files_path
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  branch="preserved/deploy-$(hostname -s | tr -c '[:alnum:]-' '-')-${stamp}-${DEPLOY_RUN_ID:-operator}"
+  location="$REPO/.worktrees/${branch//\//-}"
+  files=$(git status --porcelain --untracked-files=all)
+  stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+  git stash push --include-untracked -m "$branch" >/dev/null || return 1
+  stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+  if [ -z "$stash_after" ] || [ "$stash_after" = "$stash_before" ] || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+    echo "DEPLOY FAILED: local work was not fully captured; inspect the retained stash before continuing." >&2
+    return 1
+  fi
+  if ! git worktree add -b "$branch" "$location" HEAD \
+    || ! git -C "$location" stash apply --index "$stash_after" \
+    || ! git -C "$location" add -A \
+    || ! git -C "$location" commit -m "Preserve shared checkout work before deployment" -m "Update-note: Work left in the shared checkout is saved on its own branch before the pending update proceeds." \
+    || [ -n "$(git -C "$location" status --porcelain --untracked-files=all)" ]; then
+    git stash apply --index "$stash_after" || true
+    echo "DEPLOY FAILED: preservation did not produce a clean committed branch; the stash remains available." >&2
+    return 1
+  fi
+  preserved_commit=$(git -C "$location" rev-parse HEAD)
+  [ -n "$preserved_commit" ] || return 1
+  echo "PRESERVED SHARED CHECKOUT: branch=$branch worktree=$location commit=$preserved_commit"
+  printf 'PRESERVED FILES:\n%s\n' "$files"
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    files_path=$(mktemp "$STATE_DIR/checkout-preserved.XXXXXXXX")
+    printf '%s\n' "$files" > "$files_path"
+    if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" preserved-checkout \
+      --run-id "$DEPLOY_RUN_ID" --branch "$branch" --worktree "$location" \
+      --commit "$preserved_commit" --files-path "$files_path"; then
+      unlink "$files_path"
+      git stash apply --index "$stash_after" || true
+      return 1
+    fi
+    unlink "$files_path"
+  fi
+  # The committed branch is authoritative now; dropping the redundant stash is safe.
+  if [ "$(git rev-parse -q --verify refs/stash 2>/dev/null || true)" = "$stash_after" ]; then git stash drop stash@{0} >/dev/null; fi
+}
+
 validate_bootstrap_handoff() {
   local token_file expected_token expected_commit stored_token stored_commit current_commit
   token_file="$STATE_DIR/bootstrap-deploy.token"
@@ -818,6 +863,8 @@ deploy() {
     CURRENT_DEPLOY_STAGE=git-update
     DEPLOY_FAILURE_REASON="The latest origin refs could not be fetched."
     git fetch origin
+    DEPLOY_FAILURE_REASON="Shared checkout preservation failed; the original work remains in the checkout or Git stash for recovery."
+    preserve_shared_checkout
     DEPLOY_FAILURE_REASON="The canonical checkout could not be rebased cleanly onto origin/main."
     if ! git pull --rebase origin main; then
       echo "DEPLOY FAILED: git pull could not rebase cleanly. Fix it in git; never copy files around git." >&2
