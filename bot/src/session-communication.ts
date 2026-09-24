@@ -442,7 +442,7 @@ export class SessionCommunicationCoordinator {
             if(turnDeclaredByAction(actor.turn))
                 throw new Error('This turn already declared its outcome by action.');
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
-                inputId:actor.inputId,outcome:input.outcome,text:content||null});
+                inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             return {...receipt,duplicate:false};

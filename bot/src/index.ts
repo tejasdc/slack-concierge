@@ -331,7 +331,7 @@ import {startBackgroundJobWatch} from './background-waits';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {migrateInboxAttention,migrateInboxTopics} from './session-topics';
+import {expireUnreadableReadingItems,migrateInboxAttention,migrateInboxTopics} from './session-topics';
 import {CodexSessionObserver} from './codex-session-observer';
 import {warmSpeechEngine} from './speech-engine';
 
@@ -495,6 +495,8 @@ installSessionProjection(sessionExecutionHost.owner);
 // guarded by its own event and does nothing once it has run.
 try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
 try {migrateInboxAttention();} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
+// A reading item with nothing to read is ended with its reason; new ones are refused at the door.
+try {expireUnreadableReadingItems();} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });
