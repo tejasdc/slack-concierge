@@ -1,11 +1,11 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
-import {dirname,join} from 'node:path';
+import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
+import {dirname,join,relative,sep} from 'node:path';
+import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
-import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -617,9 +617,11 @@ export class SessionOwner {
         sequence:saved.saved_sequence,status:saved.status}:null;})(),
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
+      resumeMachine:origin==='imported'&&['claude-code','codex'].includes(session.provider_id)?(typeof meta.project==='string'?this.peers?.instanceForPath(meta.project):null)??this.selfMachine:null,
+      continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
+      capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
   list(){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).map(row=>this.view(row));}
   /**
@@ -646,7 +648,7 @@ export class SessionOwner {
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
-    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect','outage-choice'].includes(input.kind);
+    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
@@ -1785,15 +1787,57 @@ export class SessionOwner {
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
-  /** A peer session continued here from its archived transcript; the peer's own session stays parked. */
-  resurrect(body:unknown) {
+  /** Bind an existing provider transcript on the machine whose folder contains it. */
+  private resumeNative(body:unknown) {
+    const input=object(body);only(input,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer']);const action=actionId(input);
+    const provider=input.provider,nativeId=input.nativeId,cwd=input.project;
+    if(!['claude-code','codex'].includes(provider)||typeof nativeId!=='string'||!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(nativeId)||typeof cwd!=='string'||!cwd.startsWith('/')||typeof input.title!=='string'||!input.title.trim())throw new SessionOwnerError('This conversation has no usable native history identity.',409,'NATIVE_HISTORY_UNAVAILABLE');
+    const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
+    if(prior){if(prior.kind!=='resurrect-native'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {session:this.view(getSessionById(prior.session_id)!),reused:true};}
+    const existing=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
+    if(existing)return {session:this.view(existing),reused:true};
+    let actual:string,root:string;
+    try{actual=realpathSync(cwd);root=realpathSync(this.defaultCwd);if(!statSync(actual).isDirectory()||(!relative(root,actual)||relative(root,actual).startsWith('..'+sep)||relative(root,actual)==='..'))throw new Error('outside workspace');}
+    catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
+    const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
+    const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
+    if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions'))))throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+    const configured=resolveProviderDefault(configuredProviderDefault(null));
+    const defaultModel=provider==='codex'?resolveProviderAlias('cx'):configured.provider==='claude-code'?configured:resolveProviderAlias('cc-opus');
+    const created=db.transaction(()=>{
+      const duplicate=db.query("SELECT * FROM sessions WHERE provider_id=? AND agent_session_uuid=? AND status<>'archived' ORDER BY id LIMIT 1").get(provider,nativeId) as SessionRow|null;
+      if(duplicate)return {session:duplicate,reused:true};
+      const session=createNativeSession(provider,{origin:'native',purpose:'chat',title:input.title.trim().slice(0,120),cwd,project:cwd,model:defaultModel.model,reasoningEffort:defaultModel.reasoning_effort,
+        resurrection:{peer:input.sourcePeer??this.selfMachine,sessionId:input.sourceSessionId,address:input.sourceAddress,threadId:nativeId,archivedAt:new Date().toISOString(),archivePath:'',resurrectedAt:new Date().toISOString(),kind:'continued-in-place'}});
+      bindSessionProvider(session.id,provider,nativeId);
+      this.saveControl(session,'resurrect-native',input,()=>({sessionId:`concierge:${session.id}`}));
+      return {session:getSessionById(session.id)!,reused:false};
+    })();
+    return {session:this.view(created.session),reused:created.reused};
+  }
+  /** Continue peer archive copies or imported native conversations through one control. */
+  async resurrect(body:unknown) {
     const input=object(body);only(input,['clientActionId','address']);const action=actionId(input);
     const peers=this.communication?.peersOrNull();
-    if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
-    const remote=peers.splitAddress(input.address);
-    if(!remote)throw new SessionOwnerError('Resurrection takes a peer session address (<peer>/session:…).');
+    const remote=peers?.splitAddress(input.address);
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
-    if(prior){if(prior.kind!=='resurrect'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {session:this.view(getSessionById(prior.session_id)!),operation:this.receipt(prior)};}
+    if(prior){if(prior.kind!=='resurrect'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);const saved=JSON.parse(prior.receipt_json??'{}').result;return {session:saved?.session??this.view(getSessionById(prior.session_id)!),operation:this.receipt(prior)};}
+    if(!remote){
+      const source=resolveSessionAddress(input.address);
+      if(!source||!this.view(source).capabilities.resume)throw new SessionOwnerError('This imported conversation cannot be continued from its original history.',409,'CAPABILITY_UNAVAILABLE');
+      const metadata=sessionMetadata(source),project=metadata.project??metadata.source?.project,nativeId=metadata.source.nativeId;
+      if(typeof project!=='string'||!project.startsWith('/'))throw new SessionOwnerError('The original folder was not recorded for this conversation.',409,'RESUME_FOLDER_UNAVAILABLE');
+      const machine=peers?.instanceForPath(project)??null;
+      const packet={clientActionId:`native:${action}`,provider:source.provider_id,nativeId,project,title:this.catalogueLabels(source).title,sourceAddress:input.address,sourceSessionId:`concierge:${source.id}`,sourcePeer:this.selfMachine};
+      let target:any;
+      if(machine){
+        try{const value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',packet);target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};}
+        catch(error){if(error instanceof PeerError&&error.kind==='unreachable')throw new SessionOwnerError(`${machine} is not answering. This conversation lives in ${project} there; try again when it is on.`,424,'MACHINE_UNREACHABLE');if(error instanceof PeerError)throw new SessionOwnerError(error.message,error.status??502,error.code??'PEER_REFUSED');throw error;}
+      }else target=this.resumeNative(packet).session;
+      const operation=this.saveControl(source,'resurrect',input,()=>({sessionId:target.id,session:target}));
+      return {session:target,operation:this.receipt(operation)};
+    }
+    if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
     const created=peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid)});
     const session=getSessionById(created.sessionId)!;
     const operation=this.saveControl(session,'resurrect',input,()=>({sessionId:`concierge:${session.id}`,reused:created.reused}));
@@ -2045,7 +2089,8 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
-      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=this.resurrect(body);
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=await this.resurrect(body);
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=this.resumeNative(body);
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();

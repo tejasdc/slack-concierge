@@ -579,9 +579,17 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
+        const actor = this.actor(input.source);
+        action(input.action_id);
+        text(input.text);
         // A discovered address already says where the session lives.
         const remote = this.dependencies.peers?.splitAddress(input.address);
-        if (remote) {
+        if (input.resurrect && !remote) {
+            const continued=await this.dependencies.owner.resurrect({clientActionId:`ask-resurrect:${hash(`${actor.session}:${actor.turn}:${actor.inputId??''}:${input.action_id}`)}`,address:input.address});
+            const address=continued.session.address;
+            const target=this.dependencies.peers?.splitAddress(address);
+            input={...input,address:target?.address??address,peer:target?.peer,resurrect:undefined};
+        } else if (remote) {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
             if (input.resurrect) {
                 // Continue the peer session here, from its archived transcript, as a distinct session.
@@ -591,10 +599,7 @@ export class SessionCommunicationCoordinator {
                 const local = getSessionById(created.sessionId)!;
                 input = {...input, peer: undefined, address: sessionAddress(local), resurrect: undefined};
             } else input = {...input, peer: remote.peer, address: remote.address};
-        } else if (input.resurrect) throw new Error('--resurrect applies to a peer session address (<peer>/session:…).');
-        const actor = this.actor(input.source);
-        action(input.action_id);
-        text(input.text);
+        }
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
         const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);

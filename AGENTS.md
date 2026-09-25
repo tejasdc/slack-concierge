@@ -417,6 +417,9 @@ authorization or a change to the default rapid-iteration policy.
   conversations; discovery never promotes evidence into active work. Reconstructed
   consultations and explicitly bound imports remain conversations. The wire contract
   owns the classification and backward-compatible surface rule.
+  An imported Claude/Codex source with a native UUID may continue through resurrection
+  on the machine holding its recorded folder and provider transcript. The owning machine
+  binds one native session to that UUID; peer archive resurrection still makes a distinct copy.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.
 - ChatGPT uses the existing private profile, transcript custody and browser capability.

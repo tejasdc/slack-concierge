@@ -32,8 +32,8 @@ export type NativeSessionMetadata = {
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
   lineage?:{boundary:string;sourceVersion:string|null};
-  /** A new process on this instance continuing a peer session's archived transcript; the original stays parked on its peer. */
-  resurrection?:{peer:string;sessionId:string;address:string;threadId:string;archivedAt:string;archivePath:string;resurrectedAt:string};
+  /** Native continuation stays on its owning machine; archive resurrection remains a distinct copy. */
+  resurrection?:{peer:string;sessionId:string;address:string;threadId:string;archivedAt:string;archivePath:string;resurrectedAt:string;kind?:'continued-in-place'|'archive-copy'};
 };
 /** Request outcomes that settle without confirmed success, so dependents wait for the requester. */
 export const HOLDING_OUTCOMES=['unanswered','decision_needed','undetermined'];

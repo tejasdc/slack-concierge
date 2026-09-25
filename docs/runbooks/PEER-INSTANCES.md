@@ -291,6 +291,13 @@ by one of the functions above, never by a second, peer-only projection.
   `~/.codex/sessions/YYYY/MM/DD/`) and the session binds the provider's native resume by
   that UUID; the project is the same folder name on this machine. The Mac's original
   session stays parked and is never merged.
+- Imported Claude/Codex history with a provider-native UUID uses the same resurrection
+  action but continues on the machine that owns its recorded project path. That machine
+  requires the folder inside its workspace and the UUID in its own provider store, then
+  binds one session to that UUID. For an imported Mac terminal conversation, turn on the
+  Mac before continuing; the cloud archive alone cannot start this in-place conversation.
+  A repeated action opens the same bound session. A missing folder, native transcript or
+  unreachable Mac is a refusal with no new session.
 - Mac asleep or offline: `sessions ask` to a Mac address or `--peer mac` is accepted with
   status `queued_offline`; the exact delivery body is retained and handed over when the Mac
   answers again (every minute while something is owed), then the request proceeds as usual
