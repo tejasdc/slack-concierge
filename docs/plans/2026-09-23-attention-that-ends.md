@@ -49,7 +49,18 @@ marker adds nothing. When it did not, the entry is held **unfiled**, in no threa
 Being sorted as "Waiting for the router to file" with the thread its turn started from as a
 suggestion; the router files it (`topics file <topicId> --need <id>`, or `from` in a full
 declaration) and so can he, one tap. Guessing the thread from the input that started the turn is
-exactly what misfiled the Mac capture bar questions, so nothing guesses (Sol, finding 1). Outside
+exactly what misfiled the Mac capture bar questions, so nothing guesses (Sol, finding 1).
+**A service notice is the one exception, and the owner files it itself.** A notice the service
+publishes with no provider turn (`publishProviderFreeNotice`: a retry breaker tripping, a deploy
+failing, keys rotated) has no turn to derive anything from and no router turn that will ever see
+it, so held unfiled it would wait forever — the Codex App Server notice of 2026-09-25 did, and its
+notification opened on "not in a thread yet" (Tejas: "Where is this message? Why is it not in the
+thread?"). `fileServiceNotices` gives each one a thread the moment it exists: the open thread
+already titled by the notice's first sentence, else a new one so titled, with a reading item whose
+text is the notice itself (`readsFor` reads a service notice as its own answer). It runs right after
+an in-process publish, at startup for notices another process wrote, and when a message is resolved
+to its thread, so a tap can never arrive before the thread. Nothing here guesses: the notice is its
+own thread root, and its title is its own words. Outside
 the Inbox nothing changes: a worker session is one conversation and its needs stay session-level.
 
 ### Ends, and the signal that moves each

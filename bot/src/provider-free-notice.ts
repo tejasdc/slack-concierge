@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite";
 
-/** Publish one service-authored Inbox message and reading notice without starting a provider. */
+/** The scope every service notice input carries; the one mark that says "nobody's turn wrote this". */
+export const SERVICE_NOTICE_SCOPE = "service:provider-free-notice";
+
+/**
+ * Publish one service-authored Inbox message and reading notice without starting a provider.
+ * The notice has no turn behind it, so nothing would ever file it into a thread; the owner files
+ * it itself (`fileServiceNotices` in session-topics.ts) — a caller inside the Concierge process
+ * calls that right after publishing, and a separate process relies on the running owner doing
+ * it at startup and when the message is resolved to its thread.
+ */
 export function publishProviderFreeNotice(db: Database, input: {
   key: string;
   text: string;
@@ -16,7 +25,7 @@ export function publishProviderFreeNotice(db: Database, input: {
   return db.transaction(() => {
     const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
       (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
-      VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, "service:provider-free-notice", eventId,
+      VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, SERVICE_NOTICE_SCOPE, eventId,
         "input", "service", JSON.stringify({ text: input.text, delivery: "queue" }),
         JSON.stringify({ state: "completed", imported: true }));
     if (inserted.changes !== 1) return false;

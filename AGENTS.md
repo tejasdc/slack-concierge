@@ -370,7 +370,11 @@ authorization or a change to the default rapid-iteration policy.
   topic, with a kind (decision or reading), an owner and an explicit recorded end; a
   outcome the run did not declare as a question is held unfiled until the router files it,
   never guessed into a thread ([design](docs/plans/2026-09-23-attention-that-ends.md),
-  [contract](docs/contracts/native-inbox.md#topics)). The legacy marker is stripped before display; a turn without a declaration is
+  [contract](docs/contracts/native-inbox.md#topics)). A service notice (no provider turn
+  behind it) is the exception: the owner files it into a thread titled by its own first
+  sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
+  see it and a notification must always open a thread (2026-09-25, the Codex App Server
+  notice that opened on "not in a thread yet"). The legacy marker is stripped before display; a turn without a declaration is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to

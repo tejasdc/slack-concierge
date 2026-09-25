@@ -1,6 +1,7 @@
 import { db } from "./state-database";
 import { log } from "./log";
 import { publishProviderFreeNotice } from "./provider-free-notice";
+import { fileServiceNotices } from "./session-topics";
 
 /** Stable key is a site plus target. The Inbox ledger deduplicates the notice across restarts. */
 export function publishRetryBreakerNotice(input: {
@@ -18,6 +19,8 @@ export function publishRetryBreakerNotice(input: {
       payload: { key: input.key, what: input.what, reason: input.reason, sinceMs: input.sinceMs, restartSignal: input.restartSignal },
     });
     log(recorded ? "error" : "info", "retry_breaker_notice", { key: input.key, recorded });
+    // The notice has its thread before its notification can be tapped.
+    if (recorded) fileServiceNotices();
     return true;
   } catch (error) {
     log("error", "retry_breaker_notice_failed", { key: input.key, error: String(error) });

@@ -1,8 +1,9 @@
 import {randomUUID} from 'node:crypto';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
-import {capturePresentation,inboxMessage,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
+import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
 import type {OpenNeed} from './session-turn-outcome';
+import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 
 /**
@@ -119,7 +120,24 @@ export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedE
     return found;
   }
   const turnId=turnOfQuestion(question);
-  return turnId===null?[]:readsForTurn(topic.session_id,turnId,roots);
+  const fromTurn=turnId===null?[]:readsForTurn(topic.session_id,turnId,roots);
+  return fromTurn.length?fromTurn:serviceNoticeReads(topic.session_id,question.sources??[],roots);
+}
+/** An input the service published as a notice: no turn wrote it and no agent will answer it. */
+const isServiceNotice=(inputId:string)=>getAcceptedSessionInput(inputId)?.scope===SERVICE_NOTICE_SCOPE;
+/**
+ * A service notice is written by no turn, so the notice itself is what he reads. Only an input
+ * the service published as a notice counts here — never his own capture, and never a worker's
+ * return, whose thread has a turn to answer in.
+ */
+function serviceNoticeReads(sessionId:number,sources:string[],roots:ReadonlySet<string>):ReadingText[] {
+  const found:ReadingText[]=[];
+  for(const source of sources) {
+    if(!isServiceNotice(source)||!roots.has(inboxThreadRoot(sessionId,source)??source))continue;
+    const message=inboxMessageById(sessionId,source) as {content?:string;createdAt?:string}|null;
+    if(message&&String(message.content??'').trim())found.push({messageId:source,text:String(message.content),at:message.createdAt??''});
+  }
+  return found;
 }
 const NOTHING_TO_READ='Nothing to read: the turn that raised this posted nothing into this thread and left no closing text there. Post the answer first (sessions post), then declare it.';
 /** A reading item still unread and with something to read: it is listed for him, counted separately,
@@ -877,7 +895,10 @@ export function resolveTopicMessage(messageId:string) {
   if(typeof messageId!=='string'||!messageId)throw new TopicError('Name one exact Inbox message.');
   refreshRootMemo();
   const root=rootOf(session.id,messageId);
-  const topicId=root?topicOfRoot(root):null;
+  let topicId=root?topicOfRoot(root):null;
+  // A service notice published by another process has its thread made here, at the latest, so
+  // the tap that opens it never lands before the thread exists.
+  if(!topicId&&root&&isServiceNotice(root)) {fileServiceNotices();topicId=topicOfRoot(root);}
   if(!topicId)return {topic:null,root};
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   return {topic:topicSummary(topicRow(topicId),session,index,work,read),root};
@@ -1845,6 +1866,59 @@ export function expireUnreadableReadingItems() {
   })();
   if(unreadable.length)log('info','inbox_unreadable_reading_items_expired',{session_id:session.id,expired:unreadable.length,question_ids:unreadable.map(question=>question.questionId)});
   return {expired:unreadable.length};
+}
+/**
+ * A service notice has a thread from the moment it exists. Nobody's turn wrote it, so the
+ * router never handles it and nothing would file it: the Codex App Server notice of 2026-09-25
+ * sat under "being sorted", and its notification opened on "not in a thread yet" (Tejas: "Where
+ * is this message? Why is it not in the thread? Why are you not able to link it?"). The owner
+ * files each one itself — into the open thread already titled by the notice's first sentence,
+ * else a new thread with that title — as a reading item whose text is the notice. It runs after
+ * a notice is published in this process, at startup for notices another process published, and
+ * when a message is resolved to its thread. Safe to run twice: a filed notice is no longer
+ * unfiled. Notices never sit in "being sorted" for him or for the router.
+ */
+export function fileServiceNotices():{filed:number} {
+  const session=inboxSession();
+  if(!session)return {filed:0};
+  refreshRootMemo();
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const reason='A service notice is filed by the owner the moment it exists';
+  let filed=0;
+  for(const need of unfiledNeeds(session)) {
+    if(!isServiceNotice(need.inputId))continue;
+    const root=rootOf(session.id,need.inputId)??need.inputId;
+    const title=serviceNoticeTitle(need.question);
+    try {
+      db.transaction(()=>{
+        let topicId=topicOfRoot(root);
+        if(!topicId) {
+          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
+          const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):createTopic(session,by,{title,roots:[root],reason});
+          recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});
+          applyTopicChange(placed.change.kind,placed.change.payload);
+          topicId=placed.topic.topicId;
+        }
+        const topic=topicRow(topicId);
+        const question=fileNeed(session,topic,need.eventId,by);
+        const next=bumped(topic);
+        const payload={change:'filed',topicId,topic:next,questions:[question],by,reason,revision:next.revision};
+        recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:filed`,sessionId:session.id,inputId:need.inputId,kind:'topic_question',payload});
+        applyTopicChange('topic_question',payload);
+      })();
+      filed++;
+      log('info','inbox_service_notice_filed',{session_id:session.id,input_id:need.inputId,title});
+    } catch(error) {
+      log('error','inbox_service_notice_file_failed',{session_id:session.id,input_id:need.inputId,error:String(error)});
+    }
+  }
+  return {filed};
+}
+/** A notice's thread is titled by the first sentence of its first line: "Codex conversation observation stopped after repeated failures". */
+function serviceNoticeTitle(text:string):string {
+  const line=text.split('\n').map(part=>part.trim()).find(Boolean)??'Service notice';
+  const sentence=line.split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]+$/,'').trim();
+  return (sentence||line).slice(0,120);
 }
 function migrationDispatches(sessionId:number,root:string) {
   const dispatches:any[]=[];
