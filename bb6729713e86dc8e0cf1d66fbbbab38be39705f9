@@ -1,0 +1,1 @@
+Opening a thread and reading a conversation no longer wait several seconds: two lookups that had been scanning whole tables now use indexes.
