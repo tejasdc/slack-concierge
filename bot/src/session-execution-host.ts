@@ -1,7 +1,6 @@
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {existsSync,realpathSync} from 'node:fs';
 import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
@@ -32,7 +31,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
@@ -206,9 +205,11 @@ export class SessionExecutionHost {
       const profile=profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}:listProfiles(key).find(item=>item.id===profileId);
       if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
       if(profile.id!=='default'){
-        const home=accountHome(key,profile.id),projects=join(home,'projects');
-        try {if(!existsSync(join(home,'.credentials.json'))||realpathSync(projects)!==realpathSync(join(homedir(),'.claude','projects')))throw new Error('home incomplete');}
-        catch {throw new ProviderCapabilityUnavailableError('auth','That Claude account cannot open the shared conversation history.');}
+        const home=accountHome(key,profile.id);
+        if(!sharedClaudeHome(profile.label,home,true)){
+          log('warn','provider_profile_switch_refused',{provider:key,reason:'history_unavailable'});
+          return {status:'failed',detail:'That Claude account cannot open the shared conversation history. The previous account is still selected.'};
+        }
       }
       selectClaudeAccount(profile.id,profile.label);
       const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);

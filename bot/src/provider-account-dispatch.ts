@@ -11,11 +11,15 @@ import {claudeAccountCachedReset} from './provider-usage';
 import {claudeAccountSelection} from './provider-account-selection';
 
 /** Only launch from an extra home when it sees the same conversation history. */
-function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account))):string|null {
+export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false):string|null {
   const projects=join(home,'projects');
   try {
-    return existsSync(join(home,'.credentials.json'))&&existsSync(projects)
-      &&realpathSync(projects)===realpathSync(join(homedir(),'.claude','projects'))?home:null;
+    if(!existsSync(join(home,'.credentials.json')))return null;
+    const history=realpathSync(join(homedir(),'.claude','projects'));
+    // A legacy account may have been moved into its home without the history link.
+    // Prepare only for an explicit switch; never replace an existing path or touch a login.
+    if(prepare&&!existsSync(projects))symlinkSync(history,projects,'dir');
+    return realpathSync(projects)===history?home:null;
   } catch {return null;}
 }
 

@@ -538,7 +538,9 @@ authorization or a change to the default rapid-iteration policy.
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
 - For Claude, pressing an account selects the home for future turns. It never calls the
   credential-copy activation or snapshots the outgoing credential. The default login has
-  no override; extra accounts launch from their own homes with shared history. Codex's
+  no override; extra accounts launch from their own homes with shared history. Pressing
+  Switch repairs a missing shared-history link in an older home before selecting it;
+  an existing path to different history is refused without replacement. Codex's
   App Server activation still follows the established credential path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
 - A machine holds exactly one active Codex login, `~/.codex/auth.json`, and one home per

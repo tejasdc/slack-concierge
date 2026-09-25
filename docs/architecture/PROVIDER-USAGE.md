@@ -358,6 +358,10 @@ credentials name themselves and need no such filter.
 
 History is shared the same way on both machines: `~/.claude-accounts/<id>/projects` is a
 symlink to `~/.claude/projects`, which stays a real directory.
+The in-app Claude Switch action creates that link when an older account home lacks it,
+then verifies that it resolves to the default history before recording the choice.
+An existing path pointing elsewhere is preserved and the switch is refused. This
+does not change either account's credential or a running Claude process.
 
 The old Claude snapshot operation is refused, and reading or pressing an account no longer
 calls the outgoing-account snapshot path. The one-home dispatch path and Codex activation
