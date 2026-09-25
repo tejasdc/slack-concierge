@@ -105,6 +105,10 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE UNIQUE INDEX IF NOT EXISTS steering_accepted_input ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);
+        -- Every per-session read of inputs (a session's receipts, its resurrection record, the
+        -- Inbox's human replies) seeks by session; without this the catalogue's per-imported-
+        -- session lookup scanned 10,787 rows 651 times and took 3.9 s per read (2026-09-25).
+        CREATE INDEX IF NOT EXISTS session_inputs_session_kind ON session_inputs(session_id,kind);
         CREATE TABLE IF NOT EXISTS session_attachments (
           id TEXT PRIMARY KEY, action_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
@@ -126,6 +130,11 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_input ON session_owner_events(input_id);
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
+        -- A history page's input and metadata projections look each message up by session and
+        -- message id; without this they parsed the JSON of every message event of the session
+        -- per requested message (43 messages × 3,680 events: 2.3 s a page, 14 s for a delta
+        -- read, blocking the owner for that long; 2026-09-25). With it: 5 ms.
+        CREATE INDEX IF NOT EXISTS session_owner_events_message_lookup ON session_owner_events(session_id, json_extract(payload_json,'$.message.id')) WHERE kind='message';
         -- A request this instance sent to a peer instance. The target session lives in the
         -- peer's ledger, so it cannot satisfy session_communication_requests' foreign keys.
         CREATE TABLE IF NOT EXISTS session_peer_requests (
