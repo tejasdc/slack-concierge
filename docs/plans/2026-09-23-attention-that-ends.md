@@ -60,7 +60,17 @@ already titled by the notice's first sentence, else a new one so titled, with a 
 text is the notice itself (`readsFor` reads a service notice as its own answer). It runs right after
 an in-process publish, at startup for notices another process wrote, and when a message is resolved
 to its thread, so a tap can never arrive before the thread. Nothing here guesses: the notice is its
-own thread root, and its title is its own words. Outside
+own thread root, and its title is its own words. The notice is that thread's conversation — its
+author is the service with `communication: 'notice'`, so thnkr.ing shows it and he can reply to it,
+and a reply there wakes the router like any other (three notice threads opened on nothing with no
+reply, 2026-09-25: "something that has no conversation, and I'm not even able to respond to it").
+**A notice whose condition clears says so and closes**: when the breaker that announced it is
+cleared by a success (`clearRetryBreaker` → `resolveRetryNotices`), the owner posts "… is running
+again as of …" into the thread as a service post (`postedBy: 'service'`) and closes it, which ends
+the reading item; at startup the same runs for any retry notice whose breaker no longer exists, so
+a clear that happened while nothing recorded it still settles. Its words are his: a moment is
+written in his time zone (`noticeTime`: "September 24 at 11:03 PM ET"), never an ISO stamp, and a
+notice names no file path. Outside
 the Inbox nothing changes: a worker session is one conversation and its needs stay session-level.
 
 ### Ends, and the signal that moves each

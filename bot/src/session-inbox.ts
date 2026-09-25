@@ -74,7 +74,8 @@ export function inboxMessage(row:any) {
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
-    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const},...(eventPayload.relayed?{relayed:true}:{})}:{}),
+    // A post is the router's unless the service itself wrote it (a notice's "running again").
+    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const},...(eventPayload.relayed?{relayed:true}:{})}:{}),
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
     // offers to split it back out, without labelling his own thread replies.
     ...(link?.attached?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{}),

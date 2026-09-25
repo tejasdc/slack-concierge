@@ -19,7 +19,10 @@ type PublishNotice = (input: {
   key: string; what: string; reason: string; sinceMs: number; restartSignal: string;
 }) => boolean;
 
-export function createRetryBreaker(db: Database, publishNotice?: PublishNotice) {
+/** Told when a breaker that had announced itself is cleared by a success, so its notice can say so. */
+type NoticeCleared = (key: string) => void;
+
+export function createRetryBreaker(db: Database, publishNotice?: PublishNotice, noticeCleared?: NoticeCleared) {
   db.exec(`CREATE TABLE IF NOT EXISTS retry_breakers (
     key TEXT PRIMARY KEY,
     site TEXT NOT NULL,
@@ -75,7 +78,11 @@ export function createRetryBreaker(db: Database, publishNotice?: PublishNotice) 
 
   return {
     recordRetryFailure,
-    clearRetryBreaker(key: string): void { db.query("DELETE FROM retry_breakers WHERE key=?").run(key); },
+    clearRetryBreaker(key: string): void {
+      const row = db.query("SELECT notice_sent FROM retry_breakers WHERE key=?").get(key) as { notice_sent: number } | null;
+      db.query("DELETE FROM retry_breakers WHERE key=?").run(key);
+      if (row?.notice_sent) noticeCleared?.(key);
+    },
     retryBreakerDueForProbe(key: string, nowMs = Date.now()): boolean {
       const row = db.query("SELECT next_probe_ms FROM retry_breakers WHERE key=?").get(key) as {
         next_probe_ms: number | null;

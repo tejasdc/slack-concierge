@@ -9,7 +9,8 @@ export type MessageAuthor = {
   kind: 'human'|'agent'|'service'|'unknown';
   session?: {id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};
   inputId?:string; runId?:string; requestId?:string;
-  communication?:'request'|'reply'|'result'|'overdue'|'post'; replyKind?:'partial'|'final';
+  /** `notice`: the service wrote it itself with no agent behind it (a retry that gave up, a failed update). */
+  communication?:'request'|'reply'|'result'|'overdue'|'post'|'notice'; replyKind?:'partial'|'final';
   /** Whether a delegated request may change anything, resolved across its whole chain. */
   effectScope?:'informational'|'work';
   /** The human request this ultimately acts for, which can differ from the immediate sender. */

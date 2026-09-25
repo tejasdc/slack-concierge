@@ -2,6 +2,7 @@ import {db,getSessionById,getChannel} from './state';
 import {authorCorrection,sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
+import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 
 export function authorSession(id:number):MessageAuthor['session'] {
   const session=getSessionById(id);if(!session)return undefined;
@@ -149,6 +150,9 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   const peerEvents=db.query('SELECT * FROM session_peer_events WHERE accepted_input_id=? AND request_id=?').all(input.id,input.request_id) as any[];
   if(peerEvents.length===1)return peerEventAuthor(peerEvents[0]);
   if(peerEvents.length>1)return {author:{kind:'unknown'}};
+  // A service notice is the service speaking for itself: no request, no agent, and something
+  // he can answer in its thread like any other message.
+  if(input.scope===SERVICE_NOTICE_SCOPE)return {author:{kind:'service',communication:'notice'}};
   const author:MessageAuthor={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
   if(input.origin==='human'){const via=doorOf(input);if(via)author.via=via;}
   if(input.kind==='inbox-capture'){

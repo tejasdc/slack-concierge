@@ -4,6 +4,23 @@ import type { Database } from "bun:sqlite";
 export const SERVICE_NOTICE_SCOPE = "service:provider-free-notice";
 
 /**
+ * A moment as Tejas reads it: his own time zone, the one the saved-work settings hold, never
+ * an ISO stamp ("September 24, 11:03 PM ET"). A notice is read by him, not by a log reader.
+ */
+export function noticeTime(db: Database, ms: number): string {
+  let timeZone = "America/New_York";
+  try {
+    const row = db.query("SELECT time_zone FROM saved_work_settings WHERE singleton=1").get() as { time_zone: string } | null;
+    if (row?.time_zone) timeZone = row.time_zone;
+  } catch {}
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone, month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "shortGeneric" }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toISOString();
+  }
+}
+
+/**
  * Publish one service-authored Inbox message and reading notice without starting a provider.
  * The notice has no turn behind it, so nothing would ever file it into a thread; the owner files
  * it itself (`fileServiceNotices` in session-topics.ts) — a caller inside the Concierge process
@@ -22,6 +39,11 @@ export function publishProviderFreeNotice(db: Database, input: {
   if (!inbox) throw new Error("No Inbox session exists for the service notice.");
   const eventId = `service-notice:${input.key}`;
   const inputId = `service:${eventId}`;
+  // A notice is read by Tejas in his Inbox, not by a log reader: a moment is written in his time
+  // zone (`noticeTime`) and a file path tells him nothing. Logged, never refused, because a notice
+  // that is dropped for its wording is worse than one that is clumsy (2026-09-25).
+  const unreadable = [/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input.text) ? "iso-timestamp" : "", /(?:^|[\s(])(?:\/|~\/)[\w.-]+\/[\w./-]+/.test(input.text) || /\b[\w-]+\/[\w-]+\/[\w-]+\.(?:log|md|txt|json|ts|js|sh)\b/.test(input.text) ? "file-path" : ""].filter(Boolean);
+  if (unreadable.length) console.warn(JSON.stringify({ level: "warn", event: "service_notice_unreadable", key: input.key, unreadable }));
   return db.transaction(() => {
     const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
       (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)

@@ -14,7 +14,8 @@ for (let i = 0; i < args.length; i++) {
   else throw new Error(`Unknown service-notice option: ${args[i]}`);
 }
 if (!key || !/^[a-zA-Z0-9:._-]{1,160}$/.test(key) || !title.trim() || (textFile && text) || (!textFile && !text.trim())) {
-  throw new Error("Usage: service-notice.ts --key <stable key> --title <short title> [--text-file <path> | -- <text>]");
+  throw new Error("Usage: service-notice.ts --key <stable key> --title <short title> [--text-file <path> | -- <text>]\n"
+    + "The title and text are read by Tejas in his Inbox: write moments in his time (\"September 24 at 11:03 PM ET\"), name no file paths, and say what he can do about it.");
 }
 if (textFile) text = readFileSync(textFile, "utf8");
 if (!text.trim()) throw new Error("Service notice text is empty.");

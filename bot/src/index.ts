@@ -332,6 +332,7 @@ import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuatio
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics} from './session-topics';
+import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
 import {warmSpeechEngine} from './speech-engine';
 
@@ -500,6 +501,8 @@ try {expireUnreadableReadingItems();} catch(error) {log('error','inbox_unreadabl
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
 try {fileServiceNotices();} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
+// A retry notice whose breaker has since cleared says it is running again and closes.
+try {resolveRetryNotices();} catch(error) {log('error','inbox_retry_notices_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });

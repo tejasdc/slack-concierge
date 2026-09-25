@@ -1452,8 +1452,10 @@ export class SessionOwner {
     const {sourceSessionId,...display}=message;
     const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
     if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
-    // Keep what the row already knows about its author, such as a deliberate post.
-    return {...display,author:{...(display.author??{}),kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
+    // Keep what the row already knows about its author, such as a deliberate post, or that the
+    // service wrote it; only an agent's message is named by the session it came from.
+    const kind=display.author?.kind??(display.role==='user'?'unknown':'agent');
+    return {...display,author:{...(display.author??{}),kind,...(kind==='agent'?{session:authorSession(sourceSessionId)}:{})}};
   }
   /**
    * A thread's entries are the Inbox's own messages, so they carry the same attribution its

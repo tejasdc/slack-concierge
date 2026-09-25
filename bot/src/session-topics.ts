@@ -1914,6 +1914,38 @@ export function fileServiceNotices():{filed:number} {
   }
   return {filed};
 }
+/**
+ * A service notice whose condition has cleared says so, in its own thread, and the thread
+ * closes: a service post ("… is running again as of …") answers the notice, and the closure
+ * ends the reading item, so nothing about it waits on him. Settled once per notice; a second
+ * call is a no-op. Returns whether it settled anything.
+ */
+export function settleServiceNotice(input:{inputId:string;text:string}):boolean {
+  const session=inboxSession();
+  if(!session)return false;
+  const eventId=`post:service-resolved:${input.inputId}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
+  if(!isServiceNotice(input.inputId))return false;
+  refreshRootMemo();
+  let topicId=topicOfRoot(input.inputId);
+  if(!topicId){fileServiceNotices();topicId=topicOfRoot(input.inputId);}
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const at=nowIso();
+  db.transaction(()=>{
+    recordSessionEvent({eventId,sessionId:session.id,inputId:input.inputId,kind:'post',
+      payload:{text:input.text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.inputId},postedBy:'service'}});
+    if(!topicId)return;
+    const topic=topicRow(topicId);
+    if(topic.state==='closed')return;
+    const questions=expireOpen(topicQuestions(topicId),`Thread closed: ${input.text}`,at);
+    const next=bumped(topic,{state:'closed',closure:{by,at,reason:input.text,scope:null,requests:topicRequests(topicId).map(request=>request.requestId)}});
+    const payload={change:'closed',topicId,topic:next,scope:null,by,reason:input.text,revision:next.revision,questions};
+    recordSessionEvent({eventId:`topic-service-notice:${input.inputId}:closed`,sessionId:session.id,inputId:input.inputId,kind:'topic',payload});
+    applyTopicChange('topic',payload);
+  })();
+  log('info','inbox_service_notice_settled',{session_id:session.id,input_id:input.inputId,topic_id:topicId});
+  return true;
+}
 /** A notice's thread is titled by the first sentence of its first line: "Codex conversation observation stopped after repeated failures". */
 function serviceNoticeTitle(text:string):string {
   const line=text.split('\n').map(part=>part.trim()).find(Boolean)??'Service notice';

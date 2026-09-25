@@ -374,7 +374,11 @@ authorization or a change to the default rapid-iteration policy.
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server
-  notice that opened on "not in a thread yet"). The legacy marker is stripped before display; a turn without a declaration is
+  notice that opened on "not in a thread yet"). The notice is that thread's conversation
+  (author `service`, `communication: 'notice'`), he can reply to it, and when its breaker
+  clears the owner posts "running again" as a service post and closes the thread
+  (`resolveRetryNotices`); notice text is written in his time zone (`noticeTime`) and
+  never names a file path. The legacy marker is stripped before display; a turn without a declaration is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to
