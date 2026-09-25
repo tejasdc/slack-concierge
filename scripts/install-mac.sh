@@ -49,6 +49,11 @@ chmod 600 "$STATE/peer.token"
 
 (cd "$REPO/bot" && "$BUN" install --frozen-lockfile)
 # Same as remote-box's ExecStartPre: start the managed app-server daemon if it is not running.
+# The daemon and its updater loop keep the open-file limit of whoever started them, and the
+# updater restarts the App Server with its own. launchd gives this update job 256; the App Server
+# holds about eleven files per Codex conversation it has open (the observer opens every one), so
+# at ~20 conversations it failed with "Too many open files" (2026-09-25). Match the box's unit.
+ulimit -n 65536
 if ! "$CODEX" app-server daemon start >/dev/null 2>&1 || ! "$CODEX" app-server daemon version 2>/dev/null | grep -q '"status":"running"'; then
   echo "Codex app-server daemon is not running. Install the managed package with: curl -fsSL https://chatgpt.com/codex/install.sh | sh" >&2
 fi

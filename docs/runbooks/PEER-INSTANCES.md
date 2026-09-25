@@ -58,6 +58,19 @@ installer, `curl -fsSL https://chatgpt.com/codex/install.sh | sh`; the installer
 start the daemon without it. `install-mac.sh` starts it and warns when
 `codex app-server daemon version` does not report `running`.
 
+The daemon keeps the open-file limit of the process that started it, and its updater loop
+restarts the App Server with the loop's own limit. launchd's default is 256, and the App Server
+holds roughly eleven files for every Codex conversation it has open (a rollout, a writer lock and
+two helper processes' pipes), which Concierge's observer opens for every Codex session. On
+2026-09-25 the Mac's daemon, started by the unattended update job, reached 256 at about twenty
+conversations and new Codex sessions failed with `Too many open files (os error 24)`.
+`install-mac.sh` now raises the limit to 65536 before `daemon start`, as the box's unit sets
+`LimitNOFILE`. `daemon start` leaves a running daemon alone, so a daemon started with the low
+limit is replaced by hand from a shell with the raised limit, when no Codex turn is running:
+`ulimit -n 65536; codex app-server daemon stop`, stop the `daemon pid-update-loop` process,
+then `codex app-server daemon start`, which starts both again. More than 256 open files on the
+App Server (`lsof -p <pid> | wc -l`) proves the new limit took.
+
 The `~/.codex` sync job (`rsync-workspace-icloud`) must exclude `app-server-daemon/`,
 `app-server-control/` and `packages/`: on 2026-09-18 the box's Linux package and pid/lock
 files had been mirrored onto the Mac, which made `codex` unrunnable there and the daemon
