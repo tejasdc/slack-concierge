@@ -360,7 +360,10 @@ authorization or a change to the default rapid-iteration policy.
   response with what to read, needs_you with the question, or failed with why. A turn that
   posted its answer needs no closing text. A turn another agent opened into an Inbox thread
   (a return, a request) must post there before declaring; the owner refuses the outcome
-  otherwise and relays an unposted closing text into the thread itself (2026-09-24). Older sessions still use the exact final
+  otherwise and relays an unposted closing text into the thread itself (2026-09-24). A turn
+  answering a message Tejas sent himself cannot end `done` without `--quiet-because "<why he
+  need not read this>"`; the owner refuses it, raises an undeclared end to `response` so he is
+  told, and shows the reason under the reply (2026-09-25, `answersHisOwnMessage`). Older sessions still use the exact final
   `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`) when they have not declared
   by action. Tejas rejected a provider-enforced form because it doubled Claude turns.
   Only needs_you and response (an answer he must

@@ -20,7 +20,7 @@ router-actions.sh sessions ask <peer-address> <source-flags> --action-id A [--re
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
-router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--text-file F | -- <text>]
+router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
@@ -64,7 +64,7 @@ Copy results[i].session.address and returned request IDs exactly. A concierge:<i
 Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider cc-opus to create a fresh native session and first input. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
-Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
+Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, so progress and final returns file under that thread and its Timeline lists the dispatch, whatever input started the turn that sent it. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
@@ -87,7 +87,7 @@ export type SessionCommunicationRequest =
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
-  | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string } }
+  | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -301,6 +301,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
+      || (flag === '--quiet-because' && operation === 'outcome')
       || (flag === '--work-disposition' && operation === 'reply');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -371,9 +372,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       if(separator>=0)invalid('Choose --text-file or text after --.');
       content.push(readFileSync(textFile,'utf8'));
     }
+    const quiet=flags.get('--quiet-because');
+    if(quiet!==undefined&&outcome!=='done')invalid('--quiet-because belongs to done: it says why he need not read the answer.');
     if(outcome==='done') {
       if(separator>=0||textFile||content.length)invalid('done takes no text.');
-      return {operation,body:{source,action_id:actionId,outcome}};
+      return {operation,body:{source,action_id:actionId,outcome,...(quiet?{quiet_because:quiet}:{})}};
     }
     if((!textFile&&separator<0)||content.length!==1||!content[0]?.trim())invalid(`${outcome} requires one nonempty text argument.`);
     return {operation,body:{source,action_id:actionId,outcome:outcome as 'response'|'needs_you'|'failed',text:content[0]!.trim()}};

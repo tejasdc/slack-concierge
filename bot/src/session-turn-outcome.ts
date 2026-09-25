@@ -46,13 +46,29 @@ export function turnDeclaredByAction(turnId:number):boolean {
 }
 
 /**
+ * Whether a turn is answering something Tejas himself sent to the Inbox: his capture, his reply
+ * in a thread, his message. Such a turn may not end in silence on the router's judgement alone
+ * (Tejas, 2026-09-25: "if you make a field mandatory … then you are forced to answer it. That's
+ * a system … we are not relying on good intention"): `done` needs a stated reason he need not
+ * read the answer, and a turn that ends without declaring is raised to `response` so he is told.
+ */
+export function answersHisOwnMessage(sessionId:number,inputId:string):boolean {
+  const session=getSessionById(sessionId);
+  if(!session||!sessionMetadata(session).inbox)return false;
+  return getAcceptedSessionInput(inputId)?.origin==='human';
+}
+export const QUIET_REASON_REQUIRED='This turn answers a message Tejas sent himself, so it cannot end without telling him unless you say why he need not read the answer: sessions outcome done --quiet-because "<why he need not read this>" …, or declare response with what he should read (post it into the thread first).';
+
+/**
  * Records one turn's outcome. `eventId` is the idempotency identity; a retried declaration
  * with the same identity changes nothing. Must run inside the caller's transaction when
  * the caller retains an operation for it.
  */
 export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:number;inputId:string;outcome:TurnOutcome;text:string|null;
   /** An explicit declaration is refused when a `response` has nothing to read; a turn that has already ended is recorded `done` instead, with a log line. */
-  refuseUnreadable?:boolean}) {
+  refuseUnreadable?:boolean;
+  /** Why he need not read this answer: required for `done` on a turn answering his own message, shown under the reply. */
+  quiet?:string|null}) {
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(input.eventId))return false;
   const session=getSessionById(input.sessionId);
   if(!session)throw new Error('Unknown session.');
@@ -86,7 +102,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // the router files it (docs/plans/2026-09-23-attention-that-ends.md).
   const declared=!!question&&!!meta.inbox&&!!runId&&questionsDeclaredByRun(input.sessionId,runId);
   if(question&&!declared)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
-  const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation};
+  const quiet=outcome==='done'?input.quiet?.trim().slice(0,2000)||null:null;
+  const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,...(quiet?{quiet}:{})};
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputId,input.turnId,'turn_outcome',JSON.stringify(payload));
   if(question) {
@@ -95,7 +112,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,question,inputId,generation}));
   }
-  updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at}});
+  updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at,...(quiet?{quiet}:{})}});
   executionChanged();
   return true;
 }
@@ -124,9 +141,15 @@ export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;i
   const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
   if(!declared)return;
   // Recording the outcome must never fail delivery of the answer it came with.
-  const text=(declared.question??declared.message).trim().slice(0,2000)||(['needs_you','response'].includes(declared.outcome)?'See the latest answer.':'');
+  const inputId=answeredInput(result.turnId,result.inputId);
+  // A turn that answers his own message and ends `done` by marker, with no stated reason, is
+  // raised to `response`: silence about his message needs the reason the action demands, and
+  // a turn that has already ended cannot be refused, so it is told to him instead.
+  const outcome=declared.outcome==='done'&&answersHisOwnMessage(session.id,inputId)?'response':declared.outcome;
+  if(outcome!==declared.outcome)log('warn','turn_done_on_his_message_raised',{session_id:session.id,turn_id:result.turnId,input_id:inputId});
+  const text=(declared.question??declared.message).trim().slice(0,2000)||(['needs_you','response'].includes(outcome)?'See the latest answer.':'');
   recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,
-    inputId:answeredInput(result.turnId,result.inputId),outcome:declared.outcome,text:text||null});
+    inputId,outcome,text:text||null});
 }
 
 /**

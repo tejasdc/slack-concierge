@@ -7,7 +7,7 @@ import { readInputExecution, resolveSessionAddress, sessionAddress, type Session
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
-import { recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
+import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
@@ -425,7 +425,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -433,6 +433,11 @@ export class SessionCommunicationCoordinator {
         const content=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!content)throw new Error(`${input.outcome} requires text.`);
+        const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
+        if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
+        // Silence about his own message is never the router's judgement alone: `done` on a turn
+        // that answers something he sent needs the reason he need not read it, as a field.
+        if(input.outcome==='done'&&!quiet&&answersHisOwnMessage(actor.session,actor.inputId))throw new Error(QUIET_REASON_REQUIRED);
         // A turn opened by another agent's return or request into a thread owes that thread a
         // post: its closing text never shows there, so an outcome declared without a post
         // would leave the answer nowhere he looks (2026-09-24, two hours).
@@ -442,13 +447,13 @@ export class SessionCommunicationCoordinator {
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null},
+                kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{})},
                 sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             if(turnDeclaredByAction(actor.turn))
                 throw new Error('This turn already declared its outcome by action.');
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
-                inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true});
+                inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             return {...receipt,duplicate:false};

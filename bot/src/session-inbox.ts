@@ -71,7 +71,9 @@ export function inboxMessage(row:any) {
   // A turn's closing words belong to one thread or none: a turn that asked or posted for
   // another thread has its result marked, and a thread's conversation leaves it out.
   const threads=result&&typeof row.turn_id==='number'?turnThreadActions(row.session_id,row.turn_id,row.input_id):null;
-  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),
+  // A reply to his own message that ended without telling him carries the reason it gave.
+  const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id):null;
+  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
@@ -172,6 +174,12 @@ export function inboxRequestThread(session:SessionRow,thread:unknown):string|nul
   return root;
 }
 /** Threads named by a turn's requests and posts, compared with its result's thread. */
+/** The reason a turn's `done` gave for not telling him, when it answered his own message. */
+function turnQuietReason(sessionId:number,turnId:number):string|null {
+  const row=db.query(`SELECT json_extract(payload_json,'$.quiet') AS quiet FROM session_owner_events
+    WHERE session_id=? AND turn_id=? AND kind='turn_outcome' AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,turnId) as {quiet:string}|null;
+  return row?.quiet?.trim()||null;
+}
 export function turnThreadActions(sessionId:number,turnId:number,ownInputId:string|null):{mixedThreads:boolean;answeredByPost:boolean} {
   const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
   const named=new Set<string>();
