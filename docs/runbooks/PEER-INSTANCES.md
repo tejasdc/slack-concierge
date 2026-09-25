@@ -43,7 +43,9 @@ curl -s --unix-socket "$HOME/Library/Application Support/concierge/requests.sock
 curl -s -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/concierge/peer.token")" http://100.90.183.122:8788/sessions/v1/peers
 ```
 
-Projects are every `~/workspace/<dir>` with `.git` and `AGENTS.md`. There is no Inbox,
+Projects are every `~/workspace/<dir>` with `.git` and `AGENTS.md`, plus every folder
+directly inside an Obsidian vault that has its own `AGENTS.md` (the vault is a workspace
+child or grandchild holding `.obsidian`, so `~/workspace/obsidian-vault/journalmaxx/blogs` here). There is no Inbox,
 capture ingress or deployment pipeline on the Mac; `GET /sessions/v1/inbox` answers 503 there.
 
 ### Codex on the Mac
