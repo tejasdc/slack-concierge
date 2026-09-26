@@ -1,0 +1,1 @@
+Switching to a saved Claude account now checks that it can actually answer before changing the account; failed turns also keep their original sign-in reason.
