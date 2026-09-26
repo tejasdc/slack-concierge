@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {execFile,execFileSync} from 'node:child_process';
 import {promisify} from 'node:util';
-import {existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,renameSync,symlinkSync,writeFileSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {join,relative,dirname} from 'node:path';
 import {db,getSessionById} from './state';
 import {canonicalAgentsTemplate,canonicalDocsIndexTemplate} from './project-scaffold';
@@ -80,7 +80,7 @@ function notesLink(workspace:string,project:string,destination:string,createNote
 }
 // Notices are read by Tejas: plain words, no commands or codes.
 const machineName=(peer:string)=>peer==='mac'?'your Mac':peer==='cloud'?'the server':peer;
-const REASONS:Record<string,string>={unknown_kind:'that machine does not know this kind of setup',invalid_name:'the project name is not a valid project name',invalid_repository:'the request did not name one of your repositories',destination_conflict:'a different folder with that name is already there, and it was left untouched'};
+const REASONS:Record<string,string>={unknown_kind:'that machine does not know this kind of setup',invalid_name:'the project name is not a valid project name',invalid_repository:'the request did not name one of your repositories',unknown_field:'the request carried something a setup request cannot carry',destination_conflict:'a different folder with that name is already there, and it was left untouched'};
 const needsUpdateText=(row:{project:string;peer:string})=>`Concierge on ${machineName(row.peer)} needs updating before project ${row.project} can be set up there. It will finish on its own once that update is installed.`;
 function classify(error:unknown):'transient'|'permanent'{const text=String(error).toLowerCase();return /authentication|permission denied|repository not found|not found|could not read username|project predicate|invalid repository|unknown revision|reference is not a tree|does not have any commits/.test(text)?'permanent':'transient';}
 function message(error:unknown){return error instanceof Error?error.message:String(error);}
@@ -257,7 +257,7 @@ export class ProjectSetup {
   }}catch(error){log('error','project_setup_wake_failed',errorFields(error));}finally{this.running=false;}});}
   async receive(value:unknown){let raw:Record<string,any>;
     try{raw=exactKeys(value,['orderId','kind','origin','project']);}
-    catch{const id=(value as any)?.orderId;if(typeof id==='string'&&/^[a-f0-9]{32}$/.test(id))return {state:'refused',outcome:{state:'refused',reason:'invalid_repository'}};throw new Error('Invalid project setup order.');}
+    catch{const id=(value as any)?.orderId;if(typeof id==='string'&&/^[a-f0-9]{32}$/.test(id))return {state:'refused',outcome:{state:'refused',reason:'unknown_field'}};throw new Error('Invalid project setup order.');}
     if(typeof raw.orderId!=='string'||!/^[a-f0-9]{32}$/.test(raw.orderId))throw new Error('Invalid setup order ID.');
     const existing=db.query('SELECT * FROM project_setup_receipts WHERE order_id=?').get(raw.orderId) as {body_json:string;result_json:string|null}|null;
     if(existing&&existing.body_json!==JSON.stringify(raw))throw new Error('Setup order identity conflicts with its retained body.');
@@ -295,7 +295,11 @@ export class ProjectSetup {
       renameSync(temporary,destination);notesLink(this.workspace,project,destination,false);
       if(!projectPredicate(destination))return fail({state:'failed',failureClass:'permanent',reason:'project predicate failed'});
       return fail({state:'done',commit:head(destination)});
-    }catch(error){return fail({state:'failed',failureClass:classify(error),reason:message(error).slice(0,400)});}
+    }catch(error){
+      // The temporary clone is this handler's own; a failed attempt leaves nothing behind.
+      try{rmSync(dirname(temporary),{recursive:true,force:true});}catch{}
+      return fail({state:'failed',failureClass:classify(error),reason:message(error).slice(0,400)});
+    }
     finally{this.receiving.delete(raw.orderId);}
   }
   receipt(id:string){if(!/^[a-f0-9]{32}$/.test(id))throw new Error('Invalid setup order ID.');const row=db.query('SELECT result_json FROM project_setup_receipts WHERE order_id=?').get(id) as {result_json:string|null}|null;if(!row)throw new Error('Unknown setup order.');return {outcome:row.result_json?JSON.parse(row.result_json):null};}
