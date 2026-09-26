@@ -10,6 +10,25 @@ because such a loop can match itself and hold a run open indefinitely.
 
 ## Current native routing
 
+Project setup uses the same local owner socket on either machine:
+
+```bash
+router-actions.sh projects new command-line-tools --purpose "Shared commands for Tejas's machines."
+router-actions.sh projects new local-experiment --purpose "A local experiment workspace." --here-only
+router-actions.sh projects share life-logistics --to mac
+router-actions.sh projects status life-logistics --to mac
+router-actions.sh projects cancel life-logistics --to mac  # only while still recorded
+```
+
+An agent appends its exact `--source-input` and `--source-run` pair to `new` or `share`;
+a terminal user omits it. A new project gets the canonical instruction file, its Claude
+symlink, docs index, Git ignore and a notes link when this machine has a vault root. It is
+committed and pushed to a private `tejasdc` GitHub repository before the peer order is
+recorded. A repeated `new` completes an interrupted creation. `share` requires the same
+named origin and a branch already pushed there. The other machine may be asleep; status
+shows the retained order and its result when it arrives.
+Cancellation is accepted only before any delivery attempt; it never undoes a peer checkout.
+
 New work goes to Thinkering native sessions, including requests arriving through
 the retained DM. Agent Slack post/resume/upload/request ingress and automatic
 legacy routed recovery are retired; those commands refuse before publication.

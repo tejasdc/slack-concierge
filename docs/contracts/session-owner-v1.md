@@ -367,11 +367,30 @@ additive to everything above, carry a request between two instances' ledgers:
 | Route | Contract |
 | --- | --- |
 | `GET /sessions/v1/peers` | `{self, peers:[{name,url,lastUnreachableAt}]}`: this instance's name and its configured peers. |
+| `GET /sessions/v1/status` | Includes `operations:["project.setup"]` when this owner accepts the durable named operation. Missing support parks a sender order as `needs_update`. |
+| `POST /sessions/v1/projects/new` | Owner socket only: `{name,purpose,hereOnly?,source?:{input,run}}`. Creates and pushes one private GitHub project before recording orders. Agent source is an exact retained input/run pair; terminal callers omit it. |
+| `POST /sessions/v1/projects/share` | Owner socket only: `{name,to,source?:{input,run}}`. Requires a registered local Git project with matching `tejasdc` origin and pushed branch. Records one durable order for the named peer. |
+| `GET /sessions/v1/projects/status/:name?peer=…` | Reads local retained orders with peer, state, result and creation time; no peer connection is needed. |
+| `POST /sessions/v1/projects/cancel` | Owner socket only: `{name,to}`. Cancels an order only while it is still recorded and no delivery attempt is in flight; it does not remove a project. |
+| `POST /sessions/v1/peers/operations` | Peer receiver: exact `{orderId,kind:"project.setup",origin,project}` only. The receiver validates its own name, destination and fixed GitHub origin, then returns the retained outcome. |
+| `GET /sessions/v1/peers/operations/:orderId` | Sender pulls the receiver's retained outcome; this complements the push. |
+| `POST /sessions/v1/peers/operations/:orderId/outcome` | Receiver pushes `{outcome}` to the origin. Sender retains one terminal result and returns it to the requesting session when source identity exists. |
+| `POST /sessions/v1/peers/project-notices` | A Mac owner without a local Inbox forwards one retained project notice `{orderId,sourcePeer,kind,text}` to the cloud owner. The cloud owner uses the existing provider-free notice and topic filing path; the sender retries until acknowledged. |
 | `POST /sessions/v1/peers/requests` | Origin → target: `{requestId, origin:{peer,sessionId,inputId,runId,originatingHuman?,effectScope?}, provider|address, effort?, project?, title?, text, requestedEffect, files?}`. The target creates the session (or retains a `request:<requestId>` input on the addressed session), retains the delivery and dispatches. Returns `{sessionId, address, operationId}`; a repeated `requestId` returns the existing delivery. |
 | `GET /sessions/v1/peers/requests/:requestId` | Target → origin facts: `{requestId, sessionId, address, inputState, inputError, stillWorking, execution:{turnId,runId,status,settled,acknowledged,acknowledgedAt,stopped,dedicated,steeringStatus,text,error,sha256}|null, replies:[{eventId,kind,status,text,workDisposition,createdAtMs,completion}]}`. The origin, never the target, decides the outcome from these. |
 | `POST /sessions/v1/peers/requests/:requestId/replies` | Target → origin: `{eventId, kind:"progress"|"final", text, workDisposition?, evidence?, completionTurnId?, files?:[{name,contentType,base64}], responder:{peer,sessionId,inputId,runId}}`; idempotent by `eventId`. `files` are the reply's attachments read from the target's custody at forward time, because the origin cannot reach it; the origin admits them into its own custody keyed by request ID, event ID and position, so a re-forward reuses it, and records those origin-side IDs on the peer event and its return. `text` may be empty when the reply carries a file. Returns `{outcome}`. |
 | `POST /sessions/v1/peers/requests/:requestId/notify` | Target → origin: the request's execution or replies changed; the origin re-reads the facts and returns `{outcome}`. |
 | `POST /sessions/v1/resurrections` | Trusted authenticated human surface: `{clientActionId, address}`. A peer address `<peer>/session:…` keeps its existing archive-copy behavior: a distinct reconstructed session here, with `resurrection:{peer,sessionId,address,threadId,archivedAt,archivePath,resurrectedAt}`. A local imported Claude/Codex address with a provider-native UUID continues that UUID in its recorded folder on the owning machine; `resurrection.kind:"continued-in-place"` distinguishes it from an archive copy. The owner calls the authenticated peer route `POST /sessions/v1/resurrections/native` with the pinned provider UUID and folder when that folder belongs to a peer. The owning machine refuses a missing folder or native transcript with `RESUME_FOLDER_UNAVAILABLE` or `NATIVE_TRANSCRIPT_UNAVAILABLE`; an unreachable peer yields `MACHINE_UNREACHABLE`. The imported source retains a completed control with the resulting session ID, and repeated actions or a prior unarchived binding return the same session. No provider turn starts until a message is sent. |
+
+Project creation and the outgoing orders enter one ledger transaction after the external
+GitHub push. The sender's `project_creations` row records the private creation, and
+`project_setup_orders` retains each peer order and pending notice or return. The receiver's
+`project_setup_receipts` deduplicates by order ID and retains the outcome. Sender states are
+`recorded`, `delivered`, `needs_update`, `done`, `already_present`, `refused`, `failed`, and
+`cancelled`. A transient receiver failure remains delivered and is retried; permanent
+failure is terminal. Orders do not expire. One live order exists per project and peer; sharing again after a
+refusal, permanent failure or cancellation records a new attempt with a new order ID, because
+the receiver keeps a permanent failure as that order's final answer.
 
 Peer sessions in search results carry `availability:{state:"live"|"archived-only", reachable, note}`: `live` when the running peer confirmed the session, `archived-only` when this instance's transcript archive or the peer's last catalogue found it and the peer did not answer. A session is never omitted because its instance is offline. `coverage.peers` reports each peer's availability.
 

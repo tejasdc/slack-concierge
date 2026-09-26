@@ -6,6 +6,10 @@ import {parseProviderSelector,normalizeReasoningEffort} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+router-actions.sh projects new <name> --purpose "<one sentence>" [--here-only] [--source-input <id> --source-run <id>]
+router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
+router-actions.sh projects status <name> [--to <machine>]
+router-actions.sh projects cancel <name> --to <machine>  # only before delivery
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags>
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] -- <concept...>

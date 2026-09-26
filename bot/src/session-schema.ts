@@ -209,6 +209,24 @@ export function initializeSessionOwnerSchema(db: Database) {
           PRIMARY KEY(peer, remote_session_id)
         );
         CREATE INDEX IF NOT EXISTS session_peer_catalogue_thread ON session_peer_catalogue(runtime_thread_id);
+        -- Durable named peer operations use the same owner ledger as session requests.
+        CREATE TABLE IF NOT EXISTS project_setup_orders (
+          order_id TEXT PRIMARY KEY, peer TEXT NOT NULL, project TEXT NOT NULL,
+          body_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'recorded',
+          result_json TEXT, created_at_ms INTEGER NOT NULL, last_attempt_at_ms INTEGER, notice_kind TEXT, notice_text TEXT,
+          source_session_id INTEGER REFERENCES sessions(id), source_input_id TEXT,
+          source_run_id TEXT, return_input_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS project_setup_orders_project ON project_setup_orders(peer,project);
+        CREATE INDEX IF NOT EXISTS project_setup_orders_pending ON project_setup_orders(peer,state)
+          WHERE state NOT IN ('done','already_present','refused','failed','cancelled');
+        CREATE TABLE IF NOT EXISTS project_creations (
+          project TEXT PRIMARY KEY, purpose TEXT NOT NULL, commit_sha TEXT NOT NULL,
+          here_only INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_setup_receipts (
+          order_id TEXT PRIMARY KEY, body_json TEXT NOT NULL, result_json TEXT
+        );
         -- Topics: the Inbox's recognizable conversations. Owner events are the truth
         -- (kinds topic, topic_request, topic_question, topic_answer, topic_reading,
         -- topic_focus, topics_migration); these tables are their replayable projection,

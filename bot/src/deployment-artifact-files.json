@@ -2,6 +2,7 @@
   "format": 1,
   "controlBundles": {
     "control/bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
+    "control/bot/scripts/router-projects.js": "bot/scripts/router-projects.ts",
     "control/bot/scripts/router-request-client.js": "bot/scripts/router-request-client.ts",
     "control/bot/scripts/router-threads.js": "bot/scripts/router-threads.ts",
     "control/bot/scripts/router-post.js": "bot/scripts/router-post.ts",

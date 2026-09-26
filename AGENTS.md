@@ -97,6 +97,11 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Project folders are machine-local. `projects new` creates the canonical scaffold and a
+  private `tejasdc` repository before retaining a peer setup order; `projects share` requests
+  one existing pushed project on a named peer. The peer checks its own destination and never
+  replaces a folder. A project list on one machine does not imply that folder exists on the
+  other. See [peer instances](docs/runbooks/PEER-INSTANCES.md#durable-project-setup).
 - Capture ingress owns only its capture database. Its executable may import the storage-neutral
   retry and database-retry primitives, but never the application notice worker, retry adapter or
   Concierge ledger; the service user is deliberately not given that production state path.

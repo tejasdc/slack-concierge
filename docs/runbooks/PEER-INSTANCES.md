@@ -77,6 +77,50 @@ files had been mirrored onto the Mac, which made `codex` unrunnable there and th
 believe it was already running. The excludes are in `sync-remote.yaml`; the mirrored
 files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 
+## Durable project setup
+
+The project lists can differ deliberately. `router-actions.sh projects new` creates a
+private GitHub project on the current machine and retains an order for the other machine;
+`projects share` asks a named peer to set up an existing pushed project. Neither command
+mirrors the whole workspace. `projects status` reads the retained order locally.
+
+`project.setup` is a typed durable operation beside session requests on the authenticated
+peer listener. Its body contains only order ID, operation kind, project name and origin
+identity. The receiver builds the fixed `tejasdc` HTTPS URL and local workspace destination.
+It clones with an argument list, disabled hooks, submodules, non-HTTPS transports, LFS
+smudge and fsmonitor, into hidden `.project-setup` storage and moves the completed checkout
+into place last. The clone runs outside the owner's event loop, one at a time per order. The
+hook switch is given on the command line only, never saved into the new checkout, so the
+machine's pushed-history guard still applies there. The receiving machine only links `notes/`
+to its vault's project folder; the creating machine writes those files, and Obsidian Sync
+brings them, so both machines never write the same notes. An existing folder is never replaced. A matching project returns
+`already_present`; a conflict returns `refused`.
+
+The existing peer wake timer retries about every 7½–12½ minutes while work is owed (the
+peer-request policy's ten-minute cap with 25% jitter); authenticated peer
+contact also wakes it immediately. The receiver pushes a terminal outcome, and the sender
+pulls the same outcome on every wake. `GET /sessions/v1/status` advertises
+`operations:["project.setup"]`; an older peer parks an order as `needs_update`, raises one
+service notice and is checked hourly. A still waiting order raises one notice at 24 hours.
+Only refusal, permanent failure, needs-update or that wait notifies Tejas; an agent's
+outcome returns to its asking session. The Mac has no local Inbox, so it retains an
+undelivered project notice in its ledger and forwards it over the same authenticated
+peer link to the cloud owner's existing provider-free Inbox notice path. That notice is
+retried on the same peer timer until the cloud owner confirms receipt.
+
+To investigate one project, start with `router-actions.sh projects status <name>` on the
+machine that created or shared it. The owner ledger retains the order, state, result and
+creation time in `project_setup_orders`; local creations are recorded in
+`project_creations`, and the peer retains its received order and outcome in
+`project_setup_receipts`. A terminal order with an undelivered agent return or notice
+remains on the same wake timer. Service logs on
+each machine record `project_created`, `project_setup_order_recorded`,
+`project_setup_received`, `project_setup_order_settled`, and waiting delivery/notice
+events with the order ID. They contain no purpose text, notice body or credentials.
+The ledger and existing journal retention follow that host's normal backup and logging
+policy; the order has no expiry. A result is proof of that peer's recorded checkout or
+refusal, while `recorded` and `delivered` remain waiting states.
+
 ## Provider accounts on either instance
 
 Thinkering's Provider accounts surface covers both machines. It shows one section per

@@ -87,6 +87,10 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/router-sessions.$ROUTER_SUFFIX" "$@"
     ;;
+  projects)
+    shift
+    exec bun run "$BOT_DIR/scripts/router-projects.$ROUTER_SUFFIX" "$@"
+    ;;
   work)
     shift
     exec bun run "$BOT_DIR/scripts/router-request-client.$ROUTER_SUFFIX" "$@"
@@ -126,7 +130,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|projects|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

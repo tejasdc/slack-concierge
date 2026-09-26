@@ -29,6 +29,7 @@ import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,inval
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
+import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
 
@@ -438,6 +439,7 @@ export function readInputExecution(input:AcceptedSessionInput) {
 
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
 export class SessionOwner {
+  projectSetup?:ProjectSetup;
   communication?:SessionCommunicationCoordinator;
   private readonly openStreams=new Set<()=>void>();
   private streamsClosed=false;
@@ -2006,7 +2008,11 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
-      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result=this.status();
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=this.projectSetup.new(body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=this.projectSetup.share(body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[1]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[2]!,url.searchParams.get('peer')??undefined);
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...this.status(),operations:this.projectSetup?['project.setup']:[]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
@@ -2094,6 +2100,13 @@ export class SessionOwner {
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
+        else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
+        else if(parts[1]==='operations'&&this.projectSetup){
+          if(request.method==='POST'&&parts.length===2)result=await this.projectSetup.receive(body);
+          else if(request.method==='GET'&&parts.length===3)result=this.projectSetup.receipt(parts[2]!);
+          else if(request.method==='POST'&&parts[3]==='outcome'&&parts.length===4)result=this.projectSetup.pushed(parts[2]!,body);
+          else throw new SessionOwnerError('Unknown peer operation route.',404);
+        }
         else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=peers.accept(body);
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);

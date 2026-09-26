@@ -4,6 +4,7 @@ import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi, requestApiHandler } from "./routed-request-api";
 import { peerSettings, PeerClient, SessionPeers, startPeerListener } from "./session-peers";
+import {ProjectSetup} from './project-setup';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
@@ -428,13 +429,15 @@ const routedRequests = new RoutedRequestCoordinator({
   onChanged: () => sessionCommunication?.wake(),
 });
 const peering = peerSettings();
+const projectSetup = new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>sessionExecutionHost.owner,()=>sessionPeers?.wake());
 const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!, peer.paths, peer.archives)])),
   get owner() {return sessionExecutionHost.owner;},
   isOwnerAlive: ownerId => {
     const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
     return Boolean(owner&&isProcessIdentityAlive(owner));
   },
-  onError:error=>log('error','session_peer_failed',errorFields(error))}) : undefined;
+  onError:error=>log('error','session_peer_failed',errorFields(error)),
+  onWake:()=>projectSetup.wake(),hasPendingOperations:()=>projectSetup.hasPending()}) : undefined;
 let peerServer: ReturnType<typeof startPeerListener> | null = null;
 sessionCommunication = new SessionCommunicationCoordinator({
   get owner() {return sessionExecutionHost.owner;},
@@ -489,6 +492,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
 const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
+sessionExecutionHost.owner.projectSetup=projectSetup;
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 installSessionProjection(sessionExecutionHost.owner);
@@ -4086,7 +4090,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             await runStartupPhase('slack_connection', () => app.start());
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner));
             if (peering.listen) {
-              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner)});
+              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner),onContact:()=>projectSetup.wake()});
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
             }
             sandboxSlackIdentity?.assertConnected();

@@ -76,13 +76,14 @@ export class PeerClient {
 }
 
 /** The owner API on a tailnet address; one shared token stands in for the socket's file mode. */
-export function startPeerListener(input:{hostname:string;port:number;token:string;fetch:(request:Request)=>Promise<Response>}) {
+export function startPeerListener(input:{hostname:string;port:number;token:string;fetch:(request:Request)=>Promise<Response>;onContact?:()=>void}) {
   const expected=Buffer.from(input.token);
   return Bun.serve({hostname:input.hostname,port:input.port,idleTimeout:0,
     async fetch(request) {
       const header=request.headers.get('authorization')??'';
       const presented=Buffer.from(header.startsWith('Bearer ')?header.slice(7):'');
       if(presented.length!==expected.length||!timingSafeEqual(presented,expected))return Response.json({error:{code:'PEER_UNAUTHORIZED',message:'A valid peer token is required.'}},{status:401});
+      input.onContact?.();
       const url=new URL(request.url);
       if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return Response.json({error:{code:'NOT_FOUND',message:'Only the session owner API is served to peers.'}},{status:404});
       return input.fetch(request);
@@ -100,7 +101,7 @@ type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
 type WorkDisposition='completed'|'failed'|'needs_decision';
-type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean};
+type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
 const DUE_MS=30*60*1000;
@@ -946,6 +947,7 @@ export class SessionPeers {
   // ---- scheduling, shared with the coordinator's wake ----
   wake() {
     if(this.stopped||this.scheduled)return;
+    this.dependencies.onWake?.();
     this.scheduled=true;
     queueMicrotask(()=>{
       this.scheduled=false;
@@ -977,7 +979,7 @@ export class SessionPeers {
   private arm() {
     this.disarm?.();this.disarm=null;
     if(this.stopped)return;
-    const owed=this.unrecovered.size>0||(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
+    const owed=this.dependencies.hasPendingOperations?.()||this.unrecovered.size>0||(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
