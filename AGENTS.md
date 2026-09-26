@@ -539,8 +539,17 @@ authorization or a change to the default rapid-iteration policy.
 - For Claude, pressing an account selects the home for future turns. It never calls the
   credential-copy activation or snapshots the outgoing credential. The default login has
   no override; extra accounts launch from their own homes with shared history. Pressing
-  Switch repairs a missing shared-history link in an older home before selecting it;
-  an existing path to different history is refused without replacement. Codex's
+  Switch prepares the shared-history link, then makes one nonpersistent Claude request
+  from the proposed home and checks Claude's reported account identity before recording
+  the choice. The link must be prepared first because a Claude process can create its own
+  history directory in that home. A credential file and a usage reading alone do not
+  establish that its expired OAuth login can renew. A failed probe leaves the previous
+  selection and running processes alone, with a safe sign-in reason on the account row.
+  A successful probe may refresh the token inside that same home through Claude itself;
+  Concierge never copies or rewrites it. An existing path to different history is
+  refused without replacement. The account chosen for a turn is retained through its
+  failure handler so an OAuth refusal reaches the existing sign-in hold rather than
+  becoming a turn-setup error. Codex's
   App Server activation still follows the established credential path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
 - A machine holds exactly one active Codex login, `~/.codex/auth.json`, and one home per

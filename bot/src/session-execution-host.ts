@@ -35,7 +35,7 @@ import {savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatc
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
-import {activateCredentials,type ActivationReport} from './provider-activation';
+import {activateCredentials,claudeCredentialsAnswer,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
@@ -204,12 +204,16 @@ export class SessionExecutionHost {
       const defaultAccount=currentAccount(key);
       const profile=profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}:listProfiles(key).find(item=>item.id===profileId);
       if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
+      const home=profile.id==='default'?null:accountHome(key,profile.id);
       if(profile.id!=='default'){
-        const home=accountHome(key,profile.id);
-        if(!sharedClaudeHome(profile.label,home,true)){
+        if(!sharedClaudeHome(profile.label,home!,true)){
           log('warn','provider_profile_switch_refused',{provider:key,reason:'history_unavailable'});
           return {status:'failed',detail:'That Claude account cannot open the shared conversation history. The previous account is still selected.'};
         }
+      }
+      if(!await claudeCredentialsAnswer(home,profile.label)){
+        log('warn','provider_profile_switch_refused',{provider:key,reason:'account_did_not_authenticate'});
+        return {status:'failed',detail:'That Claude account could not sign in from this machine. The previous account is still selected. Sign in to that account again before switching.'};
       }
       selectClaudeAccount(profile.id,profile.label);
       const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);

@@ -379,6 +379,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
   };
 
+  let runningClaudeAccount:string|null=null;
   try {
     let preparedTurn: PreparedProviderTurn;
     if (input.presentation === "native") {
@@ -538,7 +539,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       ?input.boundAccount?{...input.boundAccount,notice:null,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0)
       :null;
-    const runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     let accountRecorded=false;
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,

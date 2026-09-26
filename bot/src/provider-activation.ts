@@ -66,13 +66,13 @@ function runningCodexTurns(): number {
   }
 }
 
-function run(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; output: string }> {
+function run(command: string, args: string[], timeoutMs: number, environment:NodeJS.ProcessEnv={...process.env}): Promise<{ code: number | null; output: string }> {
   return new Promise(resolve => {
     // Spawned from the bot, so this inherits concierge-bot.service's
     // LimitNOFILE. A daemon started from an interactive shell instead inherits
     // that shell's 1024 and exhausts it re-opening observer subscriptions; that
     // is why this restart belongs here and not in an SSH session.
-    const child = spawn(command, args, { env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     const collect = (chunk: Buffer) => { output += chunk.toString(); };
     child.stdout.on("data", collect);
@@ -117,15 +117,27 @@ async function activateCodex(): Promise<ActivationReport> {
  * A saved credential is a snapshot: its access token expires, and its refresh token may have
  * been rotated since the copy was taken, which no amount of copying can detect. The switch
  * on 2026-09-23 restored a snapshot whose token had expired eleven hours earlier, reported
- * success, and every dispatch after it failed to authenticate.
+ * success, and every dispatch after it failed to authenticate. The saved-home switch on
+ * 2026-09-25 repeated the mistake by bypassing this probe entirely; run it from the proposed
+ * home before selecting that account.
  */
-async function claudeCredentialsAnswer(): Promise<boolean> {
+export async function claudeCredentialsAnswer(home:string|null=null,expectedAccount:string|null=null): Promise<boolean> {
   const started = Date.now();
+  const environment={...process.env};
+  if(home)environment.CLAUDE_CONFIG_DIR=home;
+  else delete environment.CLAUDE_CONFIG_DIR;
   const probe = await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
     ["-p", "--model", "claude-haiku-4-5-20251001", "--no-session-persistence",
-      "--output-format", "json", "Reply with the single word OK."], 90_000);
+      "--output-format", "json", "Reply with the single word OK."], 90_000,environment);
   let ok = probe.code === 0;
   if (ok) { try { ok = JSON.parse(probe.output).is_error !== true; } catch { ok = false; } }
+  if(ok&&expectedAccount){
+    const status=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
+      ["auth","status","--json"],15_000,environment);
+    try {const value=JSON.parse(status.output) as {loggedIn?:boolean;email?:string};
+      ok=status.code===0&&value.loggedIn===true&&value.email===expectedAccount;
+    } catch {ok=false;}
+  }
   log("info", "provider_activation_probed", { provider: "claude-code", ok, duration_ms: Date.now() - started });
   return ok;
 }
