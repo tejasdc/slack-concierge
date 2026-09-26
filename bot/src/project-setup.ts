@@ -62,7 +62,9 @@ function createScaffold(path:string,project:string,purpose:string,workspace:stri
   const claude=join(path,'CLAUDE.md');
   if(pathExists(claude)){if(!lstatSync(claude).isSymbolicLink()||readlinkSync(claude)!=='AGENTS.md')throw new Error('Existing CLAUDE.md is not the canonical link.');}
   else symlinkSync('AGENTS.md',claude);
-  file('docs/README.md',canonicalDocsIndexTemplate(project));file('.gitignore','tmp/\n');
+  file('docs/README.md',canonicalDocsIndexTemplate(project));// notes/ links into this machine's vault, which lives at a different path on each machine;
+  // it must never be committed, or the other machine clones a link that points nowhere.
+  file('.gitignore','tmp/\nnotes\n');
   notesLink(workspace,project,path);
   if(!pathExists(join(path,'.git')))git(path,'init');
   try{head(path);}catch{git(path,'add','--all');git(path,'commit','-m',`Create ${project} project`);}
@@ -292,7 +294,8 @@ export class ProjectSetup {
       if(originOf(temporary)!==expectedOrigin(project))return fail({state:'refused',reason:'invalid_repository'});
       if(!projectPredicate(temporary))return fail({state:'failed',failureClass:'permanent',reason:'The GitHub repository is not a project on this machine.'});
       if(pathExists(destination))return fail({state:'refused',reason:'destination_conflict'});
-      renameSync(temporary,destination);notesLink(this.workspace,project,destination,false);
+      renameSync(temporary,destination);try{rmSync(dirname(temporary),{recursive:true,force:true});}catch{}
+      notesLink(this.workspace,project,destination,false);
       if(!projectPredicate(destination))return fail({state:'failed',failureClass:'permanent',reason:'project predicate failed'});
       return fail({state:'done',commit:head(destination)});
     }catch(error){

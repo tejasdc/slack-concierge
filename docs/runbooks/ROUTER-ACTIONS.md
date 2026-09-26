@@ -22,7 +22,7 @@ router-actions.sh projects cancel life-logistics --to mac  # only while still re
 
 An agent appends its exact `--source-input` and `--source-run` pair to `new` or `share`;
 a terminal user omits it. A new project gets the canonical instruction file, its Claude
-symlink, docs index, Git ignore and a notes link when this machine has a vault root. It is
+symlink, docs index, Git ignore (which also keeps the machine-local notes link out of Git) and a notes link when this machine has a vault root. It is
 committed and pushed to a private `tejasdc` GitHub repository before the peer order is
 recorded. A repeated `new` completes an interrupted creation. `share` requires the same
 named origin and a branch already pushed there. The other machine may be asleep; status
