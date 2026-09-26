@@ -103,7 +103,7 @@ is recorded only after the push succeeded.
 ## Sender states
 
 `recorded` → `delivered` → `done | already_present | refused | failed`; `needs_update` (the peer
-answered with an unknown route: parked, one notice naming the Mac update command, retried hourly);
+answered with an unknown route: parked, one notice saying the Mac needs updating, rechecked on every wake so it finishes as soon as the update lands);
 `cancelled` (local cancel before delivery). While the peer is unreachable the order stays `recorded`
 and is resent on the existing peer timer and immediately on any authenticated contact from that
 peer. No expiry: a project created Friday should appear Monday. The asking session sees

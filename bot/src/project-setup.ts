@@ -218,7 +218,6 @@ export class ProjectSetup {
   }
   private async send(row:Outgoing){
     const client=this.clients.get(row.peer);if(!client)return;
-    if(row.state==='needs_update'&&row.last_attempt_at_ms&&Date.now()-row.last_attempt_at_ms<60*60_000)return;
     db.query('UPDATE project_setup_orders SET last_attempt_at_ms=? WHERE order_id=?').run(Date.now(),row.order_id);
     this.sending.add(row.order_id);
     try{

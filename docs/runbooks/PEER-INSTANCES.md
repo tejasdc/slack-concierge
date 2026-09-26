@@ -101,7 +101,7 @@ peer-request policy's ten-minute cap with 25% jitter); authenticated peer
 contact also wakes it immediately. The receiver pushes a terminal outcome, and the sender
 pulls the same outcome on every wake. `GET /sessions/v1/status` advertises
 `operations:["project.setup"]`; an older peer parks an order as `needs_update`, raises one
-service notice and is checked hourly. A still waiting order raises one notice at 24 hours.
+service notice and is rechecked on every wake (peer contact or the peer timer), so it proceeds as soon as the peer advertises the operation. A still waiting order raises one notice at 24 hours.
 Only refusal, permanent failure, needs-update or that wait notifies Tejas; an agent's
 outcome returns to its asking session. The Mac has no local Inbox, so it retains an
 undelivered project notice in its ledger and forwards it over the same authenticated
