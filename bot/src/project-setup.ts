@@ -27,7 +27,14 @@ const run=(file:string,args:string[],cwd?:string)=>execFileSync(file,args,{cwd,e
 // A clone can take minutes; it must not hold the owner's event loop (speech, sessions, peers).
 const runAsync=async(file:string,args:string[],cwd?:string)=>(await promisify(execFile)(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024})).stdout.trim();
 function git(cwd:string,...args:string[]){return run('git',args,cwd);}
-function name(value:unknown):string {
+// A new project's name must say what it is (the naming rule); an existing project keeps the name
+// it already has, so share, status and the receiving side only check that it is a safe folder name.
+const FOLDER=/^[a-z0-9][a-z0-9-]{0,99}$/;
+function existingName(value:unknown):string {
+  if(typeof value!=='string'||!FOLDER.test(value))throw new Error('Name an existing project folder: lowercase letters, digits and dashes.');
+  return value;
+}
+function newName(value:unknown):string {
   if(typeof value!=='string'||!NAME.test(value)||value.split('-').every(word=>VAGUE.has(word)))throw new Error('Choose a descriptive project name with at least two lowercase words joined by dashes, such as command-line-tools.');
   return value;
 }
@@ -107,7 +114,7 @@ export class ProjectSetup {
     this.wake();this.onRecorded?.();return this.status(project,peer);
   }
   new(input:unknown){
-    const data=exactKeys(input,['name','purpose','hereOnly','source']);const project=name(data.name);
+    const data=exactKeys(input,['name','purpose','hereOnly','source']);const project=newName(data.name);
     if(typeof data.purpose!=='string'||!data.purpose.trim()||/[\r\n]/.test(data.purpose))throw new Error('A one-sentence --purpose is required.');
     if(/[.!?]\s+\S/.test(data.purpose.trim()))throw new Error('--purpose must be one sentence.');
     if(data.hereOnly!==undefined&&typeof data.hereOnly!=='boolean')throw new Error('hereOnly must be true or false.');
@@ -150,7 +157,7 @@ export class ProjectSetup {
     log('info','project_created',{project,commit,here_only:!!data.hereOnly});
     return {project,local:'done',commit,orders};
   }
-  share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=name(data.name),peer=this.peer(data.to),source=this.source(data.source);
+  share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=existingName(data.name),peer=this.peer(data.to),source=this.source(data.source);
     const destination=join(this.workspace,project);
     if(!projectPredicate(destination)||!sessionProject(this.workspace,project))throw new Error('The local project must be a registered Git project with AGENTS.md.');
     if(originOf(destination)!==expectedOrigin(project))throw new Error('This project is not from github.com/tejasdc under the same name.');
@@ -159,11 +166,11 @@ export class ProjectSetup {
     if(local!==remote)throw new Error('The local branch is ahead of its origin; push first.');
     return this.record(project,peer,source);
   }
-  status(projectValue:unknown,peerValue?:unknown){const project=name(projectValue);const peer=peerValue===undefined?null:this.peer(peerValue);
+  status(projectValue:unknown,peerValue?:unknown){const project=existingName(projectValue);const peer=peerValue===undefined?null:this.peer(peerValue);
     const rows=db.query(`SELECT * FROM project_setup_orders WHERE project=? AND (? IS NULL OR peer=?) ORDER BY created_at_ms`).all(project,peer,peer) as Outgoing[];
     return {project,orders:rows.map(row=>({orderId:row.order_id,peer:row.peer,state:row.state,message:['recorded','delivered'].includes(row.state)?`waiting for ${row.peer}`:null,result:row.result_json?JSON.parse(row.result_json):null,createdAt:new Date(row.created_at_ms).toISOString()}))};
   }
-  cancel(input:unknown){const data=exactKeys(input,['name','to']);const project=name(data.name),peer=this.peer(data.to);
+  cancel(input:unknown){const data=exactKeys(input,['name','to']);const project=existingName(data.name),peer=this.peer(data.to);
     const row=db.query('SELECT * FROM project_setup_orders WHERE project=? AND peer=? ORDER BY created_at_ms DESC,rowid DESC').get(project,peer) as Outgoing|null;
     if(!row)throw new Error('No project setup order exists for this peer.');
     if(row.state!=='recorded'||row.last_attempt_at_ms!==null||this.sending.has(row.order_id))throw new Error('Only an order never attempted for delivery can be cancelled.');
@@ -265,7 +272,7 @@ export class ProjectSetup {
       return {state:outcome.state,outcome};
     };
     if(raw.kind!=='project.setup')return fail({state:'refused',reason:'unknown_kind'});
-    let project:string;try{project=name(raw.project);}catch{return fail({state:'refused',reason:'invalid_name'});}
+    let project:string;try{project=existingName(raw.project);}catch{return fail({state:'refused',reason:'invalid_name'});}
     if(!raw.origin||typeof raw.origin!=='object'||Array.isArray(raw.origin)||Object.keys(raw.origin).some(key=>!['peer','session','input','run','originatingHuman','terminal'].includes(key)))return fail({state:'refused',reason:'invalid_repository'});
     if(raw.origin.terminal!==true&&(!this.clients.has(raw.origin.peer)||typeof raw.origin.session!=='string'||typeof raw.origin.input!=='string'||typeof raw.origin.run!=='string'))return fail({state:'refused',reason:'invalid_repository'});
     const destination=join(this.workspace,project);
