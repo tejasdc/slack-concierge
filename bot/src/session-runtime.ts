@@ -12,6 +12,7 @@ import {SessionTurnQueueCoordinator} from './session-turn-queue';
 import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity';
 import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
+import {ProjectSetup} from './project-setup';
 import {reconcileRecoverableTurns} from './turn-recovery';
 import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
@@ -69,7 +70,10 @@ export async function startSessionRuntime() {
   const isOwnerAlive=(owner:string)=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);};
   const onError=(error:unknown)=>log('error','session_communication_failed',errorFields(error));
   const peering=peerSettings();
-  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive}):undefined;
+  // Both runtime compositions carry project setup: this one is the Mac's, where a project order lands.
+  const projectSetup=new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>host.owner,()=>peers?.wake());
+  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive,onWake:()=>projectSetup.wake(),hasPendingOperations:()=>projectSetup.hasPending()}):undefined;
+  host.owner.projectSetup=projectSetup;
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
   for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
@@ -103,7 +107,7 @@ export async function startSessionRuntime() {
   await reconcileRecoverableTurns({client:null,instanceId,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
-  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner)}):null;
+  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
   // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
   const liveSpeech=startLiveSpeechListener();
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
