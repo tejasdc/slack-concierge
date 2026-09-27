@@ -59,7 +59,10 @@ export class PeerClient {
     try {
       response=await fetch(this.url+path,{method,signal:AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     } catch(error) {
-      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,
+      // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
+      // flickered awake and asleep in his bag and produced one notice and one "running again"
+      // per flicker (2026-09-27). Work waiting on it reports to its requester instead.
+      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,announce:false,
         failure:{kind:'unknown',reason:`Peer ${this.name} is unreachable.`,waitForSignal:`${this.name} next contacts this instance`,restartSignal:`${this.name} next contacts this instance`}});
       throw new PeerError(`Peer ${this.name} is unreachable.`,'unreachable',null,'PEER_UNREACHABLE');
     }
@@ -604,6 +607,7 @@ export class SessionPeers {
     const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,row.remote_session_id),run_id:execution.runId,input_id:row.remote_operation_id,sha256:execution.sha256??null,
       ...(execution.text?{text:execution.text}:{}),...(execution.error?{error:execution.error}:{})}:null;
     if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)??'The peer target could not receive this request.');return;}
+    if(this.closeStranded(row))return;
     // The worker's machine says the request stalled: tell the requester once. It stays open.
     if(remote.stalled&&row.stalled_at_ms===null){
       db.transaction(()=>{
@@ -686,13 +690,52 @@ export class SessionPeers {
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
     db.query('UPDATE session_peer_events SET status=? WHERE event_id=?').run(received?'received':['failed','uncertain','canceled'].includes(observed.state)?observed.state:input.turn_id?'admitted':'held',eventId);
   }
+  /**
+   * A request whose work on the peer has ended without a final reply, with nothing there still
+   * working on it, is closed as stalled once it is past its due time or the peer reports it
+   * stalled. Kept open, it was polled on every wake for as long as it existed: eighteen such
+   * requests from September 18–23 were still being asked about on September 27, and their burst
+   * of failures while the Mac slept is what tripped the connection notices. It closes as
+   * `unanswered`, which holds dependents like any unanswered request and is superseded by a final
+   * the worker sends later, so a late answer still returns. Nothing is re-run. The words are the
+   * same for every request one worker left this way, so a requester gets one return for all of
+   * them; each request's own last text is kept in its output.
+   */
+  private closeStranded(row:PeerRequestRow):boolean {
+    if(row.outcome||!row.remote_status_json||this.currentFinal(row.request_id))return false;
+    const remote=JSON.parse(row.remote_status_json);
+    const execution=remote.execution;
+    if(!execution||remote.stillWorking||['running','queued'].includes(execution.status))return false;
+    // Failed and cancelled executions, and recipients that answer with their turn, close in dispatch.
+    if(execution.settled&&execution.status!=='done')return false;
+    if(execution.status==='done'&&execution.answersWithTurn&&execution.dedicated&&execution.text)return false;
+    if(row.overdue_at_ms===null&&row.stalled_at_ms===null&&!remote.stalled&&row.due_at_ms>this.now())return false;
+    const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
+    const lastText=(partial?JSON.parse(partial.payload_json).text:null)??execution.text??null;
+    const worker=this.presentedSession(row.peer,row.remote_session_id);
+    this.settle(row,'unanswered',`${worker} on ${row.peer} ended its work without sending a final reply, and nothing there is still working on it, so this is closed as stalled. Nothing was re-run. Its last text, if any, is in this result's output; a final reply it sends later still returns here.`,
+      {session_id:worker,turn_id:execution.turnId??null,run_id:execution.runId??null,execution_status:execution.status,stalled:true,last_text:lastText});
+    log('info','session_peer_request_closed_stalled',{request_id:row.request_id,peer:row.peer,execution_status:execution.status});
+    return true;
+  }
   private inspectOverdue() {
     const now=this.now();
     for(const row of db.query(`SELECT * FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as PeerRequestRow[]) {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking;
       if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
-      const health=row.status==='queued_offline'?`queued; ${row.peer} has been offline since it was asked`:this.unreachable.has(row.peer)?`peer ${row.peer} unreachable`:remote?.execution?.stopped?'deliberately stopped'
+      const asleep=row.status==='queued_offline'||this.unreachable.has(row.peer);
+      if(asleep){
+        // The machine being asleep is not a notice to Tejas; the agent that asked decides whether
+        // this work matters to him now (his decision, 2026-09-27).
+        db.transaction(()=>{
+          if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
+          this.event(row,'overdue',{text:`Request ${row.request_id} is waiting on ${row.peer}, which has not answered for 30 minutes; it is probably asleep or offline. ${row.status==='queued_offline'?'The request has not reached it yet and will be delivered':'Its status will be read again'} automatically when ${row.peer} is back; nothing is lost or re-sent. Tejas was not told. If this work matters to him before ${row.peer} wakes, ask him (for example, to open the laptop); otherwise no action is needed.`,health:`${row.peer} unreachable`});
+          db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
+        })();
+        continue;
+      }
+      const health=remote?.execution?.stopped?'deliberately stopped'
         :remote?.execution?.status==='done'?`${this.presentedSession(row.peer,row.remote_session_id)} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
         :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
@@ -956,6 +999,7 @@ export class SessionPeers {
         // Keep each peer's catalogue fresh while this instance is active, at most once a minute,
         // so its sessions stay addressable when it later goes offline.
         for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
+        for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])this.closeStranded(row);
         this.inspectOverdue();
         if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
         for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])

@@ -363,6 +363,18 @@ by one of the functions above, never by a second, peer-only projection.
   and the requester sees a progress note. `sessions context` answers from the archived
   transcript. Requests already delivered keep their rows on both sides; the target retries
   its notifications and replies, and the origin's 30-minute inspection reports the queue.
+- A sleeping peer is never a notice to Tejas (his decision, September 27, 2026, after a Mac
+  in his bag produced a "stopped" and a "running again" for every brief wake). The peer
+  connection breaker still backs off and logs, but publishes nothing (`announce:false`).
+  A request still waiting on the sleeping peer at its 30-minute due time gets one overdue
+  note to the requesting agent, which decides whether Tejas needs to know; the request
+  stays recorded and resumes by itself.
+- A peer request whose work ended on the peer without a final reply, with nothing there
+  still working on it, closes as `unanswered` (stalled) once past its due time or when the
+  peer reports it stalled, using the last status read from the peer. The requester gets
+  one return per worker session with identical words; each request keeps its last text in
+  its output. A later final from the worker supersedes it and still returns. Nothing is
+  re-run. Before this, such requests were polled on every wake indefinitely.
 - remote-box down: the Mac keeps running its own sessions; replies to cloud requests stay
   `pending` and forward when the box answers.
 - Neither side ever replays a provider effect for the other.
