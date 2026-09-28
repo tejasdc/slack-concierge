@@ -163,6 +163,39 @@ describe("native provider history", () => {
     }
   });
 
+  test("a message Claude queued mid-tool is listed where Claude read it, under the uuid it was submitted as", async () => {
+    const root = mkdtempSync(join(tmpdir(), "concierge-claude-queued-"));
+    const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = join(root, "config");
+      const cwd = join(root, "workspace");
+      const project = join(process.env.CLAUDE_CONFIG_DIR, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(project, { recursive: true });
+      const sessionUuid = randomUUID(), first = randomUUID(), call = randomUUID(), result = randomUUID(), queuedRow = randomUUID(), submitted = randomUUID(), answer = randomUUID();
+      const stamp = (second: number) => `2026-09-28T16:37:0${second}.000Z`;
+      const rows = [
+        { type: "user", uuid: first, parentUuid: null, promptSource: "sdk", message: { role: "user", content: "First" }, timestamp: stamp(0) },
+        { type: "assistant", uuid: call, parentUuid: first, message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: {} }] }, timestamp: stamp(1) },
+        { type: "user", uuid: result, parentUuid: call, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] }, timestamp: stamp(3) },
+        { type: "attachment", uuid: queuedRow, parentUuid: result, attachment: { type: "queued_command", commandMode: "prompt", source_uuid: submitted, timestamp: stamp(2), prompt: [{ type: "text", text: "Queued while the tool ran" }] }, timestamp: stamp(2) },
+        { type: "attachment", uuid: randomUUID(), parentUuid: queuedRow, attachment: { type: "queued_command", commandMode: "task-notification", prompt: [] }, timestamp: stamp(3) },
+        { type: "assistant", uuid: answer, parentUuid: queuedRow, message: { role: "assistant", content: [{ type: "text", text: "Answer" }] }, timestamp: stamp(4) },
+      ].map(row => ({ ...row, sessionId: sessionUuid, cwd, isSidechain: false, entrypoint: "sdk-cli", version: "2.1.283" }));
+      writeFileSync(join(project, `${sessionUuid}.jsonl`), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      const page = await readClaudeHistory({ sessionUuid, cwd, cursor: null, limit: 10 });
+      expect(page.messages.map(message => [message.role, message.id])).toEqual([
+        ["user", first], ["tool", "toolu_1"], ["tool", "toolu_1:result"], ["user", submitted], ["assistant", answer]]);
+      expect(page.messages[3]).toMatchObject({ content: "Queued while the tool ran", createdAt: stamp(2), timestampSource: "provider", submissionId: submitted, turnId: submitted });
+      const older = await readClaudeHistory({ sessionUuid, cwd, cursor: null, limit: 2 });
+      expect(older.messages.map(message => message.id)).toEqual([submitted, answer]);
+      expect((await readClaudeHistory({ sessionUuid, cwd, cursor: older.nextCursor, limit: 10 })).messages.map(message => message.id)).toEqual([first, "toolu_1", "toolu_1:result"]);
+    } finally {
+      if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousConfig;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("consultation disables configured MCP names without interpreting dots as config traversal", () => {
     const config = codexConsultationConfig({ mcp_servers: { "session.actions": {}, "a\"b": {} } });
     expect(config.mcp_servers).toEqual({ "session.actions": { enabled: false }, 'a"b': { enabled: false } });

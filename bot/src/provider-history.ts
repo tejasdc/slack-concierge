@@ -1,4 +1,5 @@
-import { forkSession, getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
 import type { RunResult } from "./codex";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
@@ -195,7 +196,14 @@ export async function readCodexHistoryDetail(input: ProviderDetailInput,
   throw new Error("PROVIDER_HISTORY_ITEM_NOT_FOUND");
 }
 
-type ClaudeHistoryReader = typeof getSessionMessages;
+/** The SDK's listed rows, with a session's queued messages placed where Claude read them. */
+type ClaudeHistoryReader = (sessionUuid: string, options: GetSessionMessagesOptions, cwd?: string) => Promise<SessionMessage[]>;
+const readClaudeTranscript: ClaudeHistoryReader = async (sessionUuid, options, cwd) => {
+  const [listed, queued] = await Promise.all([getSessionMessages(sessionUuid, {}), cwd ? claudeQueuedMessages(sessionUuid, cwd) : []]);
+  const rows = withQueuedMessages(listed, queued, sessionUuid);
+  const offset = options.offset ?? 0;
+  return options.limit !== undefined && options.limit > 0 ? rows.slice(offset, offset + options.limit) : offset > 0 ? rows.slice(offset) : rows;
+};
 
 /**
  * Claude records who submitted each user row in `promptSource`: `sdk` for an input the
@@ -213,6 +221,8 @@ type ClaudeHistoryReader = typeof getSessionMessages;
  * author are helper-agent tasks, which live in separate files and are never displayed.
  */
 function isClaudeBookkeepingRow(row: Record<string, any>, content: unknown) {
+  // A queued message is one someone submitted; Claude records no promptSource on it.
+  if (row.queuedCommand === true) return false;
   if (row.type !== 'user' || row.entrypoint !== 'sdk-cli' || row.promptSource === 'sdk' || row.promptSource === 'typed') return false;
   if (typeof content === 'string') return true;
   // Tool results and attachments keep their own handling; only plain text rows qualify.
@@ -298,7 +308,7 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
 }
 
 export async function readClaudeHistory(input: ProviderHistoryInput,
-  read: ClaudeHistoryReader = getSessionMessages): Promise<ProviderHistoryPage> {
+  read: ClaudeHistoryReader = readClaudeTranscript): Promise<ProviderHistoryPage> {
   validatePageInput(input);
   let offset: number;
   let rows: SessionMessage[];
@@ -311,12 +321,12 @@ export async function readClaudeHistory(input: ProviderHistoryInput,
       throw new Error("INVALID_HISTORY_REFERENCE");
     }
     offset = Math.max(0, location.offset - input.limit);
-    rows = await read(input.sessionUuid, { offset, limit: location.offset - offset + 1 });
+    rows = await read(input.sessionUuid, { offset, limit: location.offset - offset + 1 }, input.cwd);
     if (rows.at(-1)?.uuid !== location.anchor) throw new Error("STALE_HISTORY_CURSOR");
     rows = rows.slice(0, -1);
     named = rows;
   } else {
-    const native = await read(input.sessionUuid, {});
+    const native = await read(input.sessionUuid, {}, input.cwd);
     if (!native.length) throw new Error("PROVIDER_HISTORY_UNAVAILABLE");
     offset = Math.max(0, native.length - input.limit);
     rows = native.slice(offset);
@@ -331,13 +341,13 @@ export async function readClaudeHistory(input: ProviderHistoryInput,
 }
 
 export async function readClaudeHistoryDetail(input: ProviderDetailInput,
-  read: ClaudeHistoryReader = getSessionMessages): Promise<{ content: string }> {
+  read: ClaudeHistoryReader = readClaudeTranscript): Promise<{ content: string }> {
   const location = decode(input.detailKey, input.sessionUuid);
   if (typeof location.uuid !== "string" || !location.uuid) throw new Error("INVALID_HISTORY_REFERENCE");
   if (location.toolId !== undefined) {
     if (typeof location.toolId !== "string" || !location.toolId
       || (location.type !== "tool_use" && location.type !== "tool_result")) throw new Error("INVALID_HISTORY_REFERENCE");
-    const rows = await read(input.sessionUuid, {});
+    const rows = await read(input.sessionUuid, {}, input.cwd);
     const matches = rows.filter(row => row.session_id === input.sessionUuid && row.uuid === location.uuid);
     if (matches.length !== 1) throw new Error("STALE_HISTORY_CURSOR");
     const content = record(matches[0]!.message)?.content;
@@ -348,7 +358,7 @@ export async function readClaudeHistoryDetail(input: ProviderDetailInput,
   }
   if (!Number.isSafeInteger(location.offset) || location.offset < 0 || !Number.isSafeInteger(location.index)
     || location.index < 0 || typeof location.uuid !== "string" || !location.uuid) throw new Error("INVALID_HISTORY_REFERENCE");
-  const [row] = await read(input.sessionUuid, { offset: location.offset, limit: 1 });
+  const [row] = await read(input.sessionUuid, { offset: location.offset, limit: 1 }, input.cwd);
   if (row?.session_id !== input.sessionUuid || row?.uuid !== location.uuid) throw new Error("STALE_HISTORY_CURSOR");
   const part = record(row.message)?.content?.[location.index];
   if (part?.type !== "tool_use" && part?.type !== "tool_result") throw new Error("PROVIDER_HISTORY_ITEM_NOT_FOUND");

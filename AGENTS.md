@@ -167,7 +167,15 @@ authorization or a change to the default rapid-iteration policy.
   it, and nothing after — shown from Claude's record, never estimated. The message itself
   is published at that pickup, from the same transcript row and through the same mapping
   as the later echo, so it appears when Claude takes it rather than with Claude's first
-  reply, and the echo merges into it under the same identity. Do not build a
+  reply, and the echo merges into it under the same identity. History lists that same
+  message where Claude read it: a message that arrives while a tool is running is written
+  by Claude Code as a `queued_command` attachment row, never a `user` row, and the SDK's
+  history reader drops attachment rows, so `claude-queued-messages.ts` scans the transcript
+  itself (append-only, once per new byte) and places each such message after the row it
+  followed, under the uuid it was submitted as, which is the id the live echo carried.
+  Two requests Claude had answered at 12:37 sat below each new message he typed with "read
+  after 12:50 PM" because the page never listed them (Tejas, 2026-09-28, reported twice).
+  Do not build a
   warm Claude process for speed: process start and `--resume` cost 1–2 seconds; the long
   wait before a reply is Claude working, which a warm process would also pay. See the
   [parity approach](docs/plans/2026-09-17-claude-session-parity.md).

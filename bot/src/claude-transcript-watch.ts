@@ -43,7 +43,13 @@ export function claudeTranscriptPickup(row: any): ClaudeTranscriptPickup | null 
   return null;
 }
 
-async function locateTranscript(configDir: string, sessionUuid: string): Promise<string | null> {
+/** Claude's config directory for this process: the launch environment's, else the owner's own. */
+export function claudeConfigDir(environment?: Record<string, string>): string {
+  return environment?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+}
+
+/** The transcript file for a session, searched across every project directory. */
+export async function locateClaudeTranscript(configDir: string, sessionUuid: string): Promise<string | null> {
   const projects = join(configDir, "projects");
   let directories: string[];
   try { directories = await readdir(projects); } catch { return null; }
@@ -70,7 +76,7 @@ export function watchClaudeTranscript(input: {
   environment?: Record<string, string>;
   onPickup: (pickup: ClaudeTranscriptPickup) => void;
 }): () => void {
-  const configDir = input.environment?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  const configDir = claudeConfigDir(input.environment);
   const locateUntil = Date.now() + LOCATE_FOR_MS;
   let path: string | null = null;
   let offset = 0;
@@ -90,7 +96,7 @@ export function watchClaudeTranscript(input: {
     try {
       if (!path) {
         if (Date.now() > locateUntil) return stop();
-        const found = await locateTranscript(configDir, input.sessionUuid);
+        const found = await locateClaudeTranscript(configDir, input.sessionUuid);
         if (!found) return;
         path = found;
         offset = input.fromStart ? 0 : (await stat(found)).size;
