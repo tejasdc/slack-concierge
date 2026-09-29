@@ -5,6 +5,7 @@ import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRo
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
+import {hisWordsLine,requireHisWords,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 
 /**
  * Topics: the Inbox's recognizable conversations. A topic owns a set of thread roots, the
@@ -1021,9 +1022,22 @@ function questionBrief(item:any) {
     known:typeof item.known==='string'?item.known:'',
     choices,uncertain,
     answerable:typeof item.answerable==='string'?item.answerable:'',
+    ...(typeof item.hisWords==='string'&&item.hisWords.trim()?{hisWords:item.hisWords.trim()}:{}),
+    ...(typeof item.whyNotSettled==='string'&&item.whyNotSettled.trim()?{whyNotSettled:item.whyNotSettled.trim()}:{}),
     // A reading item may name the exact messages he is to read; otherwise they are resolved
     // from the declaring run's own posts into this thread.
     ...(item.reads!==undefined?{reads:idList(item.reads,'reads')}:{})};
+}
+/**
+ * A decision he is asked to make carries the words of his that started the work and why they
+ * leave it open, checked when it is declared ready and shown with the question's why
+ * [decision: questions-carry-his-words]. Only declarations are held to it: questions stored
+ * before 2026-09-29 keep the readiness they had.
+ */
+function withHisWords(brief:any,by:TopicBy):any {
+  const {hisWords,why}=requireHisWords({actorInputId:by.inputId??'',hisWords:brief.hisWords,whyNotAnswered:brief.whyNotSettled},THREAD_QUESTION_FIELDS_REQUIRED);
+  const line=hisWordsLine(hisWords,why);
+  return brief.why.text.includes(line)?brief:{...brief,why:{...brief.why,text:`${brief.why.text.trim()}\n\n${line}`.trim()}};
 }
 /** `ready`, `agent_checking`, its plain spelling `checking`, or nothing; anything else is a mistake, not a default. */
 function questionContext(value:unknown):'ready'|'agent_checking'|undefined {
@@ -1051,7 +1065,7 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
   const current=(id:string)=>seen.get(id)??questionRow(id);
   for(const item of declarations as any[]) {
     if(!item||typeof item!=='object')throw new TopicError('Each question declaration must be an object.');
-    const brief=questionBrief(item);
+    let brief=questionBrief(item);
     const blocking=item.blocking!==false,optional=item.optional===true;
     const declaredContext=questionContext(item.context);
     const state:QuestionState=item.state==='partial'?'partial':'open';
@@ -1069,6 +1083,8 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       const existing=current(String(identity));
       if(existing.topicId!==topic.topicId)throw new TopicError('That question belongs to another topic.',409,'QUESTION_TOPIC_MISMATCH');
       const context=declaredContext??(missing.length?'agent_checking':existing.context);
+      if(existing.kind!=='reading'&&context==='ready'&&by.kind==='agent'&&briefChanged(existing.brief,brief)){
+        try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
       const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context;
       const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner===undefined?existing.owner:owner,sources:sources.length?sources:existing.sources,
         state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
@@ -1088,6 +1104,8 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     // `from` files an unfiled attention entry with this full brief instead of a bare one.
     const filed=typeof item.from==='string'?fileNeed(session,topic,item.from,by,brief):null;
     const kind:QuestionKind=item.kind==='reading'?'reading':filed?.kind??'decision';
+    if(kind==='decision'&&context==='ready'&&by.kind==='agent'){
+      try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
       brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??(by.sessionId?{sessionId:by.sessionId,runId:by.runId??null}:null),sources:sources.length?sources:filed?.sources??[],
       replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:filed?.legacyNeedEventId??null,
@@ -1622,7 +1640,7 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
-export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
+export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision carries "hisWords", copied exactly from his message that started the work, and "whyNotSettled", what those words leave open that only he can decide; the owner refuses it without them, and if his words already answer it you act on them instead of asking. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
 const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
 export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {

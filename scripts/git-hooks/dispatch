@@ -21,5 +21,9 @@ if [ "$name" = pre-push ]; then
   exit 0
 fi
 
+if [ "$name" = pre-commit ]; then
+  "$here/refuse-unrecorded-decision" || exit 1
+fi
+
 if [ -n "$common" ] && [ -x "$own" ]; then exec "$own" "$@"; fi
 exit 0

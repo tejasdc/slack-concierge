@@ -14,6 +14,8 @@ import { log } from './log';
 import {savedWorkSettings} from './saved-work';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
+import { completionWithCheck, questionForTejas } from './answers-to-tejas';
+import { isWritingSession, MACHINE_NEED_REQUIRED, WRITING_SESSION_REFUSAL } from './session-roles';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -425,14 +427,18 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
-        const content=typeof input.text==='string'?input.text.trim():'';
+        const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
-        if(input.outcome!=='done'&&!content)throw new Error(`${input.outcome} requires text.`);
+        if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
+        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined))
+            throw new Error('--his-words and --why-not-answered belong to needs_you: they say why only he can answer.');
+        const content=input.outcome==='needs_you'
+            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
         // Silence about his own message is never the router's judgement alone: `done` on a turn
@@ -572,6 +578,8 @@ export class SessionCommunicationCoordinator {
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
         peer?:string;
+        /** What only the peer machine can do for this work; required to create a session there. */
+        machine_need?:string;
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
@@ -582,6 +590,8 @@ export class SessionCommunicationCoordinator {
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);
+        if(input.requestedEffect==='work'&&isWritingSession(getSessionById(actor.session)!))throw new Error(WRITING_SESSION_REFUSAL);
+        if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
         // A discovered address already says where the session lives.
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (input.resurrect && !remote) {
@@ -735,9 +745,24 @@ export class SessionCommunicationCoordinator {
         evidence?:unknown[];
         attachments?:string[];
         files?:AttachedFile[];
+        his_words?:string;
+        why_not_answered?:string;
+        checked?:string;
+        not_checked?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
+        // What the requester, and through it Tejas, reads: a decision carries his words and why
+        // they leave it open; completed work carries what was checked live. Folded into the words
+        // so every path that carries a reply (a return, a peer, a digest) carries them too.
+        if((input.his_words!==undefined||input.why_not_answered!==undefined)&&input.workDisposition!=='needs_decision')
+            throw new Error('--his-words and --why-not-answered belong to --work-disposition needs_decision.');
+        if((input.checked!==undefined||input.not_checked!==undefined)&&input.workDisposition!=='completed')
+            throw new Error('--checked and --not-checked belong to --work-disposition completed.');
+        if(input.workDisposition==='needs_decision')
+            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered})};
+        else if(input.workDisposition==='completed')
+            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked})};
         const attached = !!(input.attachments?.length || files(input.files).length);
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
             // A retry after the run ended returns the committed reply, as for a local request.

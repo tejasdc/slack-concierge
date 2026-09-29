@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Rendered by scripts/install-mac.sh. Every fifteen minutes (and once after the Mac wakes,
+       because launchd runs a missed interval on wake) it installs a newer Concierge from main,
+       but only at a moment when nothing is running here; see the when-due mode of scripts/update-mac.sh. -->
+  <key>Label</key><string>com.tejasdc.concierge-autoupdate</string>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.tejasdc.agent-host</string></array>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@REPO@/scripts/update-mac.sh</string>
+    <string>--when-due</string>
+  </array>
+  <key>WorkingDirectory</key><string>@REPO@</string>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>@STATE@/logs/update.log</string>
+  <key>StandardErrorPath</key><string>@STATE@/logs/update.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:@HOME@/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key><string>en_US.UTF-8</string>
+  </dict>
+</dict>
+</plist>

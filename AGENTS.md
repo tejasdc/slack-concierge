@@ -12,10 +12,14 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Do not build Slack features, preserve Slack feature parity, run Slack-specific tests,
   claim Slack sandbox lanes, or perform Slack click testing.
-- Implement requested Thinkering behavior promptly. Use the existing evidence only. Tejas's final instruction1789490492.818709 forbids ALL agent-run
-  tests, including focused tests. Do not run, add or bypass test/verification commands.
-  Tejas owns end-to-end testing and will report failures.
-  This includes autonomous deployment repair. Model children do not inherit writable
+- Implement requested Thinkering behavior promptly. Before calling work done, check it end to
+  end on the real system and say what you saw: his surfaces through your own marked entrance
+  (`router-actions.sh test-capture`, or the socket and routes the feature itself uses), after the
+  change is installed. A completed work reply is refused without `--checked` or `--not-checked`.
+  Do not write unit tests to satisfy that, and do not run the old test suites or sandboxes; the
+  Sept 15 no-agent-tests instruction (1789490492.818709) is narrowed to exactly that
+  [decision: agents-check-real-end-to-end-behavior].
+  Autonomous deployment repair runs no checks of its own. Model children do not inherit writable
   production state-directory configuration, and the ledger refuses test processes
   before opening SQLite. Do not bypass either boundary with alternate test config.
   The external repair supervisor launches no reviewers and requires an explicit
@@ -231,6 +235,17 @@ authorization or a change to the default rapid-iteration policy.
   `slack-concierge` for Concierge code and `thinkering` for Thinkering code.
   `D0BMWUJ3RD5` is a retired DM workspace, never a substitute project.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
+- What reaches Tejas and where work runs are enforced by the owner, not asked of agents
+  (`session-roles.ts`, `answers-to-tejas.ts`, from the 2026-09-29 retrospective in
+  `docs/retrospectives/2026-09-29-avoidable-failures/`). A session in a writing project
+  (`WRITING_PROJECTS`, today `messaging-agent`) cannot send work requests: it reports a missing
+  ability and the Inbox routes the building [decision: writing-agents-do-not-build]. A new
+  session on a peer needs `--machine-need`; new work runs on the server
+  [decision: sessions-placed-by-physical-need]. `needs_you` and a `needs_decision` reply need
+  `--his-words` (verified against his messages when they are in this ledger) and
+  `--why-not-answered` [decision: questions-carry-his-words]; a `completed` work reply needs
+  `--checked` or `--not-checked` [decision: agents-check-real-end-to-end-behavior]. All four are
+  folded into the words the requester and he read, so every carrier (return, peer, digest) keeps them.
 - Change the Inbox agent's standing behavior by asking the Inbox session itself
   (`sessions ask` at its exact address) to update its own `slack-inbox` instructions.
   Never edit its AGENTS.md from another session. A resumed Claude session keeps the

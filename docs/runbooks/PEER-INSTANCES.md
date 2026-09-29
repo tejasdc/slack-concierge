@@ -30,7 +30,24 @@ tree, so on 2026-09-18 an installer started by a Mac session died at the stop an
 the agent down. `install-mac.sh` now hands off to the update job when it detects that
 case, and refuses when the job is not installed yet. The first install after this change
 must be run once from a terminal. This is the Mac's counterpart of remote-box's deployment
-worker, but on demand: pushes do not update the Mac automatically.
+worker.
+
+**Automatic updates.** `com.tejasdc.concierge-autoupdate` runs `scripts/update-mac.sh --when-due`
+every fifteen minutes, and launchd runs a missed interval when the Mac wakes. It does nothing
+unless `origin/main` has moved. Then it looks at the Mac's running work without holding anything
+(`bot/scripts/drain-status.ts check`); while any turn is live it waits for the next interval, so
+an update never interrupts or delays work. When the Mac is quiet it takes the same drain gate the
+server's deployment uses, checks again, and pulls and reinstalls; new work that arrives in those
+minutes is queued, not refused, and the gate is released when the installer finishes. It logs to
+`logs/update.log`. Before 2026-09-29 the Mac updated only when someone remembered, and sat four
+days behind main. `install-mac.sh` installs this job and never reloads it from inside itself.
+
+**What runs on the Mac.** New work runs on the server. A session is started on the Mac only for
+what the Mac alone can do (its Messages app, Xcode or the Simulator, a file or app that exists
+only there, a screenshot) or when Tejas names it; `sessions ask --peer mac --provider …` requires
+`--machine-need` saying which, and the owner refuses it without
+[decision: sessions-placed-by-physical-need]. The messaging agent moved to the server on
+2026-09-29; the Mac keeps the texting relay.
 
 The script pins bun 1.3.14 under the state directory, installs locked dependencies,
 copies `router-actions.sh` to `~/.local/bin`, renders the plist with this Mac's tailnet

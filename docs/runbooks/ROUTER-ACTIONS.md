@@ -133,7 +133,25 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 Another Concierge instance is a peer: `sessions peers` lists them, and `--peer <instance>`
 on `projects`, `search` and `ask` targets that instance's projects and sessions. A peer
 request keeps its return obligation here; the recipient on the peer replies with the
-ordinary `sessions reply`. See [peer instances](PEER-INSTANCES.md).
+ordinary `sessions reply`. See [peer instances](PEER-INSTANCES.md). Creating a session on a
+peer needs `--machine-need "<what only that machine can do>"`; new work runs on the server.
+
+What reaches Tejas carries its reasons, and the owner refuses it otherwise:
+
+```bash
+# A question: his exact words that started the work, and what they leave open.
+router-actions.sh sessions outcome needs_you <source-flags> --action-id A \
+  --his-words '<copied from his message>' --why-not-answered '<what only he can decide>' -- '<the question>'
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition needs_decision \
+  --his-words '<…>' --why-not-answered '<…>' -- '<the question>'
+# Completed work: what was exercised on the real system and what was seen, or why nothing could be.
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition completed \
+  --checked '<what you ran live, and what you saw>' -- '<the answer>'
+```
+
+His words are checked against the message that started the work and his other messages of the
+last thirty days in this ledger; work that began on the other machine is taken as given. A
+session in a writing project (the messaging agent) cannot send `--requested-effect work`.
 
 To answer a thread of your own Inbox, post into it deliberately:
 

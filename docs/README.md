@@ -1,6 +1,6 @@
 # Slack Concierge documentation
 
-Final human instruction1789490492.818709: **zero agent-run tests of any kind**. Tejas owns end-to-end testing. Test/verification commands are disabled; older testing directions below are superseded. Do not add work or run another check to validate this instruction.
+Human instruction 1789490492.818709 (Sept 15) disabled agent-run test suites; on 2026-09-29 Tejas narrowed it: agents check their work end to end on the real system, through their own marked entrance, before saying it is done, and write no unit tests to fill that [decision: agents-check-real-end-to-end-behavior]. The suites and sandbox directions below stay disabled and superseded.
 
 **Current direction:** Thinkering is the product surface. Tejas deprecated Slack and ended
 Slack feature parity, Slack-specific tests, sandbox runs and mandatory review/testing cycles

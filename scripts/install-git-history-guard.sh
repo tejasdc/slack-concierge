@@ -30,6 +30,7 @@ sendemail-validate post-index-change p4-changelist p4-prepare-changelist p4-post
 mkdir -p "$dir"
 install -m 0755 "$here/git-hooks/dispatch" "$dir/dispatch"
 install -m 0755 "$here/git-hooks/refuse-history-rewrite" "$dir/refuse-history-rewrite"
+install -m 0755 "$here/git-hooks/refuse-unrecorded-decision" "$dir/refuse-unrecorded-decision"
 for name in $hooks; do ln -sfn dispatch "$dir/$name"; done
 
 gits=$(for g in /usr/bin/git /opt/homebrew/bin/git /usr/local/bin/git "$(command -v git || true)"; do [ -x "$g" ] && echo "$g"; done | sort -u)

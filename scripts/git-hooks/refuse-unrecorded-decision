@@ -1,0 +1,27 @@
+#!/bin/sh
+# pre-commit, every checkout on this machine (through dispatch): a line added to an instruction
+# file that attributes a decision to Tejas ("Tejas decided", "his choice", "(Tejas, 2026-…)")
+# must cite his decision record as [decision: <id>]. Agents kept writing their own stopgaps into
+# these files as his rules, and other agents then obeyed them as walls; the Sophie email on
+# 2026-09-29 waited 80 minutes behind one [decision: decisions-have-provenance-and-status].
+# The check itself is the record's own `decision cite-check`; this only selects what to check.
+
+top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# The record's own entries are his words; they are what gets cited, not what cites.
+[ "$(basename "$top")" = decision-record ] && exit 0
+
+files=$(git diff --cached --name-only --diff-filter=AM | grep -E '(^|/)(AGENTS|CLAUDE|SKILL)\.md$|-skill/references/[^/]+\.md$')
+[ -n "$files" ] || exit 0
+
+tool="$HOME/workspace/decision-record/bin/decision"
+if [ ! -x "$tool" ]; then
+  echo "note: the decision record is not at $tool on this machine, so attributions to Tejas were not checked." >&2
+  exit 0
+fi
+
+# shellcheck disable=SC2086 # instruction-file paths contain no spaces
+if ! git diff --cached -U0 --diff-filter=AM -- $files | "$tool" cite-check; then
+  echo "Commit refused: record the decision (decision new …) or cite the existing one, then commit again." >&2
+  exit 1
+fi
+exit 0

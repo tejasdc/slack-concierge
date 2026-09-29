@@ -9,6 +9,8 @@ LABEL=com.tejasdc.concierge
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 UPDATE_LABEL=com.tejasdc.concierge-update
 UPDATE_PLIST="$HOME/Library/LaunchAgents/$UPDATE_LABEL.plist"
+AUTO_LABEL=com.tejasdc.concierge-autoupdate
+AUTO_PLIST="$HOME/Library/LaunchAgents/$AUTO_LABEL.plist"
 BUN="$STATE/bun/bin/bun"
 BUN_VERSION=${CONCIERGE_MAC_BUN_VERSION:-1.3.14}
 PEERS=${CONCIERGE_PEERS:-'[{"name":"cloud","url":"http://100.118.245.110:8788","paths":["/root/"]}]'}
@@ -158,6 +160,16 @@ if [ "${XPC_SERVICE_NAME:-}" != "$UPDATE_LABEL" ]; then
   launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
   for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1 || break; sleep 1; done
   launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
+fi
+
+# The automatic update runs this installer itself, so it too is reloaded only from outside itself.
+sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" "$REPO/launchd/$AUTO_LABEL.plist" > "$AUTO_PLIST.tmp"
+plutil -lint "$AUTO_PLIST.tmp" >/dev/null
+mv "$AUTO_PLIST.tmp" "$AUTO_PLIST"
+if [ "${XPC_SERVICE_NAME:-}" != "$AUTO_LABEL" ]; then
+  launchctl bootout "gui/$(id -u)/$AUTO_LABEL" 2>/dev/null || true
+  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$AUTO_LABEL" >/dev/null 2>&1 || break; sleep 1; done
+  launchctl bootstrap "gui/$(id -u)" "$AUTO_PLIST"
 fi
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true

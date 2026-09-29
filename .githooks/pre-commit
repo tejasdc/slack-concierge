@@ -1,0 +1,10 @@
+#!/bin/sh
+# This repository sets its own core.hooksPath, which replaces the machine-wide hooks, so it runs
+# the machine's refusal of unrecorded "Tejas decided" lines itself (scripts/git-hooks/
+# refuse-unrecorded-decision): an attribution in an instruction file cites his decision record.
+for guard in "$(dirname "$0")/../scripts/git-hooks/refuse-unrecorded-decision" \
+  /usr/local/share/concierge-git-hooks/refuse-unrecorded-decision \
+  "$HOME/.local/share/concierge-git-hooks/refuse-unrecorded-decision"; do
+  [ -x "$guard" ] && exec "$guard" "$@"
+done
+exit 0
