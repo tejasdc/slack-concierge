@@ -7,8 +7,13 @@
 # The check itself is the record's own `decision cite-check`; this only selects what to check.
 
 top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-# The record's own entries are his words; they are what gets cited, not what cites.
-[ "$(basename "$top")" = decision-record ] && exit 0
+# The record's own entries are his words; they are what gets cited, not what cites. A commit
+# there is checked for well-formed entries instead.
+if [ "$(basename "$top")" = decision-record ]; then
+  [ -x "$top/bin/decision" ] || exit 0
+  git -C "$top" diff --quiet -- decisions || { echo "Stage every decision edit before committing; the check reads the staged record." >&2; exit 1; }
+  exec "$top/bin/decision" validate
+fi
 
 files=$(git diff --cached --name-only --diff-filter=AM | grep -E '(^|/)(AGENTS|CLAUDE|SKILL)\.md$|-skill/references/[^/]+\.md$')
 [ -n "$files" ] || exit 0
