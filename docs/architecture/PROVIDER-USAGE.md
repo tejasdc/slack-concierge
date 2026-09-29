@@ -264,7 +264,9 @@ daemon restarts, and the switch succeeds only when the running daemon answers
 the daemon restarted onto the previous one, and the row offers a sign-in. The account in use
 therefore has no `auth.json` in its home while it is in use; `~/.codex` is its one copy.
 Reading the Accounts list no longer snapshots the login in use, and `saveProfile` refuses.
-A switch is refused while a Codex turn is running on this machine.
+A switch is refused while a Codex turn is running on this machine. The post-restart account
+probe uses the shared bounded retry primitive and its own 45-second, three-attempt policy;
+temporary socket startup failures never create an unbounded or ad hoc retry loop.
 
 The first row is the dangerous one and it is not reversible: the account that was in
 `~/.codex` loses the only live token the machine had for it, and OpenAI can revoke that

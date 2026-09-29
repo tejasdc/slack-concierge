@@ -9,6 +9,8 @@ import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
+import { RETRY_POLICIES } from "./retry-policies";
+import { withRetry } from "./retry-core";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -152,14 +154,14 @@ async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boole
   const started=Date.now();
   let account:string|null=null,refused=false;
   // The daemon was just restarted, so its socket may take a moment to answer.
-  while(Date.now()-started<45_000){
-    try {
-      const answer=await sharedCodexAppServerClient().request('account/read',{refreshToken:true},{requestTimeoutMs:20_000});
-      account=typeof answer?.account?.email==='string'?answer.account.email:null;
-      refused=!account;
-      break;
-    } catch { await new Promise(resolve=>setTimeout(resolve,1_500)); }
-  }
+  try {
+    const answer=await withRetry({operation:'codex-credential-probe',key:'running-daemon',
+      policy:RETRY_POLICIES.providerCredentialProbe,
+      run:()=>sharedCodexAppServerClient().request('account/read',{refreshToken:true},{requestTimeoutMs:20_000}),
+      classifyError:()=> 'transient'});
+    account=typeof answer?.account?.email==='string'?answer.account.email:null;
+    refused=!account;
+  } catch {}
   const ok=!!account&&(!expectedAccount||account===expectedAccount);
   log('info','provider_activation_probed',{provider:'codex',ok,signed_out:refused,other_account:!!account&&!ok,duration_ms:Date.now()-started});
   return ok;

@@ -24,6 +24,7 @@ export const RETRY_POLICIES = Object.freeze({
   peerNotify: policy({ name: "peer-notify", maxAttempts: 12, baseDelayMs: 5_000, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 15 * 60_000 }),
   peerRequest: policy({ name: "peer-request", maxAttempts: 15, baseDelayMs: 5_000, capDelayMs: 10 * 60_000, jitterFraction: 0.25, maxAgeMs: 60 * 60_000 }),
   providerRequest: policy({ name: "provider-request", maxAttempts: 5, baseDelayMs: 15_000, capDelayMs: 30 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
+  providerCredentialProbe: policy({ name: "provider-credential-probe", maxAttempts: 3, baseDelayMs: 1_500, capDelayMs: 1_500, jitterFraction: 0, maxAgeMs: 45_000 }),
   externalHttp: policy({ name: "external-http", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   deployHealthProbe: policy({ name: "deploy-health-probe", maxAttempts: 3, baseDelayMs: 60_000, capDelayMs: 60 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
   captureDelivery: policy({ name: "capture-delivery", maxAttempts: 5, baseDelayMs: 1_000, capDelayMs: 30_000, jitterFraction: 0.25, maxAgeMs: 15 * 60_000 }),

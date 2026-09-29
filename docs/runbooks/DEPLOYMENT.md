@@ -520,6 +520,15 @@ deployment. The lint now recognizes the source-level policy derivation and short
 argument instead of a filename. The candidate's deployment-source bootstrap change did
 not touch this path; the detached controller still owns retry, restart, and health proof.
 
+Incident `384db91a-ab80-4544-bcaa-333fd89da57f` also stopped before replacing the
+capture bundle or route configuration. Journald retained the release-boundary refusal:
+`provider-activation.ts: raw setTimeout inside catch; use withRetry`. The candidate had added
+a short socket-startup loop while proving that the restarted Codex daemon held the selected
+account, but encoded its delay directly inside `catch`. The probe now uses the storage-neutral
+retry primitive with one named, bounded three-attempt/45-second policy. The prior capture
+runtime remained healthy and the controller restored the recorded last-known-good release;
+the external supervisor still owns integration, restart, and health proof for this repair.
+
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
 readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched
