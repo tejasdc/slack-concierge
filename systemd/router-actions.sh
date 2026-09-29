@@ -34,7 +34,11 @@
 set -euo pipefail
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/root/.bun/bin:/root/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
-STATE_DB=${CONCIERGE_STATE_DB:-${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}/state.db}
+# Concierge's own records: the Mac keeps them where its launchd job does, the server under /root.
+# Sessions Concierge starts set CONCIERGE_STATE_DIR; a plain terminal does not, so the default must
+# be this machine's (the capability-map check found `project status` failing in a Mac terminal).
+if [ "$(uname -s)" = Darwin ]; then DEFAULT_STATE_DIR="$HOME/Library/Application Support/concierge"; else DEFAULT_STATE_DIR=/root/.local/state/concierge; fi
+STATE_DB=${CONCIERGE_STATE_DB:-${CONCIERGE_STATE_DIR:-$DEFAULT_STATE_DIR}/state.db}
 export CONCIERGE_STATE_DB="$STATE_DB"
 if [ "$(uname -s)" = Darwin ]; then
   BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-$HOME/workspace/slack-concierge/bot}
