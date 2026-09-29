@@ -162,15 +162,14 @@ if [ "${XPC_SERVICE_NAME:-}" != "$UPDATE_LABEL" ]; then
   launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
 fi
 
-# The automatic update runs this installer itself, so it too is reloaded only from outside itself.
+# The automatic update runs this installer itself, and booting out a job ends every process it
+# started: on 2026-09-29 its first real run unloaded itself here and never restarted Concierge.
+# So it is only loaded when missing, never reloaded; a changed schedule takes effect when a
+# terminal or the manual update job finds it unloaded, or after `launchctl bootout` by hand.
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" "$REPO/launchd/$AUTO_LABEL.plist" > "$AUTO_PLIST.tmp"
 plutil -lint "$AUTO_PLIST.tmp" >/dev/null
 mv "$AUTO_PLIST.tmp" "$AUTO_PLIST"
-if [ "${XPC_SERVICE_NAME:-}" != "$AUTO_LABEL" ]; then
-  launchctl bootout "gui/$(id -u)/$AUTO_LABEL" 2>/dev/null || true
-  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$AUTO_LABEL" >/dev/null 2>&1 || break; sleep 1; done
-  launchctl bootstrap "gui/$(id -u)" "$AUTO_PLIST"
-fi
+launchctl print "gui/$(id -u)/$AUTO_LABEL" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$AUTO_PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # bootout returns before the service is gone; a bootstrap in that window fails silently.

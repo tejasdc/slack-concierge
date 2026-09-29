@@ -40,7 +40,7 @@ an update never interrupts or delays work. When the Mac is quiet it takes the sa
 server's deployment uses, checks again, and pulls and reinstalls; new work that arrives in those
 minutes is queued, not refused, and the gate is released when the installer finishes. It logs to
 `logs/update.log`. Before 2026-09-29 the Mac updated only when someone remembered, and sat four
-days behind main. `install-mac.sh` installs this job and never reloads it from inside itself.
+days behind main. `install-mac.sh` loads this job when it is missing and never reloads it, because the job runs the installer and booting it out would end that run (its first real run did exactly that on 2026-09-29).
 
 **What runs on the Mac.** New work runs on the server. A session is started on the Mac only for
 what the Mac alone can do (its Messages app, Xcode or the Simulator, a file or app that exists
