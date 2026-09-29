@@ -22,6 +22,8 @@ main() {
   [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Refusing: checkout has uncommitted changes." >&2; git status --short >&2; exit 2; }
 
   if [ "${1:-}" = --when-due ]; then
+    # His decisions record travels by git too; the pre-commit check on this Mac reads it.
+    git -C "$HOME/workspace/decision-record" pull --ff-only --quiet >/dev/null 2>&1 || true
     git fetch --quiet origin
     [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ] || exit 0
     echo "== $(date -u +%FT%TZ) main moved to $(git log --oneline -1 origin/main); checking for running work"
