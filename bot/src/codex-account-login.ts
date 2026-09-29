@@ -28,11 +28,14 @@ export type CodexSignInStart = AuthLoginStartResult;
 
 export class CodexAccountLogin {
   private staging: string | null = null;
+  // True from the moment Codex finishes until the new login has been proven or put back, so
+  // the Accounts screen keeps waiting instead of reading a half-finished switch as the result.
+  private settling = false;
 
   constructor(
     private readonly manager: ProviderLoginManager,
     /** Put the freshly signed-in account into use, once it exists on its own. */
-    private readonly activate: (home: string) => Promise<void>,
+    private readonly activate: (home: string) => Promise<unknown>,
     private readonly command = `${MANAGED_CODEX} login --device-auth`,
   ) {}
 
@@ -64,8 +67,12 @@ export class CodexAccountLogin {
 
   /**
    * Give the finished sign-in its account's name and put it in use. Naming it by the
-   * account means signing the same account in twice replaces its home rather than
+   * account means signing the same account in twice replaces its login rather than
    * collecting duplicates of one account under different names.
+   *
+   * Only the login moves. The account's home also holds its conversation state and the
+   * shared history link, and this used to delete the whole folder to make room; a login
+   * already there is set aside instead, never deleted.
    */
   private async settle(home: string) {
     if (!existsSync(join(home, "auth.json"))) { this.discard(home); return; }
@@ -74,16 +81,24 @@ export class CodexAccountLogin {
     if (email) {
       const named = join(CODEX_ACCOUNTS, profileId(email));
       if (named !== home) {
-        try { rmSync(named, { recursive: true, force: true }); renameSync(home, named); settled = named; }
+        try {
+          mkdirSync(named, { recursive: true, mode: 0o700 });
+          const target = join(named, "auth.json");
+          if (existsSync(target)) renameSync(target, `${target}.superseded-${Date.now()}`);
+          renameSync(join(home, "auth.json"), target);
+          this.discard(home);
+          settled = named;
+        }
         catch (error) { log("warn", "codex_account_home_not_named", errorFields(error)); }
       }
     }
     this.staging = null;
     log("info", "codex_account_signed_in", { named: !!email });
-    await this.activate(settled);
+    this.settling = true;
+    try { await this.activate(settled); } finally { this.settling = false; }
   }
 
-  hasPending(): boolean { return this.manager.hasPendingLogin("codex"); }
+  hasPending(): boolean { return this.settling || this.manager.hasPendingLogin("codex"); }
 
   async start(): Promise<CodexSignInStart> {
     this.discard(this.staging);

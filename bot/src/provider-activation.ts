@@ -7,7 +7,8 @@ import { authHeldInputCount, db, observeExecutionChanges, releaseAuthHeldWork } 
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
-import { credentialPath, type ProviderKey } from "./provider-accounts";
+import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
+import { sharedCodexAppServerClient } from "./codex-app-server-client";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -53,7 +54,7 @@ export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
  * already in flight, so activation waits for the operator instead of deciding
  * for him.
  */
-function runningCodexTurns(): number {
+export function runningCodexTurns(): number {
   try {
     const row = db.query(`SELECT COUNT(*) AS count FROM turns
       JOIN sessions ON sessions.id = turns.session_id
@@ -142,11 +143,25 @@ export async function claudeCredentialsAnswer(home:string|null=null,expectedAcco
   return ok;
 }
 
-async function codexCredentialsAnswer():Promise<boolean>{
-  const probe=await run(MANAGED_CODEX,['-s','read-only','-a','never','exec','--skip-git-repo-check',
-    '-m','gpt-6-luna','Reply with the single word OK.'],90_000);
-  const ok=probe.code===0 && /\bOK\b/.test(probe.output);
-  log('info','provider_activation_probed',{provider:'codex',ok});
+async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boolean>{
+  // Asked of the running daemon, the process that does his work, and with a renewal forced.
+  // A separate `codex exec` answered here before: it ran on its own copy of the token, so it
+  // said OK on 2026-09-29 while the daemon had already been refused ("refresh token reused")
+  // and every one of his Codex sessions was signed out — and panel said "Switched". Renewing
+  // is the part that fails for a spent login; an unexpired access token hides it for days.
+  const started=Date.now();
+  let account:string|null=null,refused=false;
+  // The daemon was just restarted, so its socket may take a moment to answer.
+  while(Date.now()-started<45_000){
+    try {
+      const answer=await sharedCodexAppServerClient().request('account/read',{refreshToken:true},{requestTimeoutMs:20_000});
+      account=typeof answer?.account?.email==='string'?answer.account.email:null;
+      refused=!account;
+      break;
+    } catch { await new Promise(resolve=>setTimeout(resolve,1_500)); }
+  }
+  const ok=!!account&&(!expectedAccount||account===expectedAccount);
+  log('info','provider_activation_probed',{provider:'codex',ok,signed_out:refused,other_account:!!account&&!ok,duration_ms:Date.now()-started});
   return ok;
 }
 
@@ -177,13 +192,13 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
   }
   const report = await activateCodex();
   pendingCodexActivation = report.status === "deferred";
-  // Codex only actually changes account when its App Server comes back on the new token.
+  // Codex only actually changes account when its App Server comes back on the new token, and
+  // a restart that came back healthy says nothing about whether that token renews.
   if (report.status === "applied") {
-    const held=authHeldInputCount(provider)>0;
-    if(held && !await codexCredentialsAnswer())return {status:'failed',
-      detail:'Codex restarted, but this account did not answer. Your waiting messages remain held.'};
+    if(!await codexCredentialsAnswer(currentAccount('codex')?.label??null))return {status:'failed',
+      detail:'Codex restarted, but that account could not sign in from this machine.'};
     releaseUsageHeldWork(provider);
-    if(held)releaseAuthHold(provider, releasedBy);
+    if(authHeldInputCount(provider)>0)releaseAuthHold(provider, releasedBy);
   }
   return report;
 }

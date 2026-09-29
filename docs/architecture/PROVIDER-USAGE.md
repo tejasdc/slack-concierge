@@ -250,7 +250,21 @@ What each action destroys, which is the part that gets forgotten:
 | --- | --- | --- | --- |
 | Sign in **inside `~/.codex`** | deleted first, then replaced | untouched | untouched |
 | Sign in into its own home | untouched | created or replaced | untouched |
-| Switch to a kept account | replaced by a copy of that home | untouched | untouched |
+| Switch to a kept account | moved back to its own home; the kept login moved in | its login moved out, the outgoing one moved in; anything already there set aside as `auth.json.superseded-<time>` | untouched |
+
+A switch **moves** logins; it never copies them (2026-09-29). It used to copy the kept home's
+login into `~/.codex` and skip saving the outgoing one whenever a stale home for that account
+already existed. The daemon renews on start, so each copy it ran on left the home copy spent:
+on 2026-09-29 a switch put the spent `tejas@chann.app` copy in place (OpenAI answered
+`refresh_token_reused`) and overwrote the working gmail login, whose older home copy was spent
+the same way on 2026-09-22. Both server Codex logins were lost, while the panel said
+"Switched". Now `moveCodexAccountIntoUse` moves the live login home and the kept login in, the
+daemon restarts, and the switch succeeds only when the running daemon answers
+`account/read {refreshToken:true}` as that account. Otherwise both logins are moved back and
+the daemon restarted onto the previous one, and the row offers a sign-in. The account in use
+therefore has no `auth.json` in its home while it is in use; `~/.codex` is its one copy.
+Reading the Accounts list no longer snapshots the login in use, and `saveProfile` refuses.
+A switch is refused while a Codex turn is running on this machine.
 
 The first row is the dangerous one and it is not reversible: the account that was in
 `~/.codex` loses the only live token the machine had for it, and OpenAI can revoke that
@@ -367,6 +381,25 @@ The old Claude snapshot operation is refused, and reading or pressing an account
 calls the outgoing-account snapshot path. The one-home dispatch path and Codex activation
 remain unchanged. A Claude press releases a usage hold only when the selected account has
 a readable usage window with room; the ordinary effect-safety gate still controls retry.
+
+**Signing a Claude account in never touches a login that is already here** (2026-09-29).
+"Sign in to another account" used to run `claude auth login` against `~/.claude`, the login
+every Claude session runs on, and a saved account whose login had lapsed had no repair: its
+Switch was refused with "sign in to that account again" and nothing could. The cause of that
+lapse, from the server's records: `claude-swap` (the usage reader) keeps its own copy of each
+account and renewed `tejas@chann.app` on 2026-09-23 18:09 and 2026-09-29 10:11 (its log);
+`~/.claude-accounts/tejas-chann-app` was a copy of that same login, so the first renewal
+killed it (the switch probe failed from 2026-09-23 21:29 on), and Claude then emptied its
+tokens. `claude-account-login.ts` now signs in inside a fresh `~/.claude-accounts/.signing-in-*`
+folder (`--email` prefilled when started from an account's row), asks Claude whose login it
+is, and moves only `.credentials.json` and `.claude.json` into that account's home (an older
+one is set aside), so the account holds its own independent login. It then switches through
+the same probe as the Switch button. Signing in as a different account than the row pressed
+keeps that login and switches nothing. Each kept account reports `signedIn`: false when its
+login has no renewal key, so the panel offers that account's sign-in instead of Switch; a
+switch refused for authentication returns `needsSignIn` with the same effect. On the Mac,
+where Claude keeps logins in the Keychain rather than a file, this sign-in reports that it
+could not finish rather than filing anything.
 
 The Mac proof established both continuation across homes and simultaneous spending on two
 Claude accounts. This source change has not been activated or tested by an agent under the

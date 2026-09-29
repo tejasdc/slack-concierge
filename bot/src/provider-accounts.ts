@@ -20,7 +20,9 @@ import { providerAccountUsage } from "./provider-account-usage";
 export type ProviderKey = "codex" | "claude-code";
 
 export type ProviderAccount = Readonly<{ id: string; label: string; detail: string | null }>;
-export type ProviderProfile = Readonly<{ id: string; label: string; detail: string | null; current: boolean }>;
+// `signedIn` is false when the kept login can no longer renew, so the surface offers a sign-in
+// for that account instead of a switch that is certain to be refused.
+export type ProviderProfile = Readonly<{ id: string; label: string; detail: string | null; current: boolean; signedIn: boolean }>;
 
 const CODEX_HOME = join(homedir(), ".codex");
 const CLAUDE_HOME = join(homedir(), ".claude");
@@ -209,7 +211,8 @@ function legacyProfiles(provider: ProviderKey): { id: string; path: string }[] {
   if (provider !== "codex") return [];
   try {
     return readdirSync(CODEX_HOME)
-      .filter(name => name.startsWith("auth.json.") && name !== "auth.json")
+      .filter(name => name.startsWith("auth.json.") && name !== "auth.json" && !name.includes("superseded")
+        && !name.endsWith(".switching"))
       .map(name => ({ id: name.slice("auth.json.".length), path: join(CODEX_HOME, name) }))
       .filter(entry => entry.id.length > 0);
   } catch { return []; }
@@ -370,98 +373,120 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
         label: recorded ?? account?.label ?? id,
         detail: account?.detail ?? null,
         current,
+        signedIn: holdsLogin(provider, credentials),
       };
     })
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
 /**
- * Keep every account this machine has been signed into, without him having to ask.
+ * Whether a kept login still holds what it needs to renew itself.
  *
- * There was a "Remember this account" button, and it was nonsense: signing in IS how an
- * account becomes his machine's. He said so (2026-09-22). Nobody signs in to an account
- * they want forgotten, so the choice never existed and the button only made him carry a
- * concept the system should own. The account in use is snapshotted whenever it is not
- * already kept, which is idempotent and needs no moment to be caught.
+ * Presence, not proof: a renewal key can be present and already spent elsewhere, which only
+ * the provider can say, so a switch still proves the account answers before it is recorded.
+ * What this does prove is the opposite case. Claude empties a login it could not renew, and
+ * that emptied login sat in his list behind a Switch button that could never work
+ * (tejas@chann.app, 2026-09-23 to 2026-09-29), when the one thing it needed was a sign-in.
  */
-export function rememberCurrentAccount(provider: ProviderKey): void {
-  // Claude's default credential already has a home. A snapshot would make a second
-  // refresh-token copy, so a read or a switch must never create one.
-  if(provider==='claude-code')return;
-  const account = currentAccount(provider);
-  if (!account) return;
-  const kept = listProfiles(provider).find(profile => profile.current);
-  if (kept) {
-    // An account kept before its name was recorded shows the name it was filed under. We
-    // know this one's address, so give it back rather than leaving him reading a slug.
-    if (provider === "claude-code" && kept.label !== account.label && account.label.includes("@")) {
-      try { writeFileSync(join(profileDirectory(provider), `${kept.id}.email`), account.label, { mode: 0o600 }); }
-      catch { /* a name it can rewrite next time is not worth failing a read for */ }
-    }
-    return;
-  }
-  try { saveProfile(provider, account.label); }
-  catch (error) { log("info", "provider_account_not_kept", { provider, error_name: (error as Error)?.name ?? "Error" }); }
+function holdsLogin(provider: ProviderKey, credentials: any): boolean {
+  const key = provider === "codex" ? credentials?.tokens?.refresh_token : credentials?.claudeAiOauth?.refreshToken;
+  return typeof key === "string" && key.length > 0;
 }
 
-/** Snapshot the credentials currently on disk under a given name. */
-export function saveProfile(provider: ProviderKey, label: string): ProviderProfile[] {
-  if(provider==='claude-code')throw new Error('Claude accounts are kept by signing in to their own homes.');
-  const source = credentialPath(provider);
-  if (!existsSync(source)) throw new Error("There are no credentials on this host to save yet.");
-  const id = profileId(label);
-  // A kept Codex account goes where the usage reader already looks: its own home under
-  // ~/.codex-accounts, which is how two accounts' limits have been readable side by side
-  // since 2026-09-18. Keeping it anywhere else makes an account switchable but silent,
-  // which is the split that cost him his second usage bar in the first place.
-  const home = accountHome(provider, id);
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  copyFileSync(source, homeCredential(provider, home));
-  // Claude's credential names no account, so the account's own name is recorded beside it.
-  if (provider === "claude-code" && label.includes("@")) writeFileSync(join(home, ".account-email"), label, { mode: 0o600 });
-  log("info", "provider_profile_saved", { provider, profile_id: id });
-  return listProfiles(provider);
-}
-
-/**
- * Put a saved profile's credentials in place. Writing through a temporary file
- * in the same directory keeps the live credential file whole: a reader either
- * sees the previous account or the next one, never a half-written file.
- *
- * This only changes what is on disk. Making a running provider use it is the
- * caller's activation step, which is why the two are one owner operation.
- */
-/**
- * Put a specific account home's credentials in use. The home is already the account's own,
- * so nothing is lost by this beyond whatever was active, which is kept first.
- */
-export function activateProfileHome(home: string): ProviderAccount | null {
-  const source = join(home, "auth.json");
-  if (!existsSync(source)) throw new Error("That account home holds no credentials.");
-  rememberCurrentAccount("codex");
-  const target = credentialPath("codex"), staged = `${target}.switching`;
-  copyFileSync(source, staged);
-  try { renameSync(staged, target); }
-  catch (error) { try { unlinkSync(staged); } catch { /* the staged copy is disposable */ } throw error; }
-  memo.delete("codex");
-  return currentAccount("codex");
-}
-
-export function activateProfile(provider: ProviderKey, id: string): ProviderAccount | null {
-  if(provider==='claude-code')throw new Error('Claude account selection does not activate a credential.');
+/** Whether the kept account `id` still holds a login on this machine. */
+export function profileSignedIn(provider: ProviderKey, id: string): boolean {
   const source = profileSources(provider).get(id);
-  if (!source) throw new Error("That saved account no longer exists on this host.");
-  // Whatever is in place now is about to be overwritten. If this machine holds no other
-  // copy of it, that copy is the only live token it has for that account, and overwriting
-  // it loses the account outright — which is exactly what happened on 2026-09-22.
-  rememberCurrentAccount(provider);
-  const target = credentialPath(provider);
-  const staged = `${target}.switching`;
-  copyFileSync(source, staged);
-  try { renameSync(staged, target); }
-  catch (error) { try { unlinkSync(staged); } catch { /* the staged copy is disposable */ } throw error; }
-  memo.delete(provider);
-  const account = currentAccount(provider);
-  log("info", "provider_profile_activated", { provider, profile_id: id, account_known: !!account });
-  return account;
+  return !!source && holdsLogin(provider, readJson(source));
+}
+
+/**
+ * Accounts are kept by signing in, never by copying a login.
+ *
+ * A login is a renewal key that the provider replaces every time it is used, and the old key
+ * stops working the moment it is replaced. Two files holding one login therefore cannot both
+ * stay alive: whichever renews first kills the other. Every lost account on this server
+ * traces to such a copy — the Claude account kept beside the usage tool's own copy of it, the
+ * Codex accounts copied into and out of the agents' home on every switch (2026-09-22 and
+ * 2026-09-29, when a switch put a spent chann.app copy in place and overwrote the working
+ * gmail login without keeping it). So there is no snapshot operation any more; an older
+ * surface that still asks for one is told how accounts are kept instead.
+ */
+export function saveProfile(_provider: ProviderKey, _label: string): ProviderProfile[] {
+  throw new Error("Accounts are kept by signing in to them. A copied login stops working as soon as the original renews.");
+}
+
+// The agents' own login is set aside into the archive rather than beside itself: a file named
+// `auth.json.<anything>` next to it is listed as a switchable account by `legacyProfiles`.
+function setAside(path: string): string | null {
+  if (!existsSync(path)) return null;
+  const aside = path === credentialPath("codex")
+    ? join(CODEX_HOME, "retired-auth", `auth.json.superseded-${Date.now()}`)
+    : `${path}.superseded-${Date.now()}`;
+  mkdirSync(join(aside, ".."), { recursive: true, mode: 0o700 });
+  renameSync(path, aside);
+  return aside;
+}
+
+/** The home an account already has on this machine, found by who its login says it is. */
+function codexHomeFor(account: ProviderAccount): string {
+  for (const entry of installedAccounts("codex")) {
+    if (codexAccount(readJson(entry.path))?.id === account.id) return join(CODEX_ACCOUNTS, entry.id);
+  }
+  return accountHome("codex", profileId(account.label));
+}
+
+export type CodexAccountMove = Readonly<{ incoming: ProviderAccount; outgoing: ProviderAccount | null; undo(): void }>;
+
+/**
+ * Put a kept Codex account in use by moving its login into the agents' home, and the login it
+ * replaces back into that account's own home. At no instant does one login exist twice, and
+ * nothing is overwritten: a file already at a destination is set aside, never deleted.
+ *
+ * The daemon only reads `~/.codex` at start, so the caller restarts it and must then prove the
+ * running daemon renews as `incoming`. When it cannot, `undo` puts both logins back where they
+ * were, so a failed switch leaves exactly the machine he had.
+ */
+export function moveCodexAccountIntoUse(source: string): CodexAccountMove {
+  const live = credentialPath("codex");
+  const incoming = codexAccount(readJson(source));
+  if (!incoming) throw new Error("That saved account holds no Codex login.");
+  const outgoing = existsSync(live) ? codexAccount(readJson(live)) : null;
+  let outgoingTarget: string | null = null, outgoingAside: string | null = null, liveAside: string | null = null;
+  if (outgoing && outgoing.id !== incoming.id) {
+    const home = codexHomeFor(outgoing);
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    outgoingTarget = join(home, "auth.json");
+    outgoingAside = setAside(outgoingTarget);
+    renameSync(live, outgoingTarget);
+  } else {
+    // The same account signed in afresh, or nothing in use: the incoming login is the newer one.
+    liveAside = setAside(live);
+  }
+  renameSync(source, live);
+  memo.delete("codex");
+  log("info", "provider_profile_moved_into_use", { provider: "codex", replaced_kept: !!outgoingTarget });
+  return {
+    incoming, outgoing,
+    // Each step is attempted even when an earlier one fails, so the login he had is put back
+    // whatever became of the one that was refused.
+    undo: () => {
+      const failed: string[] = [];
+      const step = (name: string, from: string | null, to: string) => {
+        if (!from || !existsSync(from)) return;
+        try { renameSync(from, to); } catch { failed.push(name); }
+      };
+      step("incoming", live, source);
+      if (outgoingTarget) {
+        step("outgoing", outgoingTarget, live);
+        step("kept", outgoingAside, outgoingTarget);
+      } else step("previous", liveAside, live);
+      memo.delete("codex");
+      log(failed.length ? "error" : "info", "provider_profile_move_undone", { provider: "codex", failed_steps: failed });
+    },
+  };
+}
+
+/** Where a kept Codex account's login is, by the id the Accounts surface lists it under. */
+export function codexProfileSource(id: string): string | null {
+  return profileSources("codex").get(id) ?? null;
 }

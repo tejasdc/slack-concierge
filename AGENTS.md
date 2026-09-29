@@ -575,7 +575,11 @@ authorization or a change to the default rapid-iteration policy.
   [usage limits for every account](docs/architecture/PROVIDER-USAGE.md#usage-limits-for-every-account),
   and the Accounts sign-in was built on 2026-09-22 without reading it; it cost Tejas a live
   account and its usage reporting. Read that section before changing anything that signs in,
-  switches, keeps or snapshots an account.
+  switches, keeps or snapshots an account. A login is never copied, for either provider: a
+  copy dies the first time the original renews. Codex switches move logins and succeed only
+  when the running daemon renews as the chosen account; Claude sign-ins happen in a fresh
+  folder and are filed under the account they turned out to be (2026-09-29, both server
+  Codex logins and the chann.app Claude login lost to copies).
 - A kept account's name is recorded beside it, never inferred from whoever is signed in.
   A Codex credential names its own account; a Claude one carries no address at all, so the
   code that labelled it read `~/.claude.json`, which is the global record of the *current*

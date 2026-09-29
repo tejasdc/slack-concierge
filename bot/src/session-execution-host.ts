@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
-import {join} from 'node:path';
+import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
@@ -28,26 +28,27 @@ import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
-import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
-import {activateCredentials,claudeCredentialsAnswer,type ActivationReport} from './provider-activation';
-import {resumeBlockedParkedHeadTurns} from './state';
+import {activateCredentials,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
+import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
  * `detail` is one sentence for him about what actually happened, present only when
  * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
  * that had been taken away by a restart was reported to him as a wrong code.
  */
-export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;detail?:string;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
+export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;detail?:string;needsSignIn?:boolean;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
 
 const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   no_url_before_timeout:'The sign-in tool did not produce a link. Nothing changed.',
@@ -60,13 +61,18 @@ export class SessionExecutionHost {
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
   private readonly codexLogin:CodexAccountLogin;
+  private readonly claudeLogin:ClaudeAccountLogin;
+  // One Codex switch at a time: two moves sharing one restart would undo in the wrong order.
+  private codexSwitching=false;
+  // How the last sign-in that finished on its own ended, for the screen that waited on it.
+  private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
     // process exiting is the only signal that credentials changed. Activation
     // belongs here too, or the new account would sit on disk unused.
     this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
-      void (provider==='codex'?this.codexLogin.completed():this.settleCredentialChange(provider as ProviderKey))
+      void (provider==='codex'?this.codexLogin.completed():this.finishClaudeSignIn())
         .catch(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});});
     },onPendingChanged:(provider,expiresAtMs)=>{
       // A sign-in he has started becomes work in progress the drain can see, so an update
@@ -77,9 +83,12 @@ export class SessionExecutionHost {
     // A Codex sign-in lands in a home of its own and is only then put in use, so the
     // account already here keeps its token instead of being deleted by the login.
     this.codexLogin=new CodexAccountLogin(this.providerLoginManager,async home=>{
-      activateProfileHome(home);
-      await this.settleCredentialChange('codex');
+      const result=await this.putCodexAccountInUse(join(home,'auth.json'));
+      this.lastSignIn.set('codex',{ok:result.status==='completed',detail:result.status==='completed'?null:result.detail??null});
     });
+    // A Claude sign-in lands in a folder of its own too, and is filed under whoever it
+    // turned out to be, so the login every Claude session here runs on is never replaced.
+    this.claudeLogin=new ClaudeAccountLogin(this.providerLoginManager);
     // Codex signs itself in over its own API and keeps the token it obtained, so there is
     // nothing here to activate — only parked work to release once the account is usable.
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
@@ -90,7 +99,7 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
-      auth:{status:()=>this.providerAuthStatus(),start:provider=>this.startProviderAuthRefresh(provider),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
+      auth:{status:()=>this.providerAuthStatus(),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
@@ -100,16 +109,21 @@ export class SessionExecutionHost {
     const selection=provider==='claude-code'?claudeAccountSelection():null;
     const saved=listProfiles(provider);
     const profiles=provider==='claude-code'&&defaultAccount
-      ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default'},
+      ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
         ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
       :saved;
     const account=provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
     return {provider,mode:provider==='codex'?'device':'interactive',
-      pending:provider==='codex'?this.codexLogin.hasPending():this.providerLoginManager.hasPendingLogin(provider),
+      pending:provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending(),
       // A signed-in account is kept before anything replaces it. A surface talking to an
       // older build sees this absent and warns him first, and stops once this is live.
       signInKeepsCurrent:true,
+      // Which account's row a waiting sign-in belongs to, so a reloaded page puts the code
+      // box back under the account he pressed rather than under "another account".
+      pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
+      // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
+      lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles,usage:providerAccountUsage(provider)};
@@ -127,9 +141,8 @@ export class SessionExecutionHost {
     // joins that pass rather than starting a second one.
     await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]);
-    // Codex still snapshots its active login. Claude accounts already live in their
-    // own homes; reading the list must not copy the default credential.
-    rememberCurrentAccount('codex');
+    // Reading the list never copies a login. It used to snapshot the Codex login in use into
+    // a kept home on every read, which is a second copy of one renewal key.
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
   /**
@@ -167,42 +180,95 @@ export class SessionExecutionHost {
     return {status:activation.status==='failed'?'failed':'completed',activation,
       resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh(provider):[]};
   }
-  private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
+  /**
+   * `profileId` is the kept account he pressed sign-in on; absent means a new account. A
+   * lapsed account is repaired in place: its row starts this, and finishing it switches to it.
+   */
+  private async startProviderAuthRefresh(provider:string,profileId?:string|null):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
     if(key==='codex'){
+      this.lastSignIn.delete('codex');
       const started=await this.codexLogin.start();
       if(started.status==='awaiting_approval')return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
       if(started.status==='completed')return this.settleCredentialChange(key);
       log('warn','auth_refresh_failed',{provider:key});
       return {status:'failed'};
     }
-    const command=this.options.claudeAuthRefreshCommand??'claude auth login';
-    const started=await this.providerLoginManager.start(key,command,homedir(),'paste-code');
+    const expected=profileId?this.claudeProfile(profileId)?.label??null:null;
+    const started=await this.claudeLogin.start(expected);
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
-    if(started.status==='completed')return this.settleCredentialChange(key);
+    if(started.status==='completed')return this.finishClaudeSignIn();
     log('warn','auth_refresh_failed',{provider:key,reason:started.reason,output_chars:started.output.length});
     return {status:'failed',detail:SIGN_IN_FAILURE_DETAIL[started.reason]??'The sign-in could not be started. Nothing changed.'};
   }
   private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
-    const completion=await this.providerLoginManager.complete(key,code);
+    const completion=key==='claude-code'?await this.claudeLogin.complete(code):await this.providerLoginManager.complete(key,code);
     // Not a wrong code: the waiting sign-in is gone, most often because Concierge updated
     // between his opening the link and his pasting what it gave him. Telling him the code
     // was wrong sent him round the same loop again, which is most of why this has felt like
     // nothing works (2026-09-24).
     if(completion.status==='no_pending_login')return {status:'no_pending_login',detail:'This sign-in is no longer waiting for a code — it most likely ended when Concierge updated. Start it again and it should go through.'};
-    if(completion.status==='completed')return this.settleCredentialChange(key);
+    if(completion.status==='completed')return key==='claude-code'?this.finishClaudeSignIn():this.settleCredentialChange(key);
     log('warn','auth_refresh_failed',{provider:key,stage:'complete',output_chars:completion.output.length});
     return {status:'failed',detail:'The sign-in tool did not accept that code. Nothing changed.'};
+  }
+  /**
+   * A finished Claude sign-in is kept under the account it actually is, then switched to
+   * through the same proof as the Switch button, so "signed in" and "in use" cannot disagree.
+   * Signing in as someone other than the account pressed keeps that login and switches nothing.
+   */
+  private async finishClaudeSignIn():Promise<ProviderAuthRefreshResult>{
+    const filed=await this.claudeLogin.file();
+    if(filed.status==='failed')return {status:'failed',detail:filed.detail};
+    void scheduleProviderAccountUsageRefresh().catch(()=>{});
+    if(filed.expected&&filed.expected!==filed.email)
+      return {status:'failed',detail:`That signed in ${filed.email}, not ${filed.expected}. ${filed.email} is kept on this machine; nothing was switched.`};
+    // The home it was just filed into, never a lookup by name: the default login has the same
+    // address, and choosing it would re-test the login this sign-in was meant to replace.
+    return this.switchProviderAuthProfile('claude-code',basename(filed.home));
+  }
+  private claudeProfile(profileId:string):{id:string;label:string}|null{
+    const defaultAccount=currentAccount('claude-code');
+    return profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}
+      :listProfiles('claude-code').find(item=>item.id===profileId)??null;
   }
   private saveProviderAuthProfile(provider:string,label:string):readonly ProviderProfile[]{
     return saveProfile(this.assertAuthProvider(provider),label);
   }
+  /**
+   * Put a kept Codex login in use and prove the running daemon renews as that account before
+   * saying so. The login is moved, never copied, and a failed proof moves both logins back
+   * and restarts Codex onto the one it had, so a refused switch leaves his machine unchanged.
+   */
+  private async putCodexAccountInUse(source:string):Promise<ProviderAuthRefreshResult>{
+    if(this.codexSwitching)return {status:'failed',detail:'Another Codex switch is still finishing on this machine. Nothing was changed.'};
+    if(runningCodexTurns()!==0)return {status:'failed',detail:'Codex is working on this machine right now, so nothing was changed. Switch once that work finishes.'};
+    this.codexSwitching=true;
+    try {
+      return await this.moveCodexAndProve(source);
+    } finally { this.codexSwitching=false; }
+  }
+  private async moveCodexAndProve(source:string):Promise<ProviderAuthRefreshResult>{
+    const move=moveCodexAccountIntoUse(source);
+    let activation:ActivationReport;
+    try { activation=await activateCredentials('codex'); }
+    catch(error){ log('warn','auth_activation_failed',{provider:'codex',...errorFields(error)}); activation={status:'failed',detail:''}; }
+    if(activation.status==='applied'){
+      void scheduleProviderAccountUsageRefresh().catch(()=>{});
+      return {status:'completed',activation:{status:'applied',detail:`Codex on this machine now runs on ${move.incoming.label}.`},
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
+    }
+    move.undo();
+    const back=move.outgoing?await activateCredentials('codex'):null;
+    log('warn','provider_profile_switch_refused',{provider:'codex',reason:'account_did_not_authenticate',previous_answered:back?back.status==='applied':null});
+    const still=move.outgoing?(back?.status==='applied'?` Still on ${move.outgoing.label}.`:` Codex is back on ${move.outgoing.label}, which did not answer either.`):'';
+    return {status:'failed',needsSignIn:true,detail:`${move.incoming.label} could not sign in from this machine.${still}`};
+  }
   private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
     if(key==='claude-code'){
-      const defaultAccount=currentAccount(key);
-      const profile=profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}:listProfiles(key).find(item=>item.id===profileId);
+      const profile=this.claudeProfile(profileId);
       if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
       const home=profile.id==='default'?null:accountHome(key,profile.id);
       if(profile.id!=='default'){
@@ -213,19 +279,22 @@ export class SessionExecutionHost {
       }
       if(!await claudeCredentialsAnswer(home,profile.label)){
         log('warn','provider_profile_switch_refused',{provider:key,reason:'account_did_not_authenticate'});
-        return {status:'failed',detail:'That Claude account could not sign in from this machine. The previous account is still selected. Sign in to that account again before switching.'};
+        return {status:'failed',needsSignIn:true,detail:`${profile.label} needs signing in again on this machine. Nothing was switched.`};
       }
       selectClaudeAccount(profile.id,profile.label);
       const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
       const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
-      const resumedTurnIds=hasRoom?releaseUsageHeldWork(key):0;
-      if(resumedTurnIds)this.options.wake();
-      return {status:'completed',activation:{status:'applied',detail:`New Claude work will use ${profile.label}.`},resumedTurnIds:[]};
+      if(hasRoom)releaseUsageHeldWork(key);
+      // The account just proved it answers, so work held for a sign-in may go to it now.
+      if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
+      return {status:'completed',activation:{status:'applied',detail:`New Claude work will use ${profile.label}.`},
+        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
     }
-    activateProfile(key,profileId);
-    return this.settleCredentialChange(key);
+    const source=codexProfileSource(profileId);
+    if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
+    return this.putCodexAccountInUse(source);
   }
-  async stop():Promise<void>{await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop()]);}
+  async stop():Promise<void>{await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';

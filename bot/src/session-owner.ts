@@ -333,7 +333,7 @@ export type SessionOwnerRuntime = {
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string}):Promise<unknown>;
   auth?:{
     status():unknown|Promise<unknown>;
-    start(provider:string):Promise<unknown>;
+    start(provider:string,profileId?:string|null):Promise<unknown>;
     complete(provider:string,code:string):Promise<unknown>;
     saveProfile(provider:string,label:string):unknown;
     switchProfile(provider:string,profileId:string):Promise<unknown>;
@@ -520,8 +520,10 @@ export class SessionOwner {
   // Timeouts follow what the same call can take locally: the login manager waits up to 20s
   // for a URL and 60s for a pasted code to settle, and activating Codex restarts its App
   // Server with a 90s budget.
-  startAuth(provider:string,machine?:unknown){
-    return this.authAction(machine,'refresh',{provider},30_000,()=>this.localAuth().start(provider));
+  // `profileId` names the kept account a sign-in repairs; it is sent to a peer only when
+  // present, so a peer still on an older build keeps accepting a plain sign-in.
+  startAuth(provider:string,machine?:unknown,profileId?:string|null){
+    return this.authAction(machine,'refresh',{provider,...(profileId?{profileId}:{})},30_000,()=>this.localAuth().start(provider,profileId??null));
   }
   completeAuth(provider:string,code:string,machine?:unknown){
     return this.authAction(machine,'refresh/complete',{provider,code},75_000,()=>this.localAuth().complete(provider,code));
@@ -2066,9 +2068,10 @@ export class SessionOwner {
       // `runtime.auth` guards only this instance's own controls, and is checked where they
       // are used: a call for a peer must not be refused because this machine has none.
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts.length===2) {
-        const input=object(body);only(input,['provider','machine']);
+        const input=object(body);only(input,['provider','machine','profileId']);
         if(typeof input.provider!=='string')throw new SessionOwnerError('Provider authentication target is required.');
-        result=await this.startAuth(input.provider,input.machine);
+        if(input.profileId!==undefined&&(typeof input.profileId!=='string'||!input.profileId.trim()))throw new SessionOwnerError('A saved account must be named by its id.');
+        result=await this.startAuth(input.provider,input.machine,input.profileId as string|undefined);
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts[2]==='complete'&&parts.length===3) {
         const input=object(body);only(input,['provider','code','machine']);
