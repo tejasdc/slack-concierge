@@ -130,48 +130,25 @@ export function chooseAccountForTurn(input: {
 }
 
 /**
- * What he reads about an account, and when he reads nothing at all.
+ * Nothing is said to him about which account a turn runs on. Not when a conversation starts, not
+ * when it moves, not when an account runs out and it continues elsewhere.
  *
- * One function, because the sentence is a statement of fact about why this turn landed where it
- * did, and the only thing that knows that is the choice's own recorded reason. Two functions
- * chosen by the caller's own re-reading of the inputs is how both sentences came to assert
- * things that had not happened: a conversation that moved because Tejas picked another account
- * in Provider accounts was told the old one "had run out", and a conversation that landed on an
- * account by preference was told it had "the most room" (GPT-6 Sol, 2026-09-29).
+ * Two rounds got this wrong by degrees. The first announced the account a conversation started on
+ * — which was the account he had selected himself, 27 of them pinned across his conversations
+ * ("We did not change the accounts"). The second still spoke when his own new selection moved a
+ * conversation ("I'm the one who fucking selected that. Haven't I? So why are you notifying me
+ * that? Am I a fucking idiot?"). Then he removed the category:
  *
- * Null is the ordinary answer. He is told only about a departure from where his work runs:
- * anything else — a conversation starting where everything starts, or staying put — is not news,
- * and on 2026-09-29 he found 27 such announcements pinned across his conversations, every one of
- * them naming the account he had selected himself. "We did not change the accounts."
+ * > "And why is anything, any other notifications even here too? What the fuck does it matter for
+ * > me if you ran on one account or not? What matters for me is actually you continue to make sure
+ * > everything is working and like we never face an issue of an user is running out. That's what
+ * > fucking matters. I don't fucking care what the fuck you're running in."
+ * > (Tejas, 2026-09-29.)
+ *
+ * He is right that this was never news: choosing the account with room is the whole job of the
+ * rule above, and a rule doing its job is not an event. The choice is still recorded on the turn
+ * for diagnosis — which account, and why — and that record has no words in it for him.
  */
-export function accountNoticeSentence(input: {
-  because: AccountReason;
-  /** Where this turn is running. */
-  to: string;
-  /** The account this conversation last ran on, when it has run before. */
-  from: string | null;
-  /** Where new work runs on this machine: his Provider accounts selection, else the default login. */
-  usual: string | null;
-}): string | null {
-  const continued = (why: string) => `Continued on ${input.to} — ${why}. Nothing was lost; this picks up where it left off.`;
-  // A conversation that had run somewhere else is the only case where "continued" is true.
-  const moved = input.from !== null && input.from !== input.to;
-  if (input.because === "moved-for-room") return moved ? continued(`${input.from} was out of room`) : null;
-  if (input.because === "stayed-on-its-account") {
-    // It "stayed" on the account it was asked to prefer, which is not always the one it last ran
-    // on: a newer Provider accounts selection becomes that preference. Then the conversation did
-    // move, and the reason is his own choice, not an allowance.
-    return moved ? continued("you selected it in Provider accounts") : null;
-  }
-  // Nothing was preferred and nothing had run here before, so this landed on the roomiest
-  // account. That is worth a word only when it is not where his work normally runs.
-  if (input.because === "most-headroom") {
-    return input.usual && input.to !== input.usual
-      ? `Started on ${input.to} — ${input.usual} had no room.`
-      : null;
-  }
-  return null;
-}
 
 /**
  * And what he reads when work stops anyway. Only banked work can be stuck now: a conversation

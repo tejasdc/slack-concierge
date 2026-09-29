@@ -495,38 +495,38 @@ source; until then treating it as one would be guessing.
 
 ## What he is told about accounts, and when he is not
 
-A notice about an account is news about a **departure**, and there is no other kind. It is
-produced by one function, `accountNoticeSentence` in `provider-account-choice.ts`, from the
-choice's own recorded reason (`AccountReason`), and its ordinary answer is null:
+**Nothing, unless work has actually stopped.**
 
 | What happened | What he reads |
 | --- | --- |
-| Started where his work starts, or stayed there | nothing |
-| The conversation's account was out of room, so it continued elsewhere | "Continued on X — Y was out of room. Nothing was lost; this picks up where it left off." |
-| He selected another account in Provider accounts and the conversation moved to it | "Continued on X — you selected it in Provider accounts. Nothing was lost…" |
-| A conversation with no history started somewhere other than the usual account | "Started on X — Y had no room." |
+| A conversation started on the account his work runs on | nothing |
+| A conversation stayed where it was | nothing |
+| He selected another account and conversations moved onto it | nothing — he did it |
+| Its account ran out and it continued on another one | nothing — it kept working |
+| **Every account is out, so work is waiting** | the usage hold notice: what is waiting, and when the allowance returns |
+| **A banked turn's own account is out** | it waits, and says so, naming that account |
 
-Two properties keep those sentences true, and both exist because the earlier design lost them.
+The first five rows are the account rule doing its job. The last two are the only thing he asked
+to hear about, and both already existed before this: `noticeUsageHold` in
+`provider-usage-notice.ts`, published once per allowance episode, and `accountWaitingSentence`
+for banked work.
 
-**The reason decides the words.** The call site used to re-read the inputs and pick between two
-sentence functions. That made a move caused by his own selection say the old account "had run
-out", and made an account chosen by preference say it had "the most room". The reason is already
-recorded by the rule; nothing may guess it again (GPT-6 Sol, 2026-09-29).
+He arrived at that line in four messages on 2026-09-29, each after a narrower fix:
 
-**The usual account is the default preference.** A conversation with no recorded account prefers
-his Provider accounts selection, else the machine's default login, so it starts where everything
-starts. Landing anywhere else therefore means the usual account had no room, which is what the
-sentence says. His rule still holds — never wait for a refill while another account has room —
-because the preference only applies while that account has room.
+1. A banner named the account each conversation ran on — 33 of them, all naming the account he
+   had selected himself: *"We did not change the accounts."*
+2. Narrowed to moves only; a move he caused by his own selection still spoke: *"I'm the one who
+   fucking selected that. Haven't I? So why are you notifying me that?"*
+3. Narrowed to run-outs only: *"What the fuck does it matter for me if you ran on one account or
+   not? What matters for me is … we never face an issue of an user is running out."*
+4. And the correction that keeps the one that matters: *"I'm not asking you to remove everything.
+   Why would you remove run out? … Use some fucking discernment here."*
 
-The stored sentence (`claudeAccountNotice`, read by thnkr.ing as the conversation's standing
-notice) is written on **every** turn, null included. It used to be written only when there was
-one, so it never cleared: a sentence from 06:18 was still under a conversation's header at 16:53
-after that conversation had run many more times.
+So the test is **is work affected**, not *did something change*. A switch that worked changed
+something and affected nothing.
 
-Incident, 2026-09-29: 33 notices had been produced across 33 conversations, every one naming
-`tejastej.dc@gmail.com` — the account he had selected himself. 27 announced nothing at all (20 on
-a conversation's first turn, 7 appearing mid-conversation in conversations that predated the
-feature and so had no recorded account). Six were genuine moves and were kept.
-`bot/scripts/clear-stale-account-notices.ts` cleared the 27 stored sentences once; the ledger's
-`account` events are history and were left untouched.
+The choice is still recorded on every turn as an `account` event carrying the account, the reason
+(`AccountReason`) and the account that was expected — for diagnosis, with no sentence in it.
+`claudeAccountNotice` is retired: written null on every turn so any stored sentence clears, and
+removed from the owner's session view; thnkr.ing's banner, its component and its field are gone
+(`6c74028`), because a field nothing populates is an invitation to relight it.

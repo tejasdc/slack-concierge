@@ -26,7 +26,8 @@ export type NativeSessionMetadata = {
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   claudeAccount?:string;
   claudeSelectionRevision?:number;
-  claudeAccountNotice?:string|null;
+  /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
+  claudeAccountNotice?:null;
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;

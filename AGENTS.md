@@ -684,18 +684,21 @@ authorization or a change to the default rapid-iteration policy.
   preference, never a permanent binding; only banked work can bind to one account. A
   one-home machine retains its existing dispatch path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
-- An account notice is a statement of fact about a departure, and it says nothing the rest of the
-  time. `accountNoticeSentence` takes the choice's own recorded reason and answers null for
-  everything ordinary — a conversation starting where his work starts, or staying put. Never
-  re-derive the wording from the inputs at the call site: two sentences chosen that way both
-  asserted things that had not happened, telling him an account "had run out" when he had simply
-  selected another one, and that an account had "the most room" when preference had picked it.
-  A conversation with no recorded account prefers the usual account (his Provider accounts
-  selection, else the machine's default login), so "started somewhere else" is true whenever it
-  is said rather than reasoned about. The stored sentence is written on every turn, null
-  included, so it cannot outlive what it describes. On 2026-09-29 he found 27 announcements
-  pinned across his conversations, every one naming the account he had selected himself, one of
-  them ten hours old: "We did not change the accounts." See
+- **Nothing is said to him about which account a turn runs on.** Not a start, not a switch that
+  worked, not a move onto the account he selected. Picking an account with room is the whole job
+  of that rule, and a rule doing its job is not an event. He is told exactly once, by the existing
+  usage hold notice (`provider-usage-notice.ts`), when work is actually stopped — every account
+  out, or a banked turn's own account out — and that notice says what is waiting and until when.
+  He removed this category in three steps on 2026-09-29, each after a narrower version: 27
+  banners naming the account he had selected himself ("We did not change the accounts"), then a
+  move he had caused ("I'm the one who fucking selected that … Am I a fucking idiot?"), then
+  "What the fuck does it matter for me if you ran on one account or not? What matters for me is
+  … we never face an issue of an user is running out" — and then the correction that keeps the
+  one that matters: "Why would you remove run out? … Use some fucking discernment here." The
+  choice is still recorded on the turn (`kind:'account'`, with the reason and the expected
+  account) for diagnosis, with no words in it. `claudeAccountNotice` is retired and written null
+  so old ones clear; the app's banner, component and field are gone. See
+  [interface-decisions D20](https://github.com/tejasdc/skills) and
   [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
 - A conversation that has filled up is not a failure to show him. Claude's `Prompt is too long`
   is recovered in place: `/compact` into the same live process, then the turn's accepted inputs

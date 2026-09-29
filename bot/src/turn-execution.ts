@@ -536,7 +536,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
     const claudeChoice=input.providerId==='claude-code'
-      ?input.boundAccount?{...input.boundAccount,notice:null,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
+      ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
@@ -583,19 +583,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if(event.type==='started'&&runningClaudeAccount&&!accountRecorded){
           accountRecorded=true;
           try {
-            // The notice is written every time, null included, so it cannot outlive what it
-            // describes. It used to be written only when there was one, which is why a sentence
-            // from 2:18 AM was still pinned under a conversation at 12:53 PM after that
-            // conversation had run many more times (2026-09-29).
+            // Which account this turn runs on is recorded for diagnosis and shown to nobody:
+            // the rule choosing an account with room is the rule doing its job, not an event in
+            // his day (Tejas, 2026-09-29: "I don't fucking care what the fuck you're running
+            // in"). The stored sentence is cleared here too, so any left from when this did
+            // speak disappears the next time its conversation runs.
             updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
               claudeSelectionRevision:claudeChoice?.selectionRevision??0,
-              claudeAccountNotice:claudeChoice?.notice??null});
-            const notice=claudeChoice?.notice??null;
-            if(notice){
-              recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
-                kind:'account',payload:{account:runningClaudeAccount,text:notice}});
-              if(input.presentation==='native')input.services.onProgress?.({type:'narration',text:notice});
-            }
+              claudeAccountNotice:null});
+            recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+              kind:'account',payload:{account:runningClaudeAccount,
+                ...(claudeChoice?{because:claudeChoice.because,expected:claudeChoice.expected}:{})}});
           } catch(error){log('warn','claude_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
         }
         statusController?.recordProgress(event);

@@ -1,7 +1,7 @@
 import {existsSync,realpathSync,symlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {chooseAccountForTurn,accountNoticeSentence} from './provider-account-choice';
+import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
 import {accountHome,currentAccount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
@@ -55,7 +55,7 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
   });
 }
 
-export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0):{account:string;home:string|null;notice:string|null;selectionRevision:number}|null {
+export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const usage=providerAccountUsage('claude-code');
   const defaultAccount=currentAccount('claude-code')?.label??usage?.accounts.find(account=>account.current)?.label??null;
   const selection=claudeAccountSelection();
@@ -78,7 +78,9 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
   // which is what makes "started somewhere else" true whenever it is said, rather than a sentence
   // the caller has to reason its way to.
   const usual=selection?.label??defaultAccount;
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:selectedAccount??prefer??usual});
+  // Where he would expect this turn to run, which is the one thing a notice is measured against.
+  const expected=selectedAccount??prefer??usual;
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected});
   if(choice.account===null){
     const resets=usage.accounts.filter(account=>rooms.some(room=>room.account===account.label&&(room.home||room.isDefault)))
       .map(account=>Math.max(claudeAccountCachedReset(account.label)??-Infinity,
@@ -87,6 +89,5 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
     throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
       terminalConfirmed:true,clearsAtMs:resets.length?Math.min(...resets):null});
   }
-  const notice=accountNoticeSentence({because:choice.because,to:choice.account,from:prefer,usual});
-  return {account:choice.account,home:choice.home,notice,selectionRevision:selection?.revision??0};
+  return {account:choice.account,home:choice.home,because:choice.because,expected,selectionRevision:selection?.revision??0};
 }
