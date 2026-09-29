@@ -2,7 +2,7 @@
 
 **TL;DR:** You don't need to scrap everything. The parts work, and once someone pointed at the right connection your email to Sophie went out in six minutes. What keeps breaking is the layer that coordinates them: who does what, which machine it runs on, what counts as your decision, what counts as true, what gets passed on to you, and what counts as done. For eight days each failure in that layer has been "fixed" by adding a sentence to an instruction file, so the same failures come back. This report names seven causes and the system change for each. Five of those changes alter the foundations, so they need your approval before anything is built.
 
-Status: **proposal only; nothing has been built or changed.** Three investigators worked on this independently: GPT-6 Sol, GPT-6 Astra and Claude Fable 5.1. Each read the original transcripts and never saw the others' conclusions. Their full reports are in this folder, and the brief they were given is `investigator-brief.md`. They all read the same records, so where they agree it is three readings of one set of evidence, not three separate witnesses. Where it mattered, I checked their key claims against the records myself.
+Status: approved the same night and built; see [what was built](BUILT.md). Three investigators worked on this independently: GPT-6 Sol, GPT-6 Astra and Claude Fable 5.1. Each read the original transcripts and never saw the others' conclusions. Their full reports are in this folder, and the brief they were given is `investigator-brief.md`. They all read the same records, so where they agree it is three readings of one set of evidence, not three separate witnesses. Where it mattered, I checked their key claims against the records myself.
 
 ---
 
