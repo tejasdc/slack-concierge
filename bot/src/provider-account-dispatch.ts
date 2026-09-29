@@ -1,7 +1,7 @@
 import {existsSync,realpathSync,symlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {chooseAccountForTurn,accountChosenSentence,accountMovedSentence} from './provider-account-choice';
+import {chooseAccountForTurn,accountNoticeSentence} from './provider-account-choice';
 import {accountHome,currentAccount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
@@ -72,7 +72,13 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
     isDefault:account.label===defaultAccount,
     problem:account.problem,
   }));
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:selectedAccount??prefer});
+  // Where his work runs when nothing else decides: the account he selected in Provider accounts,
+  // else this machine's default login. A conversation that has never run anywhere prefers it, so
+  // it starts where everything starts instead of on whichever account happens to be roomiest —
+  // which is what makes "started somewhere else" true whenever it is said, rather than a sentence
+  // the caller has to reason its way to.
+  const usual=selection?.label??defaultAccount;
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:selectedAccount??prefer??usual});
   if(choice.account===null){
     const resets=usage.accounts.filter(account=>rooms.some(room=>room.account===account.label&&(room.home||room.isDefault)))
       .map(account=>Math.max(claudeAccountCachedReset(account.label)??-Infinity,
@@ -81,9 +87,6 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
     throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
       terminalConfirmed:true,clearsAtMs:resets.length?Math.min(...resets):null});
   }
-  const selected=rooms.find(room=>room.account===choice.account)!;
-  const notice=prefer===choice.account?null:prefer
-    ?accountMovedSentence({from:prefer,to:choice.account,usedPercent:selected.tightestUsedPercent!})
-    :accountChosenSentence({account:choice.account,usedPercent:selected.tightestUsedPercent!,alternatives:rooms.filter(room=>room.account!==choice.account&&(room.home||room.isDefault)&&!room.problem).length});
+  const notice=accountNoticeSentence({because:choice.because,to:choice.account,from:prefer,usual});
   return {account:choice.account,home:choice.home,notice,selectionRevision:selection?.revision??0};
 }

@@ -583,9 +583,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if(event.type==='started'&&runningClaudeAccount&&!accountRecorded){
           accountRecorded=true;
           try {
+            // The notice is written every time, null included, so it cannot outlive what it
+            // describes. It used to be written only when there was one, which is why a sentence
+            // from 2:18 AM was still pinned under a conversation at 12:53 PM after that
+            // conversation had run many more times (2026-09-29).
             updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
               claudeSelectionRevision:claudeChoice?.selectionRevision??0,
-              ...(claudeChoice?.notice?{claudeAccountNotice:claudeChoice.notice}:{})});
+              claudeAccountNotice:claudeChoice?.notice??null});
             const notice=claudeChoice?.notice??null;
             if(notice){
               recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,

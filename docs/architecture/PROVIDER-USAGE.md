@@ -491,3 +491,42 @@ cache records `available: false, eligible: false, granted: false` and there is n
 list of grants with ids, grant times and expiries the way OpenAI publishes one. So nothing
 here infers a Claude grant. If that cache is ever observed turning true, it becomes a real
 source; until then treating it as one would be guessing.
+
+
+## What he is told about accounts, and when he is not
+
+A notice about an account is news about a **departure**, and there is no other kind. It is
+produced by one function, `accountNoticeSentence` in `provider-account-choice.ts`, from the
+choice's own recorded reason (`AccountReason`), and its ordinary answer is null:
+
+| What happened | What he reads |
+| --- | --- |
+| Started where his work starts, or stayed there | nothing |
+| The conversation's account was out of room, so it continued elsewhere | "Continued on X — Y was out of room. Nothing was lost; this picks up where it left off." |
+| He selected another account in Provider accounts and the conversation moved to it | "Continued on X — you selected it in Provider accounts. Nothing was lost…" |
+| A conversation with no history started somewhere other than the usual account | "Started on X — Y had no room." |
+
+Two properties keep those sentences true, and both exist because the earlier design lost them.
+
+**The reason decides the words.** The call site used to re-read the inputs and pick between two
+sentence functions. That made a move caused by his own selection say the old account "had run
+out", and made an account chosen by preference say it had "the most room". The reason is already
+recorded by the rule; nothing may guess it again (GPT-6 Sol, 2026-09-29).
+
+**The usual account is the default preference.** A conversation with no recorded account prefers
+his Provider accounts selection, else the machine's default login, so it starts where everything
+starts. Landing anywhere else therefore means the usual account had no room, which is what the
+sentence says. His rule still holds — never wait for a refill while another account has room —
+because the preference only applies while that account has room.
+
+The stored sentence (`claudeAccountNotice`, read by thnkr.ing as the conversation's standing
+notice) is written on **every** turn, null included. It used to be written only when there was
+one, so it never cleared: a sentence from 06:18 was still under a conversation's header at 16:53
+after that conversation had run many more times.
+
+Incident, 2026-09-29: 33 notices had been produced across 33 conversations, every one naming
+`tejastej.dc@gmail.com` — the account he had selected himself. 27 announced nothing at all (20 on
+a conversation's first turn, 7 appearing mid-conversation in conversations that predated the
+feature and so had no recorded account). Six were genuine moves and were kept.
+`bot/scripts/clear-stale-account-notices.ts` cleared the 27 stored sentences once; the ledger's
+`account` events are history and were left untouched.

@@ -684,6 +684,19 @@ authorization or a change to the default rapid-iteration policy.
   preference, never a permanent binding; only banked work can bind to one account. A
   one-home machine retains its existing dispatch path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
+- An account notice is a statement of fact about a departure, and it says nothing the rest of the
+  time. `accountNoticeSentence` takes the choice's own recorded reason and answers null for
+  everything ordinary — a conversation starting where his work starts, or staying put. Never
+  re-derive the wording from the inputs at the call site: two sentences chosen that way both
+  asserted things that had not happened, telling him an account "had run out" when he had simply
+  selected another one, and that an account had "the most room" when preference had picked it.
+  A conversation with no recorded account prefers the usual account (his Provider accounts
+  selection, else the machine's default login), so "started somewhere else" is true whenever it
+  is said rather than reasoned about. The stored sentence is written on every turn, null
+  included, so it cannot outlive what it describes. On 2026-09-29 he found 27 announcements
+  pinned across his conversations, every one naming the account he had selected himself, one of
+  them ten hours old: "We did not change the accounts." See
+  [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
 - A conversation that has filled up is not a failure to show him. Claude's `Prompt is too long`
   is recovered in place: `/compact` into the same live process, then the turn's accepted inputs
   replayed verbatim, once per turn and only when no tool has run. Auto-compaction is on and
