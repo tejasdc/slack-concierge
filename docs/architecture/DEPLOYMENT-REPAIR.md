@@ -108,6 +108,13 @@ path.", captured inside a shell variable that discarded it, so three updates fai
 parked without the message. The new control's own check would have refused its own list too.
 Moving the destinations under `control/` fixed it with an ordinary push.
 
+Incident, September 29, 2026: 4c6da0c made the installed Git-hook dispatcher depend on
+`refuse-unrecorded-decision`, but its artifact declaration omitted that file. Candidate
+preparation and activation succeeded, then hook installation failed while copying the absent
+file. The detached controller restored 1c4d9fe and proved it healthy. The correction adds the
+guard to the candidate-owned declaration so it is sealed and verified with the installer that
+uses it.
+
 Incident, September 21, 2026: a commit added `control/parakeet-server.cpp` to the list. The
 running control built that commit's release from its older list, so the release lacked the
 file, yet the release's own code — now the control — required it. The last-known-good release

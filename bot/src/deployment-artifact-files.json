@@ -30,6 +30,7 @@
     "control/install-git-history-guard.sh": "scripts/install-git-history-guard.sh",
     "control/git-hooks/dispatch": "scripts/git-hooks/dispatch",
     "control/git-hooks/refuse-history-rewrite": "scripts/git-hooks/refuse-history-rewrite",
+    "control/git-hooks/refuse-unrecorded-decision": "scripts/git-hooks/refuse-unrecorded-decision",
     "control/service-failure-notice.sh": "bot/scripts/service-failure-notice.sh",
     "control/systemd/concierge-service-failure@.service": "systemd/concierge-service-failure@.service",
     "control/deploy.sh": "bot/scripts/deploy.sh",
