@@ -1002,9 +1002,16 @@ export class SessionOwner {
   }
   inboxCaptureAttachments(captureId:string) {
     const body=JSON.parse(retainedInboxCapture(captureId).payload_json);
-    if(body.capture.originalTextAttachmentId)return body.attachments as string[];
+    // The Action Button uploads its recording while he talks and the capture only points at it
+    // (source.metadata.recordings); forwarding the file list alone sent the screenshot and never
+    // the recording (2026-09-30, capture b385a097, whose on-phone words were just "server").
+    const recordings=(Array.isArray(body.capture?.source?.metadata?.recordings)?body.capture.source.metadata.recordings:[])
+      .map((recording:any)=>recording?.attachmentId).filter((id:unknown):id is string=>typeof id==='string'
+        &&!!db.query('SELECT 1 FROM session_attachments WHERE id=?').get(id));
+    const files=[...new Set([...(body.attachments??[]) as string[],...recordings])];
+    if(body.capture.originalTextAttachmentId)return files;
     const original=this.upload({clientActionId:`capture-original:${captureId}`,name:'inbox-capture.txt',contentType:'text/plain',base64:Buffer.from(body.text).toString('base64')}).attachment.id;
-    return [original,...(body.attachments??[])];
+    return [original,...files];
   }
   acceptInboxCapture(body:unknown) {
     const input=object(body);only(input,['source','text','files','importOnly']);inputText(input);
