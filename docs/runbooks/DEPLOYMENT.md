@@ -24,6 +24,12 @@ poll or automatic retry based on agent work in a shared checkout.
 Startup resumes already accepted durable work but deliberately does not scan Git
 history for pushes received while Concierge was offline.
 
+`node_modules` is always an untracked local installation, whether it is a directory
+or a worktree symlink. The repository ignore rule deliberately has no trailing slash
+so `git add` excludes both forms. A committed worktree link points outside the
+deployment-owned source and makes the frozen production install fail before a
+candidate can be built.
+
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
