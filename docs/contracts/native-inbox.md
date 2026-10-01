@@ -152,6 +152,9 @@ the existing Thinkering capability socket with `{captureId,text,title,capturedAt
 command) and becomes the note; the original bytes become its Source, which the agent cannot
 supply or change. A note he already edited keeps his words (`summary:"kept-edited-note"`).
 The summary is required (Tejas, 2026-10-01: "you should not dump my whole transcript here").
+`--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
+capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
+in the one note he reads on his Timeline (`addTo` on `/captures/note`).
 The response is `{source:{objectId,revision},note:{objectId,revision},created}`.
 The capability owns idempotent creation by capture ID and preserves edited notes on
 retry. The owner retains confirmed note receipts; uncertain responses remain explicit.
