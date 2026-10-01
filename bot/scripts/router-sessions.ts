@@ -21,7 +21,7 @@ router-actions.sh sessions ask --peer <instance> --machine-need "<what only that
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
-router-actions.sh sessions note <captureId> <source-flags> --action-id A
+router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path>
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
@@ -88,7 +88,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string } }
@@ -304,6 +304,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
+      || (flag === '--summary-file' && operation === 'note')
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
       || (flag === '--quiet-because' && operation === 'outcome')
       || ((flag === '--his-words' || flag === '--why-not-answered') && (operation === 'outcome' || operation === 'reply'))
@@ -371,7 +372,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');
-    return {operation,body:{source,action_id:actionId,captureId:identity!}};
+    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
+    // "you should not dump my whole transcript here ... create like a nice bulleted list").
+    const summaryFile=flags.get('--summary-file');
+    if(!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
+    const summary=readFileSync(summaryFile!,'utf8');
+    if(!summary.trim())invalid('The summary file is empty.');
+    return {operation,body:{source,action_id:actionId,captureId:identity!,summary}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');
