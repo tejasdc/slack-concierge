@@ -649,7 +649,8 @@ export class SessionOwner {
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
     const stopState=input.kind==='stop'?(stopTurn?.status==='cancelled'?'completed':saved.state==='uncertain'||!stopTurn||!['running','delivering'].includes(stopTurn.status)?'uncertain':'running'):null;
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
-    const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
+    // A request no table knows leaves the receipt without a conversation; it never refuses the read.
+    const conversation=input.request_id&&this.communication?this.communication.find(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
     const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));

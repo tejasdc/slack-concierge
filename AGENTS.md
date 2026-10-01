@@ -362,7 +362,10 @@ authorization or a change to the default rapid-iteration policy.
   those still able to change plus new ones — decided from whether each receipt has
   settled for good, never from which events fired, since a hand-off's answer records no
   event on it — and receipt reads page, so unread state and Inbox receipts cost a page instead
-  of the whole ledger. A client holding a page asks `history?after=<asOf>` for what
+  of the whole ledger. A receipt looks its request up with `find`, which answers null for an
+  id no table holds (a project set-up's return, a Mac request the peer table dropped), so one
+  such row never refuses the whole read: it did, for every Inbox receipts read from 2026-09-28
+  to 2026-10-01, and his phone said "Request receipts could not be loaded." A client holding a page asks `history?after=<asOf>` for what
   changed. Answer it from what the page was built from, never the ledger alone: a
   provider transcript can hold a message the ledger never recorded. When the owner
   cannot answer truthfully it returns `reset`, never a partial delta. See the shared

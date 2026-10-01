@@ -512,6 +512,19 @@ export class SessionCommunicationCoordinator {
         }
         return this.receipt(this.row(requestId));
     }
+    /**
+     * The request's receipt, or null when no table here knows the id. A ledger row that names
+     * a request must never take a whole receipts read down with it: a project set-up's return
+     * and three Mac requests the peer table has since dropped carry ids the communication table
+     * never held, and every read of the Inbox's receipts was refused over them from 2026-09-28
+     * until 2026-10-01 ("Request receipts could not be loaded." on his phone).
+     */
+    find(requestId:string) {
+        if (this.local(requestId)) return this.receipt(this.row(requestId));
+        if (this.dependencies.peers?.owns(requestId)) return this.dependencies.peers.inspect(requestId);
+        if (this.dependencies.peers?.hasDelivery(requestId)) return this.dependencies.peers.inspectDelivery(requestId);
+        return null;
+    }
     cancel(input:{source:CommunicationSource;request_id:string;action_id:string}) {
         const actor=this.actor(input.source);
         action(input.action_id);
