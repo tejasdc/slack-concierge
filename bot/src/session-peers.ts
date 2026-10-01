@@ -606,7 +606,11 @@ export class SessionPeers {
     const execution=remote.execution;
     const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,row.remote_session_id),run_id:execution.runId,input_id:row.remote_operation_id,sha256:execution.sha256??null,
       ...(execution.text?{text:execution.text}:{}),...(execution.error?{error:execution.error}:{})}:null;
-    if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)??'The peer target could not receive this request.');return;}
+    // A run that started and then failed is not a request the peer could not receive: say what
+    // stopped it. Two Mac runs of over an hour were reported as "could not receive" (2026-09-30).
+    if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)
+      ??(execution?.acknowledged?`The run on ${row.peer} started but stopped before it finished${execution.error?`: ${execution.error}`:'.'}`:null)
+      ??'The peer target could not receive this request.');return;}
     if(this.closeStranded(row))return;
     // The worker's machine says the request stalled: tell the requester once. It stays open.
     if(remote.stalled&&row.stalled_at_ms===null){
