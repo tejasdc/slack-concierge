@@ -27,6 +27,7 @@ import { errorFields, log } from "./log";
 import {
   isRefreshableAuthFailure,
   providerRefusalContinuationReason,
+  providerInterruptionDetail,
   providerDispatchError,
   providerRetryDelayMs,
   ProviderTurnCancelledError,
@@ -1220,9 +1221,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && (observedAssistantOutput || observedToolCount>0 || structuredFailure.assistantOutput
           || structuredFailure.toolsUsed.length>0 || artifactActivity)
         ? providerRefusalContinuationReason(String(error),structuredFailure.clearsAtMs,Date.now(),dispatchAttempt):null;
+      const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
+        || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
+      const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;
       let continuationTurnId:number|null=null;
       if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
-        refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}:undefined)) {
+        refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}
+          :interruption?()=>{queueTurnContinuation(input.turnId,{kind:'interrupted',detail:interruption});}:undefined)) {
         throw new Error("Failed turn could not atomically release its session lock.");
       }
       if(refusal && continuationTurnId!==null)noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',

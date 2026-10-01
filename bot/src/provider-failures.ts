@@ -108,6 +108,20 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
   return null;
 }
 
+/**
+ * A Codex run that was cut off from outside it rather than refused: its app server restarted
+ * (a self-update drains running turns for about a minute, then ends them "interrupted"), or it
+ * produced nothing for the no-activity limit (its connection died while a Mac slept). Both are
+ * owed a continuation once the run had done work; neither is the provider saying no.
+ */
+export function providerInterruptionDetail(message:string):string|null {
+  if(/Codex turn ended with status interrupted/i.test(message))
+    return 'the Codex app server ended the run, most often because it restarted to update itself';
+  const silent=/produced no turn activity for (\d+)ms/i.exec(message);
+  if(silent)return `the run showed no activity for ${Math.round(Number(silent[1])/60000)} minutes, most often because its machine slept`;
+  return null;
+}
+
 export function providerRetryDelayMs(dispatchAttempt: number) {
   return retryDelayMs(RETRY_POLICIES.providerRequest, dispatchAttempt);
 }

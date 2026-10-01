@@ -249,7 +249,12 @@ export function enqueueSessionInput(inputId:string) {
 
 export type TurnContinuationReason =
   | ProviderRefusalContinuationReason
-  | {kind:'boundary'; detail:string; waitUntilMs?:number|null};
+  | {kind:'boundary'; detail:string; waitUntilMs?:number|null}
+  /** The run was cut off from outside it: the Codex app server restarted itself (its own
+   * updater, 2026-10-01 00:01 UTC) or the run went silent for the no-activity limit (a Mac whose
+   * lid closed mid-run, 01:15 UTC). One continuation; a continuation that is cut off again is not
+   * continued, so a run that keeps dying cannot loop. */
+  | {kind:'interrupted'; detail:string; waitUntilMs?:number|null};
 
 /**
  * One continuation for one interrupted turn. The failed turn stays immutable; this is
@@ -274,7 +279,9 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     const prior=getAcceptedSessionInput(id);
     if(prior)return prior;
     const when=source.ended_at.endsWith('Z')?source.ended_at:`${source.ended_at} UTC`;
+    if(reason.kind==='interrupted'&&source.accepted_input_id?.startsWith('turn-continuation:'))return null;
     const cause=reason.kind==='boundary'?`work stopped on purpose at a boundary: ${reason.detail}`
+      :reason.kind==='interrupted'?`the run was cut off from outside: ${reason.detail}`
       :`the provider refused further work (${reason.refusal}): ${reason.detail}`;
     const text=`Your previous turn was cut off at ${when} because ${cause}. Continue the original request from that point. First check what you already did in your transcript above, git status, git log, and the remote where relevant before doing anything again. Do not replay the original input or repeat an effect whose outcome is uncertain. Any requests you owed remain owed; answer them through the request protocol.`;
     const saved=retainSessionInput({id,sessionId:source.session_id,scope:'turn-continuation',actionId:String(sourceTurnId),
