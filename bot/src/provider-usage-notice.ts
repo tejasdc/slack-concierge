@@ -131,7 +131,7 @@ export function noticeAuthHold(input: {provider: UsageProvider; model:string|nul
     .get(input.turnId) as {session_id:number; accepted_input_id:string|null}|null;
   if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
   const account=input.account??currentAccount(input.provider)?.label??'the signed-in account';
-  const machine=hostname();
+  const machine=machineName();
   const head=db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
     .get(input.provider) as {id:number|null};
@@ -156,6 +156,9 @@ export function noticeAuthHold(input: {provider: UsageProvider; model:string|nul
 }
 
 /** A continuation uses the same provider-free event and episode deduplication as a hold. */
+/** The machine as he names it: his notice read "Codex sign-in expired on cortex-docker-users" (2026-10-04). */
+function machineName():string { return process.platform==='darwin'?'your Mac':'the server'; }
+
 export function noticeTurnContinuation(input:{provider:UsageProvider;model:string|null;turnId:number;
   reason:TurnContinuationReason;account?:string|null},record:RecordEvent):void {
   if(input.reason.kind!=='provider_refused')return;
@@ -182,7 +185,7 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
       kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
         model:input.model,modelLabel:modelLabel(input.model),status:null,incident:null,alternatives:[],
         continuation:{reason:input.reason.refusal,account:input.account??currentAccount(input.provider)?.label??null,
-          machine:hostname(),heldInputs:waiting.held,
+          machine:machineName(),heldInputs:waiting.held,
           clearsAt:input.reason.waitUntilMs?new Date(input.reason.waitUntilMs).toISOString():null}}});
     log('warn','provider_continuation_hold_notified',{provider:input.provider,reason:input.reason.refusal,
       machine:hostname(),held_inputs:waiting.held});
