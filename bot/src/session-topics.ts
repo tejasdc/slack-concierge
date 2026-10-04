@@ -5,7 +5,7 @@ import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRo
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
-import {hisWordsLine,requireHisWords,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
+import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 
 /**
  * Topics: the Inbox's recognizable conversations. A topic owns a set of thread roots, the
@@ -956,6 +956,26 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
   const at=nowIso();
   return roots.map(rootInputId=>({rootInputId,topicId,placedAt:at,placedBy:by,reason}));
 }
+/**
+ * A request he made closes as completed only when the work sent for it finished: every linked
+ * dispatch answered as done and no question for it still open. On 2026-10-02 a request closed
+ * completed with the reason "paid bodies not read", over a worker reply that said the same, and
+ * the unmet half of what he asked never reached him [decision: act-then-tell].
+ */
+function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
+  const unfinished=(request.dispatches??[]).filter((dispatch:any)=>{
+    const id=String(dispatch?.requestId??'');
+    const local=db.query('SELECT outcome,result_json FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
+    const peer=local?null:db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
+    const row=local??peer;
+    if(!row)return false;
+    const disposition=row.result_json?JSON.parse(row.result_json).workDisposition:undefined;
+    return row.outcome!=='answered'||(disposition!==undefined&&disposition!=='completed');
+  });
+  if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
+  if(questionsOfRequest(topic.topicId,request).some(question=>OPEN_QUESTION_STATES.includes(question.state)))
+    throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
+}
 function parseSources(values:unknown):{inputId:string;passage?:string}[] {
   return idList(values,'--source').map(value=>{
     const prefix=['capture:','request:','post:','return:','topic-event:'].find(candidate=>value.startsWith(candidate))??'';
@@ -1024,6 +1044,7 @@ function questionBrief(item:any) {
     answerable:typeof item.answerable==='string'?item.answerable:'',
     ...(typeof item.hisWords==='string'&&item.hisWords.trim()?{hisWords:item.hisWords.trim()}:{}),
     ...(typeof item.whyNotSettled==='string'&&item.whyNotSettled.trim()?{whyNotSettled:item.whyNotSettled.trim()}:{}),
+    ...(typeof item.onlyHeCan==='string'&&item.onlyHeCan.trim()?{onlyHeCan:item.onlyHeCan.trim()}:{}),
     // A reading item may name the exact messages he is to read; otherwise they are resolved
     // from the declaring run's own posts into this thread.
     ...(item.reads!==undefined?{reads:idList(item.reads,'reads')}:{})};
@@ -1035,8 +1056,9 @@ function questionBrief(item:any) {
  * before 2026-09-29 keep the readiness they had.
  */
 function withHisWords(brief:any,by:TopicBy):any {
+  const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
   const {hisWords,why}=requireHisWords({actorInputId:by.inputId??'',hisWords:brief.hisWords,whyNotAnswered:brief.whyNotSettled},THREAD_QUESTION_FIELDS_REQUIRED);
-  const line=hisWordsLine(hisWords,why);
+  const line=`${hisWordsLine(hisWords,why)}\nOnly you can: ${ONLY_HE_CAN[kind]}`;
   return brief.why.text.includes(line)?brief:{...brief,why:{...brief.why,text:`${brief.why.text.trim()}\n\n${line}`.trim()}};
 }
 /** `ready`, `agent_checking`, its plain spelling `checking`, or nothing; anything else is a mistake, not a default. */
@@ -1325,6 +1347,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return agentMutation(actor,actionId(),{kind:'topic-request-close',requestId:body?.request_id,disposition,evidence,reason:why},()=>{
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
+        if(disposition==='completed')refuseUnfinishedCompletion(topic,request);
         const at=nowIso();
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
         // Only the questions linked to this exact request end with it.
@@ -1640,7 +1663,7 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
-export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision carries "hisWords", copied exactly from his message that started the work, and "whyNotSettled", what those words leave open that only he can decide; the owner refuses it without them, and if his words already answer it you act on them instead of asking. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
+export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision is only for what no agent can do: it carries "onlyHeCan" (sign-in, secret, device or ambiguous), "hisWords" copied exactly from his message and "whyNotSettled"; the owner refuses it otherwise. Never ask him for permission or approval: do the work, have missing abilities built, and tell him afterwards. A request he made closes completed only when the work sent for it answered as done. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
 const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
 export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {

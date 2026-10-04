@@ -24,9 +24,9 @@ router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --
 router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId>]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
-router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
+router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
-router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--checked "<what you ran live and saw>" | --not-checked "<why no live check>"] [--his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags>
@@ -68,7 +68,7 @@ Copy results[i].session.address and returned request IDs exactly. A concierge:<i
 Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider cc-opus to create a fresh native session and first input. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
-Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. A question reaches Tejas only with his words: needs_you (and a reply's --work-disposition needs_decision) requires --his-words, copied exactly from the message of his that started the work, and --why-not-answered, what those words leave open that only he can decide; the owner refuses a question without them or with words that are not his. If his words already answer it, act on them. A reply with --work-disposition completed requires --checked, what you exercised on the real system (his surfaces through your own entrance, test-capture) and what you saw, or --not-checked with why no live check was possible; both are shown with your answer. Do not write unit tests to fill it. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
+Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. Ask Tejas only for what no agent can do: needs_you (and a reply's --work-disposition needs_decision) requires --only-he-can sign-in|secret|device|ambiguous (ambiguous: readings of his words that lead to different things that cannot be undone), --his-words copied exactly from his message that started the work, and --why-not-answered; permission, approval and design choices are refused, because he said "just do as I say and fix or build things if it's not possible. Ask for forgiveness not permission". Do the work, build what is missing, and tell him afterwards. A reply with --work-disposition completed requires --all-done (everything he asked for was done; when part was not, do it, have it built, or reply failed saying what) and --checked, what you exercised on the real system (his surfaces through your own entrance, test-capture) and what you saw, or --not-checked with why no live check was possible; both are shown with your answer. Do not write unit tests to fill it. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, so progress and final returns file under that thread and its Timeline lists the dispatch, whatever input started the turn that sent it. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
@@ -91,10 +91,10 @@ export type SessionCommunicationRequest =
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
-  | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string } }
+  | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; checked?:string; not_checked?:string } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; checked?:string; not_checked?:string; all_done?:boolean } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } };
@@ -263,6 +263,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const paths: string[] = [];
   const custody: string[] = [];
   let partial = false;
+  let allDone = false;
   let detach = false;
   let resurrect = false;
   let keepWorking = false;
@@ -276,6 +277,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if (flag === "--detach" && operation === "thread") {
       if (detach) invalid("Repeated --detach option.");
       detach = true;
+      continue;
+    }
+    if (flag === "--all-done" && operation === "reply") {
+      if (allDone) invalid("Repeated --all-done option.");
+      allDone = true;
       continue;
     }
     if (flag === "--partial" && operation === "reply") {
@@ -308,7 +314,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--add-to' && operation === 'note')
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
       || (flag === '--quiet-because' && operation === 'outcome')
-      || ((flag === '--his-words' || flag === '--why-not-answered') && (operation === 'outcome' || operation === 'reply'))
+      || ((flag === '--his-words' || flag === '--why-not-answered' || flag === '--only-he-can') && (operation === 'outcome' || operation === 'reply'))
       || ((flag === '--checked' || flag === '--not-checked') && operation === 'reply')
       || (flag === '--machine-need' && operation === 'ask')
       || (flag === '--work-disposition' && operation === 'reply');
@@ -398,10 +404,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       return {operation,body:{source,action_id:actionId,outcome,...(quiet?{quiet_because:quiet}:{})}};
     }
     if((!textFile&&separator<0)||content.length!==1||!content[0]?.trim())invalid(`${outcome} requires one nonempty text argument.`);
-    const hisWords=flags.get('--his-words'),why=flags.get('--why-not-answered');
-    if((hisWords!==undefined||why!==undefined)&&outcome!=='needs_you')invalid('--his-words and --why-not-answered belong to needs_you.');
+    const hisWords=flags.get('--his-words'),why=flags.get('--why-not-answered'),onlyHeCan=flags.get('--only-he-can');
+    if((hisWords!==undefined||why!==undefined||onlyHeCan!==undefined)&&outcome!=='needs_you')invalid('--his-words, --why-not-answered and --only-he-can belong to needs_you.');
     return {operation,body:{source,action_id:actionId,outcome:outcome as 'response'|'needs_you'|'failed',text:content[0]!.trim(),
-      ...(hisWords!==undefined?{his_words:hisWords}:{}),...(why!==undefined?{why_not_answered:why}:{})}};
+      ...(hisWords!==undefined?{his_words:hisWords}:{}),...(why!==undefined?{why_not_answered:why}:{}),...(onlyHeCan!==undefined?{only_he_can:onlyHeCan}:{})}};
   }
   const textFile=flags.get('--text-file');
   if(textFile) {
@@ -459,8 +465,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
-        ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--checked','checked'],['--not-checked','not_checked']]
-          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])) } };
+        ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--checked','checked'],['--not-checked','not_checked']]
+          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}) } };
 }
 
 export function runRouterSessions(request: SessionCommunicationRequest) {

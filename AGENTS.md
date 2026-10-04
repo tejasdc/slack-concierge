@@ -243,9 +243,14 @@ authorization or a change to the default rapid-iteration policy.
   session on a peer needs `--machine-need`; new work runs on the server
   [decision: sessions-placed-by-physical-need]. `needs_you` and a `needs_decision` reply need
   `--his-words` (verified against his messages when they are in this ledger) and
-  `--why-not-answered` [decision: questions-carry-his-words]; a `completed` work reply needs
-  `--checked` or `--not-checked` [decision: agents-check-real-end-to-end-behavior]. All four are
-  folded into the words the requester and he read, so every carrier (return, peer, digest) keeps them.
+  `--why-not-answered` [decision: questions-carry-his-words], plus `--only-he-can`
+  sign-in|secret|device|ambiguous: permission, approval and design questions are refused
+  [decision: act-then-tell]. A `completed` work reply needs `--all-done` and `--checked` or
+  `--not-checked` [decision: agents-check-real-end-to-end-behavior]; when part of his request
+  was not done, the work is not completed. These are folded into the words the requester and he
+  read, so every carrier (return, peer, digest) keeps them. An Inbox topic request closes
+  `completed` only when every dispatch linked to it answered as done and no question for it is
+  open (`refuseUnfinishedCompletion`): on 2026-10-02 one closed over "paid bodies not read".
 - Change the Inbox agent's standing behavior by asking the Inbox session itself
   (`sessions ask` at its exact address) to update its own `slack-inbox` instructions.
   Never edit its AGENTS.md from another session. A resumed Claude session keeps the

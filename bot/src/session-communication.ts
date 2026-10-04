@@ -427,7 +427,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -435,10 +435,10 @@ export class SessionCommunicationCoordinator {
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
-        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined))
-            throw new Error('--his-words and --why-not-answered belong to needs_you: they say why only he can answer.');
+        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined))
+            throw new Error('--his-words, --why-not-answered and --only-he-can belong to needs_you: they say why only he can answer.');
         const content=input.outcome==='needs_you'
-            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered}):stated;
+            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
         // Silence about his own message is never the router's judgement alone: `done` on a turn
@@ -760,22 +760,24 @@ export class SessionCommunicationCoordinator {
         files?:AttachedFile[];
         his_words?:string;
         why_not_answered?:string;
+        only_he_can?:string;
         checked?:string;
         not_checked?:string;
+        all_done?:boolean;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
-        if((input.his_words!==undefined||input.why_not_answered!==undefined)&&input.workDisposition!=='needs_decision')
-            throw new Error('--his-words and --why-not-answered belong to --work-disposition needs_decision.');
-        if((input.checked!==undefined||input.not_checked!==undefined)&&input.workDisposition!=='completed')
-            throw new Error('--checked and --not-checked belong to --work-disposition completed.');
+        if((input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined)&&input.workDisposition!=='needs_decision')
+            throw new Error('--his-words, --why-not-answered and --only-he-can belong to --work-disposition needs_decision.');
+        if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
+            throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
         if(input.workDisposition==='needs_decision')
-            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered})};
+            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can})};
         else if(input.workDisposition==='completed')
-            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked})};
+            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
         const attached = !!(input.attachments?.length || files(input.files).length);
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
             // A retry after the run ended returns the committed reply, as for a local request.
