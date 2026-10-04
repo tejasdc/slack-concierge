@@ -963,15 +963,21 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
-  const unfinished=(request.dispatches??[]).filter((dispatch:any)=>{
-    const id=String(dispatch?.requestId??'');
+  const settled=(id:string)=>{
     const local=db.query('SELECT outcome,result_json FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
-    const peer=local?null:db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
-    const row=local??peer;
-    if(!row)return false;
+    return local??db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
+  };
+  const done=(row:{outcome:string|null;result_json:string|null})=>{
     const disposition=row.result_json?JSON.parse(row.result_json).workDisposition:undefined;
-    return row.outcome!=='answered'||(disposition!==undefined&&disposition!=='completed');
-  });
+    return row.outcome==='answered'&&(disposition===undefined||disposition==='completed');
+  };
+  // The latest dispatch is where the work stands: an earlier one that asked a question or
+  // failed was answered by sending the work again (2026-10-04, a proposal answered
+  // needs_decision, then built by a second dispatch). Anything still running is unfinished.
+  const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
+    .filter(dispatch=>dispatch.row);
+  const latest=dispatches.at(-1);
+  const unfinished=dispatches.filter(dispatch=>!dispatch.row!.outcome||(dispatch===latest&&!done(dispatch.row!))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(questionsOfRequest(topic.topicId,request).some(question=>OPEN_QUESTION_STATES.includes(question.state)))
     throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
