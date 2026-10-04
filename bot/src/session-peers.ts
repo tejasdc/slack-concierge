@@ -594,11 +594,14 @@ export class SessionPeers {
       // A legacy peer can record the reply while answering with the old acknowledgement
       // shape. The exact retained event is stronger evidence than the sender's timeout.
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId))continue;
-      if(reply.status==='failed_deadline'||reply.status==='failed_budget'){
-        this.settle(row,'failed',`The peer could not return its answer: ${reply.status==='failed_deadline'?'delivery reached its deadline':'delivery exhausted its retry budget'}. ${reply.eventId}`);
+      // A reply the peer gave up pushing is still the peer's answer, and this poll carries it:
+      // take it. Writing the request off lost a finished Mac answer whose single push met the
+      // server mid-restart (2026-10-04, request c5a8444f). Fail only if it cannot be fetched.
+      const pulled=await this.pullReply(client,row,reply,false);
+      if(!pulled&&(reply.status==='failed_deadline'||reply.status==='failed_budget')){
+        this.settle(row,'failed',`The peer could not return its answer: ${reply.status==='failed_deadline'?'delivery reached its deadline':'delivery exhausted its retry budget'}, and fetching it failed. ${reply.eventId}`);
         return;
       }
-      await this.pullReply(client,row,reply,false);
     }
     row=this.row(row.request_id);
     if(row.outcome)return;
