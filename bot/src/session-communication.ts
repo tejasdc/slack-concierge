@@ -1234,6 +1234,35 @@ export class SessionCommunicationCoordinator {
         const status = received ? 'received' : ['failed','uncertain','canceled'].includes(observed.state) ? observed.state : input.turn_id ? 'admitted' : 'held';
         db.query('UPDATE session_communication_events SET status=? WHERE event_id=?').run(status, eventId);
     }
+    /**
+     * The sender hears at once when the work it asked for is parked on the recipient's
+     * provider: a sign-in that failed or a usage limit. The work stays queued and runs by itself
+     * when the hold clears; the sender may cancel and send it elsewhere. On 2026-10-04 an Inbox
+     * request to a Codex session sat "queued" for thirty minutes behind a dead Codex sign-in, and
+     * the sender learned nothing until the generic overdue note. One note per request, as its
+     * overdue note, so the thirty-minute one does not repeat it.
+     */
+    private inspectProviderHolds() {
+        const now = this.now();
+        for (const request of db.query(`SELECT r.* FROM session_communication_requests r
+            JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
+            WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued'
+              AND t.dispatch_failure_class IN ('auth_wait','usage_wait')`).all() as RequestRow[]) {
+            const turn = db.query(`SELECT t.dispatch_failure_class AS hold, s.provider_id AS provider FROM session_inputs i
+                JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id WHERE i.id=?`).get(request.target_input_id) as {hold:string;provider:string}|null;
+            if (!turn) continue;
+            const provider = turn.provider === 'codex' ? 'Codex' : turn.provider === 'claude-code' ? 'Claude' : turn.provider;
+            const health = turn.hold === 'auth_wait'
+                ? `held: ${provider} on this machine cannot sign in, so concierge:${request.target_session_id} cannot run it. Tejas has been told once to sign it in again`
+                : `held: ${provider} on this machine has no usage left, so concierge:${request.target_session_id} cannot run it until an account has room`;
+            db.transaction(() => {
+                const current = this.row(request.request_id);
+                if (current.outcome || current.overdue_at_ms !== null) return;
+                this.event(request, 'overdue', { text: `Request ${request.request_id} is ${health}. It stays queued and runs by itself when that clears. If it cannot wait, cancel it (sessions cancel ${request.request_id}) and send it to a session on another provider.`, health, held: turn.hold });
+                db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
+            })();
+        }
+    }
     inspectOverdue() {
         const now = this.now();
         for (const request of db.query(`SELECT * FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as RequestRow[]) {
@@ -1279,6 +1308,7 @@ export class SessionCommunicationCoordinator {
                 return;
             try {
                 this.dependencies.peers?.wake();
+                this.inspectProviderHolds();
                 this.inspectOverdue();
                 auditUndeliveredReturns(this.now());
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
