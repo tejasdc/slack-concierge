@@ -372,6 +372,9 @@ by one of the functions above, never by a second, peer-only projection.
   requires the folder inside its workspace and the UUID in its own provider store, then
   binds one session to that UUID. For an imported Mac terminal conversation, turn on the
   Mac before continuing; the cloud archive alone cannot start this in-place conversation.
+  If the Mac has lost its own copy of the transcript (the fashion conversation's file was
+  deleted from the Mac's Claude history after August 4, 2026), the server sends the copy from
+  its transcript archive once and the Mac puts it back where Claude keeps it before binding.
   A repeated action opens the same bound session. A missing folder, native transcript or
   unreachable Mac is a refusal with no new session.
 - Mac asleep or offline: `sessions ask` to a Mac address or `--peer mac` is accepted with

@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
-import {dirname,join,relative,sep} from 'node:path';
+import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
+import {basename,dirname,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
@@ -1791,9 +1791,32 @@ export class SessionOwner {
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
+  /** Put an archived copy of this machine's own provider transcript back where the provider resumes it. */
+  private restoreNativeTranscript(provider:string,nativeId:string,claudePath:string|null,restore:unknown){
+    const packet=restore&&typeof restore==='object'?restore as Record<string,unknown>:{};
+    const refuse=(why:string)=>{throw new SessionOwnerError(`The archived copy of this conversation could not be restored: ${why}.`,409,'NATIVE_TRANSCRIPT_RESTORE_REFUSED');};
+    if(typeof packet.base64!=='string'||typeof packet.sha256!=='string'||typeof packet.name!=='string')refuse('the copy was incomplete');
+    const bytes=Buffer.from(packet.base64 as string,'base64');
+    if(createHash('sha256').update(bytes).digest('hex')!==packet.sha256)refuse('its contents did not match their checksum');
+    if(!bytes.subarray(0,262_144).toString('utf8').includes(nativeId))refuse('it is not this conversation');
+    let destination:string;
+    if(provider==='claude-code')destination=claudePath!;
+    else {
+      const dated=(packet.name as string).match(/^rollout-(\d{4})-(\d{2})-(\d{2})T[^/]*\.jsonl$/);
+      if(!dated||!(packet.name as string).includes(nativeId))refuse('its file name is not a Codex conversation');
+      destination=join(homedir(),'.codex','sessions',dated![1]!,dated![2]!,dated![3]!,packet.name as string);
+    }
+    if(existsSync(destination))return;
+    mkdirSync(dirname(destination),{recursive:true,mode:0o700});
+    const staging=`${destination}.restoring-${process.pid}`;
+    writeFileSync(staging,bytes,{mode:0o600});
+    renameSync(staging,destination);
+    log('info','native_transcript_restored',{provider,native_id:nativeId,bytes:bytes.length,sha256:packet.sha256});
+  }
   /** Bind an existing provider transcript on the machine whose folder contains it. */
   private resumeNative(body:unknown) {
-    const input=object(body);only(input,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer']);const action=actionId(input);
+    const body_=object(body);only(body_,['clientActionId','provider','nativeId','project','title','sourceAddress','sourceSessionId','sourcePeer','restore']);
+    const {restore,...input}=body_;const action=actionId(input);
     const provider=input.provider,nativeId=input.nativeId,cwd=input.project;
     if(!['claude-code','codex'].includes(provider)||typeof nativeId!=='string'||!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(nativeId)||typeof cwd!=='string'||!cwd.startsWith('/')||typeof input.title!=='string'||!input.title.trim())throw new SessionOwnerError('This conversation has no usable native history identity.',409,'NATIVE_HISTORY_UNAVAILABLE');
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -1805,7 +1828,14 @@ export class SessionOwner {
     catch{throw new SessionOwnerError(`The original folder ${cwd} is not available in this machine's workspace.`,409,'RESUME_FOLDER_UNAVAILABLE');}
     const transcript=provider==='claude-code'?join(homedir(),'.claude','projects',cwd.replace(/[\\/.]/g,'-'),`${nativeId}.jsonl`):null;
     const codexTranscript=(directory:string):boolean=>{let entries:import('node:fs').Dirent[];try{entries=readdirSync(directory,{withFileTypes:true});}catch{return false;}return entries.some(entry=>entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(nativeId)||entry.isDirectory()&&codexTranscript(join(directory,entry.name)));};
-    if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions'))))throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+    if(!(transcript?existsSync(transcript):codexTranscript(join(homedir(),'.codex','sessions')))){
+      // This machine's own copy can be gone while the server's transcript archive still holds the
+      // same file (the fashion conversation, deleted from the Mac after August 4, 2026). The
+      // requester then sends the archived bytes; they are put back exactly where the provider
+      // keeps this conversation, only when nothing is there, so resume continues the original.
+      if(!restore)throw new SessionOwnerError('The original provider conversation is not in this machine’s history yet.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+      this.restoreNativeTranscript(provider,nativeId,transcript,restore);
+    }
     const configured=resolveProviderDefault(configuredProviderDefault(null));
     const defaultModel=provider==='codex'?resolveProviderAlias('cx'):configured.provider==='claude-code'?configured:resolveProviderAlias('cc-opus');
     const created=db.transaction(()=>{
@@ -1835,7 +1865,18 @@ export class SessionOwner {
       const packet={clientActionId:`native:${action}`,provider:source.provider_id,nativeId,project,title:this.catalogueLabels(source).title,sourceAddress:input.address,sourceSessionId:`concierge:${source.id}`,sourcePeer:this.selfMachine};
       let target:any;
       if(machine){
-        try{const value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',packet);target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};}
+        try{
+          let value:{session:any;reused:boolean};
+          try{value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',packet);}
+          catch(error){
+            const archived=error instanceof PeerError&&error.code==='NATIVE_TRANSCRIPT_UNAVAILABLE'?peers!.archivedTranscript(machine,nativeId):null;
+            if(!archived)throw error;
+            const bytes=readFileSync(archived.path);
+            value=await peers!.client(machine).request<{session:any;reused:boolean}>('POST','/sessions/v1/resurrections/native',
+              {...packet,restore:{name:basename(archived.path),sha256:createHash('sha256').update(bytes).digest('hex'),base64:bytes.toString('base64')}},120_000);
+          }
+          target={...value.session,id:`${machine}:${value.session.id.slice(10)}`,address:`${machine}/${value.session.address}`,peer:machine};
+        }
         catch(error){if(error instanceof PeerError&&error.kind==='unreachable')throw new SessionOwnerError(`${machine} is not answering. This conversation lives in ${project} there; try again when it is on.`,424,'MACHINE_UNREACHABLE');if(error instanceof PeerError)throw new SessionOwnerError(error.message,error.status??502,error.code??'PEER_REFUSED');throw error;}
       }else target=this.resumeNative(packet).session;
       const operation=this.saveControl(source,'resurrect',input,()=>({sessionId:target.id,session:target}));
