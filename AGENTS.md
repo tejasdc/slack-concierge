@@ -249,8 +249,10 @@ authorization or a change to the default rapid-iteration policy.
   `--not-checked` [decision: agents-check-real-end-to-end-behavior]; when part of his request
   was not done, the work is not completed. These are folded into the words the requester and he
   read, so every carrier (return, peer, digest) keeps them. An Inbox topic request closes
-  `completed` only when every dispatch linked to it answered as done and no question for it is
-  open (`refuseUnfinishedCompletion`): on 2026-10-02 one closed over "paid bodies not read".
+  `completed` only when its latest dispatch answered as done (earlier ones only block while running)
+  and no question for it is open (`refuseUnfinishedCompletion`): on 2026-10-02 one closed over
+  "paid bodies not read". A dispatch serving several requests that fell short blocks none of them
+  while another of its requests stays open or closes not-done, since that one owns the shortfall.
 - Change the Inbox agent's standing behavior by asking the Inbox session itself
   (`sessions ask` at its exact address) to update its own `slack-inbox` instructions.
   Never edit its AGENTS.md from another session. A resumed Claude session keeps the

@@ -977,7 +977,14 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
   const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
     .filter(dispatch=>dispatch.row);
   const latest=dispatches.at(-1);
-  const unfinished=dispatches.filter(dispatch=>!dispatch.row!.outcome||(dispatch===latest&&!done(dispatch.row!))).map(dispatch=>({requestId:dispatch.id}));
+  // One dispatch can serve several of his requests and cannot say which part fell short. Its
+  // shortfall only needs a home: while another request it served is still open or closed as not
+  // done, this one may close completed (2026-10-05: monitor and arm done, Amazon cart blocked).
+  const shortfallOwnedElsewhere=(dispatchId:string)=>(db.query(`SELECT request_id,state,disposition FROM inbox_requests
+      WHERE request_id<>? AND dispatches_json LIKE ?`).all(request.requestId,`%"requestId":"${dispatchId}"%`) as {request_id:string;state:string;disposition:string|null}[])
+    .some(sibling=>!(sibling.state==='closed'&&sibling.disposition==='completed'));
+  const unfinished=dispatches.filter(dispatch=>!dispatch.row!.outcome
+      ||(dispatch===latest&&!done(dispatch.row!)&&!shortfallOwnedElsewhere(dispatch.id))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(questionsOfRequest(topic.topicId,request).some(question=>OPEN_QUESTION_STATES.includes(question.state)))
     throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
