@@ -5,6 +5,7 @@ import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
+import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
@@ -1862,7 +1863,11 @@ export class SessionOwner {
       const metadata=sessionMetadata(source),project=metadata.project??metadata.source?.project,nativeId=metadata.source.nativeId;
       if(typeof project!=='string'||!project.startsWith('/'))throw new SessionOwnerError('The original folder was not recorded for this conversation.',409,'RESUME_FOLDER_UNAVAILABLE');
       const machine=peers?.instanceForPath(project)??null;
-      const packet={clientActionId:`native:${action}`,provider:source.provider_id,nativeId,project,title:this.catalogueLabels(source).title,sourceAddress:input.address,sourceSessionId:`concierge:${source.id}`,sourcePeer:this.selfMachine};
+      // Named as the receiving machine reads them: a bare local id sent to the Mac read there as one of
+      // the Mac's own sessions ("continued from Mac session 3749", 2026-10-05).
+      const packet={clientActionId:`native:${action}`,provider:source.provider_id,nativeId,project,title:this.catalogueLabels(source).title,
+        sourceAddress:machine&&!input.address.includes('/')?`${this.selfMachine}/${input.address}`:input.address,
+        sourceSessionId:machine?presentSessionForPeer(`concierge:${source.id}`,this.selfMachine):`concierge:${source.id}`,sourcePeer:this.selfMachine};
       let target:any;
       if(machine){
         try{
