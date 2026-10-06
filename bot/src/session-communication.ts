@@ -3,7 +3,7 @@ import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutio
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
-import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
+import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
@@ -1246,19 +1246,15 @@ export class SessionCommunicationCoordinator {
         const now = this.now();
         for (const request of db.query(`SELECT r.* FROM session_communication_requests r
             JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
-            WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued'
-              AND t.dispatch_failure_class IN ('auth_wait','usage_wait')`).all() as RequestRow[]) {
-            const turn = db.query(`SELECT t.dispatch_failure_class AS hold, s.provider_id AS provider FROM session_inputs i
-                JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id WHERE i.id=?`).get(request.target_input_id) as {hold:string;provider:string}|null;
-            if (!turn) continue;
-            const provider = turn.provider === 'codex' ? 'Codex' : turn.provider === 'claude-code' ? 'Claude' : turn.provider;
-            const health = turn.hold === 'auth_wait'
-                ? `held: ${provider} on this machine cannot sign in, so concierge:${request.target_session_id} cannot run it. Tejas has been told once to sign it in again`
-                : `held: ${provider} on this machine has no usage left, so concierge:${request.target_session_id} cannot run it until an account has room`;
+            WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued'`).all() as RequestRow[]) {
+            const input = getAcceptedSessionInput(request.target_input_id!);
+            const hold = input ? inputHold(input) : null;
+            if (!hold) continue;
+            const text = heldRequestNotice(request.request_id, `concierge:${request.target_session_id}`, hold);
             db.transaction(() => {
                 const current = this.row(request.request_id);
                 if (current.outcome || current.overdue_at_ms !== null) return;
-                this.event(request, 'overdue', { text: `Request ${request.request_id} is ${health}. It stays queued and runs by itself when that clears. If it cannot wait, cancel it (sessions cancel ${request.request_id}) and send it to a session on another provider.`, health, held: turn.hold });
+                this.event(request, 'overdue', { text, health: `held: ${hold.code}`, held: hold.code });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
         }

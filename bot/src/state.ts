@@ -904,6 +904,16 @@ export const SETTLED_EXECUTION_SQL = `
     WHERE artifact.turn_id=prerequisite.id AND artifact.status IN ('pending', 'sending'))
 `;
 
+// An earlier turn that holds back the session's later inputs, written against alias `older`.
+// A native turn parked with an unconfirmed outcome is history, never replayed, and no path
+// reconciles it, so it must not hold back what comes after it: the next input runs and
+// carries the parked one as unconfirmed context (listInterruptedInputContext). Holding them
+// left a Mac request queued for five days behind a run the Mac's sleep had cut off (mac:69,
+// 2026-10-01 to 2026-10-06).
+export const EARLIER_TURN_BLOCKS_SQL = `
+  (older.status='queued' OR (older.status='parked' AND older.turn_kind<>'native'))
+`;
+
 const settleDependenciesSql = `
   UPDATE turn_dependencies SET satisfied_at=CURRENT_TIMESTAMP,
     outcome=(SELECT status FROM turns WHERE id=prerequisite_turn_id),
@@ -1568,7 +1578,9 @@ export function claimNativeResultReconciliation(input: {
       WHERE t.id=? AND t.session_id=? AND t.turn_kind='native'
         AND t.status IN ('interrupted','parked','delivery_parked')
         AND NOT EXISTS (SELECT 1 FROM turns live WHERE live.session_id=t.session_id AND live.id<>t.id
-          AND (live.status IN ('running','delivering') OR (live.id<t.id AND live.status IN ('queued','parked'))))`)
+          AND live.status IN ('running','delivering'))
+        AND NOT EXISTS (SELECT 1 FROM turns older WHERE older.session_id=t.session_id AND older.id<t.id
+          AND ${EARLIER_TURN_BLOCKS_SQL})`)
       .get(input.turnId,input.sessionId) as {owner_instance_id:string|null;pid:number|null;boot_id:string|null;process_start_ticks:string|null}|null;
     if (!turn || (turn.owner_instance_id && input.isOwnerAlive({pid:turn.pid??0,bootId:turn.boot_id??'',startTicks:turn.process_start_ticks??''}))) return false;
     return db.query(`UPDATE turns SET status='delivering',owner_instance_id=?,agent_text=?,outbound_text=?,
@@ -3646,7 +3658,7 @@ export function listInterruptedInputContext(turnId: number): InterruptedInputCon
       AND prior.status IN ('cancelled', 'interrupted', 'error', 'parked')
       AND (prior.turn_kind IN ('slack_user', 'comparison') OR (prior.turn_kind='native'
         AND EXISTS(SELECT 1 FROM session_inputs input WHERE input.id=prior.accepted_input_id
-          AND input.kind IN ('input','create','consultation'))))
+          AND input.kind IN ('input','create','consultation','request'))))
       AND prior.provider_input_acknowledged_at IS NULL
       AND prior.input_context_received_by_turn_id IS NULL
     ORDER BY prior.id
@@ -4872,7 +4884,7 @@ export function acquireSessionTurn(
         )
         AND NOT EXISTS (
           SELECT 1 FROM turns older
-          WHERE older.session_id=sessions.id AND older.id<? AND older.status IN ('queued', 'parked')
+          WHERE older.session_id=sessions.id AND older.id<? AND ${EARLIER_TURN_BLOCKS_SQL}
         )
         AND NOT EXISTS (
           SELECT 1
@@ -4997,7 +5009,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND NOT EXISTS (
             SELECT 1 FROM turns older
             WHERE older.session_id=turn.session_id AND older.id<turn.id
-              AND older.status IN ('queued', 'parked')
+              AND ${EARLIER_TURN_BLOCKS_SQL}
           )
           AND NOT EXISTS (
             SELECT 1 FROM turns live

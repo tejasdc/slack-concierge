@@ -554,7 +554,11 @@ and expose the turn ID in its durable Slack status. For a login-repairable
 authentication failure on claude-code the attention notice also carries the
 `/auth-refresh` hot-login guidance; entitlement, billing, and admin-disabled
 failures, which a fresh login cannot fix, get only the generic Retry hint.
-A parked turn remains the oldest FIFO blocker, but a queued successor is the
+A native turn parked with an unconfirmed outcome is not a FIFO blocker at all
+(`EARLIER_TURN_BLOCKS_SQL`): it is never replayed, nothing reconciles it, and the
+next queued input runs carrying it as unconfirmed context. Holding successors
+behind it left a Mac request queued for five days (October 1–6, 2026).
+Any other parked turn remains the oldest FIFO blocker, but a queued successor is the
 user's durable signal to continue the session: a safely-resumable parked head
 turn is automatically resumed at each recovery boundary — when a later input
 queues behind it, once at queue startup, and after a completed `/auth-refresh`

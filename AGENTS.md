@@ -153,8 +153,12 @@ authorization or a change to the default rapid-iteration policy.
   title as his private material. See [peer instances](docs/runbooks/PEER-INSTANCES.md#screenshots).
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
-  remain immutable history; queued inputs behind parked heads remain owed work until
-  their owner reconciles the head. See the shared wire contract.
+  remain immutable history. A native turn parked with an unconfirmed outcome is never
+  replayed and never holds back later inputs: the next one runs and carries it as
+  unconfirmed context, because nothing reconciles it and a Mac request sat queued behind
+  one for five days (mac:69, Oct 1–6, 2026). A queued request that is held (sign-in, usage,
+  or anything that will not clear by itself) tells its sender at once, from a peer too
+  (`inputHold`). See the shared wire contract.
 - A busy recipient is never a refusal. Agent requests and service returns use a
   coordinator-chosen live delivery; when the provider proves it never received that
   input, it returns once to the recipient's own queue and runs when that session next

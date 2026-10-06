@@ -12,7 +12,7 @@ import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairInci
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
@@ -131,13 +131,34 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
-  const older=db.query("SELECT status FROM turns WHERE session_id=? AND id<? AND status IN ('queued','parked') ORDER BY id LIMIT 1").get(input.session_id,turn.id) as {status:string}|null;
+  const older=db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`).get(input.session_id,turn.id) as {status:string}|null;
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
   if(db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
   // Waiting behind earlier or active work in the same session, or for the dispatcher to
   // pick it up, is the owner's ordinary progress and resolves without anyone acting.
   // Explanations are reserved for holds a person must know about or act on.
   return null;
+}
+
+/**
+ * Why a queued input is not starting, when its sender has to know: a sign-in or usage hold,
+ * or anything that will not clear by itself. The sender hears it at once, on this machine
+ * or from a peer, instead of from a stall report after the due time.
+ */
+export function inputHold(input:AcceptedSessionInput):InputStatusDetail|null {
+  const observed=readInputExecution(input);
+  if(observed.state!=='queued'&&observed.state!=='waiting')return null;
+  const detail=inputStatusDetail(input,observed,input.receipt_json?JSON.parse(input.receipt_json):{});
+  if(!detail)return null;
+  return ['PROVIDER_AUTH_HELD','PROVIDER_USAGE_HELD'].includes(detail.code)||!detail.automaticRetry?detail:null;
+}
+
+/** The words a sender reads about a hold, the same from a local or a peer recipient. */
+export function heldRequestNotice(requestId:string,worker:string,hold:InputStatusDetail):string {
+  const waits=hold.code==='PROVIDER_AUTH_HELD'?`${worker} cannot start it: its provider on that machine cannot sign in. Tejas has been told once to sign it in again`
+    :hold.code==='PROVIDER_USAGE_HELD'?`${worker} cannot start it: its provider on that machine has no usage left until an account has room`
+    :`${worker} has not started it: ${hold.message}`;
+  return `Request ${requestId} is held. ${waits}. ${hold.automaticRetry?'It stays queued and starts by itself when that clears.':'Nothing will start it by itself.'} If it cannot wait, cancel it (sessions cancel ${requestId}) and send it to another session.`;
 }
 /** A provider's own trouble in his words: an overloaded or failing service is not our fault. */
 function providerTroubleText(status:number|null,offer:OutageOffer|null=null) {

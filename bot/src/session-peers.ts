@@ -7,7 +7,7 @@ import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,replyCommand,sameAnswerKey,stalle
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
-import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
+import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
@@ -725,6 +725,18 @@ export class SessionPeers {
     log('info','session_peer_request_closed_stalled',{request_id:row.request_id,peer:row.peer,execution_status:execution.status});
     return true;
   }
+  /** A request the peer holds and will not start soon tells its sender now, as a local one does. */
+  private inspectHolds() {
+    for(const row of db.query("SELECT * FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL").all() as PeerRequestRow[]) {
+      const hold=JSON.parse(row.remote_status_json!).hold;
+      const text=heldRequestNotice(row.request_id,`${this.presentedSession(row.peer,row.remote_session_id)} on ${row.peer}`,hold);
+      db.transaction(()=>{
+        if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
+        this.event(row,'overdue',{text,health:`held: ${hold.code}`,held:hold.code});
+        db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
+      })();
+    }
+  }
   private inspectOverdue() {
     const now=this.now();
     for(const row of db.query(`SELECT * FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as PeerRequestRow[]) {
@@ -830,6 +842,7 @@ export class SessionPeers {
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
+      hold:inputHold(input),
       replies,stalled:row.stalled_at_ms===null?null:{atMs:row.stalled_at_ms,reason:row.stalled_reason??'the worker sent no final reply after one reminder'}};
   }
   private deliveryReceipt(row:DeliveryRow) {
@@ -966,7 +979,7 @@ export class SessionPeers {
     this.chaseStranded(row,this.status(row.request_id));
     row=this.delivery(row.request_id);
     const status=this.status(row.request_id);
-    const fingerprint=JSON.stringify([status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
+    const fingerprint=JSON.stringify([status.hold?.code??null,status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
     if(fingerprint===row.notified_fingerprint)return;
     try {
       const answer=await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
@@ -1007,6 +1020,7 @@ export class SessionPeers {
         // so its sessions stay addressable when it later goes offline.
         for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
         for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])this.closeStranded(row);
+        this.inspectHolds();
         this.inspectOverdue();
         if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
         for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])
