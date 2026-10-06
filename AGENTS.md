@@ -786,6 +786,12 @@ authorization or a change to the default rapid-iteration policy.
   deleting this repository's main. Source: a session amended a pushed commit and force-pushed it
   on 2026-09-23, and nine deployments chased the vanished commit; Tejas: "Why are we like, you
   know, force pushing … add changes and just, like, not remove changes."
+  The same pre-command hook, when it refuses nothing, names a website's runbook to an agent about
+  to open that site in a browser (`agent-browser open|goto|navigate`, or an MCP navigate call):
+  `bot/src/site-runbook-notice.ts` asks the `website-runbooks` skill's `site-runbook --json`
+  lookup and returns its answer as `additionalContext`, once per domain per provider session,
+  skipping local hosts and his own apps, never blocking, silent when the lookup is missing.
+  Built 2026-10-06 for the website-runbooks work (Inbox capture `7b0dae00`).
 - **Provenance, not prisons.** What an agent writes shows as the agent's; what Tejas says shows as
   his, with the door it came through ("You · iPhone Action Button", "You · web", `doorOf` in
   `session-message-author.ts`). Agents keep full control of both machines, including repairing,

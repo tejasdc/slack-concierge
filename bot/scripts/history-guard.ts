@@ -10,10 +10,16 @@
  * Claude gets it with --settings on every run (claude-code.ts) and as machine settings; Codex gets
  * it as a managed hook (scripts/install-codex-stop-hook.sh). Anything unexpected lets the command
  * through: git's own hook is the backstop, and a guard must never stop unrelated work.
+ *
+ * The same pass, when it refuses nothing, tells an agent about to open a website in a browser
+ * where that website's runbook is (bot/src/site-runbook-notice.ts), as `additionalContext` beside
+ * the call. It rides this hook because both machines already run it before every call, so no new
+ * launcher or machine password is needed.
  */
 import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
+import { siteRunbookNotices } from '../src/site-runbook-notice';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -91,5 +97,10 @@ try {
 if (reason) {
   console.error(JSON.stringify({ event: 'history_rewrite_refused', provider_session: hook.session_id ?? null }));
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n');
+} else {
+  // Not a refusal: a browser about to open a website hears about that website's runbook.
+  let notices: string[] = [];
+  try { notices = siteRunbookNotices(hook, toolCommand(hook.tool_input ?? {})); } catch { notices = []; }
+  if (notices.length) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notices.join('\n') } }) + '\n');
 }
 process.exit(0);

@@ -125,7 +125,7 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|mcp__.*(navigate|new_page|open_url|goto).*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"

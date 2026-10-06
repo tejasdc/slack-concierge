@@ -387,10 +387,12 @@ export function claudeCodeArgs(input: {
  * machine-local, so every agent this owner starts carries it on either machine.
  */
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
+/** Shell commands, plus browser navigation through MCP so the guard can name a website's runbook. */
+const BROWSER_AND_SHELL_MATCHER = "Bash|mcp__.*(navigate|new_page|open_url|goto).*";
 const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
-  PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command",
+  PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"`, timeout: 20 }] }],
 } });
 
