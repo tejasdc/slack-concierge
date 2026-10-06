@@ -56,6 +56,8 @@ export type AccountUsage = Readonly<{
   current: boolean;
   windows: readonly UsageWindow[];
   problem: string | null;
+  /** True when the provider refused this account's sign-in (expired, reused or revoked). */
+  signedOut?: boolean;
   /** Absent where the provider grants no such thing, which is everywhere but Codex. */
   resetCredits?: ResetCredits | null;
   /** Read by the other machine for this same account, because this one cannot read it. */
@@ -187,9 +189,13 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   try { row = JSON.parse(await run(CODEXBAR, ["usage", "--provider", "codex", "--format", "json"], { CODEX_HOME: home }))[0]; }
   catch { return { label, plan, current: agents, windows: [], problem: "Usage could not be read." }; }
   if (row?.error) {
-    const revoked = /token_revoked|invalidated oauth token/i.test(String(row.error.message ?? ""));
-    return { label, plan, current: agents, windows: [],
-      problem: revoked ? "OpenAI ended this sign-in. It needs signing in again." : "Usage could not be read." };
+    const message = String(row.error.message ?? "");
+    // A refused sign-in is not a failed reading: the account cannot run anything until it is
+    // signed in again. On 2026-10-06 all three of the server's Codex sign-ins answered
+    // "token_expired" while Accounts still listed them as signed in.
+    const signedOut = /token_revoked|invalidated oauth token|token_expired|refresh_token_reused|401 Unauthorized/i.test(message);
+    return { label, plan, current: agents, windows: [], ...(signedOut ? { signedOut: true } : {}),
+      problem: signedOut ? "This sign-in stopped working. It needs signing in again." : "Usage could not be read." };
   }
   const usage = row?.usage ?? {}, pace = row?.pace ?? {};
   const windows: UsageWindow[] = [];

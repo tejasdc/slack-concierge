@@ -26,7 +26,7 @@ import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recor
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
-import {codexAccountInUse} from './codex-device-login';
+import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
@@ -43,7 +43,7 @@ import {claudeAccountSelection,selectClaudeAccount} from './provider-account-sel
 import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
  * `detail` is one sentence for him about what actually happened, present only when
  * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
@@ -105,6 +105,8 @@ export class SessionExecutionHost {
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
+  /** What Codex itself last said about its sign-in; see codexSignInState. */
+  private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
     const defaultAccount=currentAccount(provider);
     const selection=provider==='claude-code'?claudeAccountSelection():null;
@@ -115,6 +117,16 @@ export class SessionExecutionHost {
       :saved;
     const account=provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
+    // A sign-in Codex refused shows as signed out, on the account in use and on any kept
+    // account whose usage reading was refused, so the row offers "Sign in again".
+    const usage=providerAccountUsage(provider);
+    const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
+    const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
+    const checked=profiles.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
+    if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,
+      lastSignIn:this.lastSignIn.get(provider)??null,
+      message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:`This machine runs Codex on ${account.label}.`,
+      signedIn:!(brokenInUse||refused.has(account.label)),account,profiles:checked,usage};
     return {provider,mode:provider==='codex'?'device':'interactive',
       pending:provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending(),
       // A signed-in account is kept before anything replaces it. A surface talking to an
@@ -127,7 +139,7 @@ export class SessionExecutionHost {
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
-      account,profiles,usage:providerAccountUsage(provider)};
+      account,profiles:checked,usage};
   }
   private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
     // Asking Claude Code who it is costs a process start, so the surface that displays the
@@ -140,7 +152,8 @@ export class SessionExecutionHost {
     // to be working at all" (2026-09-23). Waiting for the read is the point — the answer
     // this returns is what he is about to look at. A press while a pass is already running
     // joins that pass rather than starting a second one.
-    await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{}),
+    await Promise.all([refreshClaudeAccount(),
+      codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]);
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.

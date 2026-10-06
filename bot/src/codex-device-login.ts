@@ -99,6 +99,26 @@ export class CodexDeviceLogin {
 }
 
 /** The account Codex is actually using, which is the one that runs his work. */
+/**
+ * Whether the running Codex has a working sign-in, asked of Codex with a forced renewal so a
+ * login that can no longer renew answers "signed out" instead of its remembered identity.
+ * `unknown` when Codex could not be asked. Accounts used to judge by the credential file
+ * being present, and showed a dead sign-in as signed in with no way to sign in again
+ * (2026-10-06).
+ */
+export async function codexSignInState(
+  client: CodexAppServerClientLike = sharedCodexAppServerClient(),
+): Promise<{ state: "signed-in"; email: string | null; planType: string | null } | { state: "signed-out" | "unknown" }> {
+  try {
+    const answer = await client.request("account/read", { refreshToken: true }, { requestTimeoutMs: 20_000 });
+    const account = answer?.account;
+    if (!account) return { state: answer?.requiresOpenaiAuth === false ? "unknown" : "signed-out" };
+    return { state: "signed-in",
+      email: typeof account.email === "string" && account.email ? account.email : null,
+      planType: typeof account.planType === "string" && account.planType ? account.planType : null };
+  } catch { return { state: "unknown" }; }
+}
+
 export async function codexAccountInUse(
   client: CodexAppServerClientLike = sharedCodexAppServerClient(),
 ): Promise<{ email: string | null; planType: string | null } | null> {
