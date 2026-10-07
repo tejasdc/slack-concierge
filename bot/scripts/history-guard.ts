@@ -16,10 +16,6 @@
  * Tejas; agents read texts through `router-actions.sh messages`, which withholds those. Each such
  * refusal is recorded (bot/src/messages-read-log.ts).
  *
- * It also refuses a background job whose only work is waiting (bot/src/background-waiter-policy.ts):
- * finished background work already reports back to the agent, so such a job only holds the run and
- * every Concierge update behind it.
- *
  * The same pass, when it refuses nothing, tells an agent about to open a website in a browser
  * where that website's runbook is (bot/src/site-runbook-notice.ts), as `additionalContext` beside
  * the call. It rides this hook because both machines already run it before every call, so no new
@@ -29,7 +25,6 @@ import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
 import { siteRunbookNotices } from '../src/site-runbook-notice';
-import { waiterOnlyRefusal } from '../src/background-waiter-policy';
 import { messagesDatabaseRefusal } from '../src/messages-database-policy';
 import { recordMessagesRead } from '../src/messages-read-log';
 
@@ -96,7 +91,7 @@ try {
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {
-    reason = waiterOnlyRefusal(hook.tool_name, input) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {
