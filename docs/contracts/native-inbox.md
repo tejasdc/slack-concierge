@@ -315,6 +315,10 @@ whose event is `final`; never the router's own turn reply to it, which carries t
 is newer than the router's newest post on that root: the router owes a
 relay, shown to him rather than logged. The prompt's `<topic>` block names it as
 `unrelayedResult`, and lists `unfiledAttention` with the filing instruction.
+Since 2026-10-07 an agent's own replies to a work request the Inbox sent for a placed thread are
+posted there by the owner and never become `return:` inputs, so only hand-backs, stalls, the
+owner's settlements and information answers can still leave a result waiting; the `<topic>` block
+lists the owner's posts as `agentAnswers` (see the session-owner contract).
 
 Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned

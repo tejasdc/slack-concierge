@@ -4,10 +4,10 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, postForwardedThreadAnswer, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import { forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -888,17 +888,33 @@ export class SessionCommunicationCoordinator {
         return id;
     }
     /**
-     * A reply to a forwarded thread reply is posted into that thread as the agent's own words the
-     * moment it is recorded; a final one settles his message's receipt; a stall is a service post.
-     * Nothing here wakes the router.
+     * An agent's answer that goes into a thread instead of back to the router as a return: an answer
+     * to a reply he wrote in that thread, or the agent's own reply (partial or final, not a hand-back,
+     * which the router must act on) to a request the Inbox sent for a thread. Each is posted there as
+     * the agent's words the moment it is recorded (a stall on his forwarded reply as a service post),
+     * and a final one files what he needs to see; nothing wakes the router. Stalls, hand-backs,
+     * information the router asked for itself and the owner's own settlements of the router's
+     * requests still return to the router, whose judgement they need.
      */
-    private postForwardedReply(request:RequestRow,event:EventRow,declared:any,forwarded:{inboxInputId:string;topicId:string}) {
+    private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
+        if(!request.source_input_id)return null;
+        const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        if(forwarded&&typeof forwarded.inboxInputId==='string')return {root:request.thread_root_input_id??request.source_input_id,forwarded};
+        // Information the router asked for itself (who owns this, what is the state) answers the router.
+        const work=JSON.parse(request.payload_json).requestedEffect==='work';
+        // An answer that already became a return before this road existed keeps its return.
+        const agentReply=work&&!event.accepted_input_id&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack;
         const inbox=getSessionById(request.source_session_id);
-        if(!inbox)return;
-        postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:event.event_id,requestId:request.request_id,root:request.thread_root_input_id??request.source_input_id!,
-            inboxInputId:forwarded.inboxInputId,respondingSessionId:`concierge:${request.target_session_id}`,text:String(declared.text??''),
+        if(!agentReply||!request.thread_root_input_id||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(request.thread_root_input_id))return null;
+        return {root:request.thread_root_input_id,forwarded:null};
+    }
+    private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
+        const responder=getSessionById(request.target_session_id);
+        postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
+            inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
+            respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.text??''),
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-            workDisposition:declared.workDisposition??null,hisInputId:request.source_input_id!});
+            workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null});
         db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
     }
     reply(input: {
@@ -957,7 +973,7 @@ export class SessionCommunicationCoordinator {
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,
-                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})});
+                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1324,10 +1340,10 @@ export class SessionCommunicationCoordinator {
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
-        // A forwarded thread reply's answer goes into the thread as the agent's words, never as a
+        // An agent's answer for a thread goes into that thread as the agent's words, never as a
         // return that would start a router turn.
-        const forwarded=JSON.parse(request.payload_json).forwardedReply;
-        if(forwarded&&request.source_input_id&&typeof forwarded.inboxInputId==='string'){this.postForwardedReply(request,event,declared,forwarded);return;}
+        const thread=this.threadAnswer(request,event,declared);
+        if(thread){this.postThreadAnswer(request,event,declared,thread);return;}
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -1386,7 +1402,9 @@ export class SessionCommunicationCoordinator {
         const answer = sameAnswerKey(event.payload_json);
         if (!answer) return { carriedBy: null, joining: [] };
         const candidates = (db.query(`SELECT event.* FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
-            WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=? ORDER BY event.rowid`)
+            WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=?
+              -- A copy the owner already posted into a thread has reached its destination; no return carries it.
+              AND NOT (event.status='received' AND event.accepted_input_id IS NULL) ORDER BY event.rowid`)
             .all(requesterSessionId, event.event_id, event.created_at_ms - 60 * 60 * 1000) as EventRow[])
             .filter(candidate => sameAnswerKey(candidate.payload_json) === answer);
         const carrier = candidates.find(candidate => candidate.accepted_input_id === `return:${candidate.event_id}`);

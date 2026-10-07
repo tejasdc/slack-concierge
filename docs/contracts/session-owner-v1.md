@@ -159,6 +159,30 @@ into the thread as a `post` by that agent (`postedBy:'owner-forward'`, `postedBy
 as a service post, and the final settles the receipt. A `deliverTo` naming a session that is not a
 choice is 409 `REPLY_TARGET_UNKNOWN`.
 
+**An agent's answer to a work request the Inbox sent for a thread goes into that thread, not back to
+the Inbox** (Tejas, 2026-10-07: "you're not the one who's receiving the responses, right?"
+[decision: agent-answers-go-to-the-thread] [decision: mac-sessions-have-parity]). For a
+request whose row has `thread_root_input_id` (every Inbox ask names one) placed in a topic, with
+`requestedEffect:'work'`, each reply the agent writes with `sessions reply` — partial or final, from
+this machine or a peer — is posted at once through the same poster as a forwarded reply
+(`postAgentAnswer` → `postForwardedThreadAnswer`): one `post` per reply event (`post:forward:<eventId>`,
+`postedBy:'owner-forward'`, `postedBySession`, `requestId`, `replyKind`, `workDisposition` on a final);
+the same agent's byte-identical words already posted in that thread within the hour are not posted
+again. The communication event is `received` with no return input, so the Inbox gets no `return:`
+input and no turn, and `result_waiting` cannot arise for it. A final answer then files, in the same
+topic and with no router turn: `needs_decision` → an open, ready `decision` question
+(`topic-answer:<eventId>`, owner the agent with `dispatchRequestId`, sources the root and the post);
+`completed` or `failed` → a `reading` item whose `reads` is the post (owner the Inbox, `answeredBy`,
+`answersRequest`); either way one `needs_you` event on the Inbox with the thread root as `inputId`
+(`needs_you:topic-answer:<eventId>`, `outcome` `needs_you` or `response`) — the thread's notification
+slot. `completed` also closes each open topic request that dispatch is linked to, when
+`refuseUnfinishedCompletion` allows it (`topic-close:answer:<eventId>:<requestId>`); `failed` leaves it
+open. Partials notify nobody. Still returned to the Inbox as before: hand-backs (`handBack`, now also
+carried on peer replies), stalls and overdue notices, the owner's own settlements (turn ended,
+cancelled, could not receive), information requests, and requests with no placed thread. The
+router reads what was posted in its next `<topic>` block as `agentAnswers`. The same filing applies
+to the final answer of a forwarded thread reply.
+
 `POST /sessions/v1/sessions/:id/inputs` accepts one more optional field for the Inbox:
 `review:{questions:[{id,revision}]}`, the exact questions a reply answers. It is valid only
 with a `replyToMessage` that resolves into a topic that owns every named question —

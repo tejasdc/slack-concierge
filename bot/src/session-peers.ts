@@ -10,7 +10,7 @@ import {meaningIndex} from './meaning-index';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
-import {postForwardedThreadAnswer} from './session-inbox';
+import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
@@ -556,13 +556,16 @@ export class SessionPeers {
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(attachments.length?{attachments}:{}),
-        ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{})};
+        ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
+        ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{})};
       if(final&&inferred)db.query('UPDATE session_peer_events SET superseded_by_event_id=? WHERE event_id=?').run(input.eventId,inferred.event_id);
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
       if(final){
         // Declared completion settles when the reply arrives, not when the peer's run ends.
         const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?'answered':requestedEffect==='work'?'undetermined':'answered';
         db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=?').run(outcome,'settled',JSON.stringify({...payload,event_id:id}),requestId);
+        // As for a server agent: its final reply ends the questions it asked for this work.
+        if(disposition)expireQuestionsForFinalReply({workerSessionId:payload.responding_session_id,requestId,disposition,reason:String(input.text).trim().slice(0,200)});
       }
       log('info','session_peer_reply_recorded',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId,...(final&&inferred?{superseded_event_id:inferred.event_id}:{})});
       return {recorded:'recorded'};
@@ -579,7 +582,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -692,15 +695,23 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
-    // His thread reply's answer from a Mac agent goes into the thread as that agent's words, never
-    // as a return that would start a router turn: the same road a server agent's answer takes
-    // [decision: mac-sessions-have-parity].
+    // An answer for a thread from a Mac agent goes into that thread as the agent's words, never as a
+    // return that would start a router turn: his thread reply's answer, or the agent's own reply to a
+    // request the Inbox sent for a thread. The same road a server agent's answer takes
+    // [decision: mac-sessions-have-parity]; stalls, hand-backs, information the
+    // router asked for itself and the owner's settlements still return.
     const forwarded=JSON.parse(row.payload_json).forwardedReply;
-    if(forwarded&&typeof forwarded.inboxInputId==='string'){
-      postForwardedThreadAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root:row.thread_root_input_id??row.source_input_id,
-        inboxInputId:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),text:String(declared.text??''),
+    const inbox=getSessionById(row.source_session_id);
+    const routed=!forwarded&&!event.accepted_input_id&&JSON.parse(row.payload_json).requestedEffect==='work'&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack&&!!row.thread_root_input_id
+      &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(row.thread_root_input_id);
+    if((forwarded&&typeof forwarded.inboxInputId==='string')||routed){
+      const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+      const root=row.thread_root_input_id??row.source_input_id;
+      postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
+        inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
+        respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.text??''),
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-        workDisposition:declared.workDisposition??null,hisInputId:row.source_input_id});
+        workDisposition:declared.workDisposition??null,hisInputId:routed?null:row.source_input_id});
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
       return;
     }
@@ -743,7 +754,8 @@ export class SessionPeers {
     const answer=sameAnswerKey(event.payload_json);
     if(!answer)return {carriedBy:null,joining:[]};
     const candidates=(db.query(`SELECT event.* FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
-      WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=? ORDER BY event.rowid`)
+      WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=?
+        AND NOT (event.status='received' AND event.accepted_input_id IS NULL) ORDER BY event.rowid`)
       .all(requesterSessionId,event.event_id,event.created_at_ms-60*60*1000) as PeerEventRow[]).filter(candidate=>sameAnswerKey(candidate.payload_json)===answer);
     const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
     return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
@@ -895,7 +907,7 @@ export class SessionPeers {
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
       return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
-        completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,
+        completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
@@ -937,7 +949,7 @@ export class SessionPeers {
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
     return {eventId:reply.event_id,kind:reply.kind,text:payload.text,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
-      ...(files?{files}:{}),
+      ...(payload.handBack?{handBack:payload.handBack}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
   /** GET …/requests/:id/replies/:eventId — a reply with its files, for an origin that pulls. */
@@ -968,7 +980,7 @@ export class SessionPeers {
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[]}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -980,7 +992,9 @@ export class SessionPeers {
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
       // Custody on this instance; the forward reads these exact bytes for the origin.
       ...(input.attachments?.length?{attachments:input.attachments}:{}),
-      ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{})};
+      ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
+      // A hand-back is the router's to act on, so the origin keeps it on the router's road.
+      ...(input.handBack?{handBack:input.handBack}:{})};
     const prior=db.query('SELECT * FROM session_peer_replies WHERE action_key=?').get(key) as ReplyRow|null;
     if(prior){if(prior.request_id!==row.request_id||prior.payload_json!==JSON.stringify(payload))throw new Error('Idempotency conflict: reply action has a different payload.');return this.deliveryReceipt(row);}
     db.transaction(()=>{

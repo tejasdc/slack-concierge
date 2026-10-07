@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
-import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
+import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
@@ -751,11 +751,12 @@ function questionsOfRequest(topicId:string,request:StoredRequest):StoredQuestion
  * request: it no longer needs the answer. `needs_decision` keeps them, because that reply is the
  * question. Called from the reply path; the request reply protocol owns when a request closes.
  */
-export function expireQuestionsForFinalReply(input:{workerSessionId:number;requestId:string;disposition:string;reason:string}) {
+export function expireQuestionsForFinalReply(input:{workerSessionId:number|string;requestId:string;disposition:string;reason:string}) {
   if(!['completed','failed'].includes(input.disposition))return 0;
   const session=inboxSession();
   if(!session)return 0;
-  const address=`concierge:${input.workerSessionId}`;
+  // A peer agent is named as the catalogue names it (`mac:84`); a local one by its number.
+  const address=typeof input.workerSessionId==='string'?input.workerSessionId:`concierge:${input.workerSessionId}`;
   const at=nowIso();
   let ended=0;
   for(const row of db.query('SELECT * FROM inbox_requests WHERE dispatches_json LIKE ?').all(`%${input.requestId}%`) as any[]) {
@@ -1853,6 +1854,87 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
   return woken;
 }
 
+/* ------------------------------------------------------------------ agents' answers in threads */
+
+/**
+ * An agent's answer goes into the thread it was asked for, and what it means for him is filed there
+ * by the owner, with no router turn: the post (`postForwardedThreadAnswer`), then for a final answer
+ * one item in Needs you with its notification — a question when the agent needs his decision, a
+ * reading item otherwise (its answer, or that it could not finish) — and, when it answered as done,
+ * the thread's request it was linked to closes completed by the same rule the router is held to
+ * (`refuseUnfinishedCompletion`). A partial answer is posted and notifies nobody: progress he learns
+ * to swipe away is worse than none. Server and Mac agents both arrive here
+ * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
+ */
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null}):string|null {
+  const post=postForwardedThreadAnswer(answer);
+  if(!post||!answer.final||answer.stalled)return post;
+  try {
+    fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:answer.text});
+  } catch(error) {
+    // The answer is in the thread; what failed is only the filing, which the router can still do.
+    log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
+  }
+  return post;
+}
+const headline=(value:string)=>firstSentence(value.replace(/^\s*TL;DR:\s*/i,''),200);
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string}) {
+  const session=getSessionById(answer.inboxSessionId);
+  if(!session||!sessionMetadata(session).inbox)return;
+  refreshRootMemo();
+  const topicId=topicOfRoot(answer.root);
+  if(!topicId)return;
+  const seen=(eventId:string)=>!!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId);
+  const by:TopicBy={kind:'owner',sessionId:answer.respondingSessionId};
+  const agent=answer.respondingTitle||'The agent working on this';
+  db.transaction(()=>{
+    // Done work closes the thread request it was sent for, exactly when the router could have closed it.
+    if(answer.disposition==='completed') {
+      for(const request of topicRequests(topicId).filter(item=>item.state==='open'&&item.dispatches.some((dispatch:any)=>String(dispatch?.requestId??'')===answer.dispatchRequestId))) {
+        const eventId=`topic-close:answer:${answer.eventId}:${request.requestId}`;
+        if(seen(eventId))continue;
+        const topic=topicRow(topicId);
+        try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
+        const at=nowIso(),why=`${agent} answered it as done.`;
+        const next={...request,state:'closed' as const,disposition:'completed',closure:{by,at,reason:why,evidence:[answer.postId]},revision:request.revision+1,updatedAt:at};
+        const questions=expireOpen(questionsOfRequest(topicId,request),`The request it was for closed (completed): ${why}`,at);
+        const topicNext=bumped(topic);
+        const payload={change:'request_closed',topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions};
+        recordSessionEvent({eventId,sessionId:session.id,kind:'topic_request',payload});
+        applyTopicChange('topic_request',payload);
+      }
+    }
+    const filedId=`topic-answer:${answer.eventId}`;
+    if(seen(filedId))return;
+    const decision=answer.disposition==='needs_decision';
+    const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
+    // One answer posted once is filed once, however many requests it closed.
+    if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId)))return;
+    const words=answer.text.trim();
+    const brief=decision
+      ?{decision:words.slice(0,2000),why:{text:`${agent} needs this from you to go on. Reply in this thread: your reply goes straight to that agent.`,sources:[answer.postId]},
+        known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
+      :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:headline(words)||'An agent answered in this thread.',
+        why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
+    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)))return;
+    const at=nowIso(),generation=raiseGeneration(session);
+    const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
+      // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
+      // a reading item is the Inbox's and ends only with his Read.
+      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
+      sources:[answer.root,answer.postId],replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
+      kind:decision?'decision':'reading',origin:'declared',generation,createdAt:at,updatedAt:at};
+    const topic=topicRow(topicId),topicNext=bumped(topic);
+    const payload={change:'reconciled',topicId,topic:topicNext,questions:[question],by,reason:`${agent} answered in this thread`,revision:topicNext.revision};
+    recordSessionEvent({eventId:filedId,sessionId:session.id,kind:'topic_question',payload});
+    applyTopicChange('topic_question',payload);
+    // The thread's one notification slot: the Inbox session, the thread's root as its input, shaped like a new question's.
+    recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
+      payload:{outcome:decision?'needs_you':'response',question:brief.decision,inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId}});
+  })();
+}
+
 /* ------------------------------------------------------------------ reply with review */
 
 /** A reply may pin the exact questions it answers, when they belong to the topic it replies in. */
@@ -1902,6 +1984,17 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
   if(Array.isArray(payload?.review?.questions))context.review=payload.review.questions.map((item:any)=>({id:item.id,revision:Number(item.revision)}));
   const unfiled=unfiledAttention(session);
   if(unfiled.length)context.unfiledAttention={instruction:UNFILED_INSTRUCTION,items:unfiled.slice(0,8).map(item=>({need:item.eventId,kind:item.kind,text:item.text.slice(0,160),startedFrom:item.startedFrom}))};
+  // Agents' answers the owner posted straight into this thread: the router is not sent them, so its
+  // next turn here reads them as a quiet record instead.
+  const roots=topicRoots(topicId);
+  if(roots.length) {
+    const answers=(db.query(`SELECT event_id,created_at,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.requestId') AS request_id,
+        json_extract(payload_json,'$.workDisposition') AS disposition,json_extract(payload_json,'$.replyKind') AS reply_kind,json_extract(payload_json,'$.text') AS text FROM session_owner_events
+      WHERE input_id IN (${roots.map(()=>'?').join(',')}) AND session_id=? AND kind='post' AND json_extract(payload_json,'$.postedBy')='owner-forward'
+      ORDER BY sequence DESC LIMIT 5`).all(...roots,sessionId) as any[]);
+    if(answers.length)context.agentAnswers=answers.map(row=>({post:row.event_id,at:iso(row.created_at),from:row.from_session,request:row.request_id,
+      kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));
+  }
   const entries=entryIndex();
   const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
   if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};

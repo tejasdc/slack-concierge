@@ -269,27 +269,46 @@ export function forwardedReplyFraming(requestId:string,text:string) {
   return `Session request ${requestId}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${requestId} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
 }
 /**
- * An agent's answer to a reply he wrote in a thread, posted into the thread as that agent's words
- * the moment it arrives (a stall as a service post); a final one settles his message's receipt.
- * Server and Mac agents take this one road [decision: mac-sessions-have-parity]; nothing here
- * wakes the router.
+ * An agent's answer, posted into the thread it was asked from as that agent's words the moment it
+ * arrives (a stall as a service post). Two roads lead here: an answer to a reply he wrote in a
+ * thread (`hisInputId`, whose receipt a final settles), and an answer to a request the Inbox router
+ * sent for a thread (Tejas, 2026-10-07: "if you're only routing the request, and the agent responds
+ * back and I get notified from the agent's response, you're not the one who's receiving the
+ * responses"). Server and Mac agents take this one road [decision: mac-sessions-have-parity];
+ * nothing here wakes the router. One answer is one post: the post is keyed by the reply's event,
+ * and the same agent's byte-identical words already posted in this thread within the hour (one
+ * answer it gave to several requests) are not posted again. Returns the post that carries the
+ * answer, or null when the reply had nothing to show.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId:string}) {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId?:string|null}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
+  let carriedBy:string|null=null;
   db.transaction(()=>{
-    if((text||answer.attachments.length)&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId))
-      recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
-        payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
-          ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
-    if(answer.final||answer.stalled) {
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId)){carriedBy=postId;}
+    else if(text||answer.attachments.length) {
+      const same=!answer.stalled&&!answer.attachments.length?db.query(`SELECT event_id FROM session_owner_events WHERE input_id=? AND session_id=? AND kind='post'
+          AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND created_at>=datetime('now','-1 hour') LIMIT 1`)
+        .get(answer.root,answer.inboxSessionId,answer.respondingSessionId,text) as {event_id:string}|null:null;
+      if(same)carriedBy=same.event_id;
+      else {
+        recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
+          payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
+            replyKind:answer.final?'final':'partial',...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
+            ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
+        carriedBy=postId;
+      }
+    }
+    if(answer.hisInputId&&(answer.final||answer.stalled)) {
       const to={sessionId:answer.respondingSessionId,requestId:answer.requestId};
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(answer.stalled
         ?{state:'uncertain',forwardedTo:to,error:{code:'FORWARDED_REPLY_STALLED',message:text||'The agent did not answer.'}}
         :{state:answer.workDisposition==='failed'?'failed':'completed',forwardedTo:to,...(answer.workDisposition==='failed'?{error:{code:'FORWARDED_REPLY_FAILED',message:text}}:{})}),answer.hisInputId);
     }
   })();
-  log('info','inbox_reply_answer_posted',{request_id:answer.requestId,thread:answer.root,responding_session_id:answer.respondingSessionId,stalled:answer.stalled,final:answer.final});
+  log('info','inbox_reply_answer_posted',{request_id:answer.requestId,thread:answer.root,responding_session_id:answer.respondingSessionId,stalled:answer.stalled,final:answer.final,
+    routed:!answer.hisInputId,post:carriedBy,...(carriedBy&&carriedBy!==postId?{same_answer_as:carriedBy}:{})});
+  return carriedBy;
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {

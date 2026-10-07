@@ -8,13 +8,15 @@ import { REMINDERS_SINCE_MS } from './request-liveness';
  * the same wake, so a settled result still without a return after the grace period has been
  * dropped somewhere, as completed work was on September 21, 2026 when it was retained instead
  * of returned. This audit makes that loud: one `session_return_undelivered` error per result.
- * A requester that is paused or archived holds its result on purpose and is not reported.
+ * A requester that is paused or archived holds its result on purpose and is not reported, and an
+ * answer the owner posted straight into an Inbox thread (`received` with no return input) has
+ * reached its destination.
  */
 const GRACE_MS = 10 * 60 * 1000;
 const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, r.source_session_id
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
     WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1) AND e.accepted_input_id IS NULL
-      AND e.status NOT IN ('held','retained') ${extra}`;
+      AND e.status NOT IN ('held','retained','received') ${extra}`;
 /**
  * A return whose input was recorded and then died with the turn that received it.
  * Recording a return does not discharge it: on 2026-09-22 nine returns were written into

@@ -468,7 +468,15 @@ authorization or a change to the default rapid-iteration policy.
   `SessionPeers.deliver` posts the Mac agent's answers into the thread through the same
   `postForwardedThreadAnswer`. The first build offered server sessions only and he rejected it the
   same evening ("Mac needs to have the same parity as we have"); a feature that addresses, lists or
-  delivers to sessions and leaves the Mac out is not finished. A service notice (no provider turn
+  delivers to sessions and leaves the Mac out is not finished. **An agent's answer to work the
+  router sent for a thread goes into that thread, not to the router** (Tejas, 2026-10-07: "I do not
+  see a reason why you need to receive a response at all") [decision: agent-answers-go-to-the-thread]: each partial and final reply is posted
+  there as the agent's words through the same poster (`postAgentAnswer` in session-topics.ts, called
+  by both deliver paths), and a final files his item with its notification (a question for
+  `needs_decision`, a reading item otherwise) and closes the linked thread request when it answered
+  done; no `return:` reaches the router, which reads the posts in its `<topic>` block
+  (`agentAnswers`). Hand-backs, stalls, the owner's settlements and information answers still return
+  to the router; see the session-owner contract. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server
