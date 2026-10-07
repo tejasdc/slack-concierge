@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {startLiveSpeechListener} from './live-speech';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
-import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
+import {db,abandonTurnArtifactBatch,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
@@ -21,7 +21,7 @@ import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
-import {advanceRepeatingSchedules,reconsiderBankedWork,inspectSavedWork,settleMissedScheduledWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
@@ -84,7 +84,7 @@ export async function startSessionRuntime() {
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
-  const queue=new SessionTurnQueueCoordinator({claim:()=>{const now=Date.now();advanceRepeatingSchedules(now);settleMissedScheduledWork(now);return claimNextQueuedTurn(instanceId,now,registry.activeSessions);},shouldStop:()=>draining,
+  const queue=new SessionTurnQueueCoordinator({claim:()=>claimQueuedTurnWithSavedWork(instanceId,registry.activeSessions),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{

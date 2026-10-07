@@ -81,7 +81,7 @@ and mandatory review requirements in this repository and linked historical mater
   only timer that admits work. Repeating schedules create one future firing under a stable
   root and sequence; an overlap skips and records that firing. The latest firing places the
   next one once it is due or has left the queue by any path (each firing keeps its own
-  instant in `saved_fire_at_ms`); only drop, archive or suspend ends a schedule. A banked run stops at an allowance boundary; a waiting update lets it finish (2026-10-07).
+  instant in `saved_fire_at_ms`); only drop, archive or suspend ends a schedule. Both runtime compositions claim through `claimQueuedTurnWithSavedWork`, which runs these clock steps first; the Slack-enabled one used to claim without them, so every repeating schedule stopped after one firing (2026-10-07). A banked run stops at an allowance boundary; a waiting update lets it finish (2026-10-07).
   If the provider already admitted it, the cancelled turn is retained without replaying
   its input and raises one question for Tejas to inspect what completed. There is no automatic
   reconciliation, continuation or shipped-work checkpoint yet.

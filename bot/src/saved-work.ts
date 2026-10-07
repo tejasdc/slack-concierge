@@ -1,4 +1,4 @@
-import {db,executionChanged,getSessionById} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getSessionById,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
@@ -286,11 +286,8 @@ export function waitingSavedWork():SavedTurn[] {return savedRows();}
  * One future firing per repeating session. A stable root/sequence prevents replay after restart.
  *
  * The latest firing of a schedule places the next one as soon as it is due or has left the
- * queue by any path, whatever started it. Watching only for a queued firing that is due depended
- * on seeing that exact moment before the claim did, and both repeating schedules on the server
- * stopped after their first firing (2026-10-07); the likeliest cause is the queue's timer waking
- * a hair before the due instant, so this step saw nothing and the claim, a moment later, took the
- * firing. A firing records its own instant because the claim clears its dispatch time.
+ * queue by any path, whatever started it, so a firing a claim took first still has a successor.
+ * A firing records its own instant because the claim clears its dispatch time.
  * Only dropping the schedule, or archiving or suspending its session, ends it.
  */
 export function advanceRepeatingSchedules(now=Date.now()):number {
@@ -349,4 +346,17 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
   }
   if(advanced)executionChanged();
   return advanced;
+}
+
+/**
+ * The one way a runtime claims queued work. Saved work's clock-driven steps (placing a repeating
+ * schedule's next firing, settling a missed expiry) run here first, so no composition can claim
+ * without them: the Slack-enabled runtime claimed directly and never ran them, and every
+ * repeating schedule on the server stopped after its first firing (2026-10-07).
+ */
+export function claimQueuedTurnWithSavedWork(ownerInstanceId:string,activeSessionIds:readonly number[]):QueuedTurnClaimRow|null {
+  const now=Date.now();
+  advanceRepeatingSchedules(now);
+  settleMissedScheduledWork(now);
+  return claimNextQueuedTurn(ownerInstanceId,now,activeSessionIds);
 }
