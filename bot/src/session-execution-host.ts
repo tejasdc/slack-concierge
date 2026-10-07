@@ -38,6 +38,7 @@ import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
+import {noticeTime} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
@@ -135,7 +136,12 @@ export class SessionExecutionHost {
     const usage=providerAccountUsage(provider);
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
-    const checked=profiles.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
+    // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it
+    // had no row of its own and nothing on the page said "in use" (2026-10-07). It gets one.
+    const listed=provider==='codex'&&account&&!profiles.some(profile=>profile.current)
+      ?[{id:'in-use',label:account.label,detail:account.detail,current:true,signedIn:true},...profiles.filter(profile=>profile.label!==account.label)]
+      :profiles;
+    const checked=listed.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
     if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:`This machine runs Codex on ${account.label}.`,
@@ -150,10 +156,26 @@ export class SessionExecutionHost {
       pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
-      message:(account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
+      message:(account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):`This machine runs Codex on ${account.label}.`)
         :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`)+terminalLogin,
       account,profiles:checked,usage};
+  }
+  /**
+   * Which Claude account is in use and why, in one sentence: his choice, and, when that account is
+   * at its limit, where new work runs until it resets. Without the reason he could not tell a
+   * switch that went wrong from the automatic move to an account with room (2026-10-07).
+   */
+  private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
+    const reading=usage?.accounts.find(item=>item.label===chosen);
+    const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
+    if(!full.length)return `New Claude work uses ${chosen}, the account you chose.`;
+    const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
+    const other=usage?.accounts.find(item=>item.label!==chosen&&!item.problem&&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+    const when=noticeTime(db,until);
+    return other
+      ?`You chose ${chosen}, but it is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
+      :`You chose ${chosen}. It is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
   }
 /**
    * The account list, answered from what this machine last knew, with the checks run behind it.
@@ -294,6 +316,8 @@ export class SessionExecutionHost {
         resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
     }
     move.undo();
+    // Codex never restarted, so the account was never tried: say what failed, not "could not sign in".
+    if(activation.restartFailed)return {status:'failed',detail:activation.detail};
     const back=move.outgoing?await activateCredentials('codex'):null;
     log('warn','provider_profile_switch_refused',{provider:'codex',reason:'account_did_not_authenticate',previous_answered:back?back.status==='applied':null});
     const still=move.outgoing?(back?.status==='applied'?` Still on ${move.outgoing.label}.`:` Codex is back on ${move.outgoing.label}, which did not answer either.`):'';

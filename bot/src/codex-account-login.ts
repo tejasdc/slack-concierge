@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ProviderLoginManager, type AuthLoginStartResult } from "./auth-login";
-import { CODEX_ACCOUNTS, profileId } from "./provider-accounts";
+import { CODEX_ACCOUNTS, existingCodexHome, profileId } from "./provider-accounts";
 import { MANAGED_CODEX } from "./provider-activation";
 import { log, errorFields } from "./log";
 
@@ -79,7 +79,10 @@ export class CodexAccountLogin {
     const email = this.signedInEmail(home);
     let settled = home;
     if (email) {
-      const named = join(CODEX_ACCOUNTS, profileId(email));
+      // The account's existing home when it has one, found by who its login says it is: naming by
+      // address alone filed a second gmail home beside the long-standing one, and Accounts listed
+      // the same account twice (2026-10-07).
+      const named = existingCodexHome(join(home, "auth.json")) ?? join(CODEX_ACCOUNTS, profileId(email));
       if (named !== home) {
         try {
           mkdirSync(named, { recursive: true, mode: 0o700 });

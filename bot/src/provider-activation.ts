@@ -27,7 +27,7 @@ import { isClaudeUsageExhaustion } from "./provider-failures";
 // longer on disk. Splitting those two steps is what turned a login into a
 // remembered ritual; keeping them together is what removes it.
 
-export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
+export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string; restartFailed?: boolean }>;
 type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval" | "home_proven";
 let pendingCodexActivation = false;
 const activationFlights = new Map<ProviderKey, Promise<ActivationReport>>();
@@ -104,8 +104,14 @@ async function activateCodex(): Promise<ActivationReport> {
   }
   const restart = await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
   if (restart.code !== 0) {
-    log("warn", "provider_activation_failed", { provider: "codex", exit_code: restart.code });
-    return { status: "failed", detail: "Signed in, but this machine did not pick the new account up. It is still on the one it was using." };
+    // A listener started outside the daemon manager refuses restart; from Oct 4 to Oct 7, 2026
+    // that made every Codex switch fail while the page blamed the account's sign-in.
+    const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
+    const unmanaged = version.code === 0 && !version.output.includes("\"backend\"");
+    log(unmanaged ? "error" : "warn", "provider_activation_failed", { provider: "codex", exit_code: restart.code, unmanaged });
+    return { status: "failed", restartFailed: true, detail: unmanaged
+      ? "Codex's background service on this machine was started outside its manager, so it could not be restarted onto the new account. Your sign-in is kept; nothing was switched."
+      : "Codex on this machine could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
   }
   const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
   const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");

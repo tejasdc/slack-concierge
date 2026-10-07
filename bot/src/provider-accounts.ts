@@ -435,6 +435,16 @@ function codexHomeFor(account: ProviderAccount): string {
   return accountHome("codex", profileId(account.label));
 }
 
+/** The kept home of the account whose login is at `credential`, when this machine already has one. */
+export function existingCodexHome(credential: string): string | null {
+  const account = codexAccount(readJson(credential));
+  if (!account) return null;
+  for (const entry of installedAccounts("codex")) {
+    if (codexAccount(readJson(entry.path))?.id === account.id) return join(CODEX_ACCOUNTS, entry.id);
+  }
+  return null;
+}
+
 export type CodexAccountMove = Readonly<{ incoming: ProviderAccount; outgoing: ProviderAccount | null; undo(): void }>;
 
 /**

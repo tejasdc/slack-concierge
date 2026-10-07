@@ -286,6 +286,15 @@ a failed providers read.
 
 ## Which account a conversation runs on
 
+**What Accounts says (2026-10-07).** Each provider's message names the account in use and why:
+for Claude, his choice, and when that account is at its limit, where new work runs until its
+reset. The Codex login in use (the agents' own home) is listed as its own row marked in use. A
+Codex sign-in is filed into the account's existing home, found by the account its login names,
+so signing the same account in twice never lists it twice. A Codex switch whose restart fails
+says so ("could not be restarted"), naming an App Server started outside its manager, instead of
+blaming the account's sign-in; from Oct 4 to Oct 7 an unmanaged listener made every Codex switch
+fail that way, repaired per the App Server runbook.
+
 `bot/src/provider-account-choice.ts` owns the pure rule. At dispatch, the owner joins its
 cached per-account usage with the default login and extra homes whose `projects` directory
 resolves to the shared Claude history. A machine with no such extra home keeps the previous
