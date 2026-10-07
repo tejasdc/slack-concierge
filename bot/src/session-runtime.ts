@@ -50,7 +50,9 @@ export async function startSessionRuntime() {
     const reserve=savedWorkSettings().reserve_percent;
     for(const turnId of active){
       const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start)continue;
-      if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
+      // An update holding its gate lets running work finish, banked runs included; it no longer
+      // cuts them off (2026-10-07). It only stops new ones from starting.
+      if(draining)continue;
       const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
       if(!session||!['codex','claude-code'].includes(session.provider_id))continue;
       const usage=providerAccountUsage(session.provider_id as 'codex'|'claude-code');

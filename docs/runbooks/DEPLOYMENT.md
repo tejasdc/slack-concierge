@@ -263,12 +263,16 @@ the event commit and last-known-good release are ancestors of the fetched tip,
 records the monotonic desired commit, and wakes a coalescing worker. An event
 arriving during a worker pass guarantees one further pass. The worker creates a
 fixed transient systemd unit. The
-runner tests provider admission atomically. If any provider work owns the
-system, the runner immediately releases its trial gate and sleeps; Concierge
-remains fully open to new turns and queued user work continues normally. A turn
-completion wakes the runner only after Concierge has synchronously promoted any
-queued successor. A long fallback wake protects liveness if a nonstandard owner
-completion emits no signal; it is not an active two-second provider poll.
+runner claims provider admission atomically and keeps that gate once claimed (2026-10-07).
+Running turns finish untouched; nothing new starts until the restart. New inputs, and agent
+requests or returns that would otherwise be steered into a live run, persist as queued turns
+and start right after it, with the receipt saying an update is installing. The runner
+rechecks on each turn completion (and a long fallback wake) and proceeds once nothing is
+running. Before this it released the gate whenever anything ran and waited for an idle
+moment, so on a busy evening one never came: the crash fix drained from 06:29 to 07:06 UTC
+on 2026-10-07 while agents ended turns on purpose to let it through. A run that only waits
+on background jobs is still released by the background-job watch after its quiet period.
+The Mac's updater (scripts/update-mac.sh) holds its gate the same way.
 Further accepted pushes advance the same durable desired record and are included
 by the active pull or the next run after the current run reaches a terminal state.
 

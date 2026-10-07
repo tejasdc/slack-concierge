@@ -1269,7 +1269,7 @@ export class SessionCommunicationCoordinator {
             // than report a healthy run as one; its answer settles this request when it ends.
             const healthy = turn?.status === 'running' ? !turn.stop_requested_at && !!turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id)
                 : turn?.status === 'done' && this.recipientStillWorking(request, ['running']);
-            // A Concierge update holds new starts and yields running work for a few minutes. Work
+            // A Concierge update holds new starts while running work finishes. Work
             // waiting only for that is not stalled, so look again after the update instead.
             if (healthy || updateDraining()) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')

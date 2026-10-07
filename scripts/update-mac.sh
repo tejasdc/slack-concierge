@@ -4,8 +4,8 @@
 # docs/runbooks/PEER-INSTANCES.md. Refuses a dirty checkout or a branch other than main.
 #
 # --when-due is the automatic path (com.tejasdc.concierge-autoupdate, every fifteen minutes and
-# after a wake): it updates only when main has moved and nothing is running on this Mac, holding
-# new work for the few minutes the restart takes and never interrupting a running turn. The Mac
+# after a wake): when main has moved it holds new work (queued, not refused) while running turns
+# finish, never interrupting one, then updates. The Mac
 # sat four days behind main because an update needed someone to remember it (2026-09-29).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,17 +27,20 @@ main() {
     git fetch --quiet origin
     [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ] || exit 0
     echo "== $(date -u +%FT%TZ) main moved to $(git log --oneline -1 origin/main); checking for running work"
-    # Look first without holding anything, so a busy Mac is never made to wait for an update.
-    if ! quiet; then echo "   work is running here; trying again at the next interval"; exit 0; fi
     claim=$(drain claim --owner-pid $$) || { echo "   another update holds the gate: $claim"; exit 0; }
     token=$(printf '%s' "$claim" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-    if ! quiet "$token"; then
-      drain release "$token" >/dev/null
-      echo "   work started while claiming; released and trying again at the next interval"
-      exit 0
-    fi
-    # New work waits (it is queued, not refused) from here until the restarted Concierge is up.
+    # New work waits (it is queued, not refused) from here until the restarted Concierge is up,
+    # and running turns finish untouched. Giving up whenever anything ran let a busy Mac skip
+    # update after update, the same starvation the server had (2026-10-07).
     trap 'drain release "$token" >/dev/null 2>&1 || true' EXIT
+    if ! quiet "$token"; then
+      echo "   work is running here; new work now queues for this update while it finishes"
+      while :; do
+        code=0; drain check "$token" >/dev/null || code=$?
+        case "$code" in 0|20) break ;; 10) sleep 20 ;; *) echo "   the update gate was lost ($code); trying again at the next interval"; exit 0 ;; esac
+      done
+      echo "   running work finished; updating"
+    fi
     git pull --ff-only --quiet origin main
     echo "== at $(git log --oneline -1)"
     scripts/install-mac.sh

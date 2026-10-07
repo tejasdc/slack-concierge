@@ -608,12 +608,10 @@ process restart to become complete.
 
 The deployment gate and the process-local drain both close promotion, never
 input persistence. A queued row admitted before or after a deploy gate survives
-restart. While deployment is only waiting for active providers it holds no gate
-at all. On turn settlement the coordinator synchronously promotes queued user
-work before waking the deployment runner, so requests win the next admission
-boundary. The runner may retain the gate only when its atomic claim observes a
-truly idle system; requests racing that short restart window remain durable
-queued turns. On SIGTERM the coordinator stops before active turns are awaited,
+restart. Once claimed, the deployment gate stays held while active providers
+finish (2026-10-07): no queued turn is promoted, and an agent request or return
+that would have been steered into a live run queues instead, so a running turn is
+never cut off and never extended. Those queued turns start after the restart. On SIGTERM the coordinator stops before active turns are awaited,
 leaving successors ownerless and queued for the next healthy process. The
 existing 60-second maintenance scan is the safety net for a gate release
 performed outside the process.

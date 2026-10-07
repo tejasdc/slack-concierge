@@ -81,7 +81,7 @@ and mandatory review requirements in this repository and linked historical mater
   only timer that admits work. Repeating schedules create one future firing under a stable
   root and sequence; an overlap skips and records that firing. The latest firing places the
   next one once it is due or has left the queue by any path (each firing keeps its own
-  instant in `saved_fire_at_ms`); only drop, archive or suspend ends a schedule. A banked run stops at an allowance or deployment boundary.
+  instant in `saved_fire_at_ms`); only drop, archive or suspend ends a schedule. A banked run stops at an allowance boundary; a waiting update lets it finish (2026-10-07).
   If the provider already admitted it, the cancelled turn is retained without replaying
   its input and raises one question for Tejas to inspect what completed. There is no automatic
   reconciliation, continuation or shipped-work checkpoint yet.
@@ -538,7 +538,10 @@ authorization or a change to the default rapid-iteration policy.
   that kept the runner from starting. Anything that changes how a failed or unstarted run is
   recorded keeps that read working, and nothing may claim a retry the record does not show.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
-  the existing detached worker can reach an idle boundary. Do not manually restart the
+  the existing detached worker can reach an idle boundary. Once the update claims its gate it
+  keeps it: running turns finish, everything new (agent requests and returns included) queues
+  and starts after the restart, so a busy evening can no longer starve an update
+  ([deployment](docs/runbooks/DEPLOYMENT.md)). Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
   App Server. The established deployment/repair owner handles rollout and health.
   Human input `1789510460.238219` explicitly authorizes the bounded native Inbox recovery
