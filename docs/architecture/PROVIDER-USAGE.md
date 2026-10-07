@@ -301,7 +301,10 @@ replaced his personal account that way, and agents silently lost it. Now every a
 its own home, the selected one without waiting for a background proof (it was proven when chosen),
 and when none can run the turn is held for a sign-in rather than falling back to the main folder.
 Accounts no longer lists the main folder's login as an account; it names it as the terminal's.
-The Mac keeps logins in the Keychain, has no such homes, and is unchanged. The last account is
+The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
+fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
+reads with its own copies of each login, so its failure says nothing about the login in the
+account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started, and is a preference on the next
 turn. The session view exposes that account; an account event carries the rule's existing
 one-time chosen or moved sentence. A confirmed usage refusal on one account is cached under

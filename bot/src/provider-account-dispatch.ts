@@ -214,13 +214,20 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
     if(ownHomes)throw noOwnClaudeLogin();
     return null;
   }
-  const rooms=usage.accounts.map(account=>({
-    account:account.label,
-    tightestUsedPercent:accountUsedPercent('claude-code',account),
-    home:account.label===defaultAccount?null:homes.get(account.label)??null,
-    isDefault:account.label===defaultAccount,
-    problem:account.problem,
-  }));
+  const rooms=usage.accounts.map(account=>{
+    const home=account.label===defaultAccount?null:homes.get(account.label)??null;
+    // The usage reader keeps its own copies of each login and reads with them; when it cannot,
+    // that says nothing about the selected account's own login. Its work is tried there, and a
+    // real limit comes back from Claude with its reset time as an ordinary usage hold.
+    const trusted=ownHomes&&account.label===selected&&!!home;
+    return {
+      account:account.label,
+      tightestUsedPercent:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      home,
+      isDefault:account.label===defaultAccount,
+      problem:trusted?null:account.problem,
+    };
+  });
   // Where his work runs when nothing else decides: the account he selected in Provider accounts,
   // else this machine's default login. A conversation that has never run anywhere prefers it, so
   // it starts where everything starts instead of on whichever account happens to be roomiest —
