@@ -195,7 +195,7 @@ export class SessionPeers {
    * forwarded exactly as the route has always accepted it, and a peer still running an older
    * build signs itself in rather than rejecting a field it has never heard of.
    */
-  async authProviders(peer:string){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer}),undefined,8_000);}
+  async authProviders(peer:string,fresh=false){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer,...(fresh?{fresh:'1'}:{})}),undefined,fresh?30_000:8_000);}
   async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}

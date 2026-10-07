@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ProviderLoginManager, type AuthLoginStartResult, type AuthLoginCompleteResult } from "./auth-login";
 import { CLAUDE_ACCOUNTS, accountHome, profileId } from "./provider-accounts";
-import { sharedClaudeHome } from "./provider-account-dispatch";
+import { forgetClaudeHomeCheck, sharedClaudeHome } from "./provider-account-dispatch";
 import { log, errorFields } from "./log";
 
 /**
@@ -108,6 +108,8 @@ export class ClaudeAccountLogin {
       writeFileSync(join(home, ".account-email"), email, { mode: 0o600 });
       // Every Claude home reads the one shared conversation history, or a switch refuses it.
       sharedClaudeHome(email, home, true);
+      // A new login is unproven until the switch that follows it checks it.
+      forgetClaudeHomeCheck(home);
       log("info", "claude_account_signed_in", { matched_expected: staging.expected ? staging.expected === email : null });
       return { status: "filed", email, home, expected: staging.expected };
     } catch (error) {

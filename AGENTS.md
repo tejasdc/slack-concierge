@@ -589,11 +589,20 @@ authorization or a change to the default rapid-iteration policy.
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
 - For Claude, pressing an account selects the home for future turns. It never calls the
   credential-copy activation or snapshots the outgoing credential. The default login has
-  no override; extra accounts launch from their own homes with shared history. Pressing
-  Switch prepares the shared-history link, then makes one nonpersistent Claude request
-  from the proposed home and checks Claude's reported account identity before recording
-  the choice. The link must be prepared first because a Claude process can create its own
-  history directory in that home. A credential file and a usage reading alone do not
+  no override; extra accounts launch from their own homes. **Changing account never takes an
+  ability away from agents** [decision: account-change-keeps-agent-abilities] (Tejas, 2026-10-07: "if the login has changed, the agents are losing
+  access to doing things, that ... never should happen"): an extra home keeps only its login
+  (`.credentials.json`, `.claude.json`, `.account-email`, remote settings and policy limits) and
+  links every other entry of `~/.claude` (settings and allowed commands, instructions, hooks,
+  skills, agents, plugins, history) by name, the same files the CLI uses when `/login` swaps only
+  the sign-in (`sharedClaudeHome`). A home missing any link is never used and logs what it lacks.
+  The account check (`claudeAccountWorks`) runs Claude as agents run and requires a Write and a
+  Bash change outside its folder, read back by the owner, and names the failure (signed out,
+  settings not in effect, wrong account, timeout); a reply-only probe passed for a home without
+  settings on 2026-10-07. Automatic moves go only to a home proven by that check or by a finished
+  turn from it; a sign-in refusal or a newly filed login withdraws the proof. Pressing
+  Switch prepares the links, runs the check from the proposed home and checks Claude's reported
+  account identity before recording the choice. A credential file and a usage reading alone do not
   establish that its expired OAuth login can renew. A failed probe leaves the previous
   selection and running processes alone, with a safe sign-in reason on the account row.
   A successful probe may refresh the token inside that same home through Claude itself;

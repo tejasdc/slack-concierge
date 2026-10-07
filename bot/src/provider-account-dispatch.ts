@@ -1,4 +1,4 @@
-import {existsSync,realpathSync,symlinkSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,renameSync,symlinkSync,unlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
@@ -7,21 +7,117 @@ import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
-import {claudeAccountCachedReset} from './provider-usage';
+import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection} from './provider-account-selection';
+import {log} from './log';
+import {claudeAccountWorks} from './provider-activation';
 
-/** Only launch from an extra home when it sees the same conversation history. */
-export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false):string|null {
-  const projects=join(home,'projects');
+/**
+ * What an extra Claude home keeps for itself: its own login and the per-login state Claude writes
+ * beside it. Everything else in the default home (settings and allowed commands, global
+ * instructions, hooks, skills, agents, plugins, conversation history and memory) is the machine's
+ * one shared set, and an extra home only links to it. Claude reads all of that from the folder it
+ * starts in, so a home that only linked history ran agents with no settings: on 2026-10-07 every
+ * command needed an approval nobody could give, for ten minutes after a switch that "worked".
+ */
+// Per-login also covers what Claude stamps with the signed-in account and deletes at logout
+// (remote settings and policy limits), so one account never reads another's.
+const PER_LOGIN=new Set(['.credentials.json','.claude.json','.claude.json.lock','.account-email','backups',
+  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json']);
+const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name);
+/**
+ * Runtime scratch Claude recreates per process. Shared when possible, but a private copy is
+ * harmless and is never moved: a live process may be using it (one was, at the 19:40 repair on
+ * 2026-10-07).
+ */
+const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','statsig','paste-cache','.last-cleanup',
+  '.last-update-result.json','mcp-needs-auth-cache.json']);
+
+/**
+ * The home an extra Claude account launches from, or null when it is not a complete view of the
+ * shared set. `prepare` adds missing links, and on an explicit switch or sign-in (`claim`) moves a
+ * conflicting private copy of a shared (non-scratch) entry aside into `.unlinked-<time>/` (kept,
+ * never deleted) so the link can take its place. A home that is still incomplete is never chosen,
+ * and says which entries it lacks: failing closed, out loud, is the invariant.
+ */
+export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false,claim=prepare):string|null {
+  let names:string[];
   try {
     if(!existsSync(join(home,'.credentials.json')))return null;
-    const history=realpathSync(join(homedir(),'.claude','projects'));
-    // A legacy account may have been moved into its home without the history link.
-    // Prepare only for an explicit switch; never replace an existing path or touch a login.
-    if(prepare&&!existsSync(projects))symlinkSync(history,projects,'dir');
-    return realpathSync(projects)===history?home:null;
+    const shared=join(homedir(),'.claude');
+    if(realpathSync(home)===realpathSync(shared))return null;
+    names=readdirSync(shared);
   } catch {return null;}
+  const shared=join(homedir(),'.claude'),missing:string[]=[];
+  let aside:string|null=null;
+  for(const name of names){
+    if(isPerLogin(name))continue;
+    try {
+      const source=realpathSync(join(shared,name)),target=join(home,name);
+      let present:string|null=null;
+      try {present=realpathSync(target);} catch {present=null;}
+      const wanted=join(shared,name);
+      if(present===source){
+        // A link resolved to today's destination would miss a later change to the shared entry.
+        if(claim&&isLink(target)&&readlinkSync(target)!==wanted){unlinkSync(target);symlinkSync(wanted,target);}
+        continue;
+      }
+      const exists=present!==null||isLink(target);
+      if(SCRATCH.has(name)){if(prepare&&!exists)symlinkSync(join(shared,name),target);continue;}
+      if(prepare&&exists&&claim){
+        aside??=join(home,`.unlinked-${Date.now()}`);
+        mkdirSync(aside,{recursive:true,mode:0o700});
+        renameSync(target,join(aside,name));
+      }
+      if(prepare&&(!exists||claim)){symlinkSync(join(shared,name),target);continue;}
+      missing.push(name);
+    } catch(error) {
+      // A shared entry that cannot be resolved (a dangling link in the default home) is not
+      // something this account could have used either, so it does not disqualify the account.
+      if(!existsSync(join(shared,name)))continue;
+      missing.push(name);
+    }
+  }
+  const said=missing.join(',');
+  if(incompleteSaid.get(home)!==said){
+    incompleteSaid.set(home,said);
+    if(missing.length)log('warn','claude_account_home_incomplete',{account,missing:missing.slice(0,20)});
+  }
+  return missing.length?null:home;
 }
+const incompleteSaid=new Map<string,string>();
+
+/**
+ * Extra homes proven to do work: a passing account check (the switch's, or a background one), or a
+ * real turn that finished from that home. Automatic moves only go to a proven home. On 2026-10-07
+ * the chooser moved work for room onto a home holding an expired login, and every turn failed until
+ * he signed in; GPT-6 Astra's review made this the first blocker. Proof is withdrawn by a sign-in
+ * refusal from that home and by a new login being filed into it. It is process state: after a
+ * restart each home proves itself again, once, in the background.
+ */
+const provenHomes=new Set<string>();
+const proving=new Set<string>();
+/** A home that just failed is not checked again for this long, so a dead login costs one check, not one per turn. */
+const RECHECK_AFTER_FAILURE_MS=10*60_000;
+const failedAt=new Map<string,number>();
+export function markClaudeHomeVerified(home:string|null){if(home){provenHomes.add(home);failedAt.delete(home);}}
+export function markClaudeHomeRefused(home:string|null){if(home){provenHomes.delete(home);failedAt.set(home,Date.now());}}
+/** A newly filed login or an explicit switch starts the home's evidence over. */
+export function forgetClaudeHomeCheck(home:string|null){if(home){provenHomes.delete(home);failedAt.delete(home);}}
+function provenOrProve(account:string,home:string):boolean{
+  if(provenHomes.has(home))return true;
+  if(Date.now()-(failedAt.get(home)??0)<RECHECK_AFTER_FAILURE_MS)return false;
+  if(!proving.has(home)){
+    proving.add(home);
+    void claudeAccountWorks(home,account).then(check=>{
+      // Work held because no account had room may now have one: release it to try again.
+      if(check.ok){provenHomes.add(home);releaseUsageHeldWork('claude-code');}
+      else {failedAt.set(home,Date.now());log('warn','claude_account_home_unproven',{account,reason:check.reason});}
+    }).catch(()=>{}).finally(()=>proving.delete(home));
+  }
+  return false;
+}
+function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
 /** An extra Codex process must see the same conversation files as the default daemon. */
 function sharedCodexHome(home:string):string|null {
@@ -47,7 +143,7 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
     const isDefault=account.label===defaultLabel;
     const profile=profiles.find(item=>item.label===account.label);
     const home=isDefault?null:profile?accountHome(provider,profile.id):null;
-    const ready=home&&(provider==='claude-code'?sharedClaudeHome(account.label,home)===home:sharedCodexHome(home)===home);
+    const ready=home&&(provider==='claude-code'?sharedClaudeHome(account.label,home)===home&&provenOrProve(account.label,home):sharedCodexHome(home)===home);
     const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
     return {account:account.label,home:ready?home:null,isDefault,
       tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
@@ -63,12 +159,18 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
   // An ordinary one-home installation follows its existing path, including its existing
   // usage refusal and retry handling. A stale or absent reading cannot justify a move.
   if(!usage||!defaultAccount)return null;
-  const extraHomes=usage.accounts.filter(account=>account.label!==defaultAccount&&sharedClaudeHome(account.label));
+  // Add any link a new shared entry needs before choosing; a home still incomplete is skipped.
+  const homes=new Map(usage.accounts.filter(account=>account.label!==defaultAccount)
+    .map(account=>{
+      const home=sharedClaudeHome(account.label,undefined,true,false);
+      return [account.label,home&&provenOrProve(account.label,home)?home:null] as const;
+    }));
+  const extraHomes=usage.accounts.filter(account=>homes.get(account.label));
   if(!extraHomes.length)return null;
   const rooms=usage.accounts.map(account=>({
     account:account.label,
     tightestUsedPercent:accountUsedPercent('claude-code',account),
-    home:account.label===defaultAccount?null:sharedClaudeHome(account.label),
+    home:account.label===defaultAccount?null:homes.get(account.label)??null,
     isDefault:account.label===defaultAccount,
     problem:account.problem,
   }));

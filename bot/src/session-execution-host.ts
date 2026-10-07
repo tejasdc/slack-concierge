@@ -32,18 +32,18 @@ import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAcc
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
+import {forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
-import {activateCredentials,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
+import {activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
  * `detail` is one sentence for him about what actually happened, present only when
  * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
@@ -100,7 +100,7 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
-      auth:{status:()=>this.providerAuthStatus(),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
+      auth:{status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
@@ -141,24 +141,30 @@ export class SessionExecutionHost {
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles:checked,usage};
   }
-  private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
-    // Asking Claude Code who it is costs a process start, so the surface that displays the
-    // answer pays it rather than the dispatch path that only needs the identity.
-    //
-    // The usage numbers are read here too, and that is the whole of what Refresh does for
-    // them. This call used to refresh only the identity and then hand back whatever the
-    // half-hourly pass had last written, so pressing Refresh re-read who was signed in and
-    // left every percentage exactly as it was: "I just pressed refresh and it doesn't seem
-    // to be working at all" (2026-09-23). Waiting for the read is the point — the answer
-    // this returns is what he is about to look at. A press while a pass is already running
-    // joins that pass rather than starting a second one.
-    await Promise.all([refreshClaudeAccount(),
+/**
+   * The account list, answered from what this machine last knew, with the checks run behind it.
+   * Every open of Accounts used to wait for a fresh sign-in check and usage reading on both
+   * machines first, 6 to 18 seconds each on 2026-10-07, so the page sat empty for up to a minute:
+   * "Why are we like not caching things ... so I don't have to wait for like a minute, every single
+   * time I open this page". Now an ordinary read returns at once, marked `checking` while a check
+   * runs, and the page asks once more with `fresh` to get the checked answer. Refresh asks with
+   * `fresh` directly, so pressing it still waits for new readings (2026-09-23). One check at a time
+   * is shared by every reader.
+   */
+  private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
+    const recent=Date.now()-this.providerAuthCheckedAt<30_000;
+    const check=this.providerAuthCheck??(!fresh&&recent?null:this.providerAuthCheck=Promise.all([refreshClaudeAccount(),
       codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]);
+      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
+      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();}));
+    if(fresh&&check)await check;
+    const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.
-    return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
+    return [this.providerAuthView('claude-code'),this.providerAuthView('codex')].map(view=>({...view,checking}));
   }
+  private providerAuthCheck:Promise<void>|null=null;
+  private providerAuthCheckedAt=0;
   /**
    * Spends one banked reset on a named account, then reads that account again.
    *
@@ -288,13 +294,22 @@ export class SessionExecutionHost {
       if(profile.id!=='default'){
         if(!sharedClaudeHome(profile.label,home!,true)){
           log('warn','provider_profile_switch_refused',{provider:key,reason:'history_unavailable'});
-          return {status:'failed',detail:'That Claude account cannot open the shared conversation history. The previous account is still selected.'};
+          return {status:'failed',detail:'That Claude account could not be given this machine\'s shared settings, instructions and history, so agents would run without them. The previous account is still selected.'};
         }
       }
-      if(!await claudeCredentialsAnswer(home,profile.label)){
-        log('warn','provider_profile_switch_refused',{provider:key,reason:'account_did_not_authenticate'});
-        return {status:'failed',needsSignIn:true,detail:`${profile.label} needs signing in again on this machine. Nothing was switched.`};
+      forgetClaudeHomeCheck(home);
+      const check=await claudeAccountWorks(home,profile.label);
+      if(!check.ok)markClaudeHomeRefused(home);
+      if(!check.ok){
+        log('warn','provider_profile_switch_refused',{provider:key,reason:check.reason});
+        const why=check.reason==='signed_out'?`${profile.label} needs signing in again on this machine.`
+          :check.reason==='wrong_account'?`That sign-in is now a different account than ${profile.label}.`
+          :check.reason==='settings_not_in_effect'?`${profile.label} signed in, but agents on it could not write files or run commands with this machine's settings.`
+          :check.reason==='timeout'?`${profile.label} did not answer in time.`
+          :`${profile.label} could not finish a test task on this machine.`;
+        return {status:'failed',needsSignIn:check.reason==='signed_out'||check.reason==='wrong_account',detail:`${why} Nothing was switched.`};
       }
+      markClaudeHomeVerified(home);
       selectClaudeAccount(profile.id,profile.label);
       const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
       const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);

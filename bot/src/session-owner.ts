@@ -356,7 +356,7 @@ export type SessionOwnerRuntime = {
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string}):Promise<unknown>;
   auth?:{
-    status():unknown|Promise<unknown>;
+    status(fresh?:boolean):unknown|Promise<unknown>;
     start(provider:string,profileId?:string|null):Promise<unknown>;
     complete(provider:string,code:string):Promise<unknown>;
     saveProfile(provider:string,label:string):unknown;
@@ -504,8 +504,8 @@ export class SessionOwner {
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
     return this.runtime.auth;
   }
-  private async localMachineView(){
-    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:await this.localAuth().status()};
+  private async localMachineView(fresh=false){
+    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:await this.localAuth().status(fresh)};
   }
   /**
    * Every machine's accounts, read in parallel. A peer that is unreachable, unauthorized or
@@ -513,27 +513,51 @@ export class SessionOwner {
    * answering rather than wonder where it went, and one silent machine must not cost him
    * the surface for the other.
    */
-  async authProviders(machine?:unknown){
+  async authProviders(machine?:unknown,fresh=false){
     const remote=this.remoteMachine(machine);
     if(remote){
       try {
-        const answer=await this.peers!.authProviders(remote) as {providers?:unknown;machines?:{name:string}[]};
+        const answer=await this.peers!.authProviders(remote,fresh) as {providers?:unknown;machines?:{name:string}[]};
         const providers=answer?.providers??[];
         return {providers,machines:[{name:remote,self:false,reachable:true,note:null,providers}]};
       } catch(error) {return this.peerFailure(remote,error);}
     }
-    const here=await this.localMachineView();
+    const here=await this.localMachineView(fresh);
     if(this.machineName(machine)!==null)return {providers:here.providers,machines:[here]};
-    const peers=await Promise.all((this.peers?.names()??[]).map(async name=>{
-      try {return {name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name) as {providers?:unknown})?.providers??[]};}
-      catch(error) {
-        const note=error instanceof PeerError&&error.kind==='unreachable'
-          ?`${name} is not answering right now, so its accounts cannot be read.`
-          :error instanceof PeerError?error.message:`${name} could not be read right now.`;
-        return {name,self:false,reachable:false,note,providers:[]};
-      }
-    }));
+    const peers=await Promise.all((this.peers?.names()??[]).map(name=>this.peerAccountView(name,fresh)));
     return {providers:here.providers,machines:[here,...peers]};
+  }
+  /**
+   * Another machine's accounts without making Accounts wait for it. Opening the page used to await
+   * every peer (up to 8 seconds, longer for a sleeping Mac) before showing this machine's rows; GPT-6
+   * Astra's review of the 2026-10-07 complaint named it. An ordinary read shows the last answer that
+   * machine gave, marked `checking`, and reads it again behind; a machine never heard from gets a
+   * short wait and is then shown as checking. A `fresh` read waits for the real answer.
+   */
+  private peerAccountCache=new Map<string,{view:Record<string,unknown>;at:number}>();
+  private peerAccountReads=new Map<string,Promise<Record<string,unknown>>>();
+  private async peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
+    let read=this.peerAccountReads.get(name);
+    if(!read){
+      read=(async()=>{
+        try {
+          const view={name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]};
+          this.peerAccountCache.set(name,{view,at:Date.now()});
+          return view;
+        } catch(error) {
+          const note=error instanceof PeerError&&error.kind==='unreachable'
+            ?`${name} is not answering right now, so its accounts cannot be read.`
+            :error instanceof PeerError?error.message:`${name} could not be read right now.`;
+          return {name,self:false,reachable:false,note,providers:[]};
+        }
+      })().finally(()=>this.peerAccountReads.delete(name));
+      this.peerAccountReads.set(name,read);
+    }
+    if(fresh)return read;
+    const cached=this.peerAccountCache.get(name);
+    if(cached)return {...cached.view,checking:true};
+    return Promise.race([read,new Promise<Record<string,unknown>>(resolve=>setTimeout(()=>
+      resolve({name,self:false,reachable:true,note:null,providers:[],checking:true}),1_500))]);
   }
   private async authAction(machine:unknown,path:string,body:Record<string,unknown>,timeoutMs:number,local:()=>unknown){
     const remote=this.remoteMachine(machine);
@@ -2108,7 +2132,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)
         result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
-        result=await this.authProviders(url.searchParams.get('machine')??undefined);
+        result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');

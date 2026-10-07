@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { watch, type FSWatcher } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { authHeldInputCount, db, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
@@ -11,6 +12,8 @@ import { credentialPath, currentAccount, type ProviderKey } from "./provider-acc
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
+import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
+import { providerOwnerEnvironment } from "./provider-owner-environment";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -69,20 +72,21 @@ export function runningCodexTurns(): number {
   }
 }
 
-function run(command: string, args: string[], timeoutMs: number, environment:NodeJS.ProcessEnv={...process.env}): Promise<{ code: number | null; output: string }> {
+function run(command: string, args: string[], timeoutMs: number, environment:NodeJS.ProcessEnv={...process.env}, cwd?:string): Promise<{ code: number | null; output: string; timedOut?: boolean }> {
   return new Promise(resolve => {
     // Spawned from the bot, so this inherits concierge-bot.service's
     // LimitNOFILE. A daemon started from an interactive shell instead inherits
     // that shell's 1024 and exhausts it re-opening observer subscriptions; that
     // is why this restart belongs here and not in an SSH session.
-    const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
     let output = "";
     const collect = (chunk: Buffer) => { output += chunk.toString(); };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.on("error", () => { clearTimeout(timer); resolve({ code: null, output }); });
-    child.on("close", code => { clearTimeout(timer); resolve({ code, output }); });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    child.on("error", () => { clearTimeout(timer); resolve({ code: null, output, timedOut }); });
+    child.on("close", code => { clearTimeout(timer); resolve({ code, output, timedOut }); });
   });
 }
 
@@ -124,25 +128,71 @@ async function activateCodex(): Promise<ActivationReport> {
  * 2026-09-25 repeated the mistake by bypassing this probe entirely; run it from the proposed
  * home before selecting that account.
  */
-export async function claudeCredentialsAnswer(home:string|null=null,expectedAccount:string|null=null): Promise<boolean> {
-  const started = Date.now();
-  const environment={...process.env};
+export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|'settings_not_in_effect'|'wrong_account'|'timeout'|'failed'}>;
+
+/**
+ * Whether Claude work can actually be done from this home: started the way agents are started
+ * (their environment, their hook settings, a workspace folder as working directory), it must write
+ * one file outside its folder with the Write tool AND change one with a Bash command, and both
+ * effects are read back here while Claude's own event record must show each tool ran. Write and
+ * Bash have separate permission rules, and read-only commands or writes inside the agent's folder
+ * pass even with no settings, so nothing less tells a usable home from a crippled one. A reply-only
+ * check passed on 2026-10-07 for a home without settings and agents were refused for ten minutes;
+ * GPT-6 Astra's review asked for exactly this test. Each failure is named for what it is, because
+ * calling every failure "needs signing in" sent him to sign in by hand.
+ */
+export async function claudeAccountWorks(home:string|null=null,expectedAccount:string|null=null):Promise<ClaudeAccountCheck>{
+  const started=Date.now();
+  const environment=providerOwnerEnvironment({...process.env});
   if(home)environment.CLAUDE_CONFIG_DIR=home;
   else delete environment.CLAUDE_CONFIG_DIR;
-  const probe = await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
-    ["-p", "--model", "claude-haiku-4-5-20251001", "--no-session-persistence",
-      "--output-format", "json", "Reply with the single word OK."], 90_000,environment);
-  let ok = probe.code === 0;
-  if (ok) { try { ok = JSON.parse(probe.output).is_error !== true; } catch { ok = false; } }
-  if(ok&&expectedAccount){
-    const status=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
-      ["auth","status","--json"],15_000,environment);
-    try {const value=JSON.parse(status.output) as {loggedIn?:boolean;email?:string};
-      ok=status.code===0&&value.loggedIn===true&&value.email===expectedAccount;
-    } catch {ok=false;}
+  const secret=randomUUID(),folder=join(homedir(),'.local','state','concierge-probe');
+  const written=join(folder,`${secret}.write`),commanded=join(folder,`${secret}.bash`);
+  mkdirSync(folder,{recursive:true,mode:0o700});
+  const cwd=process.env.CONCIERGE_WORKSPACE_ROOT||join(homedir(),'workspace');
+  const probe=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',
+    ['-p','--verbose','--output-format','stream-json','--model','claude-haiku-4-5-20251001','--no-session-persistence',
+      '--settings',CLAUDE_AGENT_HOOK_SETTINGS,
+      ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS==='1'?['--dangerously-skip-permissions']:[]),
+      `Do exactly two things with your tools, then reply DONE.\n1. Use the Write tool to create ${written} containing exactly: ${secret}\n2. Use the Bash tool to run: printf %s ${secret} > ${commanded}`],
+    120_000,environment,cwd);
+  const readBack=(path:string)=>{try {return readFileSync(path,'utf8')===secret;} catch {return false;}};
+  const wrote=readBack(written),ran=readBack(commanded);
+  for(const path of [written,commanded])try {rmSync(path,{force:true});} catch {/* temporary */}
+  const used=new Map<string,string>(),succeeded=new Set<string>();
+  let result:any=null;
+  for(const line of probe.output.split('\n')){
+    let event:any;try {event=JSON.parse(line);} catch {continue;}
+    for(const block of event?.message?.content??[]){
+      if(block?.type==='tool_use')used.set(block.id,block.name);
+      if(block?.type==='tool_result'&&!block.is_error&&used.has(block.tool_use_id))succeeded.add(used.get(block.tool_use_id)!);
+    }
+    if(event?.type==='result')result=event;
   }
-  log("info", "provider_activation_probed", { provider: "claude-code", ok, duration_ms: Date.now() - started });
-  return ok;
+  // Only Claude's own answer is read for a sign-in failure: the start-up record lists skills whose
+  // names contain words like "credential", which once made a crash look like a sign-out.
+  const text=String(result?.result??'').slice(0,2000);
+  const denied=Array.isArray(result?.permission_denials)&&result.permission_denials.length>0;
+  let reason:ClaudeAccountCheck['reason'];
+  if(probe.timedOut)reason='timeout';
+  else if(!result)reason='failed';
+  else if(result.is_error===true&&/authenticat|oauth|401|log ?in|expired/i.test(text))reason='signed_out';
+  else if(wrote&&ran&&succeeded.has('Write')&&succeeded.has('Bash'))reason='works';
+  else if(denied||result.is_error!==true)reason='settings_not_in_effect';
+  else reason='failed';
+  if(reason==='works'&&expectedAccount){
+    const status=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',['auth','status','--json'],15_000,environment);
+    try {const value=JSON.parse(status.output) as {loggedIn?:boolean;email?:string};
+      if(!(status.code===0&&value.loggedIn===true&&value.email===expectedAccount))reason='wrong_account';
+    } catch {reason='wrong_account';}
+  }
+  log('info','provider_activation_probed',{provider:'claude-code',ok:reason==='works',reason,wrote,ran,
+    tools:[...succeeded],duration_ms:Date.now()-started});
+  return {ok:reason==='works',reason};
+}
+
+export async function claudeCredentialsAnswer(home:string|null=null,expectedAccount:string|null=null):Promise<boolean>{
+  return (await claudeAccountWorks(home,expectedAccount)).ok;
 }
 
 async function codexCredentialsAnswer(expectedAccount:string|null):Promise<boolean>{

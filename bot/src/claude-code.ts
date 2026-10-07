@@ -376,7 +376,7 @@ export function claudeCodeArgs(input: {
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
     // The request protocol is enforced when the agent tries to stop, not by repeating it to the
     // agent: a Stop hook sends it back if it still owes a reply (bot/scripts/owed-reply-stop-hook.ts).
-    ...(consultation ? [] : ["--settings", OWED_REPLY_STOP_HOOK_SETTINGS]),
+    ...(consultation ? [] : ["--settings", CLAUDE_AGENT_HOOK_SETTINGS]),
     // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
     // instance running as its user opts in here to match how Tejas runs claude himself.
     ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
@@ -398,7 +398,7 @@ export function claudeCodeArgs(input: {
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
-const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
+export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",

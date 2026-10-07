@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
-import {chooseClaudeDispatch} from './provider-account-dispatch';
+import {chooseClaudeDispatch,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
@@ -381,6 +381,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   };
 
   let runningClaudeAccount:string|null=null;
+  // The extra Claude home this turn launched from, so its outcome counts as evidence about that
+  // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
+  let runningClaudeHome:string|null=null;
   try {
     let preparedTurn: PreparedProviderTurn;
     if (input.presentation === "native") {
@@ -541,6 +544,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    runningClaudeHome=claudeChoice?.home??null;
     let accountRecorded=false;
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
@@ -627,6 +631,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     input.closeSteering();
     recordProviderStarted();
+    markClaudeHomeVerified(runningClaudeHome);
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
     clearRetryBreaker(providerBreakerKey);
@@ -1031,6 +1036,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch { /* every account is spent; keep the existing usage hold */ }
       }
       const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
+      if(isRefreshableAuthFailure(message))markClaudeHomeRefused(runningClaudeHome);
       const authWait = replaySafe && input.providerId !== 'chatgpt'
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
