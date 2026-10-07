@@ -37,6 +37,10 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Channel creation, adoption, and scaffold migration](runbooks/CHANNEL-ADOPTION.md) — canonical project shape and safe reconciliation workflows.
 - [systemd unit inventory](../systemd/README.md) — repository-owned units and pointers to their runbooks.
 
+## Security
+
+- [Agent security review, 2026-10-07](security/2026-10-07-agent-security-review.md) — threat model of what agents can reach (Gmail, texts, server, Mac, DNS, password form), where login codes arrive, ranked protections (codes withheld from agent mail reads is live), the account inventory to move off his personal Gmail, and the vault-address migration plan. Sources: [research notes](security/2026-10-07-research-notes.md).
+
 ## Plans
 
 - [Why Claude-backed sessions feel worse than Codex-backed ones](plans/2026-09-17-claude-session-parity.md) — research and recommended approach, not implemented: per-turn process restart measured against the warm Codex thread, the interrupt-and-retype steering path against Claude Code's documented streaming-input command queue, and the in-flight message indicators and copy that narrate both. Includes the delivery-certainty evidence — 15 of 15 "delivery uncertain" messages present in the provider transcript, echoes retained for 9 of 24 — and the principle that the owner resolves uncertainty rather than rendering it.
