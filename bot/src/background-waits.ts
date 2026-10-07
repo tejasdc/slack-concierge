@@ -2,7 +2,7 @@ import { db, executionChanged } from "./state";
 import { nativeRunId } from "./session-inputs";
 import { log } from "./log";
 import { STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES } from "./request-liveness";
-import type { ClaudeBackgroundWait } from "./claude-code";
+import type { BackgroundReportMissing, ClaudeBackgroundWait } from "./claude-code";
 
 // A run waiting on its own background work lives only as long as this process, so
 // its wait is process state: it cannot outlive the provider process that holds it.
@@ -54,11 +54,35 @@ export function takeBackgroundReleaseDetail(turnId: number): string | null {
   return detail;
 }
 
-/** The live owner checks jobs without adding a second durable timer or a provider turn. */
-export function startBackgroundJobWatch(admit: (input: {
+type BackgroundNoticeAdmission = {
   sessionId: number; inputId: string; origin: "service"; sourceInputId: string;
   sourceRunId: string; requestId: string; text: string; delivery: "steer";
-}) => unknown): () => void {
+};
+let admitNotice: ((input: BackgroundNoticeAdmission) => unknown) | null = null;
+
+/**
+ * A background job ended but Claude's report of it never reached the agent: tell the agent in its
+ * own live run, as a service notice, so it never waits for a report that is not coming.
+ */
+export function noticeMissingBackgroundReport(turnId: number, task: BackgroundReportMissing) {
+  const turn = db.query("SELECT session_id,status FROM turns WHERE id=?").get(turnId) as
+    { session_id: number; status: string } | null;
+  if (!admitNotice || !turn || turn.status !== "running") return;
+  const id = `background-job:${nativeRunId(turnId)}:${task.id}:report-missing`;
+  try {
+    admitNotice({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
+      sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
+      text: `Your background job “${task.description}” (${task.id}) ended with status ${task.status}, but Claude Code's report of it did not arrive. Read its output (TaskOutput ${task.id}, or the output file it named when it started) and carry on from it. This is a service notice, not a request; no reply is owed.` });
+    log("info", "background_report_missing_notice_sent", { turn_id: turnId, task_id: task.id, status: task.status });
+  } catch (error) {
+    log("info", "background_report_missing_notice_skipped", { turn_id: turnId, task_id: task.id,
+      reason: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** The live owner checks jobs without adding a second durable timer or a provider turn. */
+export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission) => unknown): () => void {
+  admitNotice = admit;
   const tick = () => {
     const updateWaiting = !!db.query(`SELECT 1 FROM deployment_runs
       WHERE target='concierge' AND status IN ('prepared','draining') LIMIT 1`).get();

@@ -109,7 +109,7 @@ import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
-import { recordTurnBackgroundWait, registerBackgroundRelease, takeBackgroundReleaseDetail } from "./background-waits";
+import { noticeMissingBackgroundReport, recordTurnBackgroundWait, registerBackgroundRelease, takeBackgroundReleaseDetail } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
@@ -615,6 +615,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
+      onBackgroundReportMissing: (task) => noticeMissingBackgroundReport(input.turnId, task),
       onBackgroundReleaseReady: (release) => registerBackgroundRelease(input.turnId, release),
       onProviderRetry: (retry) => {
         recordTurnProviderRetry(input.turnId, retry);

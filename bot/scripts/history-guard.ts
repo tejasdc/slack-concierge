@@ -11,6 +11,10 @@
  * it as a managed hook (scripts/install-codex-stop-hook.sh). Anything unexpected lets the command
  * through: git's own hook is the backstop, and a guard must never stop unrelated work.
  *
+ * It also refuses a background job whose only work is waiting (bot/src/background-waiter-policy.ts):
+ * finished background work already reports back to the agent, so such a job only holds the run and
+ * every Concierge update behind it.
+ *
  * The same pass, when it refuses nothing, tells an agent about to open a website in a browser
  * where that website's runbook is (bot/src/site-runbook-notice.ts), as `additionalContext` beside
  * the call. It rides this hook because both machines already run it before every call, so no new
@@ -20,6 +24,7 @@ import { realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
 import { siteRunbookNotices } from '../src/site-runbook-notice';
+import { waiterOnlyRefusal } from '../src/background-waiter-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -81,7 +86,7 @@ try {
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command) {
-    reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    reason = waiterOnlyRefusal(hook.tool_name, input) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {

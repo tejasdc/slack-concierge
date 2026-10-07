@@ -35,6 +35,15 @@ const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
   "stream_event",
 ]);
 
+export interface BackgroundReportMissing { id: string; description: string; status: string }
+
+/**
+ * How long after Claude marks a background job ended its report may take to reach the agent.
+ * The two are written together (`task_updated`, then `task_notification`, recorded 2026-10-07),
+ * so a report still missing after this is lost, not slow.
+ */
+const BACKGROUND_REPORT_GRACE_MS = 2 * 60_000;
+
 export interface ClaudeBackgroundWait {
   since: number;
   tasks: Array<{ id: string; description: string; startedAt: number }>;
@@ -387,8 +396,8 @@ export function claudeCodeArgs(input: {
  * machine-local, so every agent this owner starts carries it on either machine.
  */
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
-/** Shell commands, plus browser navigation through MCP so the guard can name a website's runbook. */
-const BROWSER_AND_SHELL_MATCHER = "Bash|mcp__.*(navigate|new_page|open_url|goto).*";
+/** Shell commands and monitors, plus browser navigation through MCP so the guard can name a website's runbook. */
+const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|mcp__.*(navigate|new_page|open_url|goto).*";
 const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
@@ -416,6 +425,8 @@ export async function runClaudeCodeTurn(input: {
   onProviderTerminal?: () => void;
   /** The run finished answering but stays live for unfinished background work; null when that ends. */
   onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+  /** Claude marked a background job ended but its report never reached the agent. */
+  onBackgroundReportMissing?: (task: BackgroundReportMissing) => void;
   onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;
   /** Claude is retrying a failed API call on its own; null once a call gets through. */
   onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
@@ -657,8 +668,34 @@ export async function runClaudeCodeTurn(input: {
       input.onRetryRestartReady?.(null);
     }
   };
+  const endingBackgroundTasks = new Set<string>();
+  const backgroundTaskEnded = (taskId: string, status: string) => {
+    if (!backgroundTasks.has(taskId) || endingBackgroundTasks.has(taskId)) return;
+    endingBackgroundTasks.add(taskId);
+    setTimeout(() => {
+      endingBackgroundTasks.delete(taskId);
+      const task = backgroundTasks.get(taskId);
+      if (!task || inputClosed) return;
+      log("warn", "claude_code_background_report_missing", { session_uuid: observedSessionUuid, task_id: taskId, status });
+      input.onBackgroundReportMissing?.({ id: taskId, description: task.description, status });
+      recordBackgroundTaskEvent({ type: "system", subtype: "task_notification", task_id: taskId });
+    }, BACKGROUND_REPORT_GRACE_MS);
+  };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
+    if (event.type === "system" && event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
+      const active = new Set((event.tasks as JsonValue[]).map(task => task?.task_id));
+      for (const taskId of backgroundTasks.keys()) if (!active.has(taskId)) backgroundTaskEnded(taskId, "ended");
+      return;
+    }
     if (event.type !== "system" || typeof event.task_id !== "string") return;
+    // Claude says a job ended before it tells the agent: a terminal `task_updated`, or the job
+    // leaving `background_tasks_changed`, which Anthropic documents as the most reliable signal.
+    // If the report never follows, the agent would wait for it forever, so Concierge tells the
+    // agent itself and stops holding the job.
+    if (event.subtype === "task_updated" && ["completed", "failed", "killed", "stopped"].includes(String(event.patch?.status))) {
+      backgroundTaskEnded(event.task_id, String(event.patch.status));
+      return;
+    }
     if (event.subtype === "task_started" && event.ambient !== true) {
       backgroundTasks.set(event.task_id, {
         description: typeof event.description === "string" && event.description.trim()

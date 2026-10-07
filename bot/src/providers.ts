@@ -1,5 +1,5 @@
 import { forkCodexSession, ProgressCb, runCodexTurn, RunResult } from "./codex";
-import { forkClaudeCodeSession, runClaudeCodeTurn, type ClaudeBackgroundWait, type ClaudeProviderRetry } from "./claude-code";
+import { forkClaudeCodeSession, runClaudeCodeTurn, type BackgroundReportMissing, type ClaudeBackgroundWait, type ClaudeProviderRetry } from "./claude-code";
 import { providerSelectionFromText } from "./aliases";
 import { ProviderId } from "./state";
 import { SteeringSender } from "./steering";
@@ -47,6 +47,7 @@ export interface AgentProvider {
     onCancellationReady?: (cancel: () => Promise<void>) => void;
     onProviderTerminal?: () => void;
     onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+    onBackgroundReportMissing?: (task: BackgroundReportMissing) => void;
     onBackgroundReleaseReady?: (release: (() => boolean) | null) => void;
     onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
     onRetryRestartReady?: (restart: (() => boolean) | null) => void;
