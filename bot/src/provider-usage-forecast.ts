@@ -236,6 +236,42 @@ export function tightestCurrentWindow(provider: ProviderKey): UsageForecast | nu
     (forecast.minutesLeft ?? Infinity) < (closest.minutesLeft ?? Infinity) ? forecast : closest);
 }
 
+/**
+ * How far ahead Tejas is warned, longer than the hour agents are briefed on.
+ *
+ * Agent work burns about 50% of a five-hour window an hour, in bursts up to 90%. On 2026-10-07
+ * the one-hour forecast fired 96 minutes before tejas@chann.app ran out, but only 25 minutes
+ * before tejastej.dc@gmail.com did (81% → 97% in eleven minutes). Ninety minutes at the
+ * observed pace is roughly 45% used, which still leaves him room to act during a burst.
+ */
+export const NOTICE_LEAD_MS = 90 * 60_000;
+
+/**
+ * Every account of one provider expected to run out within `leadMs`, each with its tightest
+ * window. Not only the selected account: Claude turns move between accounts for room, so the
+ * account being spent is often not the one selected (both ran out on 2026-10-07). An account
+ * nobody is using has no rate and so no forecast.
+ */
+export function accountsRunningOut(provider: ProviderKey, leadMs: number): UsageForecast[] {
+  const tightest = new Map<string, UsageForecast>();
+  for (const forecast of usageForecasts(provider)) {
+    // A spent window is the usage hold's to report, with what is waiting on it.
+    if (forecast.usedPercent >= 100) continue;
+    if (!forecast.runsOutBeforeReset || forecast.minutesLeft === null|| forecast.minutesLeft * 60_000 > leadMs) continue;
+    const held = tightest.get(forecast.account);
+    if (!held || forecast.minutesLeft < (held.minutesLeft ?? Infinity)) tightest.set(forecast.account, forecast);
+  }
+  return [...tightest.values()];
+}
+
+/** Accounts other than `account` whose windows all still have room, at the last reading. */
+export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {
+  return (storedUsage(provider)?.accounts ?? [])
+    .filter(other => other.label !== account && !other.problem && other.windows.length
+      && other.windows.every(window => window.usedPercent < 100))
+    .map(other => other.label);
+}
+
 /** Accounts on this machine whose windows all still have room, at the last reading. */
 export function accountsWithRoom(provider: ProviderKey): string[] {
   const usage = storedUsage(provider);
@@ -291,10 +327,11 @@ export function usageReadingIsUrgent(): boolean {
   for (const provider of ["claude-code", "codex"] as const) {
     const usage = storedUsage(provider);
     for (const account of usage?.accounts ?? []) {
-      if (!account.current || account.problem) continue;
+      // Any account, not only the selected one: turns move to whichever has room.
+      if (account.problem) continue;
       for (const window of account.windows) {
         const resetsAtMs = at(window.resetsAt);
-        if (window.usedPercent >= 60 && (resetsAtMs === null || resetsAtMs - Date.now() > 10 * 60_000)) return true;
+        if (window.usedPercent >= 40 && window.usedPercent < 100&& (resetsAtMs === null || resetsAtMs - Date.now() > 10 * 60_000)) return true;
       }
     }
   }

@@ -4,7 +4,10 @@ import { currentAccount } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
-import { WARN_LEAD_MS, accountsWithRoom, tightestCurrentWindow, usagePressureBrief } from "./provider-usage-forecast";
+import { NOTICE_LEAD_MS, WARN_LEAD_MS, accountsRunningOut, accountsWithRoom, accountsWithRoomBesides,
+  tightestCurrentWindow, usagePressureBrief, type UsageForecast } from "./provider-usage-forecast";
+import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
+import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
@@ -300,58 +303,101 @@ function windowLabel(name: string): string {
 }
 
 /**
- * Says it before it happens.
+ * Says it before it happens, in his Inbox and on his phone.
  *
  * He asked for this in his own words after the 2026-09-22 outage: "the system should be
  * notified 30 minutes before, like 50 minutes before one hour before, it should know that
  * like, oh, we're running out of credit". The numbers were always there; nothing read them.
  *
- * One notice per window per allowance period — the reset instant identifies the period, so
- * the ledger's unique event id does the deduplication and a window cannot nag. It fires
- * only for the account the agents are actually on, only when the forecast says that window
- * runs out before it refills, and only inside the last hour, so it is a handful of
- * notifications a week rather than a running commentary. It changes nothing by itself.
+ * It used to be recorded only as an outage event with no message behind it, and thnkr.ing's
+ * notifier sends an outage only when it holds one of his messages, so every forecast was
+ * dropped: on 2026-10-07 both Claude accounts were forecast (18:57 and 20:16 UTC) and he heard
+ * only when each ran out ("I'm only getting fucking notified after the fucking usage is used
+ * up"). Now it is a provider-free Inbox notice: its own thread, a reading item, and the push
+ * every reading item gets.
+ *
+ * One notice per account per window per allowance period, keyed by the reset instant, so a
+ * window cannot nag. It fires for any account expected to run out within `NOTICE_LEAD_MS`,
+ * because turns move between accounts for room. It changes nothing by itself; when the window
+ * refills, its thread says so and closes (`settleRefilledUsageWarnings`).
  */
-export function publishUsageForecastNotices(record: RecordEvent): void {
-  const inbox = inboxSession();
-  if (!inbox) return;
+export function publishUsageForecastNotices(_record?: RecordEvent): void {
+  let published = false;
   for (const provider of ["claude-code", "codex"] as const) {
-    let forecast;
-    try { forecast = tightestCurrentWindow(provider); } catch { continue; }
-    if (!forecast || forecast.minutesLeft === null || !forecast.resetsAt) continue;
-    if (forecast.minutesLeft * 60_000 > WARN_LEAD_MS) continue;
-    const eventId = `provider-usage-forecast:${provider}:${forecast.window}:${allowancePeriod(forecast.resetsAt)}`;
-    if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) continue;
-    try {
-      const spare = accountsWithRoom(provider);
-      record({
-        eventId, sessionId: inbox.id, kind: "provider_outage",
-        payload: {
-          inputId: null, provider, model: null, modelLabel: provider === "codex" ? "Codex" : "Claude",
-          status: null, incident: null, alternatives: [],
-          usage: {
-            account: forecast.account,
-            clearsAt: forecast.resetsAt, heldInputs: 0, accountsWithRoom: spare,
-            // He asked to be told "this is running low, maybe use a reset now" — so it rides
-            // on the notice that already says he is running low, rather than arriving as a
-            // second alert about the same moment.
-            resetCredit: availableResetCredit(provider),
-            // What makes this a warning rather than a report of a stop that already happened.
-            predicted: {
-              window: forecast.window, windowLabel: windowLabel(forecast.window),
-              usedPercent: forecast.usedPercent, exhaustsAt: forecast.exhaustsAt,
-              minutesLeft: forecast.minutesLeft, source: forecast.source,
-              ratePerHour: forecast.ratePerHour, samples: forecast.samples, spanMinutes: forecast.spanMinutes,
-            },
+    let running: UsageForecast[];
+    try { running = accountsRunningOut(provider, NOTICE_LEAD_MS); } catch { continue; }
+    for (const forecast of running) {
+      if (forecast.minutesLeft === null || !forecast.resetsAt || !forecast.exhaustsAt) continue;
+      const key = `usage-warning:${provider}:${forecast.account}:${forecast.window}:${allowancePeriod(forecast.resetsAt)}`;
+      if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`service-notice:${key}`)) continue;
+      try {
+        const spare = accountsWithRoomBesides(provider, forecast.account);
+        const resetCredit = availableResetCredit(provider);
+        const recorded = publishProviderFreeNotice(db, {
+          key, kind: "provider_usage_warning",
+          text: usageWarningText(provider, forecast, spare, resetCredit),
+          payload: {
+            provider, account: forecast.account, window: forecast.window, windowLabel: windowLabel(forecast.window),
+            usedPercent: forecast.usedPercent, exhaustsAt: forecast.exhaustsAt, resetsAt: forecast.resetsAt,
+            minutesLeft: forecast.minutesLeft, source: forecast.source, ratePerHour: forecast.ratePerHour,
+            samples: forecast.samples, spanMinutes: forecast.spanMinutes, accountsWithRoom: spare,
+            movesAutomatically: movesAutomatically(provider), resetCredit,
           },
-        },
-      });
-      log("warn", "provider_usage_forecast_notified", { provider, window: forecast.window,
-        used_percent: forecast.usedPercent, minutes_left: forecast.minutesLeft, source: forecast.source,
-        samples: forecast.samples, span_minutes: forecast.spanMinutes, accounts_with_room: spare.length });
+        });
+        published ||= recorded;
+        log("warn", "provider_usage_forecast_notified", { provider, account: forecast.account, window: forecast.window,
+          used_percent: forecast.usedPercent, minutes_left: forecast.minutesLeft, source: forecast.source,
+          samples: forecast.samples, span_minutes: forecast.spanMinutes, accounts_with_room: spare.length, recorded });
+      } catch (error) {
+        log("error", "provider_usage_forecast_notice_failed", { provider,
+          error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+  // The notice has its thread before its notification can be tapped.
+  if (published) fileServiceNotices();
+  settleRefilledUsageWarnings();
+}
+
+/** Claude turns pick, each time, an account that still has room; a Codex login is switched by hand. */
+const movesAutomatically = (provider: UsageProvider) => provider === "claude-code" && claudeRunsFromOwnHomes();
+
+function usageWarningText(provider: UsageProvider, forecast: UsageForecast, spare: string[],
+  resetCredit: ResetCreditNotice | null): string {
+  const name = provider === "codex" ? "Codex" : "Claude";
+  const out = noticeTime(db, Date.parse(forecast.exhaustsAt!));
+  const refill = noticeTime(db, Date.parse(forecast.resetsAt!));
+  const pace = forecast.source === "provider" ? `by ${name}'s own projection`
+    : `at the pace of the last hour (about ${Math.round(forecast.ratePerHour ?? 0)}% an hour)`;
+  const head = `${name} account ${forecast.account} is ${Math.round(forecast.usedPercent)}% through its `
+    + `${windowLabel(forecast.window)} and, ${pace}, will run out around ${out}. It refills at ${refill}.`;
+  const next = spare.length
+    ? movesAutomatically(provider)
+      ? ` When it runs out, new ${name} work moves to ${spare.join(" or ")} by itself; nothing to do.`
+      : ` When it runs out, ${name} work stops until it refills unless you switch to ${spare.join(" or ")} on the Accounts page.`
+    : ` No other ${name} account has room, so ${name} work will wait until ${refill}`
+      + (resetCredit ? `, unless a banked reset on ${resetCredit.account} is spent (it is spent automatically if work stops).` : ".");
+  return head + next + " This is a forecast from the pace so far, not a countdown.";
+}
+
+/**
+ * A warning whose window has refilled is no longer something to read: its thread says so and
+ * closes, ending the reading item, the way a retry notice closes when its breaker clears.
+ */
+function settleRefilledUsageWarnings(): void {
+  const rows = db.query(`SELECT input.id, event.payload_json FROM session_inputs input
+    JOIN session_owner_events event ON event.input_id=input.id AND event.kind='provider_usage_warning'
+    WHERE input.scope=? AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)`)
+    .all(SERVICE_NOTICE_SCOPE) as { id: string; payload_json: string }[];
+  for (const row of rows) {
+    try {
+      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string };
+      const resetsAtMs = Date.parse(payload.resetsAt ?? "");
+      if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
+      settleServiceNotice({ inputId: row.id,
+        text: `${payload.account ?? "The account"} refilled at ${noticeTime(db, resetsAtMs)}. Nothing waits on you.` });
     } catch (error) {
-      log("error", "provider_usage_forecast_notice_failed", { provider,
-        error: error instanceof Error ? error.message : String(error) });
+      log("error", "provider_usage_warning_settle_failed", { input_id: row.id, error: String(error) });
     }
   }
 }
@@ -370,10 +416,9 @@ export function publishUsageForecastNotices(record: RecordEvent): void {
  * mention. One notice per credit per milestone, keyed by the expiry instant, so the pass
  * that runs every few minutes cannot turn a deadline into a drumbeat.
  */
-export function publishExpiringResetNotices(record: RecordEvent): void {
-  const inbox = inboxSession();
-  if (!inbox) return;
+export function publishExpiringResetNotices(_record?: RecordEvent): void {
   const now = Date.now();
+  let published = false;
   for (const provider of ["codex", "claude-code"] as const) {
     for (const account of providerAccountUsage(provider)?.accounts ?? []) {
       const credits = account.resetCredits;
@@ -383,24 +428,21 @@ export function publishExpiringResetNotices(record: RecordEvent): void {
       const daysLeft = (expiresAtMs - now) / DAY_MS;
       const milestone = EXPIRY_MILESTONES.find(step => daysLeft <= step.days);
       if (!milestone) continue;
-      const eventId = `provider-reset-expiring:${provider}:${expiresAtMs}:${milestone.name}`;
-      if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) continue;
+      const key = `provider-reset-expiring:${provider}:${expiresAtMs}:${milestone.name}`;
+      // Recorded before as a bare outage event, which thnkr.ing never showed; one already recorded
+      // that way is not announced a second time.
+      if (db.query("SELECT 1 FROM session_owner_events WHERE event_id IN (?,?)").get(key, `service-notice:${key}`)) continue;
       try {
-        record({
-          eventId, sessionId: inbox.id, kind: "provider_outage",
-          payload: {
-            inputId: null, provider, model: null,
-            modelLabel: provider === "codex" ? "Codex" : "Claude",
-            status: null, incident: null, alternatives: [],
-            usage: {
-              account: account.label, clearsAt: null, heldInputs: 0, accountsWithRoom: [],
-              resetCredit: { account: account.label, available: credits.available, expiresAt: credits.expiresAt },
-              // What makes this about a deadline rather than about running out.
-              resetExpiring: { expiresAt: credits.expiresAt, daysLeft: Math.max(0, Math.round(daysLeft)),
-                milestone: milestone.name, title: credits.title ?? null },
-            },
-          },
-        });
+        const name = provider === "codex" ? "Codex" : "Claude";
+        const count = credits.available === 1 ? "1 banked usage reset" : `${credits.available} banked usage resets`;
+        published = publishProviderFreeNotice(db, {
+          key, kind: "provider_reset_expiring",
+          text: `${count} on ${name} account ${account.label} ${credits.available === 1 ? "expires" : "expire"} `
+            + `${noticeTime(db, expiresAtMs)}. One is spent automatically when that account runs out and work stops; `
+            + "you can also spend one yourself on the Accounts page.",
+          payload: { provider, account: account.label, available: credits.available, expiresAt: credits.expiresAt,
+            daysLeft: Math.max(0, Math.round(daysLeft)), milestone: milestone.name, title: credits.title ?? null },
+        }) || published;
         log("warn", "provider_reset_credit_expiring", { provider, milestone: milestone.name,
           days_left: Math.round(daysLeft), available: credits.available, expires_at: credits.expiresAt });
       } catch (error) {
@@ -409,6 +451,7 @@ export function publishExpiringResetNotices(record: RecordEvent): void {
       }
     }
   }
+  if (published) fileServiceNotices();
 }
 
 /**

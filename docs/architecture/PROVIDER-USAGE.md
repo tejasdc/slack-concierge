@@ -446,8 +446,18 @@ them back, because they were built for a screen. Now:
   reset instant, and mixing the two would flatten the line. Every forecast carries its
   source, sample count, span and rate so nobody has to trust it blindly, and no surface ever
   states a countdown — a rate cannot promise a time and agent work arrives in bursts.
-- **Tejas is told** before it happens, once per window per allowance period, through the same
-  `provider_outage` event the hold notice uses, so it needs no provider turn and no router.
+- **Tejas is told** before it happens: once per account per window per allowance period, for
+  any account projected to run out within 90 minutes (`NOTICE_LEAD_MS`; agents are briefed at
+  one hour). It is a provider-free Inbox notice (`publishProviderFreeNotice`, kind
+  `provider_usage_warning`): its own thread, a reading item, and the push thnkr.ing sends for
+  every reading item. It says the account, how much is used, when it is expected to run out and
+  when it refills, and what happens next (Claude turns move to an account with room by
+  themselves; Codex waits unless he switches). When the window refills the thread says so and
+  closes. Until 2026-10-07 it was a bare `provider_outage` event with no message behind it, and
+  thnkr.ing sends an outage only when it holds one of his messages, so every forecast was
+  dropped: both Claude accounts were forecast that evening and he heard only when each ran out.
+  It watches every account, not only the selected one, because turns move between accounts for
+  room. The banked-reset expiry notice had the same silent drop and uses the same carrier now.
 - **`router-actions.sh sessions usage`** answers the same question for any caller: the
   account in use, the closest wall with its basis, the accounts with room, every window's
   forecast. A read; it recommends nothing and changes nothing. The Inbox router uses it to
