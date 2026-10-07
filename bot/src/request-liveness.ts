@@ -78,7 +78,7 @@ export function strandedStep(owner: SessionOwner, input: { requestId: string; wo
     if (input.createdAtMs < REMINDERS_SINCE_MS || input.stalledAtMs !== null) return { step: 'none' };
     if (workerWillWake(owner, input.workerSessionId)) return { step: 'none' };
     const session = getSessionById(input.workerSessionId);
-    if (!session || !owner.view(session).capabilities.send)
+    if (!session || !owner.canSend(session))
         return { step: 'stall', reason: 'the worker session is paused, archived or no longer available' };
     return { step: 'stall', reason: input.remindedVia === 'hook'
         ? 'it was sent back with the reply command when it tried to end its turn, and ended again without a final reply'
@@ -101,7 +101,7 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
     const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(target.turn_id) as { native_run_id: string | null } | null;
     if (!turn?.native_run_id) return null;
     const session = getSessionById(input.workerSessionId);
-    if (!session || !owner.view(session).capabilities.send) return null;
+    if (!session || !owner.canSend(session)) return null;
     return owner.admit({
         sessionId: input.workerSessionId, inputId: `canceled:${input.requestId}`, origin: 'service',
         sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,

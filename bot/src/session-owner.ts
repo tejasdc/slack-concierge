@@ -601,6 +601,19 @@ export class SessionOwner {
           .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
     return {title:(meta.title??retainedTitle?.title??channel?.name??'Agent session') as string,summary:(meta.summary??'') as string,project:(meta.project??meta.cwd??channel?.code_path??null) as string|null};
   }
+  /** Imported evidence without a native binding is read-only; everything else needs its provider. */
+  private providerReachable(session:SessionRow,meta=sessionMetadata(session)) {
+    return ((meta.origin??'native')!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
+  }
+  /**
+   * Whether this session can be sent a message, the view's capabilities.send. Delivery asks it
+   * for every request it routes; building the whole view for that also built the Inbox's
+   * attention and questions, and was the owner's largest steady cost (2026-10-07 profile).
+   */
+  canSend(session:SessionRow) {
+    const meta=sessionMetadata(session);
+    return this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended;
+  }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
     const runs=db.query('SELECT id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
@@ -610,7 +623,7 @@ export class SessionOwner {
     const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
     const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
-    const available=(origin!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
+    const available=this.providerReachable(session,meta);
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
@@ -648,7 +661,7 @@ export class SessionOwner {
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
+      capabilities:{send:this.canSend(session),resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
   list(){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).map(row=>this.view(row));}
   /**
@@ -743,7 +756,7 @@ export class SessionOwner {
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id)!;
-    if(!this.view(session).capabilities.send) return input;
+    if(!this.canSend(session)) return input;
     // A live delivery this coordinator chose, which the provider provably never
     // received, returns to this session's queue instead of failing the sender.
     const recovered=recoverUnsentSteeredInput(input.id);

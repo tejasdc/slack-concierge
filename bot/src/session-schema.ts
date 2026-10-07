@@ -134,6 +134,10 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_input ON session_owner_events(input_id);
         -- Whether a turn already declared its outcome is asked by turn alone; without this it read the whole ledger.
         CREATE INDEX IF NOT EXISTS session_owner_events_turn_kind ON session_owner_events(turn_id, kind) WHERE turn_id IS NOT NULL;
+        -- The newest event of one kind (the thread-link watermark every Inbox read checks) is one seek, not a walk back through the ledger.
+        CREATE INDEX IF NOT EXISTS session_owner_events_kind_sequence ON session_owner_events(kind, sequence);
+        -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
+        CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
         -- A history page's input and metadata projections look each message up by session and

@@ -647,7 +647,7 @@ export class SessionPeers {
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
     const source=getSessionById(row.source_session_id);
-    if(!source||!this.dependencies.owner.view(source).capabilities.send){
+    if(!source||!this.dependencies.owner.canSend(source)){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
       return;
     }

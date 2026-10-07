@@ -178,7 +178,7 @@ export class SessionCommunicationCoordinator {
     }
     private messageable(address: Address) {
         const session = getSessionById(address.session);
-        return !!session && !!this.dependencies.owner.view(session).capabilities.send;
+        return !!session && this.dependencies.owner.canSend(session);
     }
     private peerActor(actor: Actor): PeerActor {
         return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
@@ -686,7 +686,7 @@ export class SessionCommunicationCoordinator {
         }
         let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
-        const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.view(targetSession).capabilities.send;
+        const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
         if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
