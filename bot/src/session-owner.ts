@@ -6,6 +6,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {ledgerRows} from './ledger-rows';
+import {meaningIndex} from './meaning-index';
 import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
@@ -1566,6 +1567,8 @@ export class SessionOwner {
     const input=object(body);only(input,['query','limit','includeTools']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
+    // Started before the word search; the request goes out once that synchronous scan yields.
+    const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
     const matches=(text:string)=>{const lower=text.toLocaleLowerCase();return terms.every(term=>lower.includes(term.toLocaleLowerCase()));};
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
@@ -1650,7 +1653,39 @@ export class SessionOwner {
         coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}
-    return {results:[...results.values()].slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence})),coverage};
+    // Word matches keep the order they were found in; meaning matches are ranked by closeness.
+    // Reciprocal-rank fusion of the two, as measured in the September evaluation
+    // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
+    const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
+    const meaning=meaningSearch?await meaningSearch.catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})):null;
+    if(meaning?.available) {
+      // Archive matches that are not a session here are retained together, as the word path does above.
+      const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
+      const retained=await Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
+        ?this.runtime.sources.context({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId,limit:1})
+        :Promise.resolve(null)));
+      let unretained=0;
+      for(const [index,hit] of meaning.hits.entries()) {
+        let session:SessionRow|null=null;
+        if(hit.target.kind==='session')session=getSessionById(hit.target.sessionId);
+        else {
+          const outcome=retained[index]!;
+          session=native(hit.target.nativeId);
+          if(!session&&outcome.status==='fulfilled'&&outcome.value)session=this.sourceSession(outcome.value.source);
+          if(!session){unretained++;continue;}
+        }
+        if(!session||meaningRank.has(session.id))continue;
+        meaningRank.set(session.id,meaningRank.size);meaningScore.set(session.id,hit.score);
+        add(session,[{sessionId:`concierge:${session.id}`,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'user',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,corpus:'meaning',score:hit.score}]);
+      }
+      if(unretained){coverage.complete=false;coverage.omissions.push(`${unretained} archive meaning matches could not be retained and were omitted.`);}
+    }
+    if(meaning&&(!meaning.available||meaning.reason))coverage.omissions.push(meaning.reason??'Meaning search unavailable.');
+    if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
+    coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
+    const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
+    const ordered=[...results.values()].sort((a,b)=>fused(b.session.id)-fused(a.session.id));
+    return {results:ordered.slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})),coverage};
   }
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);

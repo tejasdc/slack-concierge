@@ -200,6 +200,15 @@ authorization or a change to the default rapid-iteration policy.
   same ledger. Every message mark keys the canonical session plus exact provider message
   ID; Thinkering may cache projections but must not use browser storage as cross-device
   truth or reopen a neighboring message when an exact target is unavailable.
+- Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
+  "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
+  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy.
+  It embeds titles, requests (counted toward their target session), inputs and final replies,
+  plus the archive's prompts read from Thinkering's index. It never embeds tool output,
+  assistant streaming text or transcript files. Vectors live in `meaning-index.db` beside the
+  ledger, never in it. Results fuse word and meaning ranks and say which matched. The Mac has no
+  engine and searches words only. The decision history, starting with the September QMD
+  evaluation, is in [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing
