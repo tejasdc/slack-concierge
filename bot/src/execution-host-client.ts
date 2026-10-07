@@ -41,6 +41,8 @@ export function hostSocketPath(directory: string) { return join(directory, "host
 export function executionUnit(executionId: string) { return `concierge-exec-${executionId}`; }
 
 export class HostUnavailableError extends Error {}
+/** The host was certainly not started: nothing to take custody of. */
+export class HostNotStartedError extends HostUnavailableError {}
 
 /** One line-delimited JSON connection to a host. */
 export class HostConnection {
@@ -161,13 +163,17 @@ export function startHost(input: {
   manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
 }): HostLaunch {
   const directory = executionDirectory(input.stateDir, input.executionId);
-  mkdirSync(join(input.stateDir, "exec"), { recursive: true, mode: 0o700 });
-  mkdirSync(directory, { mode: 0o700 });
-  const manifest = { version: 1, executionId: input.executionId, ...input.manifest };
-  const bytes = JSON.stringify(manifest);
-  writeFileSync(join(directory, "manifest.json"), bytes, { mode: 0o600, flag: "wx" });
-  chmodSync(directory, 0o700);
-  const hostScript = hostScriptPath(input.routerBotDir);
+  // Everything before the supervisor is asked is a definite refusal: nothing can be running.
+  let bytes: string, hostScript: string;
+  try {
+    mkdirSync(join(input.stateDir, "exec"), { recursive: true, mode: 0o700 });
+    mkdirSync(directory, { mode: 0o700 });
+    const manifest = { version: 1, executionId: input.executionId, ...input.manifest };
+    bytes = JSON.stringify(manifest);
+    writeFileSync(join(directory, "manifest.json"), bytes, { mode: 0o600, flag: "wx" });
+    chmodSync(directory, 0o700);
+    hostScript = hostScriptPath(input.routerBotDir);
+  } catch (error) { throw new HostNotStartedError(error instanceof Error ? error.message : String(error)); }
   const runtime = input.runtime ?? process.execPath;
   const unit = executionUnit(input.executionId);
   if (process.platform === "linux") {
@@ -178,9 +184,12 @@ export function startHost(input: {
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,
     ], { encoding: "utf8", timeout: 30_000 });
-    if (result.status !== 0) throw new HostUnavailableError(`systemd-run refused the host: ${(result.stderr || result.stdout || String(result.error)).trim()}`);
+    // A refusal the supervisor stated means no unit; a timeout or a lost answer does not, and is
+    // left to custody (hostCustody), which asks the supervisor what actually exists.
+    if (result.error || result.signal) throw new HostUnavailableError(`systemd-run did not answer: ${String(result.error ?? result.signal)}`);
+    if (result.status !== 0) throw new HostNotStartedError(`systemd-run refused the host: ${(result.stderr || result.stdout).trim()}`);
   } else {
-    throw new HostUnavailableError(`no execution host supervisor on ${process.platform} yet`);
+    throw new HostNotStartedError(`no execution host supervisor on ${process.platform} yet`);
   }
   return { executionId: input.executionId, directory, unit, hostScript, runtime,
     manifestDigest: createHash("sha256").update(bytes).digest("hex") };
@@ -193,10 +202,12 @@ export function startHost(input: {
 export type SupervisorView = "alive" | "gone" | "unknown";
 export function hostSupervisorView(executionId: string): SupervisorView {
   if (process.platform !== "linux") return "unknown";
-  const result = spawnSync("systemctl", ["show", `${executionUnit(executionId)}.service`, "--property=ActiveState,LoadState", "--value"],
+  const result = spawnSync("systemctl", ["show", `${executionUnit(executionId)}.service`, "--property=ActiveState", "--property=LoadState"],
     { encoding: "utf8", timeout: 10_000 });
   if (result.status !== 0 || result.error) return "unknown";
-  const [active = "", load = ""] = result.stdout.trim().split("\n").map(value => value.trim());
+  // Read by name: systemd prints properties in its own order, not the order asked for.
+  const properties = new Map(result.stdout.trim().split("\n").map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1).trim()] as const));
+  const active = properties.get("ActiveState") ?? "", load = properties.get("LoadState") ?? "";
   if (["active", "activating", "deactivating", "reloading", "refreshing"].includes(active)) return "alive";
   // A transient unit that ended is collected: it reads as not found and inactive.
   if ((active === "inactive" || active === "failed") && (load === "not-found" || load === "loaded")) return "gone";
@@ -354,7 +365,10 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       };
       const endHistory = () => {
         if (replayEnded || !ready) return;
-        if (received < replayUntil) return; // the history is still arriving
+        // Sequences are contiguous, so the history is complete exactly when the last frame sorted
+        // into it reaches the boundary; what has merely been received (perhaps in one chunk with
+        // the attach answer) does not count until it has been sorted.
+        if ((history.at(-1)?.s ?? lastSeen) < replayUntil) return;
         const outcomes = new Map<string, "written" | "failed">();
         for (const frame of history) if (frame.k === "c" && typeof frame.d?.id === "string") {
           if (frame.d.op === "written") outcomes.set(frame.d.id, "written");
@@ -399,7 +413,17 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
           if (custody === "answering") {
             try { await establish(await HostConnection.connect(socketPath, 3_000)); return; } catch { /* decide again */ }
           } else if (custody === "settle-from-record") {
-            for (const frame of readJournal(directory)) if (frame.s > lastSeen) dispatch(frame);
+            // The record is the evidence; no socket is needed to read it. A run that never attached
+            // gets its boundary and a writer that refuses (the provider has exited) from the record.
+            const record = readJournal(directory);
+            if (!ready) {
+              if (execution.mode === "adopt") replayUntil = record.at(-1)?.s ?? 0;
+              input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
+              ready = true;
+              for (const frame of early.splice(0)) sort(frame);
+            }
+            for (const frame of record) dispatch(frame);
+            endHistory();
             if (!settled) finish(new HostUnavailableError("the execution host left a record that ends without the provider's exit"));
             return;
           } else if (custody === "dead") {
@@ -431,21 +455,25 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
           const executable = execution.executable;
           const routerBotDir = execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR;
           if (!routerBotDir) throw new HostUnavailableError("the run names no release helper folder to start its host from");
+          // From here a host may exist even if this call fails (a supervisor that accepted the start
+          // but whose answer was lost); only startHost's own definite refusals mean it does not.
+          launched = true;
           const launch = startHost({ stateDir: execution.stateDir, executionId: execution.executionId, routerBotDir,
             manifest: { executable, args: input.args, cwd: input.cwd,
               environment: { ...(input.inheritEnvironment === false ? {} : process.env as Record<string, string>), ...input.environment },
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
               initialMeta: { kind: "initial" } } });
           execution.onLaunched?.(launch);
-          launched = true;
           await establish(await connectWhenReady(socketPath, Date.now() + 15_000));
         } else {
           await establish(await HostConnection.connect(socketPath));
         }
       };
       begin().catch(error => {
-        // Once a host may exist, no failure to reach it unwinds the run: custody decides.
-        if ((execution.mode === "adopt" || launched) && !settled) { void keepCustody(error instanceof Error ? error.message : String(error)); return; }
+        // Once a host may exist, no failure to reach or record it unwinds the run: custody decides.
+        if ((execution.mode === "adopt" || (launched && !(error instanceof HostNotStartedError))) && !settled) {
+          void keepCustody(error instanceof Error ? error.message : String(error)); return;
+        }
         finish(error instanceof Error ? error : new Error(String(error)));
       });
     });

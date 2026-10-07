@@ -822,8 +822,9 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         }
       }
     } else if (Object.prototype.hasOwnProperty.call(ev, "id") && ev.method) {
-      // The predecessor already answered every server request in its history.
-      if (replaying) return;
+      // A server request in the history is answered only if the record shows no answer from the
+      // predecessor; those still open are answered once, after the replay (unansweredServerRequests).
+      if (replaying) { unansweredServerRequests.set(String(ev.id), ev.method); return; }
       recordActivity();
       void writeMessage({
         id: ev.id,
@@ -836,9 +837,12 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   };
 
   /** A request the predecessor wrote to this same process, replayed from the host's record. */
+  const unansweredServerRequests = new Map<string, string>();
   const recoverPredecessorRequest = (line: string, meta: TransportFrameMeta | null) => {
     let message: any;
     try { message = JSON.parse(line); } catch { return; }
+    if (message && Object.prototype.hasOwnProperty.call(message, "id") && !message.method && ("result" in message || "error" in message))
+      unansweredServerRequests.delete(String(message.id));
     if (typeof message?.id === "number") {
       requestId = Math.max(requestId, message.id);
       if (typeof message.method === "string") predecessorRequests.set(message.id, { method: message.method, params: message.params });
@@ -877,7 +881,15 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     onStdinReady: (write, close) => { writeLine = write; closeInput = close; resolveWriter(); },
     onProtocolActivityReady: (record) => { recordActivity = record; },
     onReplayedInput: (line, meta) => recoverPredecessorRequest(line, meta),
-    onReplayEnd: () => { replaying = false; replayEnded(); },
+    onReplayEnd: () => {
+      replaying = false;
+      for (const [id, method] of unansweredServerRequests) void writeMessage({
+        id: Number.isNaN(Number(id)) ? id : Number(id),
+        error: { code: -32601, message: `Slack Concierge cannot answer server request ${method}.` },
+      }).catch(() => {});
+      unansweredServerRequests.clear();
+      replayEnded();
+    },
   });
   const processClose = processRun.then(
     (exit) => {
