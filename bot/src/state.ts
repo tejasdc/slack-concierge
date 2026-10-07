@@ -741,6 +741,12 @@ addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DE
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
+// A firing's own scheduled instant. The claim clears dispatch_next_attempt_ms, so without this a
+// firing that left the queue no longer knows when it was due and cannot place the next one.
+if (!columns("turns").has("saved_fire_at_ms")) {
+  addColumn("turns", "saved_fire_at_ms", "saved_fire_at_ms INTEGER");
+  db.exec("UPDATE turns SET saved_fire_at_ms=dispatch_next_attempt_ms WHERE saved_kind='scheduled' AND status='queued' AND dispatch_next_attempt_ms>0");
+}
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (

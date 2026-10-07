@@ -5,10 +5,11 @@ import {usageForecasts} from './provider-usage-forecast';
 import type {ProviderKey} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {chooseAccountForTurn} from './provider-account-choice';
+import {log,errorFields} from './log';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
-  saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;
+  saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
   saved_alerted_at_ms:number|null;accepted_input_id:string|null};
 
@@ -59,8 +60,8 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
     if(other)throw new Error('Saved work needs its own session.');
     const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
-      saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=?`)
-      .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,
+      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=?`)
+      .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,next,
         repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,turnId);
   })();
   executionChanged();
@@ -197,8 +198,8 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     if(typeof at!=='number'||!Number.isFinite(at)||at<=Date.now())throw new Error('Name a future time.');
     const expires=body.expiresAtMs;
     if(expires!==undefined&&(typeof expires!=='number'||!Number.isFinite(expires)||expires<=at))throw new Error('Expiry must follow the scheduled time.');
-    db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_expires_at_ms=?,saved_account=NULL,
-      saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,expires??null,turnId);
+    db.query(`UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=?,saved_fire_at_ms=?,saved_expires_at_ms=?,saved_account=NULL,
+      saved_window=NULL,saved_boundary_ms=NULL,saved_alerted_at_ms=NULL,saved_manual_start=0 WHERE id=? AND status='queued'`).run(at,at,expires??null,turnId);
     } else if(action==='start') {
     db.query(`UPDATE turns SET saved_manual_start=1,dispatch_next_attempt_ms=0,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
       WHERE id=? AND status='queued'`).run(turnId);
@@ -281,20 +282,39 @@ export function savedSessionTurn(sessionId:number):SavedTurn|null {
 }
 export function waitingSavedWork():SavedTurn[] {return savedRows();}
 
-/** One future firing per repeating session. A stable root/sequence prevents replay after restart. */
+/**
+ * One future firing per repeating session. A stable root/sequence prevents replay after restart.
+ *
+ * The latest firing of a schedule places the next one as soon as it is due or has left the
+ * queue by any path, whatever started it. Watching only for a queued firing that is due depended
+ * on seeing that exact moment before the claim did, and both repeating schedules on the server
+ * stopped after their first firing (2026-10-07); the likeliest cause is the queue's timer waking
+ * a hair before the due instant, so this step saw nothing and the claim, a moment later, took the
+ * firing. A firing records its own instant because the claim clears its dispatch time.
+ * Only dropping the schedule, or archiving or suspending its session, ends it.
+ */
 export function advanceRepeatingSchedules(now=Date.now()):number {
   let advanced=0;
-  const due=db.query(`SELECT * FROM turns WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL
-    AND status='queued' AND dispatch_next_attempt_ms<=? ORDER BY id`).all(now) as SavedTurn[];
+  const due=db.query(`SELECT * FROM turns latest WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.saved_root_id=latest.saved_root_id AND later.saved_sequence>latest.saved_sequence)
+    AND ((status='queued' AND dispatch_next_attempt_ms<=?) OR (status<>'queued' AND saved_fire_at_ms IS NOT NULL))
+    ORDER BY id`).all(now) as SavedTurn[];
   for(const row of due) {
-    db.transaction(()=>{
+    // One broken schedule must not stop the claim that every other session's work waits on.
+    try {db.transaction(()=>{
       const current=savedTurn(row.id);
-      if(!current||current.status!=='queued'||current.saved_repeat_ms===null||current.saved_root_id===null||current.saved_sequence===null)return;
+      if(!current||current.saved_repeat_ms===null||current.saved_root_id===null||current.saved_sequence===null)return;
+      const left=current.status!=='queued';
+      if(left&&db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='saved_control'
+        AND json_extract(payload_json,'$.action')='drop'`).get(current.id))return;
+      if(left&&db.query(`SELECT 1 FROM sessions WHERE id=? AND (status='archived'
+        OR COALESCE(json_extract(native_metadata_json,'$.suspended'),0)<>0)`).get(current.session_id))return;
       const interval=current.saved_repeat_ms,root=current.saved_root_id;
-      const nextSequence=current.saved_sequence+Math.max(1,Math.floor((now-current.dispatch_next_attempt_ms!)/interval)+1);
-      const nextAt=current.dispatch_next_attempt_ms!+(nextSequence-current.saved_sequence)*interval;
+      const firedAt=current.saved_fire_at_ms??current.dispatch_next_attempt_ms!;
+      const nextSequence=current.saved_sequence+Math.max(1,Math.floor((now-firedAt)/interval)+1);
+      const nextAt=firedAt+(nextSequence-current.saved_sequence)*interval;
       const skippedBetween=nextSequence-current.saved_sequence-1;
-      const prior=db.query(`SELECT 1 FROM turns WHERE saved_root_id=? AND id<? AND status IN ('queued','running','delivering') LIMIT 1`)
+      const prior=!left&&db.query(`SELECT 1 FROM turns WHERE saved_root_id=? AND id<? AND status IN ('queued','running','delivering') LIMIT 1`)
         .get(root,current.id);
       if(prior) {
         db.query(`UPDATE turns SET status='cancelled',agent_text='Skipped because the previous firing was still in progress.',ended_at=CURRENT_TIMESTAMP
@@ -320,12 +340,12 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
         payload:{text,...(payload.attachments?{attachments:payload.attachments}:{})}}).input;
       const queued=enqueueSessionInput(input.id);
       if(queued.turn_id===null)throw new Error('Repeating firing could not enter its session queue.');
-      const expiry=current.saved_expires_at_ms===null?null:nextAt+(current.saved_expires_at_ms-current.dispatch_next_attempt_ms!);
-      db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,
+      const expiry=current.saved_expires_at_ms===null?null:nextAt+(current.saved_expires_at_ms-firedAt);
+      db.query(`UPDATE turns SET saved_kind='scheduled',saved_at_ms=?,saved_expires_at_ms=?,dispatch_next_attempt_ms=?,saved_fire_at_ms=?,
         saved_repeat_ms=?,saved_root_id=?,saved_sequence=? WHERE id=? AND status='queued'`)
-        .run(now,expiry,nextAt,interval,root,nextSequence,queued.turn_id);
+        .run(now,expiry,nextAt,nextAt,interval,root,nextSequence,queued.turn_id);
       advanced++;
-    })();
+    })();} catch(error) {log('error','saved_repeat_advance_failed',{turn_id:row.id,...errorFields(error)});}
   }
   if(advanced)executionChanged();
   return advanced;

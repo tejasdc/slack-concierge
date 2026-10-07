@@ -79,7 +79,9 @@ and mandatory review requirements in this repository and linked historical mater
   recalculates banked instants and records overdue attention once; the queue also settles
   scheduled work at its optional expiry. The queue remains the
   only timer that admits work. Repeating schedules create one future firing under a stable
-  root and sequence; an overlap skips and records that firing. A banked run stops at an allowance or deployment boundary.
+  root and sequence; an overlap skips and records that firing. The latest firing places the
+  next one once it is due or has left the queue by any path (each firing keeps its own
+  instant in `saved_fire_at_ms`); only drop, archive or suspend ends a schedule. A banked run stops at an allowance or deployment boundary.
   If the provider already admitted it, the cancelled turn is retained without replaying
   its input and raises one question for Tejas to inspect what completed. There is no automatic
   reconciliation, continuation or shipped-work checkpoint yet.

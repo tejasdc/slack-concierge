@@ -82,7 +82,7 @@ export async function startSessionRuntime() {
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
-  const queue=new SessionTurnQueueCoordinator({claim:()=>{advanceRepeatingSchedules();settleMissedScheduledWork();return claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions);},shouldStop:()=>draining,
+  const queue=new SessionTurnQueueCoordinator({claim:()=>{const now=Date.now();advanceRepeatingSchedules(now);settleMissedScheduledWork(now);return claimNextQueuedTurn(instanceId,now,registry.activeSessions);},shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{
