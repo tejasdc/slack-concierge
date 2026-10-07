@@ -436,7 +436,15 @@ authorization or a change to the default rapid-iteration policy.
   questions on 2026-10-07 had dated a Sept 22 thread 4:17 PM), and **reopening a thread brings
   back the questions its closure ended** (`restoreExpiredByClosure`, his reopen and the router's alike), so
   the Threads list's one-tap close can carry an Undo that loses nothing (Tejas, 2026-10-07: "everything is
-  kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. A service notice (no provider turn
+  kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. **A reply he types inside a thread goes to the agent working on
+  it, not to the router** (`replyTargets` in session-topics.ts decides from the thread's record and the
+  app shows the choice; `SessionOwner.threadReplyTarget` applies it on the send; `forwardReply` in
+  session-communication.ts carries his words as a request to that agent, closed only by its own
+  `sessions reply`, each reply posted into the thread as the agent's words by `postForwardedReply`; the
+  router is woken by none of it and stays a choice he can address) (Tejas, 2026-10-07: "I should just
+  be talking with the agents who are working on this thread … my responses go back to the same
+  session") [decision: thread-replies-go-to-the-working-agent]; design in thinkering
+  docs/plans/2026-10-07-reply-to-who-asked.md. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server

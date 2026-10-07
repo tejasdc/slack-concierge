@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
+import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
@@ -38,6 +38,7 @@ type RequestRow = {
     source_root_ts: string;
     source_input_id: string | null;
     target_input_id: string | null;
+    thread_root_input_id: string | null;
     action_id: string;
     target_session_id: number;
     target_channel: string;
@@ -795,6 +796,71 @@ export class SessionCommunicationCoordinator {
         this.wake();
         return this.receipt(this.row(id));
     }
+    /**
+     * His reply inside an Inbox thread, carried to the agent working on it as a request rather than
+     * as a bare message: it closes only by that agent's own `sessions reply`, queues behind a shared
+     * agent's current run instead of steering into it, and comes back attributed to the agent. The
+     * Inbox router is not woken: each reply is posted into the thread as the agent's words
+     * (`postForwardedReply`). Design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md;
+     * review by concierge:3756, which ruled out inferring the answer from the agent's closing text.
+     */
+    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actionId=`forward:${input.inputId}`;
+        const existing=db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null;
+        if(existing)return existing.request_id;
+        const target=getSessionById(input.target.local);
+        if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
+        // The schema requires a source turn; a forwarded reply has none, because no router turn
+        // carries it. The Inbox's latest turn stands in as the reference and is never read for it.
+        const standIn=db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(input.inbox.id) as {id:number}|null;
+        if(!standIn)throw new Error('The Inbox has no turn to record this request against.');
+        const id=randomUUID(),now=this.now();
+        const address=sessionAddress(target);
+        const attachments=input.attachments?.length?input.attachments:[];
+        const firstInput={text:`Session request ${id}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${id} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...(attachments.length?{attachments}:{})};
+        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},...(attachments.length?{attachments}:{})});
+        db.transaction(()=>{
+            db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target.id,null,null,payload,hash(payload),now+STILL_WAITING_AFTER_MS,now,input.inputId,`request:${id}`,input.target.root);
+            retainSessionInput({id:`request:${id}`,sessionId:target.id,scope:`session:${input.inputId}`,actionId:`request:${id}`,kind:'input',origin:'agent',payload:firstInput,sourceInputId:input.inputId,requestId:id});
+            const operation=retainSessionInput({sessionId:input.inbox.id,scope:`communication:${input.inputId}`,actionId,kind:'request',origin:'human',
+                payload:{text:input.text,sourceInputId:input.inputId,targetSessionId:`concierge:${target.id}`,targetAddress:address,requestedEffect:'work',thread:input.target.root,forwardedReply:true}});
+            recordSessionEvent({eventId:`request:${id}`,sessionId:input.inbox.id,inputId:operation.input.id,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${target.id}`}});
+        })();
+        log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
+        this.wake();
+        return id;
+    }
+    /**
+     * A reply to a forwarded thread reply is posted into that thread as the agent's own words the
+     * moment it is recorded; a final one settles his message's receipt; a stall is a service post.
+     * Nothing here wakes the router.
+     */
+    private postForwardedReply(request:RequestRow,event:EventRow,declared:any,forwarded:{inboxInputId:string;topicId:string}) {
+        const inbox=getSessionById(request.source_session_id);
+        if(!inbox)return;
+        const text=String(declared.text??'').trim();
+        const attachments=Array.isArray(declared.attachments)?declared.attachments as string[]:[];
+        const stalled=event.kind==='overdue'||!!declared.stalled;
+        const eventId=`post:forward:${event.event_id}`;
+        const root=request.thread_root_input_id??request.source_input_id!;
+        db.transaction(()=>{
+            if((text||attachments.length)&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+                recordSessionEvent({eventId,sessionId:inbox.id,inputId:root,kind:'post',
+                    payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${inbox.id}`,messageId:forwarded.inboxInputId},requestId:request.request_id,
+                        ...(stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:`concierge:${request.target_session_id}`}),...(attachments.length?{attachments}:{})}});
+            if(event.kind==='final'||stalled) {
+                const to={sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id};
+                db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(stalled
+                    ?{state:'uncertain',forwardedTo:to,error:{code:'FORWARDED_REPLY_STALLED',message:text||'The agent did not answer.'}}
+                    :{state:declared.workDisposition==='failed'?'failed':'completed',forwardedTo:to,...(declared.workDisposition==='failed'?{error:{code:'FORWARDED_REPLY_FAILED',message:text}}:{})}),request.source_input_id!);
+            }
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+        })();
+        log('info','inbox_reply_answer_posted',{request_id:request.request_id,event_kind:event.kind,thread:root,stalled});
+    }
     reply(input: {
         source: CommunicationSource;
         action_id: string;
@@ -1207,6 +1273,10 @@ export class SessionCommunicationCoordinator {
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
+        // A forwarded thread reply's answer goes into the thread as the agent's words, never as a
+        // return that would start a router turn.
+        const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        if(forwarded&&request.source_input_id&&typeof forwarded.inboxInputId==='string'){this.postForwardedReply(request,event,declared,forwarded);return;}
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {

@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {localSessionNumber} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
@@ -835,6 +836,63 @@ function topicHistory(sessionId:number,topicId:string) {
       return {change:payload.change,at:iso(row.created_at),by:payload.by??null,reason:payload.reason??null};
     });
 }
+/** One agent a reply inside a thread can go to, and why; `owns` names the items (questions, their sources, returned answers) a reply to which goes to it by default. */
+export type ReplyTarget={sessionId:string;title:string|null;why:string;owns:string[]};
+export type ReplyTargets={router:string;default:string;choices:ReplyTarget[]};
+/** The session whose returned answer, or mirrored post, a thread message is. */
+function spokenBySession(sessionId:number,messageId:string):string|null {
+  if(messageId.startsWith('return:')) {
+    const row=db.query(`SELECT r.target_session_id FROM session_communication_events e JOIN session_communication_requests r ON r.request_id=e.request_id WHERE e.event_id=?`)
+      .get(messageId.slice('return:'.length)) as {target_session_id:number}|null;
+    return row?`concierge:${row.target_session_id}`:null;
+  }
+  if(messageId.startsWith('post:')) {
+    const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND session_id=?').get(messageId,sessionId) as {payload_json:string}|null;
+    const from=row?JSON.parse(row.payload_json)?.postedBySession:null;
+    return typeof from==='string'?from:null;
+  }
+  return null;
+}
+/**
+ * Who a reply inside this thread goes to: the agents working on it (an open request's dispatch,
+ * a dispatch in flight, an open question they asked, an answer they returned), the router, and
+ * the default. The default is the agent whose item he is replying to; else the one agent working
+ * here; else the router, which also covers "several are working", so he picks. Only a session
+ * this owner runs and can still send to is a choice: a Mac session's or a closed session's thread
+ * still goes through the router. The app shows these and sends his pick; nothing in the app
+ * re-derives them (design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md; Tejas,
+ * 2026-10-07: "I should just be talking with the agents who are working on this thread … my
+ * responses go back to the same session").
+ */
+export function replyTargets(topicId:string,about:string|null=null,canSend:(session:SessionRow)=>boolean=session=>session.status!=='archived'&&!sessionMetadata(session).suspended):ReplyTargets {
+  const session=inboxOrThrow();
+  const router=`concierge:${session.id}`;
+  const roots=topicRoots(topicId);
+  const choices=new Map<string,ReplyTarget>();
+  const add=(sessionId:string|null|undefined,why:string,owns:string[])=>{
+    if(!sessionId||sessionId===router)return;
+    const local=localSessionNumber(sessionId);
+    const row=local===null?null:getSessionById(local);
+    if(!row||!canSend(row))return;
+    const existing=choices.get(sessionId);
+    if(existing){existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));return;}
+    choices.set(sessionId,{sessionId,title:sessionMetadata(row).title??null,why,owns:[...new Set(owns)]});
+  };
+  // A dispatch counts while its request to the agent is still open; one that settled is finished
+  // work, and the router's own request bookkeeping can lag by weeks (five idle sessions still
+  // listed on "Action Button recording" on 2026-10-07), so a settled dispatch never catches his reply.
+  // A request the owner has already marked stalled is not work in progress either.
+  const stillOpen=(requestId:string)=>!!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId);
+  for(const request of topicRequests(topicId))if(request.state==='open')
+    for(const dispatch of request.dispatches as any[])if(stillOpen(String(dispatch.requestId)))add(dispatch.targetSessionId,`working on “${request.title}”`,request.sources.map((source:any)=>source.inputId));
+  for(const dispatch of workIndex(session.id).dispatches)if(dispatch.root&&roots.includes(dispatch.root))add(dispatch.sessionId,'working on this thread now',[dispatch.root]);
+  for(const question of topicQuestions(topicId))if(OPEN_QUESTION_STATES.includes(question.state)||question.state==='deferred')
+    add(question.owner?.sessionId,question.brief?.decision?`asked you: ${question.brief.decision}`:'asked you a question here',[question.questionId,...question.sources]);
+  if(about){const spoke=spokenBySession(session.id,about);if(spoke)add(spoke,'answered here',[about]);}
+  const list=[...choices.values()];
+  const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
+  return {router,default:owning?.sessionId??(list.length===1?list[0]!.sessionId:router),choices:list};
+}
 export function readTopic(topicId:string,limit:number|null=null) {
   const session=inboxOrThrow();
   const topic=topicRow(topicId);
@@ -848,6 +906,7 @@ export function readTopic(topicId:string,limit:number|null=null) {
     questions:topicQuestions(topicId).map(question=>questionView(question,reply)),
     focus:focus?{topicId:focus.topicId,inputIds:focus.inputIds,runId:focus.runId,summary:focus.summary,since:focus.since}:null,
     work:summary.work,
+    replyTargets:replyTargets(topicId),
     entries:topicEntries(topicId,null,limit)};
 }
 
@@ -861,6 +920,7 @@ function topicEventSentence(payload:any):string {
     case 'merged':return `Merged ${payload.mergedTopic?.title??'another thread'} into ${title}.`;
     case 'closed':return `Closed: ${payload.reason??''}${payload.scope?` (${payload.scope})`:''}`;
     case 'reopened':return `Reopened: ${payload.reason??''}`;
+    case 'forwarded':return `Your reply went straight to ${payload.to?.title??'the agent working on this'}.`;
     case 'set_aside':return `Set aside: ${payload.topic?.setAside?.reason??''}`;
     case 'resumed':return 'Picked back up.';
     case 'added':return `Request added: ${payload.request?.title??''}`;
@@ -946,7 +1006,7 @@ export function crossTopicQuestions(state:string|null) {
     const questions=topicQuestions(topic.topicId).filter(matches);
     if(!questions.length)continue;
     const reply=latestHumanReply(read,topicRoots(topic.topicId));
-    groups.push({topic:topicSummary(topic,session,index,work,read),questions:questions.map(question=>questionView(question,reply))});
+    groups.push({topic:topicSummary(topic,session,index,work,read),questions:questions.map(question=>questionView(question,reply)),replyTargets:replyTargets(topic.topicId)});
   }
   return {topics:groups};
 }
