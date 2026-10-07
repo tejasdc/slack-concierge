@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { visibleSlackRootSql } from "./slack-thread-identity";
+import { ledgerRows } from "./ledger-rows";
 
 export const ROUTER_SEARCH_VERSION = 2;
 export type RouterSearchSourceKind = "turn_input" | "steering_input" | "delivered_tldr";
@@ -68,8 +69,8 @@ export function rebuildRouterSearchIndex(database: Database) {
     // missing index rows. Restore that precondition before replacing documents.
     database.exec("INSERT INTO router_search_fts(router_search_fts) VALUES('rebuild')");
     database.exec("DELETE FROM router_search_documents");
-    for (const source of database.query("SELECT * FROM router_search_sources ORDER BY turn_id, source_kind, source_id").iterate()) {
-      projectSource(database, source as SearchSource);
+    for (const source of ledgerRows<SearchSource>(database, "SELECT * FROM router_search_sources ORDER BY turn_id, source_kind, source_id")) {
+      projectSource(database, source);
     }
     database.query(`INSERT INTO router_search_index_state(singleton, version) VALUES(1, ?)
       ON CONFLICT(singleton) DO UPDATE SET version=excluded.version`).run(ROUTER_SEARCH_VERSION);

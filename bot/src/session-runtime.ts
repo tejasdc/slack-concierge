@@ -84,6 +84,7 @@ export async function startSessionRuntime() {
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({claim:()=>{advanceRepeatingSchedules();settleMissedScheduledWork();return claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions);},shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
+    onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
       try {

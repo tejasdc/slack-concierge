@@ -65,6 +65,11 @@ for (const path of files) {
   if (pendingReset) errors.push(`${name}: pending reset feeding a wake loop; use a named retry policy`);
   const microtaskRetry = /queueMicrotask\s*\([^;]{0,240}\bretry\b/is.test(source);
   if (microtaskRetry && !allowedMicrotaskWake[name]) errors.push(`${name}: queueMicrotask retry; use withRetry`);
+  // Not a retry rule, but the same release boundary: a loop that leaves iterate() early pins
+  // the ledger connection, and the next commit by another process fails every later write
+  // (two service crashes, 2026-10-07). ledger-rows.ts is the one place allowed to iterate.
+  if (name !== 'src/ledger-rows.ts' && /\.iterate\s*\(/.test(source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')))
+    errors.push(`${name}: statement.iterate(); use ledgerRows() so an early exit closes the statement`);
 }
 for (const [name, policy] of Object.entries(RETRY_POLICIES)) {
   if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1

@@ -5,6 +5,7 @@ import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
+import {ledgerRows} from './ledger-rows';
 import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
@@ -1548,8 +1549,8 @@ export class SessionOwner {
       routingFailure=`Historical Slack routing evidence unavailable (${error.code}): ${error.message}`;
     }
     const inputFilter=likePrefilter('input.payload_json',terms),messageFilter=likePrefilter('event.payload_json',terms);
-    for(const row of db.query(`SELECT input.id,input.session_id,input.payload_json,input.created_at FROM session_inputs input
-      WHERE input.kind IN ('input','create')${inputFilter.sql} ORDER BY input.rowid DESC`).iterate(...inputFilter.params) as Iterable<any>) {
+    for(const row of ledgerRows<any>(db,`SELECT input.id,input.session_id,input.payload_json,input.created_at FROM session_inputs input
+      WHERE input.kind IN ('input','create')${inputFilter.sql} ORDER BY input.rowid DESC`,...inputFilter.params)) {
       if(results.size>=limit)break;
       const payload=JSON.parse(row.payload_json),text=payload.text??payload.firstInput?.text??'';
       if(typeof text!=='string'||!matches(text))continue;
@@ -1557,11 +1558,11 @@ export class SessionOwner {
       if(session)add(session,[{sessionId:`concierge:${row.session_id}`,sourceId:`input:${row.id}`,sourceVersion:hash(text),eventId:row.id,ordinal:0,role:'user',locator:row.id,textHash:hash(text),text,snippet:searchSnippet(text,terms),at:ledgerTime(row.created_at)}]);
     }
     // Only a message's latest streamed version counts; the message-version index answers that per candidate.
-    for(const event of db.query(`SELECT event.sequence,event.session_id,event.payload_json,event.created_at FROM session_owner_events event
+    for(const event of ledgerRows<any>(db,`SELECT event.sequence,event.session_id,event.payload_json,event.created_at FROM session_owner_events event
       WHERE event.kind='message'${messageFilter.sql} AND NOT EXISTS (SELECT 1 FROM session_owner_events later WHERE later.kind='message'
         AND later.turn_id IS event.turn_id AND json_extract(later.payload_json,'$.message.id')=json_extract(event.payload_json,'$.message.id')
         AND later.sequence>event.sequence)
-      ORDER BY event.sequence DESC`).iterate(...messageFilter.params) as Iterable<any>) {
+      ORDER BY event.sequence DESC`,...messageFilter.params)) {
       if(results.size>=limit)break;
       const message=JSON.parse(event.payload_json).message;
       if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))continue;

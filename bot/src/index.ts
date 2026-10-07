@@ -2436,6 +2436,7 @@ function startSessionTurnQueue() {
     shouldStop: () => draining,
     nextAttemptMs: () => nextQueuedTurnAttemptMs(),
     onError: (claim, error) => settleClaimedTurnSetupFailure(claim, error),
+    onClaimError: (error, consecutive_failures) => log("error", "session_turn_claim_failed", { ...errorFields(error), consecutive_failures }),
   });
   const resumedTurnIds = resumeBlockedParkedHeadTurns();
   if (resumedTurnIds.length > 0) {
