@@ -152,7 +152,7 @@ export class MeaningIndex {
     const sessions=db.query('SELECT id FROM sessions ORDER BY id').all() as {id:number}[];
     for(let start=0;start<sessions.length;start+=PAGE){
       const rows:Row[]=[];
-      for(const {id} of sessions.slice(start,start+PAGE)){const title=this.titleOf(id);if(!title||title.length<3||title==='Agent session'||title.startsWith('{'))continue;const key=`title:${id}`;const index=this.rowOf.get(key)??-1;if(index>=0&&this.texts[index]===title.slice(0,SNIPPET_CHARS))continue;this.store.query('DELETE FROM passages WHERE key=?').run(key);rows.push({key,target:{kind:'session',sessionId:id},text:title,at:null});}
+      for(const {id} of sessions.slice(start,start+PAGE)){const title=this.titleOf(id);if(!title||title.length<3||title==='Agent session'||title==='Imported session'||title.startsWith('{'))continue;const key=`title:${id}`;const index=this.rowOf.get(key)??-1;if(index>=0&&this.texts[index]===title.slice(0,SNIPPET_CHARS))continue;this.store.query('DELETE FROM passages WHERE key=?').run(key);rows.push({key,target:{kind:'session',sessionId:id},text:title,at:null});}
       await this.save(rows);
     }
   }
