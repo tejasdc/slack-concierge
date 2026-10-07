@@ -233,8 +233,11 @@ A running turn holds an update only if it would end with the coordinator. One ru
   (`drain-status holds <token>` for that revision, or a gate held by its own ancestor, which is how
   an updater from before the token calls it) and otherwise hands over to `update-mac.sh`.
 - Not proven here: whether macOS's Background Task Management lists these jobs (it needs an
-  administrator to read). The Mac's shared Codex daemon is not taken over across restarts until a run
-  proves it.
+  administrator to read).
+- Shared-daemon Codex turns (both machines) are still taken back after a restart, but an update
+  always waits for them (`HOOKS_NOT_PINNED_PER_RUN` in `execution-survival.ts`): their machine-wide
+  hooks carry no per-run helper folder, so they would run whatever copy an update installs under
+  the running turn. Selecting the run's own helpers for those hooks is the open follow-up.
 
 ## Shutdown
 

@@ -25,8 +25,17 @@ export function provenRunKinds(database: Database): Set<string> {
   if (!hasExecutions(database)) return new Set();
   if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
   return new Set((database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
-    WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind));
+    WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind)
+    .filter(kind => !HOOKS_NOT_PINNED_PER_RUN.has(kind)));
 }
+
+/**
+ * Kinds whose machine-wide hooks cannot yet follow the run: the shared Codex daemon's hooks carry no
+ * per-run helper folder, so they fall back to the installed copy, which an update replaces under the
+ * running turn. Until those hooks select the run's own helpers, an update waits for these turns
+ * however well they survive a restart (step-6 review, 2026-10-07).
+ */
+const HOOKS_NOT_PINNED_PER_RUN = new Set(["codex/codex-daemon"]);
 
 /** What may start while an update installs: only kinds proven to carry on through its restart. */
 export function survivableRunKinds(database: Database) {
