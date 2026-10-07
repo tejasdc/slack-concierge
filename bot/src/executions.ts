@@ -8,6 +8,7 @@
 import { rmSync } from "node:fs";
 import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
+import { watchHostsInUse } from "./watches";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
 db.exec(`
@@ -116,14 +117,16 @@ export function hostedTurns(turnIds: Iterable<number>): Set<number> {
 
 /** Release files a live execution still runs from; a release cleanup must keep them. */
 export function releaseFilesInUse(): string[] {
-  return (db.query("SELECT DISTINCT host_script FROM executions WHERE state IN ('intended','live','exited') AND host_script IS NOT NULL").all() as { host_script: string }[])
+  const runs = (db.query("SELECT DISTINCT host_script FROM executions WHERE state IN ('intended','live','exited') AND host_script IS NOT NULL").all() as { host_script: string }[])
     .map(row => row.host_script);
+  return [...new Set([...runs, ...watchHostsInUse().scripts])];
 }
 
 /** Every host protocol an admitted execution still speaks; a candidate release must adopt them all. */
 export function hostProtocolsInUse(): number[] {
-  return (db.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[])
+  const runs = (db.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[])
     .map(row => row.host_protocol);
+  return [...new Set([...runs, ...watchHostsInUse().protocols])];
 }
 
 /** A finished execution's record (its journal is the run's raw evidence) is kept this long. */

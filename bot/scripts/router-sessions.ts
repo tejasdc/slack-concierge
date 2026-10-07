@@ -31,6 +31,12 @@ router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags>
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
+router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
+router-actions.sh sessions watch list <source-flags>
+router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
+
+A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -97,6 +103,7 @@ export type SessionCommunicationRequest =
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } };
 
 class SessionUsageError extends Error {}
@@ -242,6 +249,33 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(sub==='list'&&actionId)invalid('Listing saved work takes no action ID.');
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
     return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
+  }
+  if(first==='watch') {
+    const sub=args.shift();
+    if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');
+    const separatorAt=args.indexOf('--');
+    const options=separatorAt<0?[...args]:args.slice(0,separatorAt);
+    const argv=separatorAt<0?[]:args.slice(separatorAt+1);
+    const target=sub==='file'||sub==='cancel'?options.shift():undefined;
+    if((sub==='file'||sub==='cancel')&&(!target||target.startsWith('--')))invalid(sub==='file'?'watch file needs the absolute path to watch.':'watch cancel needs the watch id.');
+    const flags=new Map<string,string>();
+    while(options.length){const flag=options.shift()!,value=options.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
+    if(sub!=='list'&&!actionId)invalid('watch needs a stable --action-id.');
+    if((sub==='file'||sub==='command')&&!until)invalid('watch needs --until.');
+    if(sub==='command') {
+      if(!cwd)invalid('watch command needs --cwd.');
+      if(!argv.length)invalid('watch command needs the command after --.');
+    } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
+    if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
+    // A bare command name becomes the path the agent's own shell would run.
+    const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
+    return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),
+      ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
+      ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{})}};
   }
   const savedKind=first==='schedule'?'scheduled':first==='bank'?'banked':null;
   const operation=savedKind?'ask':first;

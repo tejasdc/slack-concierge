@@ -29,6 +29,8 @@ export const RETRY_POLICIES = Object.freeze({
   deployHealthProbe: policy({ name: "deploy-health-probe", maxAttempts: 3, baseDelayMs: 60_000, capDelayMs: 60 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
   captureDelivery: policy({ name: "capture-delivery", maxAttempts: 5, baseDelayMs: 1_000, capDelayMs: 30_000, jitterFraction: 0.25, maxAgeMs: 15 * 60_000 }),
   noticeDelivery: policy({ name: "notice-delivery", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
+  // Handing a finished watch's one service input to its session; a restart starts the budget again.
+  watchDelivery: policy({ name: "watch-delivery", maxAttempts: 10, baseDelayMs: 5_000, capDelayMs: 5 * 60_000, jitterFraction: 0.25, maxAgeMs: 60 * 60_000 }),
   observer: policy({ name: "observer", maxAttempts: 5, baseDelayMs: 100, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 5 * 60_000 }),
   ledgerWrite: policy({ name: "ledger-write", maxAttempts: 8, baseDelayMs: 50, capDelayMs: 1_000, jitterFraction: 0.25, maxAgeMs: 5_000 }),
   // An agent's helper call waiting out a Concierge restart (deploy stop to online took ~25 s on

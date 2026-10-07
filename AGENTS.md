@@ -586,6 +586,11 @@ authorization or a change to the default rapid-iteration policy.
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
   update line). On the Mac each run is its own launchd job started through the agent-host app. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
+- **An agent that must wait for a file, directory or command registers a watch and ends its turn**
+  (`router-actions.sh sessions watch …`, `bot/src/watches.ts`): one polling worker per machine inside
+  Concierge wakes the exact session once with a retained observation, records restarts and sleep as
+  gaps, and runs a watched command as an execution host that never holds an update. See
+  [watches](docs/architecture/WATCHES.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
