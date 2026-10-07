@@ -35,6 +35,8 @@ export const RETRY_POLICIES = Object.freeze({
   // 2026-10-07); the Stop hook's own 20-second limit gets the shorter one.
   ownerRestart: policy({ name: "owner-restart", maxAttempts: 14, baseDelayMs: 500, capDelayMs: 8_000, jitterFraction: 0.25, maxAgeMs: 90_000 }),
   ownerRestartInHook: policy({ name: "owner-restart-in-hook", maxAttempts: 8, baseDelayMs: 500, capDelayMs: 4_000, jitterFraction: 0.25, maxAgeMs: 15_000 }),
+  // A host just started by its supervisor opening its socket (it does within a second).
+  hostStart: policy({ name: "host-start", maxAttempts: 120, baseDelayMs: 50, capDelayMs: 250, jitterFraction: 0.25, maxAgeMs: 15_000 }),
   slackRateLimit: policy({ name: "slack-rate-limit", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
 });
 

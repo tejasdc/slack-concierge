@@ -9,6 +9,7 @@ import { RETRY_POLICIES } from "./retry-policies";
 import { codexHistoryMessages } from "./provider-history";
 import { projectSessionProviderMessage } from "./session-projection";
 import { recordSessionEvent } from "./session-inputs";
+import { recordCodexWorkload } from "./session-fit";
 import { disconnectCodexLifecycle, observeCodexLifecycle } from "./codex-session-lifecycle";
 import {
   getConciergeProviderTurn,
@@ -24,6 +25,7 @@ function wait(milliseconds: number) {
 
 export class CodexSessionObserver {
   private stopped = false;
+  private readonly countedCompactions = new Set<string>();
   private connectionLoop: Promise<void> | null = null;
   private notificationLoop: Promise<void> = Promise.resolve();
   private readonly stoppedSignal: Promise<void>;
@@ -204,9 +206,23 @@ export class CodexSessionObserver {
         this.subscribedThreadIds.delete(threadId);
         return;
       }
+      if (event.method === "thread/tokenUsage/updated") {
+        // How full the conversation is, for routing (session-fit.ts); Codex reports it per turn.
+        const usage = event.params.tokenUsage;
+        const tokens = Number(usage?.last?.inputTokens), window = Number(usage?.modelContextWindow);
+        if (Number.isFinite(tokens) && tokens > 0)
+          recordCodexWorkload(getUniqueCodexSessionBinding(threadId)!.session_id, { contextTokens: tokens, contextWindow: Number.isFinite(window) ? window : null });
+        return;
+      }
       if (event.method === "thread/compacted"
         || event.method === "item/started" && event.params.item?.type === "contextCompaction") {
         const binding = getUniqueCodexSessionBinding(threadId)!;
+        // Both notifications can describe one compaction; count it once per turn.
+        const compactionKey = `${threadId}:${event.params.turnId ?? ""}`;
+        if (!event.params.turnId || !this.countedCompactions.has(compactionKey)) {
+          if (event.params.turnId) this.countedCompactions.add(compactionKey);
+          recordCodexWorkload(binding.session_id, { compactions: 1 });
+        }
         recordSessionEvent({ eventId: `provider-compaction:${randomUUID()}`, sessionId: binding.session_id,
           kind: "provider-activity", payload: { providerThreadUuid: threadId,
             providerTurnId: event.params.turnId ?? null, activity: "compaction", source: event.method } });

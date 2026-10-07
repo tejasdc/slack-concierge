@@ -1,6 +1,7 @@
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { currentAccount } from "./provider-accounts";
+import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { WARN_LEAD_MS, accountsWithRoom, tightestCurrentWindow, usagePressureBrief } from "./provider-usage-forecast";
@@ -130,7 +131,9 @@ export function noticeAuthHold(input: {provider: UsageProvider; model:string|nul
   const turn = db.query('SELECT session_id, accepted_input_id FROM turns WHERE id=?')
     .get(input.turnId) as {session_id:number; accepted_input_id:string|null}|null;
   if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
-  const account=input.account??currentAccount(input.provider)?.label??'the signed-in account';
+  // Agents' account, never the terminal's login in the main folder when accounts have homes.
+  const account=input.account??(input.provider==='claude-code'&&claudeRunsFromOwnHomes()?selectedClaudeHome()?.label:null)
+    ??currentAccount(input.provider)?.label??'the signed-in account';
   const machine=machineName();
   const head=db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)

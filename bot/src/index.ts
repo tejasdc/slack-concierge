@@ -344,6 +344,15 @@ import {warmSpeechEngine} from './speech-engine';
 // already warm rather than paying the model load while someone waits.
 warmSpeechEngine();
 
+// Session search by meaning: indexing runs in the background from startup, in both compositions.
+{
+  const {startMeaningIndex}=await import('./meaning-index');
+  const {getSessionById}=await import('./state');
+  const {dirname}=await import('node:path');
+  const {sessionMetadata}=await import('./session-inputs');
+  startMeaningIndex(dirname(db.filename),id=>{const session=getSessionById(id);return session?(sessionMetadata(session).title as string|undefined)??null:null;});
+}
+
 if(process.env.CONCIERGE_SLACK_ENABLED==='0') {
   const {startSessionRuntime}=await import('./session-runtime');
   await startSessionRuntime();

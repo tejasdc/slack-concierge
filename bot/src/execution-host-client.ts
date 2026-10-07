@@ -9,6 +9,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type { ClaudeCodeTransport, TransportFrameMeta } from "./claude-code";
+import { RETRY_POLICIES } from "./retry-policies";
+import { nextRetry } from "./retry-core";
 
 export const HOST_PROTOCOL_VERSION = 1;
 /** Every host protocol this coordinator can adopt; a release must keep each one any live execution still speaks. */
@@ -236,11 +238,15 @@ export function hostScriptOfProcess(hostPid: number): string | null {
   try { return readFileSync(`/proc/${hostPid}/cmdline`, "utf8").split("\0")[2] || null; } catch { return null; }
 }
 
-async function connectWhenReady(socketPath: string, deadlineMs: number): Promise<HostConnection> {
+async function connectWhenReady(socketPath: string): Promise<HostConnection> {
+  const startedAtMs = Date.now();
   let last: unknown = null;
-  while (Date.now() < deadlineMs) {
-    try { return await HostConnection.connect(socketPath); }
-    catch (error) { last = error; await new Promise(resolve => setTimeout(resolve, 50)); }
+  for (let attempt = 1; ; attempt++) {
+    const connected = await HostConnection.connect(socketPath).catch(error => { last = error; return null; });
+    if (connected) return connected;
+    const next = nextRetry({ policy: RETRY_POLICIES.hostStart, attempt, startedAtMs, nowMs: Date.now(), classification: "transient" });
+    if (next.action === "stop") break;
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, next.atMs - Date.now())));
   }
   throw new HostUnavailableError(`the execution host never opened its socket: ${last instanceof Error ? last.message : String(last)}`);
 }
@@ -464,7 +470,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
               initialMeta: { kind: "initial" } } });
           execution.onLaunched?.(launch);
-          await establish(await connectWhenReady(socketPath, Date.now() + 15_000));
+          await establish(await connectWhenReady(socketPath));
         } else {
           await establish(await HostConnection.connect(socketPath));
         }

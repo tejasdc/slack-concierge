@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {db,type SessionRow} from './state';
-import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata} from './session-inputs';
+import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -93,7 +93,9 @@ export function inboxMessage(row:any) {
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
-    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const},...(eventPayload.relayed?{relayed:true}:{})}:{}),
+    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
+      // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
+      ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
     // offers to split it back out, without labelling his own thread replies.
     ...(link?.attached?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{}),
@@ -245,6 +247,20 @@ export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;input
     payload:{text:result.text,replyToMessage:{kind:'message',sessionId:`concierge:${result.sessionId}`,messageId:result.inputId},
       postedBy:'owner-relay',relayed:true,...(result.attachments?.length?{attachments:result.attachments}:{})}});
   return root;
+}
+/**
+ * His reply inside a thread, going straight to the agent working on it: his message stays in the
+ * thread as an accepted entry with no router turn behind it, its receipt waits on that agent and
+ * names it, and the Timeline says where it went. The request that carries his words is opened by
+ * the communication layer (`forwardReply`), never here.
+ */
+export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessionInput,target:{sessionId:string;title:string|null;topicId:string;root:string}) {
+  const payload=JSON.parse(input.payload_json);
+  const to={sessionId:target.sessionId,title:target.title};
+  recordSessionEvent({eventId:`forwarded:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'accepted',payload:{origin:'human',text:payload.text??'',forwardedTo:to}});
+  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'waiting',forwardedTo:to}),input.id);
+  recordSessionEvent({eventId:`topic-forward:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'topic',
+    payload:{change:'forwarded',topicId:target.topicId,by:{kind:'human'},to,inputId:input.id}});
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {

@@ -200,6 +200,15 @@ authorization or a change to the default rapid-iteration policy.
   same ledger. Every message mark keys the canonical session plus exact provider message
   ID; Thinkering may cache projections but must not use browser storage as cross-device
   truth or reopen a neighboring message when an exact target is unavailable.
+- Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
+  "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
+  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy.
+  It embeds titles, requests (counted toward their target session), inputs and final replies,
+  plus the archive's prompts read from Thinkering's index. It never embeds tool output,
+  assistant streaming text or transcript files. Vectors live in `meaning-index.db` beside the
+  ledger, never in it. Results fuse word and meaning ranks and say which matched. The Mac has no
+  engine and searches words only. The decision history, starting with the September QMD
+  evaluation, is in [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing
@@ -247,7 +256,12 @@ authorization or a change to the default rapid-iteration policy.
   (`WRITING_PROJECTS`, today `messaging-agent`) cannot send work requests: it reports a missing
   ability and the Inbox routes the building [decision: writing-agents-do-not-build]. A new
   session on a peer needs `--machine-need`; new work runs on the server
-  [decision: sessions-placed-by-physical-need]. `needs_you` and a `needs_decision` reply need
+  [decision: sessions-placed-by-physical-need]. Concierge records each session's context and the Inbox topics
+  it handles and shows them in search and context; the router chooses, and the receiving session
+  judges fit: a request on a topic new to it says so, and it may hand it back (`--hand-back
+  not-my-subject|too-loaded`, closing failed with a ready fresh-session command). Concierge never
+  requires a reason or reads compactions as fit (`session-fit.ts`, [session fit](docs/architecture/SESSION-FIT.md);
+  2026-10-07 [decision: router-decides-session-reuse] [decision: receiving-session-judges-fit]). `needs_you` and a `needs_decision` reply need
   `--his-words` (verified against his messages when they are in this ledger) and
   `--why-not-answered` [decision: questions-carry-his-words], plus `--only-he-can`
   sign-in|secret|device|ambiguous: permission, approval and design questions are refused
@@ -426,10 +440,21 @@ authorization or a change to the default rapid-iteration policy.
   his `open` state brings one back by hand (Tejas, 2026-10-07: "remind me later … 30 minutes, 3
   hours, 6 hours, one week") [decision: remind-me-later-on-questions]. **The open-threads list is ordered by
   what needs him** (`listTopics`: a decision or something to read first, then work moving, then unread, then
-  the quiet rest, newest first within each; closed threads by closure), and **reopening a thread brings
+  the quiet rest, newest first within each by the conversation's own time; closed threads by `closedAt`), **a
+  thread's time, newest entry and unread mark come from its conversation alone** (his messages, posts and
+  returns under its roots), never from housekeeping events, which stay in the Timeline (withdrawing 39 stale
+  questions on 2026-10-07 had dated a Sept 22 thread 4:17 PM), and **reopening a thread brings
   back the questions its closure ended** (`restoreExpiredByClosure`, his reopen and the router's alike), so
   the Threads list's one-tap close can carry an Undo that loses nothing (Tejas, 2026-10-07: "everything is
-  kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. A service notice (no provider turn
+  kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. **A reply he types inside a thread goes to the agent working on
+  it, not to the router** (`replyTargets` in session-topics.ts decides from the thread's record and the
+  app shows the choice; `SessionOwner.threadReplyTarget` applies it on the send; `forwardReply` in
+  session-communication.ts carries his words as a request to that agent, closed only by its own
+  `sessions reply`, each reply posted into the thread as the agent's words by `postForwardedReply`; the
+  router is woken by none of it and stays a choice he can address) (Tejas, 2026-10-07: "I should just
+  be talking with the agents who are working on this thread … my responses go back to the same
+  session") [decision: thread-replies-go-to-the-working-agent]; design in thinkering
+  docs/plans/2026-10-07-reply-to-who-asked.md. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server
@@ -555,10 +580,11 @@ authorization or a change to the default rapid-iteration policy.
   back by identity at startup (`claimAdoptableExecutions`), before steering and turn recovery, and
   replays the host's record to rebuild its state. The host holds no policy and is never patched in
   place; never restart, kill or "clean up" `concierge-exec-*` units by hand: they are agents at work.
-  Shared-daemon Codex turns are followed by their exact ids after a restart. An update waits only
-  for runs that would end with Concierge: a kind of run stops holding updates once this machine has
-  seen one survive a restart (`execution-survival.ts`, one rule for the gate, the queue and the update
-  line). The Mac keeps direct child processes until its own host lands. See
+  Shared-daemon Codex turns are followed by their exact ids after a restart, and a Codex turn on
+  its own account's process runs in a host too. An update waits only for runs that would end with
+  Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
+  at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
+  update line). The Mac keeps direct child processes until its own host lands. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
@@ -604,8 +630,11 @@ authorization or a change to the default rapid-iteration policy.
   writes the other's credentials, and a machine that is not answering is shown as such
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
 - For Claude, pressing an account selects the home for future turns. It never calls the
-  credential-copy activation or snapshots the outgoing credential. The default login has
-  no override; extra accounts launch from their own homes. **Changing account never takes an
+  credential-copy activation or snapshots the outgoing credential. Extra accounts launch from
+  their own homes, and once any exists agents never run on the main folder's login: a hand
+  `claude auth login` or `/login` there replaces that login with no copy, so it is the
+  terminal's alone (`claudeRunsFromOwnHomes`; it silently displaced his personal account at
+  19:31 UTC on 2026-10-07). **Changing account never takes an
   ability away from agents** [decision: account-change-keeps-agent-abilities] (Tejas, 2026-10-07: "if the login has changed, the agents are losing
   access to doing things, that ... never should happen"): an extra home keeps only its login
   (`.credentials.json`, `.claude.json`, `.account-email`, remote settings and policy limits) and

@@ -32,7 +32,7 @@ import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAcc
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
+import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
@@ -115,12 +115,21 @@ export class SessionExecutionHost {
     const defaultAccount=currentAccount(provider);
     const selection=provider==='claude-code'?claudeAccountSelection():null;
     const saved=listProfiles(provider);
-    const profiles=provider==='claude-code'&&defaultAccount
+    // Where accounts have homes of their own, the main folder's login is a terminal's and is never
+    // offered: agents never run on it, so a hand sign-in there cannot displace theirs.
+    const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
+    const profiles=provider==='claude-code'&&ownHomes
+      ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
+      :provider==='claude-code'&&defaultAccount
       ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
         ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
       :saved;
-    const account=provider==='claude-code'&&selection&&selection.profileId!=='default'
+    const account=provider==='claude-code'&&ownHomes
+      ?profiles.find(profile=>profile.current)??null
+      :provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
+    const terminalLogin=ownHomes&&defaultAccount&&defaultAccount.label!==account?.label
+      ?` The sign-in typed in a terminal here (${defaultAccount.label}) is that terminal's own; agents never run on it.`:'';
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
     const usage=providerAccountUsage(provider);
@@ -141,8 +150,9 @@ export class SessionExecutionHost {
       pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
-      message:account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
-        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
+      message:(account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
+        :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
+        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`)+terminalLogin,
       account,profiles:checked,usage};
   }
 /**
@@ -254,7 +264,7 @@ export class SessionExecutionHost {
   }
   private claudeProfile(profileId:string):{id:string;label:string}|null{
     const defaultAccount=currentAccount('claude-code');
-    return profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}
+    return profileId==='default'&&defaultAccount&&!claudeRunsFromOwnHomes()?{id:'default',label:defaultAccount.label}
       :listProfiles('claude-code').find(item=>item.id===profileId)??null;
   }
   private saveProviderAuthProfile(provider:string,label:string):readonly ProviderProfile[]{
@@ -289,39 +299,51 @@ export class SessionExecutionHost {
     const still=move.outgoing?(back?.status==='applied'?` Still on ${move.outgoing.label}.`:` Codex is back on ${move.outgoing.label}, which did not answer either.`):'';
     return {status:'failed',needsSignIn:true,detail:`${move.incoming.label} could not sign in from this machine.${still}`};
   }
+  private claudeSwitching=false;
+  private async switchClaudeAccount(profileId:string):Promise<ProviderAuthRefreshResult>{
+    const key='claude-code' as const;
+    const profile=this.claudeProfile(profileId);
+    if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
+    const home=profile.id==='default'?null:accountHome(key,profile.id);
+    if(profile.id!=='default'){
+      if(!sharedClaudeHome(profile.label,home!,true)){
+        log('warn','provider_profile_switch_refused',{provider:key,reason:'history_unavailable'});
+        return {status:'failed',detail:'That Claude account could not be given this machine\'s shared settings, instructions and history, so agents would run without them. The previous account is still selected.'};
+      }
+    }
+    forgetClaudeHomeCheck(home);
+    const check=await claudeAccountWorks(home,profile.label);
+    // At its limit is still signed in and still his choice: select it, and its work waits for the
+    // reset or runs on the other account while that one has room.
+    const full=check.reason==='out_of_room';
+    if(!check.ok&&!full)markClaudeHomeRefused(home);
+    if(!check.ok&&!full){
+      log('warn','provider_profile_switch_refused',{provider:key,reason:check.reason});
+      const why=check.reason==='signed_out'?`${profile.label} needs signing in again on this machine.`
+        :check.reason==='wrong_account'?`That sign-in is now a different account than ${profile.label}.`
+        :check.reason==='settings_not_in_effect'?`${profile.label} signed in, but agents on it could not write files or run commands with this machine's settings.`
+        :check.reason==='timeout'?`${profile.label} did not answer in time.`
+        :`${profile.label} could not finish a test task on this machine.`;
+      return {status:'failed',needsSignIn:check.reason==='signed_out'||check.reason==='wrong_account',detail:`${why} Nothing was switched.`};
+    }
+    if(!full)markClaudeHomeVerified(home);
+    selectClaudeAccount(profile.id,profile.label);
+    const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
+    const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
+    if(hasRoom)releaseUsageHeldWork(key);
+    // The account just proved it answers, so work held for a sign-in may go to it now.
+    if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
+    return {status:'completed',activation:{status:'applied',detail:full?`New Claude work will use ${profile.label}. It is at its usage limit right now, so its work waits for the reset or runs on another account with room.`:`New Claude work will use ${profile.label}.`},
+      resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
+  }
   private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
     if(key==='claude-code'){
-      const profile=this.claudeProfile(profileId);
-      if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
-      const home=profile.id==='default'?null:accountHome(key,profile.id);
-      if(profile.id!=='default'){
-        if(!sharedClaudeHome(profile.label,home!,true)){
-          log('warn','provider_profile_switch_refused',{provider:key,reason:'history_unavailable'});
-          return {status:'failed',detail:'That Claude account could not be given this machine\'s shared settings, instructions and history, so agents would run without them. The previous account is still selected.'};
-        }
-      }
-      forgetClaudeHomeCheck(home);
-      const check=await claudeAccountWorks(home,profile.label);
-      if(!check.ok)markClaudeHomeRefused(home);
-      if(!check.ok){
-        log('warn','provider_profile_switch_refused',{provider:key,reason:check.reason});
-        const why=check.reason==='signed_out'?`${profile.label} needs signing in again on this machine.`
-          :check.reason==='wrong_account'?`That sign-in is now a different account than ${profile.label}.`
-          :check.reason==='settings_not_in_effect'?`${profile.label} signed in, but agents on it could not write files or run commands with this machine's settings.`
-          :check.reason==='timeout'?`${profile.label} did not answer in time.`
-          :`${profile.label} could not finish a test task on this machine.`;
-        return {status:'failed',needsSignIn:check.reason==='signed_out'||check.reason==='wrong_account',detail:`${why} Nothing was switched.`};
-      }
-      markClaudeHomeVerified(home);
-      selectClaudeAccount(profile.id,profile.label);
-      const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
-      const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
-      if(hasRoom)releaseUsageHeldWork(key);
-      // The account just proved it answers, so work held for a sign-in may go to it now.
-      if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
-      return {status:'completed',activation:{status:'applied',detail:`New Claude work will use ${profile.label}.`},
-        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
+      // One switch at a time: two presses in a row used to race on preparing the same home and the
+      // second was refused for a reason that was not true.
+      if(this.claudeSwitching)return {status:'failed',detail:'Another Claude switch is still finishing on this machine. Nothing was changed.'};
+      this.claudeSwitching=true;
+      try { return await this.switchClaudeAccount(profileId); } finally { this.claudeSwitching=false; }
     }
     const source=codexProfileSource(profileId);
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');

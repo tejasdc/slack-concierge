@@ -924,6 +924,12 @@ deploy() {
     "$CONTROL_DIR/install-transcriber.sh"
   fi
 
+  echo "=== install/verify session search engine ==="
+  if [ -x "$CONTROL_DIR/install-meaning-engine.sh" ]; then
+    DEPLOY_FAILURE_REASON="The session search engine could not be installed or verified."
+    "$CONTROL_DIR/install-meaning-engine.sh"
+  fi
+
   DEPLOY_FAILURE_REASON="The durable restarting checkpoint could not be recorded."
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="

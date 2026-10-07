@@ -6,6 +6,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {ledgerRows} from './ledger-rows';
+import {meaningIndex} from './meaning-index';
 import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
@@ -25,11 +26,12 @@ import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
-import {acceptedInputAuthor,authorSession} from './session-message-author';
+import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message-author';
+import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,type InboxCapture} from './session-inbox';
-import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,resolveTopicMessage,topicEntries,topicHumanAction,TopicError,validateReviewSelection} from './session-topics';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection} from './session-topics';
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -1221,7 +1223,8 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review','door','agentSource']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
+    if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const agent=agentTestSource(input.agentSource);
     // A reply may pin the exact questions it answers; the owner proves they belong to the
@@ -1239,14 +1242,43 @@ export class SessionOwner {
       if(!this.view(session).capabilities.steer||acceptedInputForTurn(active.id)?.kind==='fork')throw new SessionOwnerError('This execution does not support steering.',409,'CAPABILITY_UNAVAILABLE');
       if(active.stop_requested_at)throw new SessionOwnerError('The selected live run is stopping; input was not steered.',409,'RUN_STOPPING');
     }
+    // A reply inside an Inbox thread goes to the agent working on it unless he addressed the
+    // router; the owner decides from the thread's record and he can override in the To line
+    // (design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md).
+    const forward=!agent&&input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
     const retained=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
       // His message is his answer to whatever this session (or Inbox thread) asked him.
       if(!saved.duplicate&&!agent)clearNeedsForHumanInput(session.id,input);
+      if(forward&&!saved.duplicate)recordForwardedThreadReply(session,saved.input,forward);
       return saved;
     })();
+    if(forward) {
+      if(!this.communication)throw new SessionOwnerError('Session communication is unavailable; the reply was kept and not sent.',503);
+      this.communication.forwardReply({inbox:session,inputId:retained.input.id,target:forward,text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
+      return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
+    }
     return {operation:this.receipt(this.dispatch(retained.input))};
+  }
+  /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
+  private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number;title:string|null;topicId:string;root:string}|null {
+    if(!sessionMetadata(session).inbox)return null;
+    const messageId=input.replyToMessage?.messageId;
+    if(typeof messageId!=='string'||input.deliverTo==='router')return null;
+    const root=inboxThreadRoot(session.id,messageId);
+    const topicId=root?topicOfRoot(root):null;
+    if(!root||!topicId) {
+      if(typeof input.deliverTo==='string')throw new SessionOwnerError('That message is not in a thread yet, so only the router can take this reply.',409,'REPLY_TARGET_UNKNOWN');
+      return null;
+    }
+    const targets=replyTargets(topicId,messageId,candidate=>this.canSend(candidate));
+    const chosen=typeof input.deliverTo==='string'?input.deliverTo:targets.default;
+    if(chosen===targets.router)return null;
+    const choice=targets.choices.find(item=>item.sessionId===chosen);
+    const local=localSessionNumber(chosen);
+    if(!choice||local===null)throw new SessionOwnerError('That session is not working on this thread, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
+    return {sessionId:chosen,local,title:choice.title,topicId,root};
   }
   admit(input:OwnerAdmission) {
     // A returned answer can carry the files it answered with. They are retained custody the
@@ -1535,7 +1567,10 @@ export class SessionOwner {
     // Keep what the row already knows about its author, such as a deliberate post, or that the
     // service wrote it; only an agent's message is named by the session it came from.
     const kind=display.author?.kind??(display.role==='user'?'unknown':'agent');
-    return {...display,author:{...(display.author??{}),kind,...(kind==='agent'?{session:authorSession(sourceSessionId)}:{})}};
+    // A post from the agent he replied to carries that agent's identity; it is named, not the router.
+    const {fromSession,...author}=(display.author??{}) as Record<string,any>;
+    const named=typeof fromSession==='string'?sessionAuthor(fromSession):undefined;
+    return {...display,author:{...author,kind,...(kind==='agent'?{session:named??authorSession(sourceSessionId)}:{})}};
   }
   /**
    * A thread's entries are the Inbox's own messages, so they carry the same attribution its
@@ -1579,6 +1614,8 @@ export class SessionOwner {
     const input=object(body);only(input,['query','limit','includeTools']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
+    // Started before the word search; the request goes out once that synchronous scan yields.
+    const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
     const matches=(text:string)=>{const lower=text.toLocaleLowerCase();return terms.every(term=>lower.includes(term.toLocaleLowerCase()));};
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
@@ -1663,7 +1700,39 @@ export class SessionOwner {
         coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}
-    return {results:[...results.values()].slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence})),coverage};
+    // Word matches keep the order they were found in; meaning matches are ranked by closeness.
+    // Reciprocal-rank fusion of the two, as measured in the September evaluation
+    // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
+    const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
+    const meaning=meaningSearch?await meaningSearch.catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})):null;
+    if(meaning?.available) {
+      // Archive matches that are not a session here are retained together, as the word path does above.
+      const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
+      const retained=await Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
+        ?this.runtime.sources.context({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId,limit:1})
+        :Promise.resolve(null)));
+      let unretained=0;
+      for(const [index,hit] of meaning.hits.entries()) {
+        let session:SessionRow|null=null;
+        if(hit.target.kind==='session')session=getSessionById(hit.target.sessionId);
+        else {
+          const outcome=retained[index]!;
+          session=native(hit.target.nativeId);
+          if(!session&&outcome.status==='fulfilled'&&outcome.value)session=this.sourceSession(outcome.value.source);
+          if(!session){unretained++;continue;}
+        }
+        if(!session||meaningRank.has(session.id))continue;
+        meaningRank.set(session.id,meaningRank.size);meaningScore.set(session.id,hit.score);
+        add(session,[{sessionId:`concierge:${session.id}`,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'user',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,corpus:'meaning',score:hit.score}]);
+      }
+      if(unretained){coverage.complete=false;coverage.omissions.push(`${unretained} archive meaning matches could not be retained and were omitted.`);}
+    }
+    if(meaning&&(!meaning.available||meaning.reason))coverage.omissions.push(meaning.reason??'Meaning search unavailable.');
+    if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
+    coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
+    const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
+    const ordered=[...results.values()].sort((a,b)=>fused(b.session.id)-fused(a.session.id));
+    return {results:ordered.slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})),coverage};
   }
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);

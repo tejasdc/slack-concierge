@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
+import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
@@ -15,7 +15,8 @@ import {savedWorkSettings} from './saved-work';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
-import { isWritingSession, MACHINE_NEED_REQUIRED, WRITING_SESSION_REFUSAL } from './session-roles';
+import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
+import { backfillSessionWorkload, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -37,6 +38,7 @@ type RequestRow = {
     source_root_ts: string;
     source_input_id: string | null;
     target_input_id: string | null;
+    thread_root_input_id: string | null;
     action_id: string;
     target_session_id: number;
     target_channel: string;
@@ -228,11 +230,26 @@ export class SessionCommunicationCoordinator {
         }
         return ids;
     }
-    search(input: {
+    /**
+     * The routing facts beside each local candidate (session-fit.ts), for the topic this caller works
+     * on: its named Inbox thread, else the topic of the human message its own work started from.
+     */
+    private withWorkload<T extends {session?:any}>(entries:T[],actor:Actor,thread:unknown):(T&{workload?:unknown})[] {
+        const source=getSessionById(actor.session)!;
+        const named=thread!==undefined&&sessionMetadata(source).inbox?inboxRequestThread(source,thread):null;
+        const topic=topicOf(topicRootFor(named,actor.inputId));
+        return entries.map(entry=>{
+            const local=typeof entry.session?.id==='string'?/^concierge:(\d+)$/.exec(entry.session.id):null;
+            const session=local?getSessionById(Number(local[1])):null;
+            return session?{...entry,workload:sessionWorkload(session,entry.session.execution,topic)}:entry;
+        });
+    }
+    async search(input: {
         source: CommunicationSource;
         concepts: string[];
         limit?: number;
         peer?: string;
+        thread?: string;
     }) {
         const actor = this.actor(input.source);
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
@@ -244,11 +261,13 @@ export class SessionCommunicationCoordinator {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // Sessions live on several instances; discovery covers all of them unless one was named.
-        return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local();
+        const found:any = await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
+        return {...found,results:this.withWorkload(found.results??[],actor,input.thread)};
     }
     async context(input: {
         source: CommunicationSource;
         address: string;
+        thread?: string;
     }) {
         const actor = this.actor(input.source);
         const remote = this.dependencies.peers?.splitAddress(input.address);
@@ -261,7 +280,8 @@ export class SessionCommunicationCoordinator {
             }
         }
         const address = this.address(input.address);
-        return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        const context:any = await this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        return this.withWorkload([context],actor,input.thread)[0];
     }
     async projects(input:{source:CommunicationSource;peer?:string}) {
         this.actor(input.source);
@@ -596,6 +616,8 @@ export class SessionCommunicationCoordinator {
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
+        /** A session a new one should consult for context; its address is put in the first input. */
+        consult?:string;
         saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number};
     }) {
         if (this.stopped)
@@ -605,6 +627,11 @@ export class SessionCommunicationCoordinator {
         text(input.text);
         if(input.requestedEffect==='work'&&isWritingSession(getSessionById(actor.session)!))throw new Error(WRITING_SESSION_REFUSAL);
         if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
+        if(input.consult!==undefined) {
+            if(!input.provider||input.provider==='chatgpt')throw new Error('--consult points a new coding session at earlier work; it needs --provider.');
+            if(typeof input.consult!=='string'||!/^([\w-]+\/)?session:[\w-]+$/.test(input.consult))throw new Error('--consult takes an exact session address from discovery.');
+            input={...input,text:`${consultPointer(input.consult)}\n\n${input.text}`};
+        }
         // A discovered address already says where the session lives.
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (input.resurrect && !remote) {
@@ -671,6 +698,7 @@ export class SessionCommunicationCoordinator {
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
+            ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -694,6 +722,14 @@ export class SessionCommunicationCoordinator {
         if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
         if (target?.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
+        // A session given a topic it does not handle yet is told so, with the other topics it is on,
+        // so it can judge fit and hand the request back (session-fit.ts). Facts, never a refusal.
+        const topicRoot=topicRootFor(threadRoot,actor.inputId);
+        let fitNote:string|null=null;
+        if(target&&targetSession&&!historical&&!consultationOnly&&targetSession.provider_id!=='chatgpt'&&!takesManySubjects(targetSession)&&input.requestedEffect==='work') {
+            const fit=forTopic(targetSession,topicOf(topicRoot));
+            if(fit&&!fit.holds)fitNote=newTopicNote(fit);
+        }
         for (const dependency of after)
             if (this.row(dependency).source_session_id !== actor.session)
                 throw new Error('A continuation may depend only on this session’s accepted requests.');
@@ -716,7 +752,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -729,12 +765,12 @@ export class SessionCommunicationCoordinator {
             const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encoded);
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(fitNote?{newTopic:true}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
                     input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
-                    now,sourceInput,`request:${id}`,threadRoot);
+                    now,sourceInput,`request:${id}`,threadRoot,topicRoot??'');
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
@@ -747,6 +783,71 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return this.receipt(this.row(id));
+    }
+    /**
+     * His reply inside an Inbox thread, carried to the agent working on it as a request rather than
+     * as a bare message: it closes only by that agent's own `sessions reply`, queues behind a shared
+     * agent's current run instead of steering into it, and comes back attributed to the agent. The
+     * Inbox router is not woken: each reply is posted into the thread as the agent's words
+     * (`postForwardedReply`). Design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md;
+     * review by concierge:3756, which ruled out inferring the answer from the agent's closing text.
+     */
+    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actionId=`forward:${input.inputId}`;
+        const existing=db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null;
+        if(existing)return existing.request_id;
+        const target=getSessionById(input.target.local);
+        if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
+        // The schema requires a source turn; a forwarded reply has none, because no router turn
+        // carries it. The Inbox's latest turn stands in as the reference and is never read for it.
+        const standIn=db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(input.inbox.id) as {id:number}|null;
+        if(!standIn)throw new Error('The Inbox has no turn to record this request against.');
+        const id=randomUUID(),now=this.now();
+        const address=sessionAddress(target);
+        const attachments=input.attachments?.length?input.attachments:[];
+        const firstInput={text:`Session request ${id}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${id} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...(attachments.length?{attachments}:{})};
+        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},...(attachments.length?{attachments}:{})});
+        db.transaction(()=>{
+            db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target.id,null,null,payload,hash(payload),now+STILL_WAITING_AFTER_MS,now,input.inputId,`request:${id}`,input.target.root);
+            retainSessionInput({id:`request:${id}`,sessionId:target.id,scope:`session:${input.inputId}`,actionId:`request:${id}`,kind:'input',origin:'agent',payload:firstInput,sourceInputId:input.inputId,requestId:id});
+            const operation=retainSessionInput({sessionId:input.inbox.id,scope:`communication:${input.inputId}`,actionId,kind:'request',origin:'human',
+                payload:{text:input.text,sourceInputId:input.inputId,targetSessionId:`concierge:${target.id}`,targetAddress:address,requestedEffect:'work',thread:input.target.root,forwardedReply:true}});
+            recordSessionEvent({eventId:`request:${id}`,sessionId:input.inbox.id,inputId:operation.input.id,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${target.id}`}});
+        })();
+        log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
+        this.wake();
+        return id;
+    }
+    /**
+     * A reply to a forwarded thread reply is posted into that thread as the agent's own words the
+     * moment it is recorded; a final one settles his message's receipt; a stall is a service post.
+     * Nothing here wakes the router.
+     */
+    private postForwardedReply(request:RequestRow,event:EventRow,declared:any,forwarded:{inboxInputId:string;topicId:string}) {
+        const inbox=getSessionById(request.source_session_id);
+        if(!inbox)return;
+        const text=String(declared.text??'').trim();
+        const attachments=Array.isArray(declared.attachments)?declared.attachments as string[]:[];
+        const stalled=event.kind==='overdue'||!!declared.stalled;
+        const eventId=`post:forward:${event.event_id}`;
+        const root=request.thread_root_input_id??request.source_input_id!;
+        db.transaction(()=>{
+            if((text||attachments.length)&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+                recordSessionEvent({eventId,sessionId:inbox.id,inputId:root,kind:'post',
+                    payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${inbox.id}`,messageId:forwarded.inboxInputId},requestId:request.request_id,
+                        ...(stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:`concierge:${request.target_session_id}`}),...(attachments.length?{attachments}:{})}});
+            if(event.kind==='final'||stalled) {
+                const to={sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id};
+                db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(stalled
+                    ?{state:'uncertain',forwardedTo:to,error:{code:'FORWARDED_REPLY_STALLED',message:text||'The agent did not answer.'}}
+                    :{state:declared.workDisposition==='failed'?'failed':'completed',forwardedTo:to,...(declared.workDisposition==='failed'?{error:{code:'FORWARDED_REPLY_FAILED',message:text}}:{})}),request.source_input_id!);
+            }
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+        })();
+        log('info','inbox_reply_answer_posted',{request_id:request.request_id,event_kind:event.kind,thread:root,stalled});
     }
     reply(input: {
         source: CommunicationSource;
@@ -764,6 +865,8 @@ export class SessionCommunicationCoordinator {
         checked?:string;
         not_checked?:string;
         all_done?:boolean;
+        /** The receiving session's push-back: not-my-subject or too-loaded, with a failed disposition. */
+        hand_back?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -774,6 +877,14 @@ export class SessionCommunicationCoordinator {
             throw new Error('--his-words, --why-not-answered and --only-he-can belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        if(input.hand_back!==undefined) {
+            if(input.workDisposition!=='failed')throw new Error('--hand-back goes with --work-disposition failed: the request returns to the requester to start fresh.');
+            const replier=getAcceptedSessionInput(input.source.input_id??''),session=replier?getSessionById(replier.session_id):null;
+            if(!session)throw new Error('--hand-back needs this session\'s exact native source.');
+            // A peer session's local address means nothing to a requester on another machine.
+            const viaPeer=!!(this.dependencies.peers&&!this.local(input.request_id)&&this.dependencies.peers.hasDelivery(input.request_id));
+            input={...input,text:handBackText(input.hand_back,input.text,session,viaPeer?null:sessionAddress(session))};
+        }
         if(input.workDisposition==='needs_decision')
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can})};
         else if(input.workDisposition==='completed')
@@ -853,7 +964,8 @@ export class SessionCommunicationCoordinator {
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(attachments.length?{attachments}:{}),
-            ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}) };
+            ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
+            ...(input.hand_back?{handBack:input.hand_back}:{}) };
         const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
         if (prior) {
             if (prior.request_id !== request.request_id || prior.payload_json !== JSON.stringify(payload))
@@ -1160,6 +1272,10 @@ export class SessionCommunicationCoordinator {
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
+        // A forwarded thread reply's answer goes into the thread as the agent's words, never as a
+        // return that would start a router turn.
+        const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        if(forwarded&&request.source_input_id&&typeof forwarded.inboxInputId==='string'){this.postForwardedReply(request,event,declared,forwarded);return;}
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -1355,7 +1471,9 @@ export class SessionCommunicationCoordinator {
         }
     }
     start() { if (!this.stopped)
-        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start();
+        // Routing facts for sessions that worked before they were recorded; off every read path.
+        const backfill = setTimeout(() => void backfillSessionWorkload(() => this.stopped).catch(error => log('warn', 'session_workload_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000); backfill.unref?.(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
     async idle() { do {
         await Promise.resolve();
         await Promise.all([...this.tasks.values()]);

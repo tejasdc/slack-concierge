@@ -12,7 +12,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection} from './provider-account-selection';
 import {log} from './log';
-import {claudeAccountWorks} from './provider-activation';
+import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 
 /**
  * What an extra Claude home keeps for itself: its own login and the per-login state Claude writes
@@ -24,16 +24,21 @@ import {claudeAccountWorks} from './provider-activation';
  */
 // Per-login also covers what Claude stamps with the signed-in account and deletes at logout
 // (remote settings and policy limits), so one account never reads another's.
+// It also covers sign-in state and the locks Claude takes while it renews a login (`.storage-write`,
+// `.oauth_refresh.lock*`): linking a lock to the main folder's would tie this account's renewals to
+// whatever a terminal there is doing, and a lock that happened to exist during a switch would be
+// left dangling (GPT-6 Astra's stand-in review, 2026-10-07).
 const PER_LOGIN=new Set(['.credentials.json','.claude.json','.claude.json.lock','.account-email','backups',
-  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json']);
-const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name);
+  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json',
+  'hfi-auth.json','.session_ingress_token','.storage-write']);
+const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name)||/^\.oauth_refresh\.lock/.test(name);
 /**
  * Runtime scratch Claude recreates per process. Shared when possible, but a private copy is
  * harmless and is never moved: a live process may be using it (one was, at the 19:40 repair on
  * 2026-10-07).
  */
 const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','statsig','paste-cache','.last-cleanup',
-  '.last-update-result.json','mcp-needs-auth-cache.json']);
+  '.last-update-result.json','mcp-needs-auth-cache.json','teams','jobs','daemon']);
 
 /**
  * The home an extra Claude account launches from, or null when it is not a complete view of the
@@ -126,7 +131,7 @@ function provenOrProve(account:string,home:string):boolean{
     proving.add(home);
     void claudeAccountWorks(home,account).then(check=>{
       // Work held because no account had room may now have one: release it to try again.
-      if(check.ok){provenHomes.add(home);releaseUsageHeldWork('claude-code');}
+      if(check.ok){provenHomes.add(home);releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
       else {failedAt.set(home,Date.now());log('warn','claude_account_home_unproven',{account,reason:check.reason});}
     }).catch(()=>{}).finally(()=>proving.delete(home));
   }
@@ -151,14 +156,47 @@ function accountUsedPercent(provider:ProviderKey,account:AccountUsage):number|nu
   return account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null;
 }
 
+/**
+ * Whether Claude work on this machine runs only from accounts' own homes.
+ *
+ * The main folder's login (`~/.claude/.credentials.json`) is whatever was last signed in there,
+ * and anyone typing `claude auth login` or `/login` in a terminal replaces it, destroying the
+ * login that was there: Claude keeps no second copy. At 19:31 UTC on 2026-10-07 a hand sign-in
+ * as tejas@chann.app replaced his personal account that way, and his personal account dropped out
+ * of agents' work with nothing said. So once this machine keeps any account in a home of its own
+ * (Accounts files every sign-in into one), agents never run on the main folder's login: it is the
+ * terminal's, and a hand sign-in there can only displace the terminal's account. A machine whose
+ * logins are not files (the Mac keeps them in the Keychain) has no such homes and is unchanged.
+ */
+export function claudeRunsFromOwnHomes():boolean {
+  return listProfiles('claude-code').length>0;
+}
+
+/** The account selected for agents and its home, when that is one of the homes (never the main folder's login). */
+export function selectedClaudeHome():{label:string;home:string}|null {
+  const selection=claudeAccountSelection();
+  if(!selection||selection.profileId==='default')return null;
+  return {label:selection.label,home:accountHome('claude-code',selection.profileId)};
+}
+
+/** The home a Claude account launches from: the selected account's complete home, or another proven one. */
+function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string):string|null {
+  const complete=sharedClaudeHome(account,home,prepare,false);
+  // The selected account was proven when he chose it and stays his choice across restarts; a
+  // sign-in refusal from it holds the work for a sign-in. Proof only gates automatic moves.
+  return complete&&(account===selected||provenOrProve(account,complete))?complete:null;
+}
+
 export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
-  const defaultLabel=currentAccount(provider)?.label;
+  const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
+  const defaultLabel=ownHomes?null:currentAccount(provider)?.label;
+  const selected=provider==='claude-code'?selectedClaudeHome()?.label??null:null;
   const profiles=listProfiles(provider);
   return usage.accounts.map(account=>{
     const isDefault=account.label===defaultLabel;
     const profile=profiles.find(item=>item.label===account.label);
     const home=isDefault?null:profile?accountHome(provider,profile.id):null;
-    const ready=home&&(provider==='claude-code'?sharedClaudeHome(account.label,home)===home&&provenOrProve(account.label,home):sharedCodexHome(home)===home);
+    const ready=home&&(provider==='claude-code'?launchableClaudeHome(account.label,selected,false,home)===home:sharedCodexHome(home)===home);
     const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
     return {account:account.label,home:ready?home:null,isDefault,
       tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
@@ -166,29 +204,50 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
   });
 }
 
+/** Held for a sign-in, never run on the main folder's login instead (the message is a sign-in refusal on purpose). */
+const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
+  message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
+
 export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const usage=providerAccountUsage('claude-code');
-  const defaultAccount=currentAccount('claude-code')?.label??usage?.accounts.find(account=>account.current)?.label??null;
+  const ownHomes=claudeRunsFromOwnHomes();
+  // Never the main folder's login where accounts have homes of their own; see claudeRunsFromOwnHomes.
+  const defaultAccount=ownHomes?null:currentAccount('claude-code')?.label??usage?.accounts.find(account=>account.current)?.label??null;
   const selection=claudeAccountSelection();
   const selectedAccount=selection&&selection.revision>seenSelectionRevision?selection.label:null;
+  const selected=selectedClaudeHome()?.label??null;
+  // Without a reading of the selected account (none at all, or the usage reader does not know an
+  // account just signed in through Accounts) nothing can be compared, so the work runs where he chose.
+  if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
+    const home=selected?launchableClaudeHome(selected,selected,true):null;
+    if(home)return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
+    if(!usage)throw noOwnClaudeLogin();
+  }
   // An ordinary one-home installation follows its existing path, including its existing
   // usage refusal and retry handling. A stale or absent reading cannot justify a move.
-  if(!usage||!defaultAccount)return null;
+  if(!usage||(!ownHomes&&!defaultAccount))return null;
   // Add any link a new shared entry needs before choosing; a home still incomplete is skipped.
   const homes=new Map(usage.accounts.filter(account=>account.label!==defaultAccount)
-    .map(account=>{
-      const home=sharedClaudeHome(account.label,undefined,true,false);
-      return [account.label,home&&provenOrProve(account.label,home)?home:null] as const;
-    }));
+    .map(account=>[account.label,launchableClaudeHome(account.label,selected,true)] as const));
   const extraHomes=usage.accounts.filter(account=>homes.get(account.label));
-  if(!extraHomes.length)return null;
-  const rooms=usage.accounts.map(account=>({
-    account:account.label,
-    tightestUsedPercent:accountUsedPercent('claude-code',account),
-    home:account.label===defaultAccount?null:homes.get(account.label)??null,
-    isDefault:account.label===defaultAccount,
-    problem:account.problem,
-  }));
+  if(!extraHomes.length){
+    if(ownHomes)throw noOwnClaudeLogin();
+    return null;
+  }
+  const rooms=usage.accounts.map(account=>{
+    const home=account.label===defaultAccount?null:homes.get(account.label)??null;
+    // The usage reader keeps its own copies of each login and reads with them; when it cannot,
+    // that says nothing about the selected account's own login. Its work is tried there, and a
+    // real limit comes back from Claude with its reset time as an ordinary usage hold.
+    const trusted=ownHomes&&account.label===selected&&!!home;
+    return {
+      account:account.label,
+      tightestUsedPercent:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      home,
+      isDefault:account.label===defaultAccount,
+      problem:trusted?null:account.problem,
+    };
+  });
   // Where his work runs when nothing else decides: the account he selected in Provider accounts,
   // else this machine's default login. A conversation that has never run anywhere prefers it, so
   // it starts where everything starts instead of on whichever account happens to be roomiest —

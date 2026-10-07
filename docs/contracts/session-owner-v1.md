@@ -143,6 +143,20 @@ authority, events and the `sessions topics` agent commands are specified in
 
 `TopicSummary` is `{id, title, aliases, summary, state, setAside:{reason,returnCondition,at}|null, revision, recovered, createdAt, updatedAt, lastEntryAt, lastEntrySequence, unread, roots, needsYou:{count,oldestAt,items:[{questionId?,needInputId?,text,at,revision?,outcome?}]}, questions:{open,checking,deferred}, requests:{open,closed}, work}`. `unread` is `lastEntrySequence > ` the read mark. `TopicDetail` adds `closure:{by,at,reason,scope,requests}|null` and `history` (the last 20 topic events as `{change,at,by,reason}`). `Request` is `{id,topicId,title,brief,state,disposition,revision,sources:[{inputId,passage?}],dispatches:[{requestId,targetSessionId,targetTitle,outcome,state}],closure,createdAt,updatedAt}`. `Question` is `{id,topicId,revision,state,blocking,optional,context,kind:"decision"|"reading",origin,generation,readiness,missing,waiting,reads:[{messageId,text,at}],brief:{decision,why:{text,sources},known,choices,uncertain,answerable},owner,sources,replaces,replacedBy,answer:{inputId,at,passage,interpretation,answeredRevision}|null,exposed:{revision,at}|null,acknowledged:{at,by}|null,pendingReply:{inputId,at}|null,recovered,createdAt,updatedAt}`. `Focus` is `{topicId,inputIds,runId,summary,since}` and `Work` is `{kind:"router_working"|"router_queued"|"worker_working"|"idle", text, sessionId?, position?, runId?}`.
 
+`GET /sessions/v1/inbox/topics/:id` also returns `replyTargets:{router, default, choices:[{sessionId,title,why,owns:[id…]}]}`:
+who a reply inside the thread goes to. `choices` are the sessions this owner runs that hold a
+still-open, unstalled request in the thread, asked an open question there, or returned the answer
+being replied to; `default` is the one owning the item replied to, else the single choice, else the
+router. The questions read carries the same per group. A human input to the Inbox with
+`replyToMessage` may carry `deliverTo` (a choice's session id, or `router`); absent, the owner
+applies its default. A reply addressed to an agent is retained in the Inbox as his message
+(`accepted` event `forwarded:<input>`, receipt `{state:'waiting', forwardedTo}`, a `topic`
+event `change:'forwarded'`), starts no router turn, and is carried to the agent as a communication
+request (action `forward:<input>`, payload `forwardedReply`); each of the agent's replies is posted
+into the thread as a `post` by that agent (`postedBy:'owner-forward'`, `postedBySession`), a stall
+as a service post, and the final settles the receipt. A `deliverTo` naming a session that is not a
+choice is 409 `REPLY_TARGET_UNKNOWN`.
+
 `POST /sessions/v1/sessions/:id/inputs` accepts one more optional field for the Inbox:
 `review:{questions:[{id,revision}]}`, the exact questions a reply answers. It is valid only
 with a `replyToMessage` that resolves into a topic that owns every named question —

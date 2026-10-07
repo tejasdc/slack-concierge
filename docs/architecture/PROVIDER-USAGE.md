@@ -290,7 +290,21 @@ a failed providers read.
 cached per-account usage with the default login and extra homes whose `projects` directory
 resolves to the shared Claude history. A machine with no such extra home keeps the previous
 launch path. Each new process gets the selected home's `CLAUDE_CONFIG_DIR`; no credential
-file changes and a running process keeps the home it started with. The last account is
+file changes and a running process keeps the home it started with.
+
+**A sign-in typed by hand never moves agents** (`claudeRunsFromOwnHomes` in
+`provider-account-dispatch.ts`). Once this machine keeps any Claude account in a home of its
+own, agents never run on the main folder's login (`~/.claude/.credentials.json`): it belongs to
+whoever typed `claude auth login` or `/login` in a terminal, and that command replaces the login
+that was there with no copy kept. At 19:31 UTC on 2026-10-07 a hand sign-in as tejas@chann.app
+replaced his personal account that way, and agents silently lost it. Now every account runs from
+its own home, the selected one without waiting for a background proof (it was proven when chosen),
+and when none can run the turn is held for a sign-in rather than falling back to the main folder.
+Accounts no longer lists the main folder's login as an account; it names it as the terminal's.
+The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
+fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
+reads with its own copies of each login, so its failure says nothing about the login in the
+account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started, and is a preference on the next
 turn. The session view exposes that account; an account event carries the rule's existing
 one-time chosen or moved sentence. A confirmed usage refusal on one account is cached under

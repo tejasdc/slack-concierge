@@ -13,7 +13,9 @@ import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
 import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
+import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { isClaudeUsageExhaustion } from "./provider-failures";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -26,11 +28,11 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 // remembered ritual; keeping them together is what removes it.
 
 export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
-type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval";
+type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval" | "home_proven";
 let pendingCodexActivation = false;
 const activationFlights = new Map<ProviderKey, Promise<ActivationReport>>();
 
-function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
+export function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
   const head = db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
     .get(provider) as { id: number | null };
@@ -128,7 +130,7 @@ async function activateCodex(): Promise<ActivationReport> {
  * 2026-09-25 repeated the mistake by bypassing this probe entirely; run it from the proposed
  * home before selecting that account.
  */
-export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|'settings_not_in_effect'|'wrong_account'|'timeout'|'failed'}>;
+export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|'out_of_room'|'settings_not_in_effect'|'wrong_account'|'timeout'|'failed'}>;
 
 /**
  * Whether Claude work can actually be done from this home: started the way agents are started
@@ -177,6 +179,8 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   if(probe.timedOut)reason='timeout';
   else if(!result)reason='failed';
   else if(result.is_error===true&&/authenticat|oauth|401|log ?in|expired/i.test(text))reason='signed_out';
+  // Signed in, answering, and simply at its limit: a fact about room, not about the login.
+  else if(result.is_error===true&&isClaudeUsageExhaustion(text))reason='out_of_room';
   else if(wrote&&ran&&succeeded.has('Write')&&succeeded.has('Bash'))reason='works';
   else if(denied||result.is_error!==true)reason='settings_not_in_effect';
   else reason='failed';
@@ -233,7 +237,11 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no loaded copy to
     // invalidate — but the file being readable says nothing about it being usable.
-    if (!await claudeCredentialsAnswer()) {
+    // Where accounts have homes of their own, agents run on the selected one, so that is the
+    // login whose answer can release held work; the main folder's is a terminal's.
+    const ownHomes = claudeRunsFromOwnHomes(), selected = ownHomes ? selectedClaudeHome() : null;
+    if (ownHomes && !selected) return { status: "failed", detail: "No Claude account is selected for agents on this machine. Choose one in Accounts." };
+    if (!await claudeCredentialsAnswer(selected?.home ?? null, selected?.label ?? null)) {
       log("warn", "provider_activation_failed", { provider, reason: "credentials_did_not_answer" });
       return { status: "failed", detail: "That account is signed in on disk but did not answer, "
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
