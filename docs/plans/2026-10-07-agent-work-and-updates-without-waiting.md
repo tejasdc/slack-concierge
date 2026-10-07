@@ -44,6 +44,19 @@ Facts established on the real system during this review (server unless noted; Ma
 
 All 21 code citations in the first draft were re-verified on current main; two paths corrected (`bot/scripts/drain-status.ts`, `bot/scripts/history-guard.ts`).
 
+### 0.1 Keeper experiment (2026-10-07, 20:06–20:10 UTC)
+
+A throwaway keeper (`/root/workspace/agent-scripts/keeper-probe/`, logs in `tmp/reviews/keeper-probe-*.log`) started a real Claude agent in stream-json mode, held its pipes, journaled every line and accepted coordinators over a Unix socket.
+
+| Machine | What was done | Observed |
+|---|---|---|
+| Server | Keeper started with `systemd-run` from inside a Concierge turn; coordinator A sent `sleep 30; echo finished-…; date` and left after 6 s; coordinator B attached 40 s later | Agent's control group `system.slice/keeper-probe-….service`, outside `concierge-bot.service`. The command finished at 20:08:04; at 20:08:07 the agent woke itself and wrote its result into the journal with no coordinator attached. Coordinator B's follow-up ("what time did it print?") was answered correctly ("20:08:04") by the same pid. |
+| Mac | Keeper as its own launchd job in `gui/<uid>` (parent launchd); coordinator A sent the same task and left; the Mac's real `com.tejasdc.concierge` was restarted with `kickstart -k` mid-task (Mac idle, nothing running); coordinator B attached afterwards | Concierge pid changed 57984 → 65751; the agent process survived and answered both coordinators. The task itself could not run: the Mac's Claude account was at its session limit until 20:40 UTC, so tool execution across a Mac restart is still to be shown (the server showed it). |
+
+Also found: the Mac's extra Claude account home keeps its login in the Keychain, not `.credentials.json`, and has its own `settings.json`, so `sharedClaudeHome` (which requires `.credentials.json`) never selects it and the shared-settings rule does not yet cover Mac homes. Step 6 must handle Keychain-held logins.
+
+Not yet shown: a real `concierge-bot` restart on the server with a keeper running (cgroup separation is shown; the restart was not done because the probing turn itself ran inside the service), the private-stdio Codex path, and the server's shared Codex daemon (signed out; the Mac result from Astra stands).
+
 ## 1. Architecture
 
 ### 1.1 Parts, machines, purpose
