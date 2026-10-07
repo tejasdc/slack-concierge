@@ -54,11 +54,22 @@ if [ -e "$hook" ] && ! grep -Fq "$marker" "$hook"; then
 fi
 mkdir -p "$etc/hooks"
 tmp=$(mktemp)
+# Both wrappers dispatch per run (marker line "dispatch: per-run v1"): an agent Concierge started
+# carries its own helper folder in CONCIERGE_ROUTER_BOT_DIR (a server release, or the Mac's pinned
+# helpers for its commit), so an update never changes the hooks under a running agent. Any other
+# agent, including the shared Codex daemon's, uses the installed copy below.
+dispatch='# dispatch: per-run v1'
 cat > "$tmp" <<EOF
 #!/bin/sh
 $marker
+$dispatch
 # Codex runs this as a managed Stop hook; it asks Concierge whether the agent still owes a reply.
-CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run '$bot/scripts/owed-reply-stop-hook.$suffix' codex
+dir='$bot' suffix='$suffix'
+if [ -n "\${CONCIERGE_ROUTER_BOT_DIR:-}" ]; then
+  if [ -f "\$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.js" ]; then dir=\$CONCIERGE_ROUTER_BOT_DIR suffix=js
+  elif [ -f "\$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" ]; then dir=\$CONCIERGE_ROUTER_BOT_DIR suffix=ts; fi
+fi
+CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run "\$dir/scripts/owed-reply-stop-hook.\$suffix" codex
 EOF
 install -m 0755 "$tmp" "$hook"
 
@@ -72,8 +83,14 @@ fi
 cat > "$tmp" <<EOF
 #!/bin/sh
 $marker
+$dispatch
 # Codex and Claude run this before every command; it refuses one that rewrites pushed history.
-exec '$bun' run '$bot/scripts/history-guard.$suffix'
+dir='$bot' suffix='$suffix'
+if [ -n "\${CONCIERGE_ROUTER_BOT_DIR:-}" ]; then
+  if [ -f "\$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.js" ]; then dir=\$CONCIERGE_ROUTER_BOT_DIR suffix=js
+  elif [ -f "\$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.ts" ]; then dir=\$CONCIERGE_ROUTER_BOT_DIR suffix=ts; fi
+fi
+exec '$bun' run "\$dir/scripts/history-guard.\$suffix"
 EOF
 install -m 0755 "$tmp" "$guard"
 cat > "$tmp" <<EOF

@@ -66,7 +66,12 @@ install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actio
 # password once: a run from a terminal asks for it; the unattended update job only reports it. The
 # hook itself lives in this checkout, so later updates reach it without another password.
 # The same run installs the refusal of rewritten pushed history for Codex, Claude and git.
-if grep -Fqs "'$REPO/bot/scripts/owed-reply-stop-hook.ts'" /etc/codex/hooks/concierge-owed-reply \
+# The wrappers dispatch to each run's own pinned helpers ("dispatch: per-run v1"); an older,
+# checkout-bound wrapper is not accepted as installed. Until they are, Mac agents are not started
+# in execution hosts (below), so no agent outlives an update whose hooks would change under it.
+hooks_per_run() { grep -Fqs '# dispatch: per-run v1' /etc/codex/hooks/concierge-owed-reply \
+  && grep -Fqs '# dispatch: per-run v1' /etc/codex/hooks/concierge-history-guard; }
+if hooks_per_run && grep -Fqs "dir='$REPO/bot'" /etc/codex/hooks/concierge-owed-reply \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-history-guard"' /etc/codex/requirements.toml \
   && grep -Fqs 'hooks = true' /etc/codex/requirements.toml; then :
@@ -79,6 +84,24 @@ fi
 # git refuses a push that rewrites pushed history for this user without any password, so the
 # unattended update installs it every time; the password step above adds it machine-wide.
 "$REPO/scripts/install-git-history-guard.sh" --user
+
+# Restarting a running Concierge is the update's job: only a run of scripts/update-mac.sh that holds
+# the update gate, after checking running work and compatibility for exactly this commit, may do it.
+# Anything else (a terminal, an agent) goes through that gated path instead. Nothing above this
+# point restarts anything.
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  # The updater passes its token and the revision it checked; an updater from before that holds the
+  # gate as this installer's ancestor, which is the same proof without the token.
+  if [ -n "${CONCIERGE_UPDATE_GATE_TOKEN:-}" ]; then
+    proof=(holds "$CONCIERGE_UPDATE_GATE_TOKEN"); [ "$(git -C "$REPO" rev-parse HEAD)" = "${CONCIERGE_UPDATE_CANDIDATE:-}" ] || proof=()
+  else proof=(holds --ancestor-of $$); fi
+  if [ ${#proof[@]} -eq 0 ] || ! (cd "$REPO/bot" && CONCIERGE_STATE_DIR="$STATE" "$BUN" scripts/drain-status.ts "${proof[@]}" >/dev/null); then
+    echo "Concierge is running here; restarting it goes through the gated update."
+    exec "$REPO/scripts/update-mac.sh"
+  fi
+fi
+HOST_LAUNCHER=""
+hooks_per_run && HOST_LAUNCHER=1
 
 # Speech-to-text: Apple's on-device engine behind the same protocol as the box's Parakeet
 # (bot/src/speech-engine.ts). Rebuilt only when its source changes. Running it once with no
@@ -145,8 +168,12 @@ fi
 # Built before launchd is touched: a build or signing failure leaves the running agent alone.
 LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 [ -x "$LAUNCHER" ] || { echo "The agent-host app did not build; Concierge was left as it was." >&2; exit 2; }
+# Agent helpers for this commit, in a folder that is never changed afterwards (kept, never pruned).
+HELPERS=$(cd "$REPO/bot" && "$BUN" scripts/build-pinned-helpers.ts "$STATE/helpers" | tail -1)
+[ -f "$HELPERS/scripts/router-sessions.js" ] || { echo "The agent helpers did not build; Concierge was left as it was." >&2; exit 2; }
 
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
+    -e "s|@HELPERS@|$HELPERS|g" -e "s|@HOST_LAUNCHER@|${HOST_LAUNCHER:+$LAUNCHER}|g" \
     -e "s|@PEERS@|$PEERS|g" -e "s|@CLAUDE@|$CLAUDE|g" -e "s|@CODEX@|$CODEX|g" -e "s|@NODE@|$NODE|g" \
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null

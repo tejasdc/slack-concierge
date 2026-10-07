@@ -413,7 +413,7 @@ export function claudeCodeArgs(input: {
  * (bot/scripts/history-guard.ts); it travels here because Claude's own settings file is
  * machine-local, so every agent this owner starts carries it on either machine.
  */
-const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
+const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {

@@ -265,7 +265,8 @@ export type HandBack = keyof typeof HAND_BACK_KINDS;
  */
 export function handBackText(kind: unknown, text: string, session: SessionRow, address: string | null): string {
   if (typeof kind !== 'string' || !Object.hasOwn(HAND_BACK_KINDS, kind)) throw new Error(`--hand-back takes ${Object.keys(HAND_BACK_KINDS).join(' or ')}.`);
-  const project = basename(sessionMetadata(session).cwd ?? '') || '<project>';
+  // Not its subject means the work belongs elsewhere, so only a too-loaded hand-back names its own project.
+  const project = kind === 'too-loaded' ? basename(sessionMetadata(session).cwd ?? '') || '<project>' : '<the project this work belongs to>';
   if (!address) return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context; it runs on another machine, so use its peer address from sessions search with --consult.\n\n${text}`;
   return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context: sessions ask --provider cc-opus --project ${project} --session-name "<this topic>" --consult ${address} <source-flags> --action-id <new id> --requested-effect work [--thread <message-id>] -- <text>\n\n${text}`;
 }
