@@ -19,7 +19,7 @@
 const WAIT_ONLY_COMMANDS = new Set(['sleep', 'echo', 'printf', 'true', ':', 'test', '[', '[[', 'ls', 'cat', 'tail', 'head', 'wc', 'grep', 'date']);
 const SHELL_KEYWORDS = /^(?:(?:until|while|done|do|then|else|fi|if)\b|!|\{|\}|\(|\))\s*/;
 
-export const WAITER_REFUSAL = 'Refused: this background job only waits. Every background agent and background command you start '
+export const WAITER_REFUSAL = 'Refused: this job only waits. Every background agent and background command you start '
   + 'already reports back to you when it finishes, inside helper agents too, and Concierge keeps this run open until then and '
   + 'checks on you if a report is late. So start nothing just to wait: keep working or end your turn, and you are woken with the '
   + 'result. If you need a result before you can go on, run that agent or command in the foreground instead.';
@@ -38,9 +38,15 @@ function waitsOnly(command: string): boolean {
   return sleeps;
 }
 
-/** The refusal for a background job that only waits, or null for anything that does work. */
+/**
+ * The refusal for a job that only waits, or null for anything that does work. In the background
+ * any wait-only command is refused; in the foreground only a wait loop is, since a short pause
+ * is ordinary and Claude Code already blocks a long one. A foreground loop polling for its own
+ * jobs' output holds the turn, and every update with it, as surely as a background one: the
+ * security-review session sat in one at 16:40 on 2026-10-07 while the update waited.
+ */
 export function waiterOnlyRefusal(toolName: unknown, input: Record<string, any>): string | null {
-  const background = toolName === 'Monitor' || (toolName === 'Bash' && input.run_in_background === true);
-  if (!background || typeof input.command !== 'string') return null;
-  return waitsOnly(input.command) ? WAITER_REFUSAL : null;
+  if (typeof input.command !== 'string' || !waitsOnly(input.command)) return null;
+  if (toolName === 'Monitor' || (toolName === 'Bash' && input.run_in_background === true)) return WAITER_REFUSAL;
+  return toolName === 'Bash' && /\b(?:until|while)\b/.test(input.command) ? WAITER_REFUSAL : null;
 }

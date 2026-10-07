@@ -246,6 +246,18 @@ live, a waiting release waits for it too (Tejas accepted this on 2026-09-18);
 the wait is shown to him rather than hidden. Timers such as ScheduleWakeup and cron
 report no task and do not keep a run open.
 
+Agents never build waiters (2026-10-07). Finished background work reports back to the agent
+that started it, nested helpers included (a nested `task_started` carries
+`owned_by_subagent`, and its completion restarts the helper), and Anthropic's sub-agents
+documentation says not to write polling or sleep loops. The pre-command hook therefore refuses
+a job made only of sleeping and looking at files: any such background Bash command or Monitor,
+and a foreground wait loop (`bot/src/background-waiter-policy.ts`). Concierge does not rely
+on the notification alone: when Claude marks a job ended (a terminal `task_updated`, or the
+job leaving `background_tasks_changed`) and its report has not reached the agent two minutes
+later, the owner steers a service notice into the run and stops holding the job
+(`noticeMissingBackgroundReport`). The 15- and 60-minute prompts remain the check on jobs
+that are still running.
+
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. Supported `thread/read(includeTurns=true)` history replays completed items idempotently and proves whether the turn is still in progress or terminal. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 
 Codex cancellation is registered before provider submission. A Stop before submission prevents model input; after submission, a missing provider turn ID or unconfirmed interrupt response remains an uncertain outcome, not a successful cancellation. Stop interrupts an exact known turn without waiting behind an in-flight recovery read. A confirmed terminal provider event still owns cancellation completion; an interrupt acknowledgement alone does not. Late recovery responses cannot attach provider identity, input acknowledgement, or results after the local controller has settled. Consultation restrictions and request/inactivity timeout budgets are unchanged.
