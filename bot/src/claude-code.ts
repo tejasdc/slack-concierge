@@ -396,8 +396,8 @@ export function claudeCodeArgs(input: {
  * machine-local, so every agent this owner starts carries it on either machine.
  */
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
-/** Shell commands and monitors, plus browser navigation through MCP so the guard can name a website's runbook. */
-const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|mcp__.*(navigate|new_page|open_url|goto).*";
+/** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
+const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
 const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],

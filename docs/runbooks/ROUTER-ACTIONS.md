@@ -8,6 +8,35 @@ when all have exited. A timeout exits 124 and names any still-running IDs. The
 pre-command guard refuses a loop around a full-command process-name search,
 because such a loop can match itself and hold a run open indefinitely.
 
+## Reading his texts (Mac)
+
+`router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>]
+[--limit <n>]` answers JSON with his texts, received and sent, newest first (default 7 days,
+50 shown messages; at most 365 and 500). One-time codes, password-reset texts and sign-in links
+are never shown: `withheldCount` and `withheldByKind` count them over the same stretch of time,
+`withheld` lists the newest 200 by sender, time and kind, and a search never matches against
+their words (that would let a search spell a code out). `window.truncated` says when the limit
+stopped the read before the requested days. A read that withheld anything is logged to
+`diagnostics/messages-reads.jsonl` under the state directory, without message words. It runs only
+on the Mac; the server answers `MESSAGES_NOT_ON_THIS_MACHINE`.
+
+It is the sanctioned way in, not the only one. The pre-command guard refuses any call that names
+the Messages folder, chat.db or Notification Center's store, or a `mac-screenshot app Messages`,
+from either machine [decision: agents-never-see-login-codes]. That includes commands that only
+write about them, such as a commit message or a session message: every exemption tried opened a
+read (attaching the database with `--file`, `git commit -F <(…)`), so such text goes in a file
+passed with `git commit -F` or `--text-file`, whose contents are not inspected. A command that
+builds the path at runtime (`cd ~/Library/Mess*`, a recursive search of all of `~/Library`), a
+screenshot of the Messages window by its window number or by part of its name (`mac-screenshot app mess` or `app sms`), or a whole-screen capture that catches a
+notification banner still gets through, because Mac agents keep Full Disk Access and screen
+recording until Tejas decides otherwise (security review, 2026-10-07).
+
+Measured on 2026-10-07 over a year of his texts: of 601 texts from short-code and named senders,
+201 were withheld, and none of the 400 shown contained a code when read with every digit masked
+(they were events, bills, deliveries and reservations). Texts from ordinary numbers are withheld
+when a code word sits beside a 4–8 digit number (131 in that year, mostly banks texting from
+long numbers and codes he forwarded), which errs toward hiding.
+
 ## Current native routing
 
 Project setup uses the same local owner socket on either machine:

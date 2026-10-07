@@ -11,6 +11,7 @@
     "control/bot/scripts/agent-test-capture.js": "bot/scripts/agent-test-capture.ts",
     "control/bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
     "control/bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
+    "control/bot/scripts/messages-read.js": "bot/scripts/messages-read.ts",
     "control/bot/scripts/service-notice.js": "bot/scripts/service-notice.ts",
     "control/bot/scripts/native-pipeline-continuation.js": "bot/scripts/native-pipeline-continuation.ts",
     "control/bot/scripts/key-change-notice.js": "bot/scripts/key-change-notice.ts",

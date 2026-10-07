@@ -11,6 +11,11 @@
  * it as a managed hook (scripts/install-codex-stop-hook.sh). Anything unexpected lets the command
  * through: git's own hook is the backstop, and a guard must never stop unrelated work.
  *
+ * It refuses, first, any call that reads the Mac's Messages or Notification Center databases
+ * directly (bot/src/messages-database-policy.ts), because they hold the login codes texted to
+ * Tejas; agents read texts through `router-actions.sh messages`, which withholds those. Each such
+ * refusal is recorded (bot/src/messages-read-log.ts).
+ *
  * It also refuses a background job whose only work is waiting (bot/src/background-waiter-policy.ts):
  * finished background work already reports back to the agent, so such a job only holds the run and
  * every Concierge update behind it.
@@ -25,6 +30,8 @@ import { dirname, resolve } from 'node:path';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
 import { siteRunbookNotices } from '../src/site-runbook-notice';
 import { waiterOnlyRefusal } from '../src/background-waiter-policy';
+import { messagesDatabaseRefusal } from '../src/messages-database-policy';
+import { recordMessagesRead } from '../src/messages-read-log';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -80,12 +87,15 @@ const probe: RepositoryProbe = {
 let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
 let reason: string | null = null;
+let refusedMessages = false;
 try {
   const input = hook.tool_input ?? {};
   const command = toolCommand(input);
+  reason = messagesDatabaseRefusal(command, input);
+  refusedMessages = reason !== null;
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
-  if (command) {
+  if (command && !reason) {
     reason = waiterOnlyRefusal(hook.tool_name, input) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
@@ -99,7 +109,10 @@ try {
     }
   }
 } catch { reason = null; }
-if (reason) {
+if (refusedMessages) {
+  try { recordMessagesRead({ event: 'messages_database_refused', provider_session: hook.session_id ?? null, tool: hook.tool_name ?? null, cwd: hook.cwd ?? null }); } catch {}
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n');
+} else if (reason) {
   console.error(JSON.stringify({ event: 'history_rewrite_refused', provider_session: hook.session_id ?? null }));
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n');
 } else {

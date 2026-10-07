@@ -20,6 +20,7 @@
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to <concierge:N>] -- <text>
+#   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]   # Mac only; codes withheld
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
 #   router-actions.sh channels-list                       # prints active channels
 #
@@ -129,12 +130,18 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/agent-test-capture.$ROUTER_SUFFIX" "$@"
     ;;
+  messages)
+    # His texts on the Mac, with login codes, reset texts and sign-in links withheld; agents may
+    # not open the Messages database themselves.
+    shift
+    exec bun run "$BOT_DIR/scripts/messages-read.$ROUTER_SUFFIX" "$@"
+    ;;
   list-add)
     echo "list-add is retired: use todo-add so notes/TODOS.md remains authoritative" >&2
     exit 2
     ;;
   *)
-    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|projects|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|projects|react|todo-add|test-capture|messages|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

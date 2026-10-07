@@ -802,7 +802,18 @@ authorization or a change to the default rapid-iteration policy.
   `session-message-author.ts`). Agents keep full control of both machines, including repairing,
   restarting or bypassing Concierge and starting agents outside it; nothing checks their commands
   or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"), except
-  the refusal to rewrite pushed history he asked for the same evening (the bullet above). His
+  the refusal to rewrite pushed history he asked for the same evening (the bullet above), and the
+  refusal to read the Mac's Messages or Notification Center databases directly or photograph the
+  Messages app [decision: agents-never-see-login-codes]: the same pre-command hook refuses any call
+  naming them (`messages-database-policy.ts`; even in a commit or session message, so such words go
+  in a file passed with `-F` or `--text-file`), and agents read his texts with `router-actions.sh messages`
+  (`bot/scripts/messages-read.ts`, Mac only), which withholds one-time codes, reset texts and
+  sign-in links by `text-code-withholding.ts` and lists them by sender, time and kind. Refusals and
+  withholding reads are logged to `diagnostics/messages-reads.jsonl` in the state directory, never
+  with message words. It matches places, not intent, so a command that builds the path at runtime
+  a screenshot by window number, or a whole-screen capture gets through; only removing the Mac agents' Full Disk Access and screen
+  recording closes that, and that is his open decision
+  (`docs/security/2026-10-07-agent-security-review.md`; `docs/runbooks/ROUTER-ACTIONS.md`). His
   doors (thnkr.ing sign-in, device keys, the capture drop-off, the owner socket's human routes)
   record the sender as him, so an agent tests a delivery path through its own entrance,
   `router-actions.sh test-capture` (`bot/scripts/agent-test-capture.ts`): the real pipeline, with
