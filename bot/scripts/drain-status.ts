@@ -59,11 +59,25 @@ try {
   if (command === "host-protocols") finish(0, { status: "host-protocols", current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS });
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!["check", "claim", "recover", "release", "adoptable-check"].includes(command)) {
+  if (!["check", "claim", "recover", "release", "holds", "adoptable-check"].includes(command)) {
     finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check (--running ARTIFACT|--running-contract FILE) (--rollback ARTIFACT|--no-rollback) [--candidate-contract FILE]|host-protocols>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true });
   database.exec("PRAGMA busy_timeout=5000");
+  if (command === "holds") {
+    // Whether the update gate is held under exactly this token by a live owner (the Mac installer's
+    // proof that it was called by the gated update).
+    // Either the exact token, or (`--ancestor-of <pid>`) a gate whose owner started that process:
+    // an updater from before the token existed holds the gate and runs the installer as its child.
+    const ancestorOf = flag("--ancestor-of");
+    const token = ancestorOf ? null : process.argv[3];
+    const gate = (ancestorOf ? database.query("SELECT * FROM deployment_drain WHERE singleton=1").get()
+      : token ? database.query("SELECT * FROM deployment_drain WHERE singleton=1 AND token=?").get(token) : null) as any;
+    database.close();
+    const live = gate && isProcessIdentityAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })
+      && (!ancestorOf || isAncestorProcess(gate.owner_pid, Number(ancestorOf)));
+    finish(live ? 0 : 1, live ? { status: "held", token } : { status: "not-held" });
+  }
   if (command === "release") {
     const token = process.argv[3];
     if (!token) finish(1, { status: "error", error: "release requires a token" });

@@ -58,7 +58,8 @@ main() {
   git merge --ff-only --quiet "$candidate"
   [ "$(git rev-parse HEAD)" = "$candidate" ] || { echo "Refusing: the checkout is not at the checked revision." >&2; exit 2; }
   echo "== at $(git log --oneline -1)"
-  scripts/install-mac.sh
+  # The installer restarts Concierge only with this gate's proof for exactly this revision.
+  CONCIERGE_UPDATE_GATE_TOKEN="$token" CONCIERGE_UPDATE_CANDIDATE="$candidate" scripts/install-mac.sh
 }
 main "$@"
 exit $?

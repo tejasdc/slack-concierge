@@ -217,6 +217,21 @@ A running turn holds an update only if it would end with the coordinator. One ru
   again at the next interval. The survival rule is per machine and per supervisor
   (`claude-code/launchd`), so a Mac update stops waiting for Claude runs only after one was seen alive
   across a Mac restart.
+- A run never has its helpers changed under it. `install-mac.sh` builds the agent helpers (the same
+  bundles a server release carries) for the installed commit into `$STATE/helpers/<commit>`, never
+  changed or pruned, and the service names it (`CONCIERGE_PINNED_HELPERS_DIR`); each run's
+  `CONCIERGE_ROUTER_BOT_DIR` is that folder. The machine-wide hook wrappers in `/etc/codex/hooks`
+  (also Claude's managed history guard) dispatch per run ("dispatch: per-run v1"): a run's own
+  folder when it names one, the installed copy for any other agent, on both machines. Installing
+  those wrappers needs the Mac's admin password once (`install-mac.sh` from a terminal); until they
+  are installed the Mac starts no hosts (`CONCIERGE_AGENT_HOST_LAUNCHER` is left empty), so its
+  updates keep waiting for agents as before. A rebuilt agent-host app moves the previous one to
+  `$STATE/app-retired/`.
+- Restarting the Mac's Concierge belongs to the gated update. `update-mac.sh` (automatic or
+  requested) checks running work, holds the gate, checks compatibility for one fetched revision and
+  installs exactly it; `install-mac.sh` restarts a running Concierge only with that gate's proof
+  (`drain-status holds <token>` for that revision, or a gate held by its own ancestor, which is how
+  an updater from before the token calls it) and otherwise hands over to `update-mac.sh`.
 - Not proven here: whether macOS's Background Task Management lists these jobs (it needs an
   administrator to read). The Mac's shared Codex daemon is not taken over across restarts until a run
   proves it.
