@@ -19,6 +19,9 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   const steered=db.query(`SELECT accepted_input_id FROM turn_steering_messages
     WHERE turn_id=? AND status='sent' AND accepted_input_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(turnId) as {accepted_input_id:string}|null;
   const payload={message},digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  // Recorded once, when first seen: an adopted run replays its earlier output, and attribution may
+  // have moved since (a follow-up acknowledged in between), which must not rewrite or refuse it.
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`message:${turnId}:${digest}`))return;
   recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:steered?.accepted_input_id??turn.accepted_input_id,turnId,kind:'message',payload});
 }
 

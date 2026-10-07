@@ -238,6 +238,7 @@ import { legacyProgressChunks, progressActivityIdAfterChunks, type SlackAgentPro
 import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { reconcileRecoverableTurns } from "./turn-recovery";
+import { claimAdoptableExecutions, hostedTurns } from "./executions";
 import {
   ensureChannelList,
 } from "./lists";
@@ -536,8 +537,16 @@ const activeAgentSessionStatusProjectionTasks = new Map<
   Promise<"delivered" | "stopped" | "permanent_failure">
 >();
 
+/**
+ * Turns whose provider process lives in an execution host keep running through this coordinator's
+ * exit and are taken back by the next one, so stopping never waits for them (design 2026-10-07 §2).
+ */
+function turnsThatEndWithThisProcess() {
+  return activeTurnCount - hostedTurns(activeTurnDispatch.activeTurns).size;
+}
+
 function resolveDrainIfIdle() {
-  if (activeTurnCount !== 0 || activeInputHandlerCount !== 0 || !resolveDrained) return;
+  if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount !== 0 || !resolveDrained) return;
   resolveDrained();
   resolveDrained = null;
 }
@@ -3684,6 +3693,14 @@ async function reconcilePriorInstanceTurns() {
     log("warn", "turn_artifact_uploads_recovered_as_ambiguous", { count: recoveredArtifactClaims });
   }
   cleanExpiredArtifactStaging();
+  // Agents still running in their execution hosts are taken back before anything below reads
+  // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
+  for (const adoption of await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive })) {
+    void sessionExecutionHost.run(adoption.claim, adoption).catch((error) => {
+      log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
+      settleClaimedTurnSetupFailure(adoption.claim, error);
+    });
+  }
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
@@ -3974,7 +3991,7 @@ async function drainAndStop(signal: string) {
   if (codexRemoteObserver) await codexRemoteObserver.stop();
   if (codexSessionObserver) await codexSessionObserver.stop();
   await app.stop();
-  if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
+  if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
   const activeDeploymentWork = deploymentWorkRunner.active();

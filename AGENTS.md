@@ -549,6 +549,14 @@ authorization or a change to the default rapid-iteration policy.
   reported with no attempts to count — today's failures began exactly there, with a wake loop
   that kept the runner from starting. Anything that changes how a failed or unstarted run is
   recorded keeps that read working, and nothing may claim a retry the record does not show.
+- **A Claude run on the server lives in its own execution host, not in the Concierge service**
+  (`bot/scripts/execution-host.ts`, one `concierge-exec-<id>` systemd unit per run, journal under
+  `$CONCIERGE_STATE_DIR/exec/`). Restarting Concierge leaves it working; the next Concierge takes it
+  back by identity at startup (`claimAdoptableExecutions`), before steering and turn recovery, and
+  replays the host's record to rebuild its state. The host holds no policy and is never patched in
+  place; never restart, kill or "clean up" `concierge-exec-*` units by hand: they are agents at work.
+  Codex runs and the Mac keep direct child processes until their own steps land. See
+  [execution host](docs/architecture/EXECUTION-HOST.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
