@@ -11,7 +11,7 @@ router-actions.sh projects share <name> --to <machine> [--source-input <id> --so
 router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery
 router-actions.sh sessions peers <source-flags>
-router-actions.sh sessions usage <source-flags>
+router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] -- <text>
@@ -31,6 +31,12 @@ router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags>
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
+router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
+router-actions.sh sessions watch list <source-flags>
+router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
+
+A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -84,7 +90,7 @@ type Source = { channel_id: string; message_ts: string } | { input_id: string; r
 export type SessionCommunicationRequest =
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
-  | { operation: "usage"; body: { source: Source } }
+  | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
@@ -97,6 +103,7 @@ export type SessionCommunicationRequest =
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } };
 
 class SessionUsageError extends Error {}
@@ -243,6 +250,33 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
     return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
   }
+  if(first==='watch') {
+    const sub=args.shift();
+    if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');
+    const separatorAt=args.indexOf('--');
+    const options=separatorAt<0?[...args]:args.slice(0,separatorAt);
+    const argv=separatorAt<0?[]:args.slice(separatorAt+1);
+    const target=sub==='file'||sub==='cancel'?options.shift():undefined;
+    if((sub==='file'||sub==='cancel')&&(!target||target.startsWith('--')))invalid(sub==='file'?'watch file needs the absolute path to watch.':'watch cancel needs the watch id.');
+    const flags=new Map<string,string>();
+    while(options.length){const flag=options.shift()!,value=options.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
+    if(sub!=='list'&&!actionId)invalid('watch needs a stable --action-id.');
+    if((sub==='file'||sub==='command')&&!until)invalid('watch needs --until.');
+    if(sub==='command') {
+      if(!cwd)invalid('watch command needs --cwd.');
+      if(!argv.length)invalid('watch command needs the command after --.');
+    } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
+    if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
+    // A bare command name becomes the path the agent's own shell would run.
+    const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
+    return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),
+      ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
+      ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{})}};
+  }
   const savedKind=first==='schedule'?'scheduled':first==='bank'?'banked':null;
   const operation=savedKind?'ask':first;
   const outcome = operation === 'outcome' ? args.shift() : undefined;
@@ -267,8 +301,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   let detach = false;
   let resurrect = false;
   let keepWorking = false;
+  let bySession = false;
   while (options.length) {
     const flag = options.shift()!;
+    if(flag==='--by-session'&&operation==='usage'){
+      if(bySession)invalid('Repeated --by-session option.');
+      bySession=true;continue;
+    }
     if (flag === "--keep-working" && operation === "post") {
       if (keepWorking) invalid("Repeated --keep-working option.");
       keepWorking = true;
@@ -295,6 +334,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       continue;
     }
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
+      || (flag==='--period'&&operation==='usage')
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
@@ -349,7 +389,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(operation==='usage') {
     if(separator>=0)invalid('usage does not accept text.');
-    return {operation,body:{source}};
+    const period=flags.get('--period');
+    if(period!==undefined&&!bySession)invalid('--period requires --by-session.');
+    if(period!==undefined&&period!=='today'&&period!=='week')invalid('--period requires today or week.');
+    return {operation,body:{source,...(bySession?{by_session:true,period:(period??'today') as 'today'|'week'}:{})}};
   }
   if (operation === "search") {
     if (separator < 0 || content.length < 1 || content.length > 8 || content.some(concept => !concept.trim())) {

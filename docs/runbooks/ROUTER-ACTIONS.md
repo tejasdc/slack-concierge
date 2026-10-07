@@ -166,6 +166,15 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+**Watching without waiting.** `sessions watch file <absolute-path> --until <ISO time|90s|30m|2h|1d>`,
+`sessions watch command --cwd <dir> --until … -- <argv…>`, `sessions watch list` and
+`sessions watch cancel <watch-id>` (each with the run's `--source-input/--source-run` and, except
+`list`, a stable `--action-id`) wake this conversation once, when the file or directory changes
+(deletion counts), when the command finishes, or at the deadline (at most 30 days), with no model
+running meanwhile. One service input `watch:<id>:<fired|expired|failed|cancelled>` arrives saying
+what was observed and any observation gap. Local to this machine. See
+[watches](../architecture/WATCHES.md).
+
 Another Concierge instance is a peer: `sessions peers` lists them, and `--peer <instance>`
 on `projects`, `search` and `ask` targets that instance's projects and sessions. A peer
 request keeps its return obligation here; the recipient on the peer replies with the

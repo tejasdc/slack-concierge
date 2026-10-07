@@ -65,8 +65,11 @@ if [ -x "$APP/Contents/MacOS/$DISPLAY_NAME" ] && [ "$(cat "$STATE/app/.fingerpri
   exit 0
 fi
 
-# Any app built under an earlier display name goes, so only one copy holds the approvals.
-for old in "$STATE/app/"*.app; do if [ -e "$old" ] && [ "$old" != "$APP" ]; then rm -rf "$old"; fi; done
+# An earlier build is moved aside, never deleted: agents still running started through it
+# (execution hosts), and only the copy under app/ is registered, so only it holds the approvals.
+RETIRED="$STATE/app-retired"
+retire_app() { mkdir -p "$RETIRED"; mv "$1" "$RETIRED/$(basename "$1" .app)-$(date +%Y%m%dT%H%M%S)-$$.app"; }
+for old in "$STATE/app/"*.app; do if [ -e "$old" ] && [ "$old" != "$APP" ]; then retire_app "$old"; fi; done
 rm -rf "$APP.build"
 mkdir -p "$APP.build/Contents/MacOS"
 # The executable carries the display name too: macOS shows it in background-activity notices.
@@ -82,7 +85,7 @@ security list-keychains -d user -s $searchlist "$KEYCHAIN"
 codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY_NAME" --identifier com.tejasdc.agent-host "$APP.build"
 restore_searchlist
 trap - EXIT
-rm -rf "$APP"
+[ -e "$APP" ] && retire_app "$APP"
 mv "$APP.build" "$APP"
 # Outside the bundle: an extra file inside it would break the signature seal.
 echo "$fingerprint" > "$STATE/app/.fingerprint"

@@ -413,7 +413,7 @@ export function claudeCodeArgs(input: {
  * (bot/scripts/history-guard.ts); it travels here because Claude's own settings file is
  * machine-local, so every agent this owner starts carries it on either machine.
  */
-const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST ? "js" : "ts";
+const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
@@ -726,6 +726,8 @@ export async function runClaudeCodeTurn(input: {
     }
   };
   const endingBackgroundTasks = new Set<string>();
+  // Jobs whose report was taken (or declared lost): never readmitted by a later list that still names them.
+  const reportedBackgroundTasks = new Set<string>();
   // A job's end seen in the replay starts its grace only when the replay is over: grace is
   // measured in the live run, not in how long the history took to read back.
   const endedDuringReplay = new Map<string, string>();
@@ -744,8 +746,13 @@ export async function runClaudeCodeTurn(input: {
   };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
     if (event.type === "system" && event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
-      const active = new Set((event.tasks as JsonValue[]).map(task => task?.task_id));
+      // The level set is authoritative both ways: a job it lists is running even when its start
+      // edge was never seen (design §5, step 8), and a job it no longer lists has ended.
+      const listed = (event.tasks as JsonValue[]).filter(task => typeof task?.task_id === "string" && task.ambient !== true);
+      const active = new Set(listed.map(task => task.task_id));
       for (const taskId of backgroundTasks.keys()) if (!active.has(taskId)) backgroundTaskEnded(taskId, "ended");
+      const missedStarts = listed.filter(task => !backgroundTasks.has(task.task_id) && !reportedBackgroundTasks.has(task.task_id));
+      for (const task of missedStarts) recordBackgroundTaskEvent({ ...task, type: "system", subtype: "task_started" });
       return;
     }
     if (event.type !== "system" || typeof event.task_id !== "string") return;
@@ -766,6 +773,7 @@ export async function runClaudeCodeTurn(input: {
       input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait?.since ?? Math.min(...[...backgroundTasks.values()].map(task => task.startedAt))));
       return;
     }
+    if (event.subtype === "task_notification") reportedBackgroundTasks.add(event.task_id);
     if (event.subtype !== "task_notification" || !backgroundTasks.delete(event.task_id)) return;
     if (backgroundWait && backgroundTasks.size > 0) {
       input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait.since));

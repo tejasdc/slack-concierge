@@ -40,6 +40,10 @@
     <key>CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS</key><string>1</string>
     <key>CONCIERGE_CODEX_EXECUTABLE</key><string>@CODEX@</string>
     <key>CONCIERGE_NODE_BIN</key><string>@NODE@</string>
+    <!-- Each agent run's own launchd job starts through the same app (execution hosts). -->
+    <key>CONCIERGE_AGENT_HOST_LAUNCHER</key><string>@HOST_LAUNCHER@</string>
+    <!-- Agent helpers built for the installed commit; never changed under a running agent. -->
+    <key>CONCIERGE_PINNED_HELPERS_DIR</key><string>@HELPERS@</string>
   </dict>
 </dict>
 </plist>

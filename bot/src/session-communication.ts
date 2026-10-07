@@ -14,6 +14,7 @@ import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-r
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
 import {savedWorkSettings} from './saved-work';
+import {cancelWatch,listWatches,registerWatch} from './watches';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
@@ -596,6 +597,30 @@ export class SessionCommunicationCoordinator {
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',{clientActionId:input.action_id});
+    }
+    /**
+     * Wake this session once, when a file or directory changes, when a command finishes, or at a
+     * deadline (docs/architecture/WATCHES.md). Local to this machine and to the session whose live run
+     * asks: this route is served on the owner socket only, never to a peer, and a watch is never forwarded.
+     */
+    watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
+        const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
+        if(input.verb==='list')return {watches:listWatches(actor.session)};
+        if(!input.action_id)throw new Error('A watch command needs a stable --action-id.');
+        action(input.action_id);
+        if(input.verb==='cancel'){
+            if(!input.watch_id)throw new Error('Name the watch to cancel.');
+            return {watch:cancelWatch(actor.session,input.watch_id)};
+        }
+        if(typeof input.until!=='string'||!input.until.trim())throw new Error('--until is required.');
+        if(input.verb==='file'){
+            if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
+            return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path});
+        }
+        if(!Array.isArray(input.argv)||typeof input.cwd!=='string')throw new Error('A command watch needs --cwd and the command after --.');
+        return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd});
     }
     async ask(input: {
         source: CommunicationSource;

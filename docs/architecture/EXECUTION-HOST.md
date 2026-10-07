@@ -1,7 +1,7 @@
 # Execution host
 
-**Status: built on Linux (server) for Claude runs, Codex runs and updates, 2026-10-07; the Mac host
-(launchd) is a later delivery** of
+**Status: built on Linux (server) for Claude runs, Codex runs and updates, and on the Mac (launchd)
+for Claude and per-account Codex runs and its updates, 2026-10-07** — the delivery of
 [agent work and updates without waiting](../plans/2026-10-07-agent-work-and-updates-without-waiting.md)
 §9 steps 4, 5, 7 (Linux) and 6.
 
@@ -195,7 +195,49 @@ A running turn holds an update only if it would end with the coordinator. One ru
 - The first release that contains this rule installs at an idle moment as before (the deployment
   runs the previous control).
 - Known limits: the capture gate still holds incoming captures in ingress for the deployment's
-  duration (unchanged; they are retained and delivered afterwards). The Mac has no host yet.
+  duration (unchanged; they are retained and delivered afterwards).
+
+## The Mac
+
+- Each run's host is its own launchd job in the user's GUI domain, label
+  `com.tejasdc.concierge.exec.<id>`, written as `job.plist` in the execution folder and loaded with
+  `launchctl bootstrap` (`startHost`). Its program is the signed agent-host app's executable
+  (`CONCIERGE_AGENT_HOST_LAUNCHER`, which `install-mac.sh` puts in the service's environment), so
+  agents keep the permissions macOS granted that app; without it, runs stay direct children.
+- A Mac has no cgroup: the provider stays in the host's process group (not detached), and launchd ends
+  that group when the job's process leaves, so a killed host leaves nothing behind (checked
+  2026-10-07). Stop's signal reaches the provider itself, which ends its own tools.
+- `launchctl print` is the supervisor view: running is alive; loaded-but-not-running or "no such
+  service" (113) is gone; anything else is unknown. launchd keeps a finished job loaded, so the jobs of
+  released or lost runs are removed (`retireFinishedHostJobs`) after a release and at startup, and
+  only once launchd reports them stopped.
+- The Mac updates its checkout in place and has no rollback release. Before pulling, `update-mac.sh`
+  runs `drain-status adoptable-check --candidate-contract <origin/main's host-protocols.json>
+  --running-contract <the checkout's> --no-rollback`; a refusal leaves everything unchanged and tries
+  again at the next interval. The survival rule is per machine and per supervisor
+  (`claude-code/launchd`), so a Mac update stops waiting for Claude runs only after one was seen alive
+  across a Mac restart.
+- A run never has its helpers changed under it. `install-mac.sh` builds the agent helpers (the same
+  bundles a server release carries) for the installed commit into `$STATE/helpers/<commit>`, never
+  changed or pruned, and the service names it (`CONCIERGE_PINNED_HELPERS_DIR`); each run's
+  `CONCIERGE_ROUTER_BOT_DIR` is that folder. The machine-wide hook wrappers in `/etc/codex/hooks`
+  (also Claude's managed history guard) dispatch per run ("dispatch: per-run v1"): a run's own
+  folder when it names one, the installed copy for any other agent, on both machines. Installing
+  those wrappers needs the Mac's admin password once (`install-mac.sh` from a terminal); until they
+  are installed the Mac starts no hosts (`CONCIERGE_AGENT_HOST_LAUNCHER` is left empty), so its
+  updates keep waiting for agents as before. A rebuilt agent-host app moves the previous one to
+  `$STATE/app-retired/`.
+- Restarting the Mac's Concierge belongs to the gated update. `update-mac.sh` (automatic or
+  requested) checks running work, holds the gate, checks compatibility for one fetched revision and
+  installs exactly it; `install-mac.sh` restarts a running Concierge only with that gate's proof
+  (`drain-status holds <token>` for that revision, or a gate held by its own ancestor, which is how
+  an updater from before the token calls it) and otherwise hands over to `update-mac.sh`.
+- Not proven here: whether macOS's Background Task Management lists these jobs (it needs an
+  administrator to read).
+- Shared-daemon Codex turns (both machines) are still taken back after a restart, but an update
+  always waits for them (`HOOKS_NOT_PINNED_PER_RUN` in `execution-survival.ts`): their machine-wide
+  hooks carry no per-run helper folder, so they would run whatever copy an update installs under
+  the running turn. Selecting the run's own helpers for those hooks is the open follow-up.
 
 ## Shutdown
 
@@ -214,8 +256,6 @@ preflight that refuses a candidate missing a protocol in use belongs to the depl
 
 ## Not covered yet
 
-- The Mac (launchd host, Keychain-held Claude homes), Codex runs (shared daemon and private
-  stdio): later steps. Codex and Mac runs keep the previous direct child process.
 - Forks and legacy Slack turns keep direct child processes.
 - `CONCIERGE_EXECUTION_HOSTS=0` returns new runs to direct child processes without touching hosts
   already running.

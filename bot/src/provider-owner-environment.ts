@@ -3,6 +3,10 @@ import { join, resolve } from "node:path";
 import { resolveRuntimeProfile } from "./runtime-profile";
 
 function routerBotDirectory(environment: NodeJS.ProcessEnv, moduleDirectory: string, installedProduction: boolean): string {
+  // The Mac runs from a checkout its updates rewrite, so its runs use the helpers built for the
+  // installed commit (build-pinned-helpers.ts), which never change under a running agent.
+  const pinned = environment.CONCIERGE_PINNED_HELPERS_DIR;
+  if (pinned && existsSync(join(pinned, "scripts/router-sessions.js"))) return realpathSync(pinned);
   const sourceBot = resolve(moduleDirectory, "..");
   if (existsSync(join(sourceBot, "scripts/router-sessions.ts"))) return realpathSync(sourceBot);
 

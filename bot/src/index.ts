@@ -332,6 +332,7 @@ import {scheduleProviderAccountUsageRefresh, startProviderUsageWatch, USAGE_REFR
 import {watchAuthHeldCredentials} from './provider-activation';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {startBackgroundJobWatch} from './background-waits';
+import { startMachineWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
@@ -3908,6 +3909,7 @@ async function reconcilePriorInstanceTurns() {
 // forecast check, which is what turns a number on a screen into a warning before the wall.
 startProviderUsageWatch({ stopped: () => draining, onReading: () => { wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
+const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
 watchAuthHeldCredentials();
 
 // Which Claude account this host is signed in as, from Claude Code itself. A host that
@@ -3976,6 +3978,7 @@ async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
   stopBackgroundJobWatch();
+  stopWatchWorker();
   serviceOnline = false;
   try {
     clearSandboxReadyReceipt(runtime);

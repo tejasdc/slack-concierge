@@ -3,6 +3,7 @@ import { db } from "./state";
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
 import type { ProviderKey } from "./provider-accounts";
+import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 
 /**
  * Seeing a usage wall coming, instead of discovering it by hitting one.
@@ -79,7 +80,20 @@ function storedUsage(provider: ProviderKey): ProviderUsage | null {
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
-  try { return JSON.parse(row.usage_json) as ProviderUsage; } catch { return null; }
+  try { return withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage); } catch { return null; }
+}
+
+/**
+ * Marks as current the Claude account agents are on, not the one the usage reader calls active.
+ * The reader's "active" is whoever is signed in to the main folder, which is the terminal's login
+ * once accounts have homes of their own, so the running-low warning watched the wrong account and
+ * he heard about chann.app only once it was out (2026-10-07).
+ */
+export function withAgentsAccountCurrent(provider: ProviderKey, usage: ProviderUsage): ProviderUsage {
+  if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
+  const chosen = selectedClaudeHome()?.label ?? null;
+  if (!chosen) return usage;
+  return { ...usage, accounts: usage.accounts.map(account => ({ ...account, current: account.label === chosen })) };
 }
 
 /**
@@ -222,6 +236,58 @@ export function tightestCurrentWindow(provider: ProviderKey): UsageForecast | nu
     (forecast.minutesLeft ?? Infinity) < (closest.minutesLeft ?? Infinity) ? forecast : closest);
 }
 
+/**
+ * How far ahead Tejas is warned, longer than the hour agents are briefed on.
+ *
+ * Agent work burns about 50% of a five-hour window an hour, in bursts up to 90%. On 2026-10-07
+ * the one-hour forecast fired 96 minutes before tejas@chann.app ran out, but only 25 minutes
+ * before tejastej.dc@gmail.com did (81% → 97% in eleven minutes). Ninety minutes at the
+ * observed pace is roughly 45% used, which still leaves him room to act during a burst.
+ */
+export const NOTICE_LEAD_MS = 90 * 60_000;
+
+/**
+ * Every account of one provider expected to run out within `leadMs`, each with its tightest
+ * window. Not only the selected account: Claude turns move between accounts for room, so the
+ * account being spent is often not the one selected (both ran out on 2026-10-07). An account
+ * nobody is using has no rate and so no forecast.
+ */
+export function accountsRunningOut(provider: ProviderKey, leadMs: number): UsageForecast[] {
+  const tightest = new Map<string, UsageForecast>();
+  for (const forecast of usageForecasts(provider)) {
+    // A spent window is the usage hold's to report, with what is waiting on it.
+    if (forecast.usedPercent >= 100) continue;
+    if (!projectedOut(forecast, leadMs) && !highAndClimbing(forecast, leadMs)) continue;
+    const held = tightest.get(forecast.account);
+    if (!held || (forecast.minutesLeft ?? Infinity) < (held.minutesLeft ?? Infinity)) tightest.set(forecast.account, forecast);
+  }
+  return [...tightest.values()];
+}
+
+const projectedOut = (forecast: UsageForecast, leadMs: number) => forecast.runsOutBeforeReset
+  && forecast.minutesLeft !== null && forecast.minutesLeft * 60_000 <= leadMs;
+
+/**
+ * Past this share of a window, still climbing and far from refilling, he is told even when the
+ * last hour's pace looks gentle. Replaying 2026-10-07: tejastej.dc@gmail.com sat near 50% for half
+ * an hour, so the pace line projected two hours, then burst 60% -> 100% in 45 minutes; the
+ * projection alone warned 27 minutes ahead, this level warns about 45 minutes ahead.
+ */
+export const LEVEL_WARN_PERCENT = 60;
+const highAndClimbing = (forecast: UsageForecast, leadMs: number) => {
+  const resetsAtMs = at(forecast.resetsAt);
+  return forecast.usedPercent >= LEVEL_WARN_PERCENT && (forecast.ratePerHour ?? 0) > 0
+    && resetsAtMs !== null && resetsAtMs - Date.now() > leadMs;
+};
+
+/** Accounts other than `account` whose windows all still have room, at the last reading. */
+export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {
+  return (storedUsage(provider)?.accounts ?? [])
+    .filter(other => other.label !== account && !other.problem && other.windows.length
+      && other.windows.every(window => window.usedPercent < 100))
+    .map(other => other.label);
+}
+
 /** Accounts on this machine whose windows all still have room, at the last reading. */
 export function accountsWithRoom(provider: ProviderKey): string[] {
   const usage = storedUsage(provider);
@@ -277,10 +343,11 @@ export function usageReadingIsUrgent(): boolean {
   for (const provider of ["claude-code", "codex"] as const) {
     const usage = storedUsage(provider);
     for (const account of usage?.accounts ?? []) {
-      if (!account.current || account.problem) continue;
+      // Any account, not only the selected one: turns move to whichever has room.
+      if (account.problem) continue;
       for (const window of account.windows) {
         const resetsAtMs = at(window.resetsAt);
-        if (window.usedPercent >= 60 && (resetsAtMs === null || resetsAtMs - Date.now() > 10 * 60_000)) return true;
+        if (window.usedPercent >= 40 && window.usedPercent < 100&& (resetsAtMs === null || resetsAtMs - Date.now() > 10 * 60_000)) return true;
       }
     }
   }

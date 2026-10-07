@@ -592,8 +592,13 @@ authorization or a change to the default rapid-iteration policy.
   its own account's process runs in a host too. An update waits only for runs that would end with
   Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
-  update line). The Mac keeps direct child processes until its own host lands. See
+  update line). On the Mac each run is its own launchd job started through the agent-host app. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
+- **An agent that must wait for a file, directory or command registers a watch and ends its turn**
+  (`router-actions.sh sessions watch …`, `bot/src/watches.ts`): one polling worker per machine inside
+  Concierge wakes the exact session once with a retained observation, records restarts and sleep as
+  gaps, and runs a watched command as an execution host that never holds an update. See
+  [watches](docs/architecture/WATCHES.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
@@ -777,8 +782,10 @@ authorization or a change to the default rapid-iteration policy.
   every forecast carries its source, samples, span and rate. Never state a countdown: a rate
   cannot promise a time. Readings tighten to five-minute cadence near a wall because two
   samples cannot draw a line, and both runtime compositions start the watch.
-- Work that is about to stop is told before it stops, not after: Tejas once per allowance
-  period through the existing notification path, any caller through
+- Work that is about to stop is told before it stops, not after: Tejas once per account per
+  allowance period, about 90 minutes ahead, as a provider-free Inbox notice with its own thread
+  and push (a bare outage event never reached him: thnkr.ing sends those only for held messages,
+  so tonight's forecasts on 2026-10-07 were silently dropped), any caller through
   `router-actions.sh sessions usage`, and sessions through their own context. A turn that
   starts while the account is low reads it in its per-turn instructions; a turn already
   running is told inside that run, pinned to that exact live run so a notice about spending
@@ -937,6 +944,8 @@ Provider exhaustion and early top-up/reset invalidation use the shared
 [usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
 use its clear command for the affected provider; never bypass a known usage limit merely
 to force another attempt. Clear does not authorize replay or resume stopped work.
+The separate [usage breakdown](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance)
+reads provider transcripts off the owner event loop and stores its cursor outside the ledger.
 
 ## Response contract
 
