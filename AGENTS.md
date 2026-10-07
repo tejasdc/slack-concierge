@@ -808,12 +808,14 @@ authorization or a change to the default rapid-iteration policy.
   or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"), except
   the refusal to rewrite pushed history he asked for the same evening (the bullet above), and the
   refusal to read the Mac's Messages or Notification Center databases directly or photograph the
-  Messages app [decision: agents-never-see-login-codes]: the same pre-command hook refuses any call
+  Messages app [decision: codes-hidden-only-for-money-and-identity]: the same pre-command hook refuses any call
   naming them (`messages-database-policy.ts`; even in a commit or session message, so such words go
   in a file passed with `-F` or `--text-file`), and agents read his texts with `router-actions.sh messages`
-  (`bot/scripts/messages-read.ts`, Mac only), which withholds one-time codes, reset texts and
-  sign-in links by `text-code-withholding.ts` and lists them by sender, time and kind. Refusals and
-  withholding reads are logged to `diagnostics/messages-reads.jsonl` in the state directory, never
+  (`bot/scripts/messages-read.ts`, Mac only). Texts that look like codes, resets or sign-in links
+  (`text-code-withholding.ts`) are shown or hidden by thnkr.ing's one rule, asked over `ssh
+  remote-box` (`POST /codes/decide`): ordinary sites and his allow list shown, money and identity and
+  his hide list hidden, everything hidden when thnkr.ing cannot be asked. Refusals and
+  code reads are logged to `diagnostics/messages-reads.jsonl` in the state directory, never
   with message words. It matches places, not intent, so a command that builds the path at runtime
   a screenshot by window number, or a whole-screen capture gets through; only removing the Mac agents' Full Disk Access and screen
   recording closes that, and that is his open decision

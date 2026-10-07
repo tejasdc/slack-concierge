@@ -1,9 +1,11 @@
 /**
- * `router-actions.sh messages`: an agent on the Mac reads Tejas's texts, received and sent, with
- * every login code, reset text and sign-in link withheld (bot/src/text-code-withholding.ts). Agents
- * may not open the Messages database themselves (bot/src/messages-database-policy.ts), so this is
- * their one way in. A withheld text is listed by sender, time and kind, never its words, and every
- * read that withheld something is recorded (bot/src/messages-read-log.ts).
+ * `router-actions.sh messages`: an agent on the Mac reads Tejas's texts, received and sent. Texts
+ * that look like a login code, reset or sign-in link (bot/src/text-code-withholding.ts) are shown
+ * only when thnkr.ing's rule allows them — ordinary sites and his allow list — and hidden for his
+ * money and identity accounts and his hide list [decision: codes-hidden-only-for-money-and-identity].
+ * Agents may not open the Messages database themselves (bot/src/messages-database-policy.ts), so
+ * this is their way in. A hidden text is listed by sender, time and kind, never its words, and every
+ * read that hid or showed a code is recorded (bot/src/messages-read-log.ts).
  *
  *   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]
  *
@@ -80,16 +82,54 @@ const WITHHELD_LISTED = 200;
 const shown: unknown[] = [];
 const withheld: unknown[] = [];
 const counts: Record<string, number> = {};
+const codesShown: Record<string, number> = {};
 let withheldTotal = 0;
 let truncatedAt: string | null = null;
-for (const row of rows) {
-  if (shown.length >= limit) { truncatedAt = new Date(row.at * 1000).toISOString(); break; }
-  const sender = row.mine ? null : row.handle;
-  const place = [row.handle, row.chat, row.chatId].filter(Boolean).join(' ').toLowerCase();
-  if (withWhom && !place.includes(withWhom)) continue;
+
+// Which of the code-looking texts an agent may see is not decided here: thnkr.ing holds the one
+// rule and his allow and hide lists (its code-policy.ts), so this asks it over the same SSH every
+// Mac agent uses to reach the server, in batches, and hides every one it cannot get an answer for.
+type CodeDecision = { key: boolean; withhold: boolean; category: string | null; rule: string | null; service: string | null };
+const candidates = new Map<number, { from: string | null; text: string }>();
+const scanned = rows.filter(row => !withWhom || [row.handle, row.chat, row.chatId].filter(Boolean).join(' ').toLowerCase().includes(withWhom)).map(row => {
   const words = bodyText(row.text, row.body);
-  const when = new Date(row.at * 1000).toISOString();
+  const sender = row.mine ? null : row.handle;
   const kind = textWithholding(words, sender ?? row.chatId);
+  if (kind && words && candidates.size < 1000) candidates.set(row.id, { from: sender ?? row.chatId, text: words.slice(0, 20_000) });
+  return { row, words, kind };
+});
+const decisions = new Map<number, CodeDecision>();
+let codeRuleUnavailable: string | null = null;
+const ids = [...candidates.keys()];
+for (let at = 0; at < ids.length && !codeRuleUnavailable; at += 200) {
+  const batch = ids.slice(at, at + 200);
+  const body = JSON.stringify({ items: batch.map(id => ({ channel: 'text', from: candidates.get(id)!.from, text: candidates.get(id)!.text })) });
+  const answer = Bun.spawnSync(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', 'remote-box',
+    'curl -s --max-time 20 --unix-socket /run/thinkering/session-capabilities.sock -H content-type:application/json --data-binary @- http://x/codes/decide'],
+  { stdin: Buffer.from(body), stdout: 'pipe', stderr: 'ignore', timeout: 30_000 });
+  try {
+    const parsed = JSON.parse(answer.stdout.toString()) as { decisions?: CodeDecision[] };
+    if (!Array.isArray(parsed.decisions) || parsed.decisions.length !== batch.length) throw new Error('no decisions');
+    batch.forEach((id, index) => decisions.set(id, parsed.decisions![index]!));
+  } catch {
+    codeRuleUnavailable = 'thnkr.ing could not be asked which codes agents may see, so every code-looking text is hidden this time.';
+  }
+}
+
+for (const { row, words, kind } of scanned) {
+  if (shown.length >= limit) { truncatedAt = new Date(row.at * 1000).toISOString(); break; }
+  const when = new Date(row.at * 1000).toISOString();
+  const decision = kind ? decisions.get(row.id) : undefined;
+  // Shown only when thnkr.ing explicitly allowed it; no answer, or "not a key" for a text that looks
+  // like one here, keeps it hidden.
+  if (kind && decision?.key && !decision.withhold) {
+    if (query && !(words ?? '').toLowerCase().includes(query)) continue;
+    const label = decision.service ?? 'unknown site';
+    codesShown[label] = (codesShown[label] ?? 0) + 1;
+    shown.push({ at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null, text: words,
+      codeShown: { category: decision.category, service: decision.service, rule: decision.rule } });
+    continue;
+  }
   if (kind) {
     // Listed whatever was searched for and never matched against the search: answering whether a
     // code contains "12" would let a search spell the code out one digit at a time.
@@ -102,9 +142,9 @@ for (const row of rows) {
   shown.push({ at: when, from: row.mine ? 'Tejas' : row.handle, chat: row.chat || null, text: words });
 }
 
-if (withheldTotal) {
+if (withheldTotal || Object.keys(codesShown).length) {
   // The answer matters more than its log line; a log that cannot be written is said on stderr.
-  try { recordMessagesRead({ event: 'messages_withheld', cwd: process.cwd(), with: withWhom, q: query, days, limit, shown: shown.length, withheld: counts }); }
+  try { recordMessagesRead({ event: 'messages_withheld', cwd: process.cwd(), with: withWhom, q: query, days, limit, shown: shown.length, withheld: counts, codesShown, codeRuleUnavailable: !!codeRuleUnavailable }); }
   catch (error) { console.error(JSON.stringify({ event: 'messages_withheld_log_failed', error: String(error) })); }
 }
 console.log(JSON.stringify({
@@ -113,8 +153,12 @@ console.log(JSON.stringify({
   withheldCount: withheldTotal,
   withheldByKind: counts,
   withheldNote: withheldTotal
-    ? 'One-time codes, password-reset texts and sign-in links are never shown to agents. Only their sender, time and kind are listed'
+    ? 'Codes, reset texts and sign-in links for his money and identity accounts (and any site on his hide list) are never shown to agents. Only their sender, time and kind are listed'
       + (withheldTotal > withheld.length ? `, the newest ${withheld.length} of ${withheldTotal}.` : '.')
     : undefined,
+  codesShownNote: Object.keys(codesShown).length
+    ? 'Login codes from ordinary sites, or sites on his allow list, are shown so agents can sign in for him; each carries codeShown with the site and rule.'
+    : undefined,
+  codeRuleUnavailable: codeRuleUnavailable ?? undefined,
   window: { days, limit, newestFirst: true, truncated: truncatedAt !== null, olderThanThisNotRead: truncatedAt },
 }, null, 1));
