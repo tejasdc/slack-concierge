@@ -31,6 +31,10 @@ export const RETRY_POLICIES = Object.freeze({
   noticeDelivery: policy({ name: "notice-delivery", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   observer: policy({ name: "observer", maxAttempts: 5, baseDelayMs: 100, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 5 * 60_000 }),
   ledgerWrite: policy({ name: "ledger-write", maxAttempts: 8, baseDelayMs: 50, capDelayMs: 1_000, jitterFraction: 0.25, maxAgeMs: 5_000 }),
+  // An agent's helper call waiting out a Concierge restart (deploy stop to online took ~25 s on
+  // 2026-10-07); the Stop hook's own 20-second limit gets the shorter one.
+  ownerRestart: policy({ name: "owner-restart", maxAttempts: 14, baseDelayMs: 500, capDelayMs: 8_000, jitterFraction: 0.25, maxAgeMs: 90_000 }),
+  ownerRestartInHook: policy({ name: "owner-restart-in-hook", maxAttempts: 8, baseDelayMs: 500, capDelayMs: 4_000, jitterFraction: 0.25, maxAgeMs: 15_000 }),
   slackRateLimit: policy({ name: "slack-rate-limit", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
 });
 

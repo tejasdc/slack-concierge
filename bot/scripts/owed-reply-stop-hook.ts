@@ -22,13 +22,15 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { requestApiResponse } from './router-request-client';
+import { RETRY_POLICIES } from '../src/retry-policies';
 
 const provider = process.argv[2];
 let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
 const conversation = typeof hook.session_id === 'string' ? hook.session_id : null;
 if (!provider || !conversation || (Array.isArray(hook.background_tasks) && hook.background_tasks.length)) process.exit(0);
-const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra });
+// The hook itself has 20 seconds (claude-code.ts), so a restart is waited out only within that.
+const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra }, RETRY_POLICIES.ownerRestartInHook);
 
 try {
   if (hook.stop_hook_active) {

@@ -172,6 +172,16 @@ request keeps its return obligation here; the recipient on the peer replies with
 ordinary `sessions reply`. See [peer instances](PEER-INSTANCES.md). Creating a session on a
 peer needs `--machine-need "<what only that machine can do>"`; new work runs on the server.
 
+A call that lands while Concierge restarts for an update waits it out (`ownerRestart`, 90 s;
+the Stop hook's `ownerRestartInHook`, 15 s) in `bot/scripts/router-request-client.ts`. A request
+that never reached the owner is sent again; one that may have reached it is sent again only when
+the owner deduplicates it (every `sessions` change carries `--action-id`, and every `sessions`
+call without one is a read). Otherwise, or when the budget ends, the command exits 1 with
+`{"error":"owner_unconfirmed","retry":{"path","action_id","resend_is_safe"}}`: run the same command
+with the same action id again, or check with `sessions get`. `projects new|share|cancel` carry no
+identity and are never resent after a possible delivery. Thinkering applies the same rule to his
+own changes (each carries a `clientActionId`) in its server's owner client and in the browser.
+
 What reaches Tejas carries its reasons, and the owner refuses it otherwise:
 
 ```bash
