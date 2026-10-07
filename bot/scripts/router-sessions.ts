@@ -11,7 +11,7 @@ router-actions.sh projects share <name> --to <machine> [--source-input <id> --so
 router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery
 router-actions.sh sessions peers <source-flags>
-router-actions.sh sessions usage <source-flags>
+router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] -- <text>
@@ -90,7 +90,7 @@ type Source = { channel_id: string; message_ts: string } | { input_id: string; r
 export type SessionCommunicationRequest =
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
-  | { operation: "usage"; body: { source: Source } }
+  | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
@@ -301,8 +301,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   let detach = false;
   let resurrect = false;
   let keepWorking = false;
+  let bySession = false;
   while (options.length) {
     const flag = options.shift()!;
+    if(flag==='--by-session'&&operation==='usage'){
+      if(bySession)invalid('Repeated --by-session option.');
+      bySession=true;continue;
+    }
     if (flag === "--keep-working" && operation === "post") {
       if (keepWorking) invalid("Repeated --keep-working option.");
       keepWorking = true;
@@ -329,6 +334,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       continue;
     }
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
+      || (flag==='--period'&&operation==='usage')
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
@@ -383,7 +389,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(operation==='usage') {
     if(separator>=0)invalid('usage does not accept text.');
-    return {operation,body:{source}};
+    const period=flags.get('--period');
+    if(period!==undefined&&!bySession)invalid('--period requires --by-session.');
+    if(period!==undefined&&period!=='today'&&period!=='week')invalid('--period requires today or week.');
+    return {operation,body:{source,...(bySession?{by_session:true,period:(period??'today') as 'today'|'week'}:{})}};
   }
   if (operation === "search") {
     if (separator < 0 || content.length < 1 || content.length > 8 || content.some(concept => !concept.trim())) {

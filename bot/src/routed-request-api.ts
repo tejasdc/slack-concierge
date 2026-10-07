@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
+import {usageBreakdown} from './usage-breakdown';
 
 // macOS has no /proc: the only proof that nothing listens on a leftover socket entry is
 // a refused connection to it. A connection that opens proves a live listener.
@@ -56,7 +57,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
-        if (operation === 'usage') return Response.json(sessions.usage(input));
+        if (operation === 'usage') {
+          const current=sessions.usage(input);
+          return Response.json(input.by_session
+            ? await usageBreakdown(input.period==='week'?'week':'today') : current);
+        }
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));

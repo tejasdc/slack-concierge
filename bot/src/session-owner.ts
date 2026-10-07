@@ -40,6 +40,7 @@ import {PeerError} from './session-peers';
 import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
+import {usageBreakdown} from './usage-breakdown';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -2212,6 +2213,11 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
+      else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='breakdown'&&parts.length===2){
+        const period=url.searchParams.get('period')??'today';
+        if(period!=='today'&&period!=='week')throw new SessionOwnerError('Use period=today or period=week.');
+        result=await usageBreakdown(period);
+      }
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();

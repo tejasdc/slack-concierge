@@ -598,3 +598,20 @@ The choice is still recorded on every turn as an `account` event carrying the ac
 `claudeAccountNotice` is retired: written null on every turn so any stored sentence clears, and
 removed from the owner's session view; thnkr.ing's banner, its component and its field are gone
 (`6c74028`), because a field nothing populates is an invitation to relight it.
+
+## Who used the allowance
+
+The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
+same read through `router-actions.sh sessions usage --by-session --period today|week`.
+Today starts at midnight in the owner's saved-work time zone; week means the last
+seven days. A separate worker reads provider transcripts incrementally and keeps its
+cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
+the ledger. The ledger is read only for session titles, projects, and account choices.
+The worker does not copy or modify transcripts and does not hold the owner event loop.
+
+Shares use published API token prices as an **allowance proxy**, not a claim that a
+subscription's five-hour meter is denominated in dollars. The response includes the
+prices and sources used, weighted totals, raw token classes, and each consumer's share.
+Claude's shared transcript folder cannot reveal the account used by a terminal process;
+those conversations appear under an explicit unknown-account bucket. A Concierge turn
+without an account event is also unknown rather than assigned by guesswork.
