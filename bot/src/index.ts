@@ -239,7 +239,7 @@ import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgre
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { reconcileRecoverableTurns } from "./turn-recovery";
 import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
-import { interruptOrphanedTurn } from "./state";
+import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {
   ensureChannelList,
 } from "./lists";
@@ -555,8 +555,13 @@ function turnsThatEndWithThisProcess() {
   return activeTurnCount - hostedTurns(activeTurnDispatch.activeTurns).size;
 }
 
+// A run that gains independent custody (its host is now recorded) no longer ends with this
+// process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
+observeExecutionChanges(() => resolveDrainIfIdle());
+
 function resolveDrainIfIdle() {
-  if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount !== 0 || !resolveDrained) return;
+  // Checked first: execution changes call this often, and only a waiting shutdown needs the count.
+  if (!resolveDrained || activeInputHandlerCount !== 0 || turnsThatEndWithThisProcess() > 0) return;
   resolveDrained();
   resolveDrained = null;
 }

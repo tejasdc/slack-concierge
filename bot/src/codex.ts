@@ -451,6 +451,8 @@ export interface RunCodexTurnInput {
   /** Follow-ups the earlier coordinator was sending; Codex's history decides whether each arrived. */
   recoveredSteeringClientIds?: string[];
   onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
+  /** The adopted turn was still running in the daemon when it was taken over (survival evidence). */
+  onAdoptedLive?: () => void;
 }
 
 function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string, currentModel:()=>string|undefined) {
@@ -1330,6 +1332,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   // An adopted turn that its thread's history never shows did not reach the daemon from here, so
   // following it cannot end by waiting; a turn this run submitted itself keeps the open search.
   let adoptedSearchesLeft = input.adoptTurn ? 20 : Infinity;
+  let adoptedLiveReported = false;
   const reconcileAcceptedTurn = async () => {
     stopInactivityTimeout();
     let retryMs = 100;
@@ -1365,7 +1368,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
           continue;
         }
         if (typeof turn.id === "string") acceptActiveTurnId(turn.id);
+        const stillRunning = !turn?.status || turn.status === "inProgress";
         settleFromTurn(turn);
+        if (input.adoptTurn && stillRunning && !adoptedLiveReported) { adoptedLiveReported = true; input.onAdoptedLive?.(); }
         if (turnSettled) return;
         if (recoveryMustInterrupt && activeTurnId) {
           try {

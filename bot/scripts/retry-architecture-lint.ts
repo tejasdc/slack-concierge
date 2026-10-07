@@ -50,6 +50,16 @@ function walk(dir: string) {
   }
 }
 walk(join(root, 'src'));
+
+// Not a retry rule, but the same release boundary: a release must be able to take back every host
+// an earlier release could have started, so the adoptable host protocols run from 1 to the newest
+// without a gap and include the one new hosts speak (docs/architecture/EXECUTION-HOST.md).
+{
+  const protocols = JSON.parse(readFileSync(join(root, 'src/host-protocols.json'), 'utf8')) as { current: number; adoptable: number[] };
+  const newest = Math.max(protocols.current, ...protocols.adoptable);
+  const missing = Array.from({ length: newest }, (_, index) => index + 1).filter(version => !protocols.adoptable.includes(version));
+  if (missing.length) { console.error(`retry-architecture: src/host-protocols.json: adoptable must keep every host protocol up to ${newest}; missing ${missing.join(', ')}`); process.exitCode = 1; }
+}
 const errors: string[] = [];
 for (const path of files) {
   const name = relative(root, path);

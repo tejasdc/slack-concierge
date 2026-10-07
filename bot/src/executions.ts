@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS executions (
 );
 CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended', 'live', 'exited');
 `);
+// Set only when a later coordinator took the run over while its provider was still running: the
+// evidence that this kind of run survives a restart (execution-survival.ts). A run settled from
+// a finished record, or one merely claimed, proves nothing about survival.
+if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()))
+  db.exec("ALTER TABLE executions ADD COLUMN adopted_live INTEGER NOT NULL DEFAULT 0");
+
+/** This coordinator took the run over while its provider was still running. */
+export function recordLiveAdoption(executionId: string) {
+  db.query("UPDATE executions SET adopted_live=1, updated_at_ms=? WHERE execution_id=?").run(Date.now(), executionId);
+}
 
 export type ExecutionRow = {
   execution_id: string; turn_id: number; dispatch_attempt: number; session_id: number; provider: string;
@@ -64,6 +74,9 @@ export function recordExecutionLaunched(executionId: string, launch: HostLaunch)
   db.query(`UPDATE executions SET unit=?, host_script=?, runtime=?, manifest_digest=?, state='live', updated_at_ms=?
     WHERE execution_id=? AND state='intended'`)
     .run(launch.unit, launch.hostScript, launch.runtime, launch.manifestDigest, Date.now(), executionId);
+  // A run that now has independent custody no longer ends with this coordinator: a shutdown waiting
+  // on it re-evaluates (index.ts observes execution changes).
+  executionChanged();
 }
 
 export function recordExecutionExited(executionId: string, exit: { code: number | null; signal: string | null }) {

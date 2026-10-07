@@ -57,6 +57,7 @@ DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
 DEPLOY_DESIRED_COMMIT=""
 FAILED_CANDIDATE_COMMIT=""
+PREFLIGHT_REFUSED=0
 DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
 CANDIDATE_ARTIFACT_PATH=""
@@ -441,7 +442,7 @@ cleanup_failed_deployment() {
     echo "Capture gate token: $CAPTURE_DRAIN_TOKEN" >&2
     return "$deploy_status"
   fi
-  if [ -n "$DEPLOY_RUN_ID" ] && [ "$DEPLOY_RUN_TERMINAL" = "0" ] && \
+  if [ -n "$DEPLOY_RUN_ID" ] && [ "$DEPLOY_RUN_TERMINAL" = "0" ] && [ "$PREFLIGHT_REFUSED" != "1" ] && \
     handoff_failed_deployment_to_repair "$deploy_status"; then
     echo "Deployment failure was handed to autonomous trusted-root repair." >&2
     trap - EXIT ERR INT TERM
@@ -597,6 +598,8 @@ prepare_candidate_release() {
   printf '%s\n' "$output"
   if [ "$status" -ne 0 ]; then
     DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output:0:600}"
+    # Nothing was activated: the running release stays exactly as it is (no restore, no restart).
+    PREFLIGHT_REFUSED=1
     return "$status"
   fi
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \

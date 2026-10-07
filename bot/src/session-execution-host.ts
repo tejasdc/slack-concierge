@@ -45,7 +45,7 @@ import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
-import {recordExecutionExited,recordExecutionLaunched,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
+import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
@@ -683,6 +683,7 @@ export class SessionExecutionHost {
     return {...prepared,...adoption.processor.run,
       adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
       recoveredSteeringClientIds:sending,
+      onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
   }
   private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string) {
@@ -690,7 +691,10 @@ export class SessionExecutionHost {
     const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??claudeExecutable(),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
-      onAttached:status=>log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until}),
+      onAttached:status=>{
+        log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
+        if(mode==='adopt'&&!status.exit)recordLiveAdoption(executionId);
+      },
       onExited:exit=>recordExecutionExited(executionId,exit)});
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {

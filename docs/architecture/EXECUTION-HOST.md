@@ -155,23 +155,39 @@ A running turn holds an update only if it would end with the coordinator. One ru
 `bot/src/execution-survival.ts`, used by the update gate (`drain-status.ts inspect`), the queue
 (`claimNextQueuedTurn`) and the update line (`deploymentWait`):
 
-- A kind of run (provider and supervisor: `claude-code/systemd`, `codex/codex-daemon`,
-  `codex/systemd`) counts as surviving only after this machine has seen one survive: an execution
-  of that kind that a later coordinator took back and then settled and released. Until then the
-  update waits for it exactly as before. Nothing is assumed from code alone.
-- A running turn whose execution is of a proven kind and on a host protocol this release can adopt
-  is reported `continuing`, not `active`: the update does not wait for it.
+- **Proof.** A kind of run (provider and supervisor: `claude-code/systemd`, `codex/codex-daemon`,
+  `codex/systemd`) counts as surviving only after this machine has recorded one execution of that
+  kind whose provider was **still running when a later coordinator took it over**
+  (`executions.adopted_live`: a host attach that found no exit, or a Codex thread whose turn was still
+  in progress) and that then settled and was released. A run settled from a finished record, a held
+  run or a mere claim proves nothing. Until the proof exists the update waits for that kind exactly
+  as before. The first proof is the acceptance restart with a marked test run (see below).
+- A running turn whose execution is of a proven kind and on an adoptable host protocol is reported
+  `continuing`, not `active`: the update does not wait for it.
 - While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new
-  message is not held behind the install; other kinds wait as before, and their receipts still say
-  so (`DEPLOYMENT_HOLD`).
-- Before a candidate is activated, its own `drain-status.js adoptable-check` must cover every host
-  protocol an admitted execution still speaks; otherwise the deployment fails before anything is
-  activated or restarted.
-- The update line receives `continuing`: how many running conversations carry on through it.
-- The first release that contains hosts installs at an idle moment as before (the installed control
-  that runs the deployment predates this rule). The first proof comes from the acceptance restart.
-- Known limit: the capture gate still holds incoming captures in ingress for the duration of a
-  deployment, as before; captures are retained and delivered afterwards.
+  message is not held behind the install; other kinds wait as before, and their receipts say so
+  (`DEPLOYMENT_HOLD`).
+- **Compatibility by construction.** `bot/src/host-protocols.json` holds the protocol new hosts speak
+  (`current`) and every protocol a release can take back (`adoptable`); the host program and the
+  coordinator both read it. The release lint (`retry-architecture-lint.ts`) refuses a release whose
+  `adoptable` does not hold every version from 1 to the newest, so no release can lose a protocol an
+  earlier one started, and runs admitted during an install cannot outgrow the candidate. A new
+  protocol is added to `adoptable` one release before it becomes `current` (expand, then use), so the
+  previous release, the one a rollback restores, can always take its hosts back.
+- Before a candidate is activated its own `drain-status.js adoptable-check` compares `adoptable` with
+  the protocols admitted executions speak. A refusal leaves the running release exactly as it is: the
+  run is recorded as failed and its gates released, with no restore, restart or repair handoff
+  (`PREFLIGHT_REFUSED` in `deploy.sh`).
+- A shutdown waiting for turns that end with the coordinator re-evaluates whenever an execution
+  changes, so a turn that gains its host during the shutdown stops being waited for at once.
+- What he sees: while an update waits, the line says how many conversations continue through it
+  (`continuing`); after it installs, `executionsOnPreviousVersion` counts running conversations
+  whose hosts were started from a previous release, and the line reads "Concierge update installed ·
+  N finishing on the previous version" until they finish.
+- The first release that contains this rule installs at an idle moment as before (the deployment
+  runs the previous control).
+- Known limits: the capture gate still holds incoming captures in ingress for the deployment's
+  duration (unchanged; they are retained and delivered afterwards). The Mac has no host yet.
 
 ## Shutdown
 

@@ -4,8 +4,10 @@
  * line (what it says continues). Design 2026-10-07 §9 step 7; docs/architecture/EXECUTION-HOST.md.
  *
  * A kind of run (provider and supervisor) counts only once this machine has seen one survive: an
- * execution of that kind that a later coordinator took back and then settled and released. Until
- * then the update waits for it exactly as before, so a host never proven here cannot cut work off.
+ * execution of that kind whose provider was still running when a later coordinator took it over
+ * (`adopted_live`), and that then settled and was released. A run settled from a finished record or
+ * merely claimed proves nothing. Until then the update waits for it exactly as before, so a host
+ * never proven here cannot cut work off.
  * Takes the database as a parameter so the deployment scripts, which open the ledger themselves,
  * use the same rule.
  */
@@ -22,8 +24,9 @@ function hasExecutions(database: Database) {
 
 export function provenRunKinds(database: Database): Set<string> {
   if (!hostsEnabled() || !hasExecutions(database)) return new Set();
+  if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
   return new Set((database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
-    WHERE adoptions>0 AND state='released'`).all() as { kind: string }[]).map(row => row.kind));
+    WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind));
 }
 
 /** What may start while an update installs: only kinds proven to carry on through its restart. */

@@ -20,7 +20,8 @@ import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, 
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 
-export const HOST_PROTOCOL_VERSION = 1;
+import HOST_PROTOCOLS from "../src/host-protocols.json";
+export const HOST_PROTOCOL_VERSION: number = HOST_PROTOCOLS.current;
 /** A record nobody comes back for is kept this long after the provider exited, then the host leaves. */
 const ABANDONED_TERMINAL_MS = 7 * 24 * 60 * 60_000;
 /** One frame line from a client may not exceed this; a provider message is far smaller. */

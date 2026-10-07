@@ -16,6 +16,8 @@ import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart} from './execution-survival';
+import {hostScriptPath} from './execution-host-client';
+import {providerOwnerEnvironment} from './provider-owner-environment';
 import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -912,7 +914,19 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   status() {
-    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate()};
+    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate(),
+      executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
+  }
+  /**
+   * Running conversations whose agents still run on a previous release's execution host: they carry
+   * on through an installed update and finish there, and this falls to zero as they do. Compared by
+   * the host program each one was started from, not by counting every hosted conversation.
+   */
+  private executionsOnPreviousVersion() {
+    try {
+      const current=hostScriptPath(providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR);
+      return (db.query("SELECT count(*) AS n FROM executions WHERE state IN ('live','exited') AND host_script IS NOT NULL AND host_script<>?").get(current) as {n:number}).n;
+    } catch {return 0;}
   }
   /** A release waits for every running turn to end; name the sessions it is waiting on. */
   private deploymentWait() {

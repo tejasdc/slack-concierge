@@ -12,9 +12,14 @@ import type { ClaudeCodeTransport, TransportFrameMeta } from "./claude-code";
 import { RETRY_POLICIES } from "./retry-policies";
 import { nextRetry } from "./retry-core";
 
-export const HOST_PROTOCOL_VERSION = 1;
-/** Every host protocol this coordinator can adopt; a release must keep each one any live execution still speaks. */
-export const ADOPTABLE_HOST_PROTOCOLS: readonly number[] = [1];
+import HOST_PROTOCOLS from "./host-protocols.json";
+/**
+ * The protocol new hosts speak and every protocol this release can take back, from one file the host
+ * program reads too. The release lint requires `adoptable` to hold every version from 1 to the newest,
+ * so no release can drop one an earlier release started (docs/architecture/EXECUTION-HOST.md).
+ */
+export const HOST_PROTOCOL_VERSION: number = HOST_PROTOCOLS.current;
+export const ADOPTABLE_HOST_PROTOCOLS: readonly number[] = HOST_PROTOCOLS.adoptable;
 
 export type HostFrame = { s: number; t: number; k: "o" | "e" | "i" | "c" | "x" | "h"; d: any };
 export type HostStatus = { protocol: number; executionId: string; hostPid: number; providerPid: number | null;
