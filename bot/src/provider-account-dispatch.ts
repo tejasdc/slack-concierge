@@ -1,4 +1,6 @@
 import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,renameSync,symlinkSync,unlinkSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
@@ -40,10 +42,23 @@ const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','stats
  * never deleted) so the link can take its place. A home that is still incomplete is never chosen,
  * and says which entries it lacks: failing closed, out loud, is the invariant.
  */
+/**
+ * Whether a Claude home holds a login. On Linux that is its `.credentials.json`; on a Mac, Claude
+ * keeps an extra home's login in the login Keychain under "Claude Code-credentials-" plus the first
+ * eight hex digits of the SHA-256 of the home's path, and writes no file (seen 2026-10-07, design
+ * §0.1). The Keychain is asked only whether that item exists; its secret is never read.
+ */
+export function claudeHomeHasLogin(home:string):boolean {
+  if(existsSync(join(home,'.credentials.json')))return true;
+  if(process.platform!=='darwin')return false;
+  const service=`Claude Code-credentials-${createHash('sha256').update(home.replace(/\/+$/,'')).digest('hex').slice(0,8)}`;
+  return spawnSync('/usr/bin/security',['find-generic-password','-s',service],{stdio:'ignore',timeout:5_000}).status===0;
+}
+
 export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false,claim=prepare):string|null {
   let names:string[];
   try {
-    if(!existsSync(join(home,'.credentials.json')))return null;
+    if(!claudeHomeHasLogin(home))return null;
     const shared=join(homedir(),'.claude');
     if(realpathSync(home)===realpathSync(shared))return null;
     names=readdirSync(shared);
