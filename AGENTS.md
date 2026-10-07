@@ -424,7 +424,12 @@ authorization or a change to the default rapid-iteration policy.
   notified, and admits a service notice to the question's owner (the Inbox router for most)
   naming the thread, so it can refresh anything in the question that expires before he opens it;
   his `open` state brings one back by hand (Tejas, 2026-10-07: "remind me later … 30 minutes, 3
-  hours, 6 hours, one week") [decision: remind-me-later-on-questions]. A service notice (no provider turn
+  hours, 6 hours, one week") [decision: remind-me-later-on-questions]. **The open-threads list is ordered by
+  what needs him** (`listTopics`: a decision or something to read first, then work moving, then unread, then
+  the quiet rest, newest first within each; closed threads by closure), and **reopening a thread brings
+  back the questions its closure ended** (`restoreExpiredByClosure`, his reopen and the router's alike), so
+  the Threads list's one-tap close can carry an Undo that loses nothing (Tejas, 2026-10-07: "everything is
+  kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server

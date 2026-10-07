@@ -160,7 +160,8 @@ type StoredQuestion={questionId:string;topicId:string;revision:number;state:Ques
   /** The Inbox session's attention generation when this was raised, so the session's read/dismiss cutoffs still mean something. */
   generation:number|null;
   /** When a question he set aside comes back in front of him, as an instant; null for one set aside with no time. */
-  deferUntil:string|null;createdAt:string;updatedAt:string};
+  /** When a set-aside question comes back; absent or null for one with no moment. */
+  deferUntil?:string|null;createdAt:string;updatedAt:string};
 
 const nowIso=()=>new Date().toISOString();
 const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
@@ -701,6 +702,17 @@ function expireOpen(questions:StoredQuestion[],reason:string,at:string):StoredQu
   return questions.filter(question=>OPEN_QUESTION_STATES.includes(question.state))
     .map(question=>({...question,state:'expired' as QuestionState,updatedAt:at,brief:{...question.brief,endedBecause:reason}}));
 }
+/**
+ * The questions a thread's closure ended come back open when the thread reopens, so an Undo on a
+ * one-tap close from the list loses nothing. Only questions this exact closure expired qualify
+ * (they carry its moment), never ones that ended earlier for their own reasons.
+ */
+function restoreExpiredByClosure(topic:StoredTopic,at:string):StoredQuestion[] {
+  const closedAt=topic.closure?.at;
+  if(!closedAt||topic.closure?.kind==='merged')return [];
+  return topicQuestions(topic.topicId).filter(question=>question.state==='expired'&&question.updatedAt===closedAt)
+    .map(question=>{const {endedBecause:_ended,...brief}=question.brief??{};return {...question,state:'open' as QuestionState,updatedAt:at,brief};});
+}
 /** The open questions a topic request's closure ends: only those linked to that exact request. */
 function questionsOfRequest(topicId:string,request:StoredRequest):StoredQuestion[] {
   const dispatches=new Set(request.dispatches.map((dispatch:any)=>String(dispatch.requestId??'')));
@@ -798,7 +810,12 @@ export function listTopics(options:{state?:string|null;query?:string|null;cursor
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
   else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
   else if(state==='background')summaries=summaries.filter(topic=>topic.state==='open'&&!topic.needsYou.count&&topic.work.kind!=='idle');
-  summaries.sort((first,second)=>String(second.lastEntryAt).localeCompare(String(first.lastEntryAt)));
+  // Open threads: what he can act on first, then what is moving, then what he has not read, then
+  // the quiet rest, newest first within each band. Closed threads keep plain recency, which is the
+  // order they were closed in (Tejas, 2026-10-07: "everything is kind of cluttered and dumped on
+  // the main page here. Clean it up.").
+  const band=(topic:ReturnType<typeof topicSummary>)=>topic.needsYou.count||topic.toRead.count?0:topic.work.kind!=='idle'?1:topic.unread?2:3;
+  summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||String(second.lastEntryAt).localeCompare(String(first.lastEntryAt)));
   const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
   const offset=Math.max(0,Number(options.cursor)||0);
   const page=summaries.slice(offset,offset+limit);
@@ -1308,8 +1325,9 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const why=text(body?.reason,'reason');
       return agentMutation(actor,actionId(),{kind:'topic-reopen',topicId:body?.topic_id,reason:why},()=>{
         const topic=topicFor(body?.topic_id);
+        const questions=restoreExpiredByClosure(topic,nowIso());
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
-        return {change:{kind:'topic',payload:{change:'reopened',topicId:topic.topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next}};
+        return {change:{kind:'topic',payload:{change:'reopened',topicId:topic.topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
       });
     }
     case 'request.add':{
@@ -1580,8 +1598,9 @@ export function topicHumanAction(topicId:string,body:any) {
       }
       case 'reopen':{
         const why=text(action.reason,'reason',4000);
+        const questions=restoreExpiredByClosure(topic,at);
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
-        return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next}};
+        return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
       }
       case 'set_aside':{
         const why=text(action.reason,'reason',4000);
