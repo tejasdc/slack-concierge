@@ -36,7 +36,7 @@ import {forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,saved
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
-import {activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
+import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
@@ -44,8 +44,8 @@ import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
-import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal,releaseHost} from './execution-host-client';
-import {recordExecutionExited,recordExecutionLaunched,recordExecutionReleased,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
+import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
+import {recordExecutionExited,recordExecutionLaunched,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
@@ -518,18 +518,19 @@ export class SessionExecutionHost {
   }
   /** After the turn's outcome is durably the owner's, its host may let its record go. */
   private async releaseExecutions(turnId:number) {
-    for(const execution of db.query("SELECT * FROM executions WHERE turn_id=? AND state IN ('live','exited')").all(turnId) as ExecutionRow[]) {
-      if(execution.supervisor==='codex-daemon'){recordExecutionReleased(execution.execution_id);continue;}
-      if(execution.state!=='exited')continue;
-      if(await releaseHost(execution.directory,execution.execution_id))recordExecutionReleased(execution.execution_id);
-    }
+    for(const execution of db.query("SELECT * FROM executions WHERE turn_id=? AND state IN ('live','exited')").all(turnId) as ExecutionRow[])
+      await releaseExecution(execution);
   }
   /** What Claude's record of picking up an earlier coordinator's follow-up means for its delivery. */
   private recoveredSteering(clientMessageId:string,outcome:'acknowledged'|'unacknowledged') {
     const row=db.query('SELECT steering_id,session_id,turn_id FROM session_inputs WHERE id=?').get(clientMessageId) as {steering_id:number|null;session_id:number;turn_id:number|null}|null;
     if(!row?.steering_id)return;
-    if(outcome==='acknowledged')markTurnSteeringMessageSent(row.steering_id);
-    else markTurnSteeringMessageAmbiguous(row.steering_id,'The run ended before Claude recorded picking this message up.');
+    // Only states this evidence can move: an acknowledgement upgrades sending or uncertain to sent;
+    // a missing pickup makes sending uncertain. A settled failure or delivery stays as it is.
+    const status=(db.query('SELECT status FROM turn_steering_messages WHERE id=?').get(row.steering_id) as {status:string}|null)?.status;
+    if(outcome==='acknowledged'&&(status==='sending'||status==='ambiguous'))markTurnSteeringMessageSent(row.steering_id);
+    else if(outcome==='unacknowledged'&&status==='sending')markTurnSteeringMessageAmbiguous(row.steering_id,'The run ended before the agent recorded picking this message up.');
+    else return;
     recordSessionEvent({eventId:`delivery:${clientMessageId}:${outcome==='acknowledged'?'sent':'ambiguous'}`,sessionId:row.session_id,inputId:clientMessageId,
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
@@ -573,9 +574,19 @@ export class SessionExecutionHost {
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
         run:async prepared=>{
           let actual=prepared;
+          // A Claude run keeps the account (home) it launched from. A shared-daemon Codex run has no
+          // home of its own: binding one would move it onto a private Codex process.
+          const privateCodex=session.provider_id==='codex'&&(adoption?adoption.execution.supervisor!=='codex-daemon':!!prepared.environment?.CODEX_HOME);
+          const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||privateCodex)
+            ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
           if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
-            actual=adoption?this.adoptedRun(prepared,adoption)
-              :this.hostedRun(prepared,claim,session,{replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel?{account:prepared.accountLabel,home:prepared.environment?.CLAUDE_CONFIG_DIR??null}:null});
+            actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
+          } else if(privateCodex&&(adoption||executionHostsEnabled())) {
+            // A Codex turn on its own account's app-server process lives in a host, like Claude.
+            actual=adoption?this.adoptedRun(prepared,adoption,MANAGED_CODEX):this.hostedRun(prepared,claim,session,kept,MANAGED_CODEX);
+          } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
+            // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
+            actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
           }
           // An adopted run's admission was retained when it started, and a Stop requested meanwhile
           // must still reach its process, so it is not re-checked here.
@@ -618,24 +629,44 @@ export class SessionExecutionHost {
    * account, never re-derived.
    */
   private hostedRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
-    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=prepared as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:session.provider_id,
       directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
-    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir)} as any;
+    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable)} as any;
   }
-  private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
+  private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
-      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir)} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable)} as any;
   }
-  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string) {
+  private trackedCodexRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
+    retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
+      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,run:data}});
+    return prepared;
+  }
+  /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
+  private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {
+    const current=getSessionById(session.id)!;
+    const turn=db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(adoption.claim.turn_id) as {provider_turn_id:string|null}|null;
+    if(!current.agent_session_uuid)throw new ProviderDispatchError({message:'The Codex thread this run started is unknown; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
+    const sending=(db.query(`SELECT input.id FROM turn_steering_messages steering JOIN session_inputs input ON input.steering_id=steering.id
+      WHERE steering.turn_id=? AND steering.status='sending'`).all(adoption.claim.turn_id) as {id:string}[]).map(row=>row.id);
+    return {...prepared,...adoption.processor.run,
+      adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
+      recoveredSteeringClientIds:sending,
+      onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
+  }
+  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
-    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:claudeExecutable(),
+    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??claudeExecutable(),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until}),
       onExited:exit=>recordExecutionExited(executionId,exit)});

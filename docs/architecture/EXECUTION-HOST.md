@@ -79,6 +79,13 @@ counts `adoptions`; it never increments the dispatch attempt or clears an acknow
 At startup, before steering recovery and turn recovery run, each open execution of a still-running
 turn whose coordinator is dead is decided by evidence (`claimAdoptableExecutions`):
 
+The decision (`hostCustody`) is the same one a live run makes when its connection breaks or its
+first attach fails after a launch: the supervisor's view is three-valued (`systemctl show`: alive,
+positively gone, or unknown when the query fails), unknown keeps custody, and the unit name is derived
+from the execution id, so a launch that crashed before recording it is still checked. A run whose
+connection is lost stays pending (held) and keeps deciding, 1 s then every 30 s; it never unwinds
+through provider-failure settlement while its host may still act.
+
 | Host | Decision |
 | --- | --- |
 | answers its exact execution id | taken back live (`adopt`) |
@@ -97,17 +104,24 @@ Taking back:
    with the exact prompt, folders, model, account and session id stored at launch in
    `executions.processor_json`.
 4. The transport attaches; the host returns its sequence at that moment (`until`) in the same
-   synchronous step that starts the replay. Frames are held until this run's writer exists, then
-   handed over in order. Frames up to `until` are the predecessor's history: stdout lines carry their
+   synchronous step that starts the replay. Frames that arrive before the boundary is known wait
+   unsorted; the history (up to `until`) is collected whole, so each recorded write is replayed with
+   its recorded outcome (a write the host recorded as failed rebuilds nothing), and it is handed over
+   only after this run's writer exists. Frames up to `until` are the predecessor's history: stdout lines carry their
    original receipt time (the adapter's clock, so a background job keeps its age) and the
    predecessor's writes are rebuilt (pending follow-ups, a Stop already sent, a compaction or a
    model switch with its request id). **During the replay the adapter only rebuilds state: it writes
-   nothing, closes nothing and registers no steering or Stop.** At the end of the history
-   (`onReplayEnd`) it acts once on what is still owed: a continuation owed after a compaction or a
-   model switch that the record does not show written (sent with a stable command id), a close the
-   predecessor's decision implies, the steering and Stop registrations, and one close-after-result
-   evaluation of the final state. Replayed output is not re-parsed per line for narration.
-5. A Stop requested while no coordinator held the run is sent to the process after the replay.
+   nothing, closes nothing (a close any rebuilt decision implies is owed), arms no policy deadline
+   (compaction, model switch, a background job's missing-report grace) and registers no steering.**
+   At the end of the history (`onReplayEnd`) it acts once on what is still owed: completing a Stop
+   whose interrupt is in the record (close and signal grace, the interrupt not resent), an owed close,
+   the deadlines still pending (from now), a continuation owed after a compaction or a model switch
+   that the record does not show written (sent with a stable command id), the steering
+   registration, and one close-after-result evaluation of the final state. Replayed output is not
+   re-parsed per line for narration. The inactivity limit starts after the replay, and a host whose
+   disk is full (`journalError`) is waited on, not taken for a silent provider.
+5. Stop is his and works at once, replay or not: it closes the input even when a full disk refused
+   the interrupt. A Stop requested while no coordinator held the run is sent to the process.
 
 Tool-approval prompts: Claude's print mode asks its host to answer them (`--permission-prompts`
 defaults to `host`), and Concierge has never answered them; that gap predates hosts and is unchanged.

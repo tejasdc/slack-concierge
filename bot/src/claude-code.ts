@@ -91,7 +91,7 @@ export interface ClaudeCodeTransport {
     onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void;
     onProtocolActivityReady?: (record: () => void) => void;
     /** A write an earlier coordinator made to this same process, replayed from the host's record. */
-    onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number) => void;
+    onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number, outcome: "written" | "unknown") => void;
     /** The replayed history has been handed over; from here frames are live and decisions may act. */
     onReplayEnd?: () => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -685,7 +685,7 @@ export async function runClaudeCodeTurn(input: {
     retryRestart = true;
     reportProviderTerminal();
     void writeInput(`${claudeCodeInterruptRequest(`concierge_restart_${++nextControlRequestId}`)}\n`, { kind: "interrupt" }).catch(() => {});
-    closeProviderInput(new Error("Claude Code attempt restarted on another model."));
+    closeProviderInput(new Error("Claude Code attempt restarted on another model."), true); // his choice: acts at once
     return true;
   };
   const recordProviderRetryEvent = (event: JsonValue) => {
@@ -706,7 +706,11 @@ export async function runClaudeCodeTurn(input: {
     }
   };
   const endingBackgroundTasks = new Set<string>();
+  // A job's end seen in the replay starts its grace only when the replay is over: grace is
+  // measured in the live run, not in how long the history took to read back.
+  const endedDuringReplay = new Map<string, string>();
   const backgroundTaskEnded = (taskId: string, status: string) => {
+    if (replaying) { if (backgroundTasks.has(taskId)) endedDuringReplay.set(taskId, status); return; }
     if (!backgroundTasks.has(taskId) || endingBackgroundTasks.has(taskId)) return;
     endingBackgroundTasks.add(taskId);
     setTimeout(() => {
@@ -762,7 +766,13 @@ export async function runClaudeCodeTurn(input: {
       }
     }, 60_000);
   };
-  const closeProviderInput = (reason = new Error("Claude Code completed before acknowledging the steering message.")) => {
+  /**
+   * Ends the run's input. While an adopted run replays its history nothing closes the live
+   * process: a close any rebuilt decision implies is owed and made once the replay ends. Only a
+   * Stop he asked for (`now`) acts at once, even mid-replay.
+   */
+  const closeProviderInput = (reason = new Error("Claude Code completed before acknowledging the steering message."), now = false) => {
+    if (replaying && !now) { if (owedClose === undefined) owedClose = reason; return; }
     if (inputClosed) return;
     inputClosed = true;
     endBackgroundWait();
@@ -943,16 +953,18 @@ export async function runClaudeCodeTurn(input: {
       sessionUuid, fromStart, environment: input.environment, onPickup: recordTranscriptPickup,
     });
   };
+  // Stop is his, so it is available as soon as there is a writer, replay or not, and it closes
+  // the input even if the interrupt could not be written (a full disk refuses the write).
   const maybeRegisterCancellation = () => {
-    if (cancellationRegistered || inputClosed || !writeInput || replaying) return;
+    if (cancellationRegistered || inputClosed || !writeInput) return;
     cancellationRegistered = true;
     input.onCancellationReady?.(async () => {
       if (cancellationReason || inputClosed || !writeInput) return;
       cancellationReason = new ProviderTurnCancelledError();
       reportProviderTerminal();
       const requestId = `concierge_stop_${++nextControlRequestId}`;
-      await writeInput(`${claudeCodeInterruptRequest(requestId)}\n`, { kind: "interrupt", commandId: requestId });
-      closeProviderInput(cancellationReason);
+      try { await writeInput(`${claudeCodeInterruptRequest(requestId)}\n`, { kind: "interrupt", commandId: requestId }); }
+      finally { closeProviderInput(cancellationReason, true); }
     });
   };
   const handleProtocolEvent = (event: JsonValue) => {
@@ -1144,11 +1156,9 @@ export async function runClaudeCodeTurn(input: {
     } else if (meta?.kind === "interrupt") {
       retryRestart = true;
     } else if (meta?.kind === "compact") {
+      // Its deadline is armed when the replay ends, if the compaction is still unanswered then.
       compactionAttempted = true;
-      compaction ??= { result: null, error: null, deadline: setTimeout(() => {
-        compaction = null;
-        closeProviderInput(new Error("Claude Code did not finish compacting the full conversation."));
-      }, COMPACTION_TIMEOUT_MS) };
+      compaction ??= { result: null, error: null, deadline: undefined as unknown as ReturnType<typeof setTimeout> };
     } else if (meta?.kind === "compaction-replay" && text !== null) {
       if (compaction) clearTimeout(compaction.deadline);
       compaction = null;
@@ -1169,8 +1179,9 @@ export async function runClaudeCodeTurn(input: {
       if (index >= 0) fallbackModels = fallbackModels.slice(index + 1);
       let settle!: () => void;
       const settled = new Promise<void>((resolve) => { settle = resolve; });
+      // Its deadline too is armed only if the switch is still unanswered when the replay ends.
       modelSwitch = { requestId: message.request_id, attempt: usageAttempt("claude-code", model, input.accountLabel), settled, settle,
-        deadline: setTimeout(() => failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch.")), input.modelSwitchTimeoutMs ?? 10_000) };
+        deadline: undefined as unknown as ReturnType<typeof setTimeout> };
       const count = Number(message.request_id.match(/(\d+)$/)?.[1]);
       if (Number.isSafeInteger(count)) nextControlRequestId = Math.max(nextControlRequestId, count);
     }
@@ -1179,12 +1190,27 @@ export async function runClaudeCodeTurn(input: {
   const finishReplay = () => {
     if (!replaying) return;
     replaying = false;
+    // A Stop the predecessor began (its interrupt is in the record) is completed: the input is
+    // closed and the signal grace follows, without sending the interrupt again.
+    if (cancellationReason) {
+      reportProviderTerminal();
+      closeProviderInput(cancellationReason);
+      return;
+    }
     if (owedClose !== undefined) {
       reportProviderTerminal();
       closeProviderInput(owedClose ?? undefined);
       return;
     }
-    if (cancellationReason) return;
+    // Deadlines run in the live run's time, from now.
+    if (compaction && !compaction.result) compaction.deadline = setTimeout(() => {
+      compaction = null;
+      closeProviderInput(new Error("Claude Code did not finish compacting the full conversation."));
+    }, COMPACTION_TIMEOUT_MS);
+    if (modelSwitch) modelSwitch.deadline = setTimeout(() => failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch.")),
+      input.modelSwitchTimeoutMs ?? 10_000);
+    for (const [taskId, status] of endedDuringReplay) backgroundTaskEnded(taskId, status);
+    endedDuringReplay.clear();
     // Stable identities, so a continuation the host already took (recorded before written) is
     // never written twice even if this decision were reached again.
     const owe = (text: string, kind: "compaction-replay" | "fallback-replay") => {

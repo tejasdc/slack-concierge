@@ -8,7 +8,7 @@
 import { rmSync } from "node:fs";
 import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
-import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, HostConnection, hostSocketPath, hostUnitActive, readJournal, releaseHost, type HostLaunch } from "./execution-host-client";
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostSupervisorView, releaseHost, type HostLaunch } from "./execution-host-client";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS executions (
@@ -47,14 +47,16 @@ export type ExecutionRow = {
 
 /** Recorded before the host is started, so a coordinator that dies mid-launch leaves evidence, never a second launch. */
 export function retainExecutionIntent(input: { executionId: string; turnId: number; dispatchAttempt: number; sessionId: number;
-  provider: string; directory: string; processor: unknown; coordinatorInstanceId: string }) {
+  provider: string; directory: string; processor: unknown; coordinatorInstanceId: string;
+  /** `codex-daemon`: the provider's own daemon holds the turn, so there is no host; it is live at once. */
+  supervisor?: "codex-daemon" }) {
   const now = Date.now();
   db.query(`INSERT INTO executions (execution_id, turn_id, dispatch_attempt, session_id, provider, host_protocol, supervisor,
       directory, processor_json, state, coordinator_instance_id, created_at_ms, updated_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'intended', ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(input.executionId, input.turnId, input.dispatchAttempt, input.sessionId, input.provider, HOST_PROTOCOL_VERSION,
-      process.platform === "darwin" ? "launchd" : "systemd", input.directory, JSON.stringify(input.processor),
-      input.coordinatorInstanceId, now, now);
+      input.supervisor ?? (process.platform === "darwin" ? "launchd" : "systemd"), input.directory, JSON.stringify(input.processor),
+      input.supervisor ? "live" : "intended", input.coordinatorInstanceId, now, now);
   executionChanged();
 }
 
@@ -89,7 +91,9 @@ export function liveExecutionOfTurn(turnId: number): ExecutionRow | null {
 /** Turns among `turnIds` whose provider process lives in a host and so survives this coordinator. */
 export function hostedTurns(turnIds: Iterable<number>): Set<number> {
   const hosted = new Set<number>();
-  for (const turnId of turnIds) if (db.query("SELECT 1 FROM executions WHERE turn_id=? AND state='live'").get(turnId)) hosted.add(turnId);
+  // Starting, running and exited-but-unsettled runs all outlive this coordinator: the next one
+  // decides each from its host and record.
+  for (const turnId of turnIds) if (db.query("SELECT 1 FROM executions WHERE turn_id=? AND state IN ('intended','live','exited')").get(turnId)) hosted.add(turnId);
   return hosted;
 }
 
@@ -124,17 +128,15 @@ export type Adoption = { execution: ExecutionRow; claim: QueuedTurnClaimRow; pro
 type HostProbe = "answering" | "unresponsive" | "gone-with-exit" | "gone";
 
 async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
-  if (execution.supervisor === "codex-daemon") return "answering";
-  try {
-    const connection = await HostConnection.connect(hostSocketPath(execution.directory), 3_000);
-    try { if ((await connection.status()).executionId === execution.execution_id) return "answering"; }
-    finally { connection.close(); }
-  } catch { /* decided below */ }
-  // Not answering is not dead: the supervisor says whether the host still runs. Only a host the
-  // supervisor no longer runs is gone, and then its record says whether the provider finished.
-  if (execution.unit && hostUnitActive(execution.unit)) return "unresponsive";
-  try { if (readJournal(execution.directory).some(frame => frame.k === "x")) return "gone-with-exit"; } catch {}
-  return "gone";
+  // The Codex daemon outlives Concierge on its own; the turn is followed by its exact thread, which
+  // exists once the session is bound to it. Without that binding nothing can identify the turn.
+  if (execution.supervisor === "codex-daemon")
+    return (db.query("SELECT agent_session_uuid FROM sessions WHERE id=?").get(execution.session_id) as { agent_session_uuid: string | null } | null)
+      ?.agent_session_uuid ? "answering" : "gone";
+  // The same decision a live run makes when its connection breaks (hostCustody): the unit name is
+  // derived from the execution id, so a launch that crashed before recording it is still checked.
+  const custody = await hostCustody(execution.directory, execution.execution_id);
+  return custody === "answering" ? "answering" : custody === "held" ? "unresponsive" : custody === "settle-from-record" ? "gone-with-exit" : "gone";
 }
 
 /**
@@ -194,6 +196,11 @@ export async function claimAdoptableExecutions(input: { instanceId: string;
       held.push({ execution, reason });
       continue;
     }
+    // A host found answering for a launch whose record stopped at its intent is the custody the
+    // launch would have recorded: it is live from here, for shutdown and adoption alike.
+    if (execution.state === "intended" && probe === "answering")
+      db.query("UPDATE executions SET state='live', unit=?, updated_at_ms=? WHERE execution_id=? AND state='intended'")
+        .run(executionUnit(execution.execution_id), Date.now(), execution.execution_id);
     const claim = queuedTurnClaimRow(execution.turn_id);
     if (!claim) continue;
     const mode = probe === "gone-with-exit" ? "adopt-record" as const : "adopt" as const;
@@ -242,9 +249,16 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
 async function releaseSettledExecutions() {
   const settled = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
       WHERE e.state IN ('live','exited') AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`).all() as ExecutionRow[];
-  for (const execution of settled) {
-    if (execution.supervisor === "codex-daemon") { recordExecutionReleased(execution.execution_id); continue; }
-    if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);
-  }
+  for (const execution of settled) await releaseExecution(execution);
+}
+
+/**
+ * Ends custody of a run whose outcome is durably settled: the host lets its record go, and a host
+ * the supervisor positively reports gone needs no socket to be let go of.
+ */
+export async function releaseExecution(execution: ExecutionRow) {
+  if (execution.supervisor === "codex-daemon") { recordExecutionReleased(execution.execution_id); return; }
+  if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) { recordExecutionReleased(execution.execution_id); return; }
+  if (hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
 }
 

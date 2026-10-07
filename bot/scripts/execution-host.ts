@@ -59,6 +59,9 @@ const live = new Set<(frame: Frame) => void>();
 // A frame is published only once it is persisted; a failed write is resumed where it stopped, so a
 // torn tail never swallows the frame after it.
 const unwritten: Array<{ frame: Frame; bytes: Buffer }> = [];
+const persistedWaiters: Array<() => void> = [];
+/** Resolves once every frame recorded so far is on disk. */
+const whenPersisted = () => new Promise<void>(resolve => { if (!unwritten.length) resolve(); else persistedWaiters.push(resolve); });
 let unwrittenOffset = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 function flush(): boolean {
@@ -78,6 +81,7 @@ function flush(): boolean {
     for (const send of live) send(head.frame);
   }
   journalError = null;
+  for (const waiter of persistedWaiters.splice(0)) waiter();
   if (provider?.stdout?.isPaused()) { provider.stdout.resume(); provider.stderr?.resume(); }
   return true;
 }
@@ -136,7 +140,9 @@ function writeLine(line: string): Promise<void> {
 // one being present; it is recorded like every other write.
 const initial = append("i", { id: "initial", line: manifest.initialInput, meta: { kind: "initial", ...(manifest.initialMeta ?? {}) } });
 receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: "pending" });
-writeLine(manifest.initialInput)
+// Like every write, the opening one is made only once its attempt is on disk; a full disk at
+// launch delays the agent's start rather than starting it without a record.
+whenPersisted().then(() => writeLine(manifest.initialInput))
   .then(() => { append("c", { op: "written", id: "initial" }); receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: true }); })
   .catch(error => { receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: false, error: error.message }); append("c", { op: "write-failed", id: "initial", error: error.message }); });
 
