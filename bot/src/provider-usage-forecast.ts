@@ -257,12 +257,28 @@ export function accountsRunningOut(provider: ProviderKey, leadMs: number): Usage
   for (const forecast of usageForecasts(provider)) {
     // A spent window is the usage hold's to report, with what is waiting on it.
     if (forecast.usedPercent >= 100) continue;
-    if (!forecast.runsOutBeforeReset || forecast.minutesLeft === null|| forecast.minutesLeft * 60_000 > leadMs) continue;
+    if (!projectedOut(forecast, leadMs) && !highAndClimbing(forecast, leadMs)) continue;
     const held = tightest.get(forecast.account);
-    if (!held || forecast.minutesLeft < (held.minutesLeft ?? Infinity)) tightest.set(forecast.account, forecast);
+    if (!held || (forecast.minutesLeft ?? Infinity) < (held.minutesLeft ?? Infinity)) tightest.set(forecast.account, forecast);
   }
   return [...tightest.values()];
 }
+
+const projectedOut = (forecast: UsageForecast, leadMs: number) => forecast.runsOutBeforeReset
+  && forecast.minutesLeft !== null && forecast.minutesLeft * 60_000 <= leadMs;
+
+/**
+ * Past this share of a window, still climbing and far from refilling, he is told even when the
+ * last hour's pace looks gentle. Replaying 2026-10-07: tejastej.dc@gmail.com sat near 50% for half
+ * an hour, so the pace line projected two hours, then burst 60% -> 100% in 45 minutes; the
+ * projection alone warned 27 minutes ahead, this level warns about 45 minutes ahead.
+ */
+export const LEVEL_WARN_PERCENT = 60;
+const highAndClimbing = (forecast: UsageForecast, leadMs: number) => {
+  const resetsAtMs = at(forecast.resetsAt);
+  return forecast.usedPercent >= LEVEL_WARN_PERCENT && (forecast.ratePerHour ?? 0) > 0
+    && resetsAtMs !== null && resetsAtMs - Date.now() > leadMs;
+};
 
 /** Accounts other than `account` whose windows all still have room, at the last reading. */
 export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {

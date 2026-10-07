@@ -327,7 +327,7 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
     let running: UsageForecast[];
     try { running = accountsRunningOut(provider, NOTICE_LEAD_MS); } catch { continue; }
     for (const forecast of running) {
-      if (forecast.minutesLeft === null || !forecast.resetsAt || !forecast.exhaustsAt) continue;
+      if (!forecast.resetsAt) continue;
       const key = `usage-warning:${provider}:${forecast.account}:${forecast.window}:${allowancePeriod(forecast.resetsAt)}`;
       if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`service-notice:${key}`)) continue;
       try {
@@ -365,12 +365,14 @@ const movesAutomatically = (provider: UsageProvider) => provider === "claude-cod
 function usageWarningText(provider: UsageProvider, forecast: UsageForecast, spare: string[],
   resetCredit: ResetCreditNotice | null): string {
   const name = provider === "codex" ? "Codex" : "Claude";
-  const out = noticeTime(db, Date.parse(forecast.exhaustsAt!));
   const refill = noticeTime(db, Date.parse(forecast.resetsAt!));
   const pace = forecast.source === "provider" ? `by ${name}'s own projection`
     : `at the pace of the last hour (about ${Math.round(forecast.ratePerHour ?? 0)}% an hour)`;
-  const head = `${name} account ${forecast.account} is ${Math.round(forecast.usedPercent)}% through its `
-    + `${windowLabel(forecast.window)} and, ${pace}, will run out around ${out}. It refills at ${refill}.`;
+  const used = `${name} account ${forecast.account} is ${Math.round(forecast.usedPercent)}% through its ${windowLabel(forecast.window)}`;
+  const head = forecast.runsOutBeforeReset && forecast.exhaustsAt
+    ? `${used} and, ${pace}, will run out around ${noticeTime(db, Date.parse(forecast.exhaustsAt))}. It refills at ${refill}.`
+    : `${used} and still climbing (about ${Math.round(forecast.ratePerHour ?? 0)}% an hour); it refills at ${refill}. `
+      + "Agent work comes in bursts, so it can run out before then.";
   const next = spare.length
     ? movesAutomatically(provider)
       ? ` When it runs out, new ${name} work moves to ${spare.join(" or ")} by itself; nothing to do.`

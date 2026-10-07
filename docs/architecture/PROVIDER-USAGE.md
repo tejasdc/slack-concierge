@@ -448,7 +448,9 @@ them back, because they were built for a screen. Now:
   states a countdown — a rate cannot promise a time and agent work arrives in bursts.
 - **Tejas is told** before it happens: once per account per window per allowance period, for
   any account projected to run out within 90 minutes (`NOTICE_LEAD_MS`; agents are briefed at
-  one hour). It is a provider-free Inbox notice (`publishProviderFreeNotice`, kind
+  one hour), or already at 60% (`LEVEL_WARN_PERCENT`) and still climbing with more than 90
+  minutes until it refills: on 2026-10-07 one account plateaued near 50% and then burst to 100%
+  in 45 minutes, so the pace line alone warned 25 minutes ahead and the level warns about 45. It is a provider-free Inbox notice (`publishProviderFreeNotice`, kind
   `provider_usage_warning`): its own thread, a reading item, and the push thnkr.ing sends for
   every reading item. It says the account, how much is used, when it is expected to run out and
   when it refills, and what happens next (Claude turns move to an account with room by
