@@ -55,21 +55,37 @@ let sequence = 0;
 let journalError: string | null = null;
 const live = new Set<(frame: Frame) => void>();
 
-function append(k: Frame["k"], d: unknown): Frame {
-  const frame: Frame = { s: ++sequence, t: Date.now(), k, d };
-  const bytes = `${JSON.stringify(frame)}\n`;
-  for (;;) {
-    try { writeSync(journal, bytes); journalError = null; break; }
-    catch (error) {
-      // A full disk stops the host from accepting more, never drops a frame silently.
+// Frames not yet fully on disk, oldest first, with how many of the first one's bytes are written.
+// A frame is published only once it is persisted; a failed write is resumed where it stopped, so a
+// torn tail never swallows the frame after it.
+const unwritten: Array<{ frame: Frame; bytes: Buffer }> = [];
+let unwrittenOffset = 0;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+function flush(): boolean {
+  while (unwritten.length) {
+    const head = unwritten[0]!;
+    try {
+      while (unwrittenOffset < head.bytes.length) unwrittenOffset += writeSync(journal, head.bytes, unwrittenOffset);
+    } catch (error) {
+      // A full disk stops the host from reading the provider (backpressure) and stays visible in
+      // `status`; the event loop keeps answering, so Stop and status still work.
       journalError = error instanceof Error ? error.message : String(error);
       provider?.stdout?.pause(); provider?.stderr?.pause();
-      Bun.sleepSync(1000);
+      flushTimer ??= setTimeout(() => { flushTimer = null; flush(); }, 1_000);
+      return false;
     }
+    unwritten.shift(); unwrittenOffset = 0;
+    for (const send of live) send(head.frame);
   }
+  journalError = null;
   if (provider?.stdout?.isPaused()) { provider.stdout.resume(); provider.stderr?.resume(); }
-  for (const send of live) send(frame);
-  return frame;
+  return true;
+}
+/** Records a frame; true when it is already on disk (and published), false when it waits for space. */
+function append(k: Frame["k"], d: unknown): Frame & { persisted: boolean } {
+  const frame: Frame = { s: ++sequence, t: Date.now(), k, d };
+  unwritten.push({ frame, bytes: Buffer.from(`${JSON.stringify(frame)}\n`) });
+  return { ...frame, persisted: flush() };
 }
 
 let provider: ChildProcess | null = null;
@@ -121,7 +137,7 @@ function writeLine(line: string): Promise<void> {
 const initial = append("i", { id: "initial", line: manifest.initialInput, meta: { kind: "initial", ...(manifest.initialMeta ?? {}) } });
 receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: "pending" });
 writeLine(manifest.initialInput)
-  .then(() => receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: true }))
+  .then(() => { append("c", { op: "written", id: "initial" }); receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: true }); })
   .catch(error => { receipts.set("initial", { op: "receipt", id: "initial", seq: initial.s, written: false, error: error.message }); append("c", { op: "write-failed", id: "initial", error: error.message }); });
 
 // ---- the coordinator connection -------------------------------------------------------------
@@ -164,11 +180,21 @@ async function command(socket: Socket, message: any) {
   if (prior) return send(socket, prior);
   if (message.op === "submit") {
     if (typeof message.line !== "string" || message.line.includes("\n")) return send(socket, { op: "refused", id, reason: "one line" });
+    // A write is recorded before it is made; a record that cannot be kept means no write, and the
+    // receipt says so (unsent, never ambiguous).
+    if (unwritten.length) return send(socket, { op: "receipt", id, written: false, error: `journal unavailable: ${journalError}` });
     const frame = append("i", { id, line: message.line, meta: message.meta ?? null });
+    if (!frame.persisted) {
+      append("c", { op: "write-failed", id, error: "journal unavailable; not written" });
+      receipts.set(id, { op: "receipt", id, seq: frame.s, written: false, error: `journal unavailable: ${journalError}` });
+      return send(socket, receipts.get(id));
+    }
     const pending = { op: "receipt", id, seq: frame.s, written: "pending" };
     receipts.set(id, pending);
     try {
       await writeLine(message.line);
+      // Attempted and completed are separate facts: this one proves the pipe accepted the line.
+      append("c", { op: "written", id });
       receipts.set(id, { ...pending, written: true });
     } catch (error) {
       const failure = error instanceof Error ? error.message : String(error);
@@ -195,6 +221,7 @@ async function command(socket: Socket, message: any) {
   if (message.op === "release") {
     // Custody ends only after the exit is recorded and the coordinator says it has it.
     if (!exit) return send(socket, { op: "refused", id, reason: "the provider is still running" });
+    if (unwritten.length) return send(socket, { op: "refused", id, reason: "the record is not fully on disk yet" });
     append("c", { op: "release", id });
     send(socket, { op: "receipt", id, released: true });
     return leave("released");

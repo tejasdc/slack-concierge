@@ -5,7 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type { ClaudeCodeTransport, TransportFrameMeta } from "./claude-code";
@@ -203,8 +203,8 @@ async function connectWhenReady(socketPath: string, deadlineMs: number): Promise
 }
 
 export type HostedExecution = {
-  /** Start a new execution with this id, or attach to one already running. */
-  mode: "launch" | "adopt";
+  /** Start a new execution, attach to one still running, or settle one whose host left a finished record. */
+  mode: "launch" | "adopt" | "adopt-record";
   executionId: string;
   /** The provider CLI by absolute path: the host's supervisor gives it no PATH of its own. */
   executable: string;
@@ -232,11 +232,21 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
     const execution = this.execution;
     const inactivityMs = this.timeouts.inactivityMs ?? 30 * 60_000;
     const shutdownGraceMs = this.timeouts.shutdownGraceMs ?? 2_000;
+    if (execution.mode === "adopt-record") return this.runFromRecord(input);
     return new Promise((resolve, reject) => {
       let connection: HostConnection | null = null;
       let settled = false, exited = false, inputClosing = false;
       let terminationError: Error | null = null;
-      let replayUntil = 0;
+      // Frames up to the host's sequence at attach are the predecessor's history. They are handled
+      // only after this run's writer exists, and the run is told when they end, so nothing it
+      // decides while rebuilding acts on the live process (design §3.1 step 4).
+      let replayUntil = 0, ready = false, replayEnded = false;
+      const held: HostFrame[] = [];
+      const endReplayIfDone = () => {
+        if (replayEnded || !ready || lastSeen < replayUntil) return;
+        replayEnded = true;
+        input.onReplayEnd?.();
+      };
       let inactivity: ReturnType<typeof setTimeout> | null = null;
       const timers: Array<ReturnType<typeof setTimeout>> = [];
       const clear = () => { if (inactivity) clearTimeout(inactivity); inactivity = null; for (const timer of timers.splice(0)) clearTimeout(timer); };
@@ -270,11 +280,14 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         }, inactivityMs);
       };
       const write = (value: string, meta?: TransportFrameMeta) => {
-        if (!connection || inputClosing || exited) return Promise.reject(new Error("claude-code stdin is closed"));
+        if (!connection || inputClosing || exited) return Promise.reject(new HostWriteRefusedError("claude-code stdin is closed"));
         const line = value.endsWith("\n") ? value.slice(0, -1) : value;
         return connection.command({ op: "submit", id: meta?.commandId ?? randomUUID(), line, meta: meta ?? null }).then(receipt => {
-          if (receipt.written !== true) throw new Error(`claude-code stdin refused the write: ${receipt.error ?? "not written"}`);
-        });
+          if (receipt.written === true) return;
+          // `false` is the host's record that the line was never written; anything else is not proof.
+          if (receipt.written === false) throw new HostWriteRefusedError(`claude-code stdin refused the write: ${receipt.error ?? "not written"}`);
+          throw new WriteOutcomeUnknownError("the host has not confirmed this write");
+        }, error => { throw new WriteOutcomeUnknownError(`the host connection ended before confirming this write: ${error instanceof Error ? error.message : String(error)}`); });
       };
       const onFrame = (frame: HostFrame) => {
         const replaying = frame.s <= replayUntil;
@@ -288,8 +301,9 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
           exited = true;
           const exit = { code: frame.d?.code ?? null, signal: (frame.d?.signal ?? null) as NodeJS.Signals | null };
           execution.onExited?.(exit);
-          void connection?.command({ op: "release", id: `release-${execution.executionId}` })
-            .then(() => execution.onReleased?.()).catch(() => {});
+          // The host keeps its record until the turn's result is durably settled; the owner of the
+          // turn releases it afterwards (releaseHost), so a crash in between still finds it.
+          endReplayIfDone();
           if (terminationError) finish(terminationError); else finish(null, exit);
           return;
         }
@@ -299,8 +313,10 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       let lastSeen = 0;
       const dispatch = (frame: HostFrame) => {
         if (frame.s <= lastSeen) return;
+        if (!ready) { held.push(frame); return; }
         lastSeen = frame.s;
         try { onFrame(frame); } catch (error) { terminateWithError(error); }
+        endReplayIfDone();
       };
       const socketPath = hostSocketPath(executionDirectory(execution.stateDir, execution.executionId));
       let reattachments = 0;
@@ -336,23 +352,66 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
               initialMeta: { kind: "initial" } } });
           execution.onLaunched?.(launch);
-          // The replay boundary must be known before the first frame is handled.
-          replayUntil = 0;
           const attached = await attachTo(await connectWhenReady(socketPath, Date.now() + 15_000));
           execution.onAttached?.(attached);
         } else {
-          const first = await HostConnection.connect(socketPath);
-          const status = await first.status();
-          replayUntil = status.lastSeq;
-          const attached = await attachTo(first);
-          // Frames the host wrote between the status and the attach are live, not replayed.
+          const attached = await attachTo(await HostConnection.connect(socketPath));
+          // The host computes this in the same synchronous step that starts the replay, so it is
+          // exactly the predecessor's history; anything later is live.
+          replayUntil = attached.until;
           execution.onAttached?.(attached);
         }
         input.onStdinReady?.((value: string, meta?: TransportFrameMeta) => write(value, meta), () => closeInput());
         input.onProtocolActivityReady?.(resetInactivity);
         resetInactivity();
+        ready = true;
+        for (const frame of held.splice(0)) dispatch(frame);
+        endReplayIfDone();
       };
       begin().catch(error => finish(error instanceof Error ? error : new Error(String(error))));
     });
   }
+
+  /**
+   * The host is gone but its record holds the provider's exit: the run is rebuilt from the record
+   * alone and settles from its own evidence, never as an interruption (it cannot write any more).
+   */
+  private runFromRecord(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+    const frames = readJournal(executionDirectory(this.execution.stateDir, this.execution.executionId));
+    const exit = frames.find(frame => frame.k === "x");
+    if (!exit) return Promise.reject(new HostUnavailableError("the execution's record holds no exit"));
+    input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
+    for (const frame of frames) {
+      if (frame.k === "o") input.onStdout(`${frame.d}\n`, frame.t);
+      else if (frame.k === "e") input.onStderr(String(frame.d));
+      else if (frame.k === "i" && frame.d?.id !== "initial") input.onReplayedInput?.(frame.d.line, frame.d.meta ?? null, frame.t);
+    }
+    input.onReplayEnd?.();
+    this.execution.onExited?.({ code: exit.d?.code ?? null, signal: exit.d?.signal ?? null });
+    return Promise.resolve({ code: exit.d?.code ?? null, signal: (exit.d?.signal ?? null) as NodeJS.Signals | null });
+  }
 }
+
+/** Every complete frame of an execution's journal, in order; a torn tail is skipped. */
+export function readJournal(directory: string): HostFrame[] {
+  const frames: HostFrame[] = [];
+  for (const line of readFileSync(join(directory, "journal"), "utf8").split("\n")) {
+    if (!line) continue;
+    try { frames.push(JSON.parse(line)); } catch { /* torn tail */ }
+  }
+  return frames;
+}
+
+/** Ends a host's custody once the turn's outcome is durably the owner's; refused while it still runs. */
+export async function releaseHost(directory: string, executionId: string): Promise<boolean> {
+  try {
+    const connection = await HostConnection.connect(hostSocketPath(directory), 3_000);
+    try { await connection.attach(Number.MAX_SAFE_INTEGER, () => {}); await connection.command({ op: "release", id: `release-${executionId}` }); return true; }
+    finally { connection.close(); }
+  } catch { return false; }
+}
+
+/** A write the host recorded as never made: the input provably did not reach the provider. */
+export class HostWriteRefusedError extends Error {}
+/** A write whose outcome nobody recorded (connection lost, unconfirmed): it may have reached the provider. */
+export class WriteOutcomeUnknownError extends Error {}

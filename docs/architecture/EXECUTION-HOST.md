@@ -44,8 +44,12 @@ lines `{s, t, k, d}`), `host.sock` (0600). Folders of runs that ended over 30 da
 startup; their ledger rows stay.
 
 Journal kinds: `h` host facts (protocol, pids), `i` a write to the provider (`{id, line, meta}`,
-recorded before it is written), `o` one stdout line, `e` a stderr chunk, `c` a control fact (close,
-signal, write failure, release, host exit), `x` the provider's exit `{code, signal, at}`.
+recorded before it is written), `o` one stdout line, `e` a stderr chunk, `c` a control fact (`written`
+when the pipe accepted an `i`, `write-failed`, close, signal, release, host exit), `x` the provider's
+exit `{code, signal, at}`. A frame is published only once it is fully on disk; a failed write resumes
+where it stopped, so a torn tail never swallows the next frame. While the disk refuses, the host stops
+reading the provider and keeps answering `status`, `signal` and `close`; a `submit` is refused with
+`written:false` (provably unsent) rather than written without a record.
 
 ## Protocol (version 1)
 
@@ -59,7 +63,7 @@ message.
 | `submit {id, line, meta}` | only from the attached connection; records `i` before writing; the same `id` returns the first receipt and never writes again; `written: true` proves the pipe accepted it, never that the model read it |
 | `close {id}` | ends stdin; the provider exits by itself |
 | `signal {id, signal}` | SIGINT/SIGTERM/SIGKILL to the provider's process group |
-| `release {id}` | refused while the provider runs; afterwards the host exits |
+| `release {id}` | refused while the provider runs or the record is not fully on disk; afterwards the host exits. Sent by the turn's owner only after the turn's outcome is durably settled (`releaseExecutions`), never on seeing the exit, so a crash in between leaves the record for the next coordinator |
 
 A full disk stops reading the provider (backpressure) and is reported in `status`, never a dropped frame.
 
@@ -72,25 +76,46 @@ counts `adoptions`; it never increments the dispatch attempt or clears an acknow
 
 ## Taking a run back (adoption)
 
-At startup, for each open execution of a still-running turn whose coordinator is dead and whose host
-answers its exact execution id:
+At startup, before steering recovery and turn recovery run, each open execution of a still-running
+turn whose coordinator is dead is decided by evidence (`claimAdoptableExecutions`):
 
-1. The turn is claimed for the new coordinator (same dispatch attempt), before steering recovery and
-   turn recovery run, so neither reads it as orphaned.
-2. Follow-ups the old coordinator had queued but not written fail back to their queue (provably
-   unsent); one it was writing is decided by the journal: written means Claude's pickup decides it.
+| Host | Decision |
+| --- | --- |
+| answers its exact execution id | taken back live (`adopt`) |
+| gone (its unit no longer runs) with a recorded exit | settled from its record alone (`adopt-record`): the outcome is the provider's own, never an interruption |
+| still running but not answering, or speaking a protocol this coordinator cannot adopt | **held**: the turn becomes this coordinator's (so recovery never reads it as dead while the agent may act), the execution is marked `held: …`, and an unresponsive host is retried every 30 s until it answers, leaves a record, or is gone; only that session waits |
+| gone with no recorded exit | `lost`: ordinary recovery, interrupted and unconfirmed, never replayed |
+
+Taking back:
+
+1. The turn is claimed for the new coordinator in one transaction (same dispatch attempt).
+2. Follow-ups queued but never handed to the provider fail back to their queue. One that was being
+   sent is decided by the host's receipts: no recorded attempt or a recorded failure means unsent; a
+   recorded completed write is decided by Claude's pickup during or after the replay; an attempt with
+   no outcome, or a record that cannot be read, stays uncertain (never resent).
 3. The run re-enters the same native execution path (`SessionExecutionHost.run(claim, adoption)`),
    with the exact prompt, folders, model, account and session id stored at launch in
-   `executions.processor_json`, and a transport in `adopt` mode.
-4. The transport attaches from sequence 1. Frames up to the host's sequence at attach are a replay:
-   stdout lines carry their original receipt time, which the Claude adapter uses as its clock, so a
-   background job keeps its age; the old coordinator's writes are rebuilt (pending follow-ups, a Stop
-   already sent, a compaction or model switch in flight). Replayed output is not re-parsed per line
-   for live narration. Then live frames continue.
-5. A Stop requested while no coordinator held the run is sent to the process, not answered without it.
+   `executions.processor_json`.
+4. The transport attaches; the host returns its sequence at that moment (`until`) in the same
+   synchronous step that starts the replay. Frames are held until this run's writer exists, then
+   handed over in order. Frames up to `until` are the predecessor's history: stdout lines carry their
+   original receipt time (the adapter's clock, so a background job keeps its age) and the
+   predecessor's writes are rebuilt (pending follow-ups, a Stop already sent, a compaction or a
+   model switch with its request id). **During the replay the adapter only rebuilds state: it writes
+   nothing, closes nothing and registers no steering or Stop.** At the end of the history
+   (`onReplayEnd`) it acts once on what is still owed: a continuation owed after a compaction or a
+   model switch that the record does not show written (sent with a stable command id), a close the
+   predecessor's decision implies, the steering and Stop registrations, and one close-after-result
+   evaluation of the final state. Replayed output is not re-parsed per line for narration.
+5. A Stop requested while no coordinator held the run is sent to the process after the replay.
 
-A host that does not answer leaves the run to ordinary recovery: interrupted and unconfirmed, never
-replayed. The original input is never resent.
+Tool-approval prompts: Claude's print mode asks its host to answer them (`--permission-prompts`
+defaults to `host`), and Concierge has never answered them; that gap predates hosts and is unchanged.
+A pending `control_request` stays in the journal and is replayed exactly as Claude sent it, by its
+own request id, so a later policy that answers them needs no reinitialize handshake to see it. The
+design's `reinitialize` (§3.1 step 4) was for recovering missed frames from a cursor; a replay of the
+whole record misses none, and Concierge registers no SDK hook callbacks for it to re-register (hooks
+are command hooks in `--settings`, held by the unchanged process).
 
 ## Shutdown
 

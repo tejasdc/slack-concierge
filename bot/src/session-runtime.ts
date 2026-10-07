@@ -25,7 +25,8 @@ import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resum
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
-import {claimAdoptableExecutions,hostedTurns} from './executions';
+import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
+import {interruptOrphanedTurn} from './state';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -106,13 +107,17 @@ export async function startSessionRuntime() {
     },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
-  for(const adoption of await claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive})) {
+  const runAdopted=(adoption:Adoption)=>{
     active.add(adoption.claim.turn_id);
     void host.run(adoption.claim,adoption).catch(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
       host.settleSetupFailure(adoption.claim,error);
     }).finally(()=>{active.delete(adoption.claim.turn_id);queue.wake();});
-  }
+  };
+  const executions=await claimAdoptableExecutions({instanceId,isOwnerAlive:isProcessIdentityAlive});
+  for(const adoption of executions.adopted)runAdopted(adoption);
+  for(const held of executions.held)watchHeldExecution(held,{stopped:()=>draining,adopt:runAdopted,
+    interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   await reconcileRecoverableTurns({client:null,instanceId,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,

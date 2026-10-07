@@ -44,7 +44,7 @@ import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
-import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId} from './execution-host-client';
+import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal,releaseHost} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordExecutionReleased,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -464,7 +464,11 @@ export class SessionExecutionHost {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(adoption)this.settleUnsentSteering(claim.turn_id,adoption.execution);
-        return this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
+        const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
+        // Only here is the run's outcome durably settled; a crash before this leaves the host's
+        // record for the next coordinator to settle from.
+        await this.releaseExecutions(claim.turn_id).catch(error=>log('warn','execution_release_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+        return outcome;
       });
     } finally {
       recordSessionEvent({eventId:`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
@@ -484,19 +488,40 @@ export class SessionExecutionHost {
    * record: written means Claude's pickup decides it (during replay or later), absent means unsent.
    */
   private settleUnsentSteering(turnId:number,execution:ExecutionRow) {
-    const written=new Set<string>();
-    try {
-      for(const line of readFileSync(join(execution.directory,'journal'),'utf8').split('\n')) {
-        if(!line)continue;let frame:any;try{frame=JSON.parse(line);}catch{continue;}
-        if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')written.add(frame.d.meta.clientMessageId);
-      }
-    } catch(error){log('warn','execution_journal_unreadable',{execution_id:execution.execution_id,...errorFields(error)});}
     const rows=db.query(`SELECT steering.id,steering.status,input.id AS input_id FROM turn_steering_messages steering
       LEFT JOIN session_inputs input ON input.steering_id=steering.id
       WHERE steering.turn_id=? AND steering.status IN ('queued','sending')`).all(turnId) as {id:number;status:string;input_id:string|null}[];
-    for(const row of rows) {
-      if(row.status==='sending'&&row.input_id&&written.has(row.input_id))continue;
-      markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was written to the agent; it was never delivered.');
+    // 'queued' was never handed to the provider by anyone: provably unsent.
+    for(const row of rows)if(row.status==='queued')markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was sent to the agent; it was never delivered.');
+    const sending=rows.filter(row=>row.status==='sending');
+    if(!sending.length)return;
+    // The daemon's own history decides a Codex follow-up (recoveredSteeringClientIds).
+    if(execution.supervisor==='codex-daemon')return;
+    // A host records a write before making it, then records whether it completed. Only those
+    // records prove anything: no attempt means unsent; a recorded failure means unsent; a
+    // completed write is decided by Claude's pickup; anything unreadable or unfinished stays uncertain.
+    const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
+    let readable=true;
+    try {
+      for(const frame of readJournal(execution.directory)) {
+        if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
+        if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
+        if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);
+      }
+    } catch(error){readable=false;log('warn','execution_journal_unreadable',{execution_id:execution.execution_id,...errorFields(error)});}
+    for(const row of sending) {
+      const command=row.input_id?`steer-${row.input_id}`:null;
+      if(!readable||!command){markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while sending this message and its delivery cannot be confirmed.');continue;}
+      if(!attempted.has(command)||failed.has(command)){markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was written to the agent; it was never delivered.');continue;}
+      if(!completed.has(command))markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while this message was being written to the agent; its delivery cannot be confirmed.');
+    }
+  }
+  /** After the turn's outcome is durably the owner's, its host may let its record go. */
+  private async releaseExecutions(turnId:number) {
+    for(const execution of db.query("SELECT * FROM executions WHERE turn_id=? AND state IN ('live','exited')").all(turnId) as ExecutionRow[]) {
+      if(execution.supervisor==='codex-daemon'){recordExecutionReleased(execution.execution_id);continue;}
+      if(execution.state!=='exited')continue;
+      if(await releaseHost(execution.directory,execution.execution_id))recordExecutionReleased(execution.execution_id);
     }
   }
   /** What Claude's record of picking up an earlier coordinator's follow-up means for its delivery. */
@@ -605,16 +630,15 @@ export class SessionExecutionHost {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
-      transport:this.hostedTransport('adopt',adoption.execution.execution_id,stateDir)} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir)} as any;
   }
-  private hostedTransport(mode:'launch'|'adopt',executionId:string,stateDir:string) {
+  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:claudeExecutable(),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until}),
-      onExited:exit=>recordExecutionExited(executionId,exit),
-      onReleased:()=>recordExecutionReleased(executionId)});
+      onExited:exit=>recordExecutionExited(executionId,exit)});
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);

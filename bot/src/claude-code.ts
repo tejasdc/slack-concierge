@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-marker";
 import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
@@ -7,6 +7,7 @@ import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import { WriteOutcomeUnknownError } from "./execution-host-client";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
@@ -91,6 +92,8 @@ export interface ClaudeCodeTransport {
     onProtocolActivityReady?: (record: () => void) => void;
     /** A write an earlier coordinator made to this same process, replayed from the host's record. */
     onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number) => void;
+    /** The replayed history has been handed over; from here frames are live and decisions may act. */
+    onReplayEnd?: () => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
@@ -464,6 +467,14 @@ export async function runClaudeCodeTurn(input: {
   // from: a background job does not become new because Concierge restarted.
   let eventAt: number | null = null;
   const now = () => eventAt ?? Date.now();
+  // While an adopted run replays its predecessor's history it only rebuilds state: it writes
+  // nothing and closes nothing, because those decisions were already made (and recorded) by the
+  // coordinator that saw these frames live. What is still owed is acted on once, at the end.
+  let replaying = !!input.adopted;
+  let owedClose: Error | null | undefined;
+  let owedCompactionReplay: string | null = null;
+  let owedFallbackReplay: string | null = null;
+  let closeCheckOwed = false;
   const selectAvailableModel = (models: string[]) => {
     for (const model of models) {
       const attempt = usageAttempt("claude-code", model, input.accountLabel);
@@ -822,6 +833,7 @@ export async function runClaudeCodeTurn(input: {
     return true;
   };
   const scheduleCloseAfterResult = () => {
+    if (replaying) { closeCheckOwed = true; return; }
     if (closeCheckScheduled || inputClosed) return;
     closeCheckScheduled = true;
     queueMicrotask(() => {
@@ -849,7 +861,7 @@ export async function runClaudeCodeTurn(input: {
     });
   };
   const maybeRegisterSteeringSender = () => {
-    if (steeringSenderRegistered || inputClosed || !writeInput || !initialPromptAcknowledged) return;
+    if (steeringSenderRegistered || inputClosed || !writeInput || !initialPromptAcknowledged || replaying) return;
     steeringSenderRegistered = true;
     input.onSteeringReady?.(async (steering) => {
       if (modelSwitch) await modelSwitch.settled;
@@ -873,8 +885,9 @@ export async function runClaudeCodeTurn(input: {
         void writeInput(`${claudeCodeUserMessage(acknowledgement.text, acknowledgement.uuid)}\n`,
           { kind: "steering", clientMessageId: acknowledgement.clientMessageId, commandId: `steer-${acknowledgement.clientMessageId}` }).catch((error) => {
           // A write the pipe refused never entered the queue, so the input is provably
-          // unsent and its owner may place it as ordinary queued work.
-          settleAcknowledgement(acknowledgement, new SteeringNotSentError(
+          // unsent and its owner may place it as ordinary queued work. A write whose outcome a
+          // host could not confirm may have arrived, so it stays uncertain, never resent.
+          settleAcknowledgement(acknowledgement, error instanceof WriteOutcomeUnknownError ? error : new SteeringNotSentError(
             `Claude Code did not accept this message: ${error instanceof Error ? error.message : String(error)}`,
           ));
           if (providerProducedResult) scheduleCloseAfterResult();
@@ -931,7 +944,7 @@ export async function runClaudeCodeTurn(input: {
     });
   };
   const maybeRegisterCancellation = () => {
-    if (cancellationRegistered || inputClosed || !writeInput) return;
+    if (cancellationRegistered || inputClosed || !writeInput || replaying) return;
     cancellationRegistered = true;
     input.onCancellationReady?.(async () => {
       if (cancellationReason || inputClosed || !writeInput) return;
@@ -991,7 +1004,17 @@ export async function runClaudeCodeTurn(input: {
         modelSwitch.settle();
         modelSwitch = null;
         if (response?.subtype !== "success") {
-          failModelSwitch(new Error(String(response?.error || "Claude Code rejected the fallback model switch.")));
+          const failure = new Error(String(response?.error || "Claude Code rejected the fallback model switch."));
+          if (replaying) { modelSwitchError = failure; owedClose = failure; }
+          else failModelSwitch(failure);
+        } else if (replaying && !cancellationReason) {
+          // The switch was answered before this run took over; the continuation it owes is written
+          // once the history ends, unless the history shows the predecessor already wrote it.
+          currentUsageAttempt = nextAttempt;
+          providerProducedResult = false;
+          usageRejected = false;
+          usageResetAt = null;
+          owedFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
         } else if (!inputClosed && writeInput && !cancellationReason) {
           currentUsageAttempt = nextAttempt;
           providerProducedResult = false;
@@ -1055,13 +1078,26 @@ export async function runClaudeCodeTurn(input: {
         return;
       }
       if (pendingFallbackReplay !== null) {
-        failModelSwitch(new Error("Claude Code ended before acknowledging the fallback continuation."));
+        const failure = new Error("Claude Code ended before acknowledging the fallback continuation.");
+        if (replaying) { modelSwitchError = failure; owedClose = failure; }
+        else failModelSwitch(failure);
         return;
       }
       if (compaction) {
         const outcome = compaction.result, failure = compaction.error;
         clearTimeout(compaction.deadline);
         compaction = null;
+        if (replaying) {
+          // Decided by the predecessor, and its continuation (if written) follows in the history.
+          if (outcome === "success" && !cancellationReason) {
+            providerProducedResult = false;
+            owedCompactionReplay = [COMPACTION_CONTINUATION, ...acceptedUserInputs].join("\n\n");
+          } else {
+            providerProducedResult = true;
+            owedClose = null;
+          }
+          return;
+        }
         if (outcome === "success" && !inputClosed && writeInput && !cancellationReason) {
           // The refusal is spent: the parser starts a new visible segment at each accepted
           // user input, so the answer to this replay is the turn's answer.
@@ -1118,13 +1154,49 @@ export async function runClaudeCodeTurn(input: {
       compaction = null;
       providerProducedResult = false;
       pendingCompactionReplay = text;
+      owedCompactionReplay = null;
     } else if (meta?.kind === "fallback-replay" && text !== null) {
       providerProducedResult = false;
       pendingFallbackReplay = text;
+      owedFallbackReplay = null;
       ownerSubmittedTexts.add(text);
+    } else if (meta?.kind === "set-model" && isRecord(message) && typeof message.request_id === "string"
+        && isRecord(message.request) && typeof message.request.model === "string") {
+      // A switch the predecessor asked for: its answer (replayed or still to come) is matched to it,
+      // and the models left to fall back to are the ones after it.
+      const model = message.request.model;
+      const index = fallbackModels.indexOf(model);
+      if (index >= 0) fallbackModels = fallbackModels.slice(index + 1);
+      let settle!: () => void;
+      const settled = new Promise<void>((resolve) => { settle = resolve; });
+      modelSwitch = { requestId: message.request_id, attempt: usageAttempt("claude-code", model, input.accountLabel), settled, settle,
+        deadline: setTimeout(() => failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch.")), input.modelSwitchTimeoutMs ?? 10_000) };
+      const count = Number(message.request_id.match(/(\d+)$/)?.[1]);
+      if (Number.isSafeInteger(count)) nextControlRequestId = Math.max(nextControlRequestId, count);
     }
-    // "set-model" needs nothing rebuilt: its answer was replayed or will arrive, and the
-    // fallback replay that follows it is what this run must recognise.
+  };
+  /** The predecessor's history has been rebuilt: act once on what it still owes, then run live. */
+  const finishReplay = () => {
+    if (!replaying) return;
+    replaying = false;
+    if (owedClose !== undefined) {
+      reportProviderTerminal();
+      closeProviderInput(owedClose ?? undefined);
+      return;
+    }
+    if (cancellationReason) return;
+    // Stable identities, so a continuation the host already took (recorded before written) is
+    // never written twice even if this decision were reached again.
+    const owe = (text: string, kind: "compaction-replay" | "fallback-replay") => {
+      ownerSubmittedTexts.add(text);
+      void writeInput?.(`${claudeCodeUserMessage(text)}\n`, { kind, commandId: `${kind}-${createHash("sha256").update(text).digest("hex").slice(0, 24)}` })
+        .catch(error => closeProviderInput(error instanceof Error ? error : new Error(String(error))));
+    };
+    if (owedCompactionReplay) { pendingCompactionReplay = owedCompactionReplay; owedCompactionReplay = null; owe(pendingCompactionReplay, "compaction-replay"); }
+    if (owedFallbackReplay) { pendingFallbackReplay = owedFallbackReplay; owedFallbackReplay = null; owe(pendingFallbackReplay, "fallback-replay"); }
+    maybeRegisterSteeringSender();
+    maybeRegisterCancellation();
+    if (closeCheckOwed || providerProducedResult) scheduleCloseAfterResult();
   };
   function reportStarted() {
     if (reportedStarted) return;
@@ -1158,6 +1230,7 @@ export async function runClaudeCodeTurn(input: {
     onProtocolActivityReady: (record) => {
       recordProtocolActivity = record;
     },
+    onReplayEnd: finishReplay,
     onReplayedInput: (line, meta, at) => {
       eventAt = at;
       try { recoverPredecessorWrite(line, meta); } finally { eventAt = null; }
