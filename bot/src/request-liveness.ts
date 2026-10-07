@@ -23,6 +23,20 @@ import type { SessionOwner } from './session-owner';
 export const REMINDERS_SINCE_MS = 1790138700000; // 2026-09-23T04:45:00Z
 
 /**
+ * When an agent is first asked whether it is still waiting: a request with no answer, or a
+ * background job a Concierge update is waiting on. Every such notice and its wording read this
+ * one value. It was 30 minutes in four places; Tejas asked for 15 on 2026-10-07, after workers
+ * the 1:47 AM crash cut off went unnoticed for half an hour.
+ */
+export const STILL_WAITING_AFTER_MS = 15 * 60_000;
+export const STILL_WAITING_MINUTES = STILL_WAITING_AFTER_MS / 60_000;
+
+/** True while a Concierge update is draining: work held only by it is waiting, not stalled. */
+export function updateDraining(): boolean {
+  return !!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
+}
+
+/**
  * The open requests the due-time inspection still looks at. Its timer and the inspection read this
  * one predicate. They once differed: the timer still counted a stalled request the inspection
  * skips, so a stalled request past its due time kept the timer due at once, and the owner

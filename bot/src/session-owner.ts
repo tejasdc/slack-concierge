@@ -13,6 +13,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
@@ -877,7 +878,7 @@ export class SessionOwner {
       const wait=turnBackgroundWait(turn.id);
       return [{sessionId:`concierge:${session.id}`,title:this.catalogueLabels(session).title,
         jobs:(wait?.jobs??[]).map(job=>({description:job.description,ageMs:job.ageMs,
-          told:job.told60?60:job.told30?30:null}))}];
+          told:job.told60?60:job.toldFirst?STILL_WAITING_MINUTES:null}))}];
     });
     const commit=run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, including the commit subject when its

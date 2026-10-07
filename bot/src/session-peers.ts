@@ -3,7 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
-import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -107,7 +107,7 @@ type WorkDisposition='completed'|'failed'|'needs_decision';
 type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
-const DUE_MS=30*60*1000;
+const DUE_MS=STILL_WAITING_AFTER_MS;
 /** The request ID is a function of the source input and action, so a retry after a lost response reaches the same peer row. */
 const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 
@@ -741,7 +741,8 @@ export class SessionPeers {
     const now=this.now();
     for(const row of db.query(`SELECT * FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as PeerRequestRow[]) {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-      const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking;
+      // A peer mid-update holds its work for a few minutes; that is waiting, not a stall.
+      const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking||remote?.updating===true;
       if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
       const asleep=row.status==='queued_offline'||this.unreachable.has(row.peer);
       if(asleep){
@@ -749,7 +750,7 @@ export class SessionPeers {
         // this work matters to him now (his decision, 2026-09-27).
         db.transaction(()=>{
           if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-          this.event(row,'overdue',{text:`Request ${row.request_id} is waiting on ${row.peer}, which has not answered for 30 minutes; it is probably asleep or offline. ${row.status==='queued_offline'?'The request has not reached it yet and will be delivered':'Its status will be read again'} automatically when ${row.peer} is back; nothing is lost or re-sent. Tejas was not told. If this work matters to him before ${row.peer} wakes, ask him (for example, to open the laptop); otherwise no action is needed.`,health:`${row.peer} unreachable`});
+          this.event(row,'overdue',{text:`Request ${row.request_id} is waiting on ${row.peer}, which has not answered for ${STILL_WAITING_MINUTES} minutes; it is probably asleep or offline. ${row.status==='queued_offline'?'The request has not reached it yet and will be delivered':'Its status will be read again'} automatically when ${row.peer} is back; nothing is lost or re-sent. Tejas was not told. If this work matters to him before ${row.peer} wakes, ask him (for example, to open the laptop); otherwise no action is needed.`,health:`${row.peer} unreachable`});
           db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
         })();
         continue;
@@ -759,7 +760,7 @@ export class SessionPeers {
         :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});
+        this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
       })();
     }
@@ -842,7 +843,7 @@ export class SessionPeers {
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
-      hold:inputHold(input),
+      hold:inputHold(input),updating:updateDraining(),
       replies,stalled:row.stalled_at_ms===null?null:{atMs:row.stalled_at_ms,reason:row.stalled_reason??'the worker sent no final reply after one reminder'}};
   }
   private deliveryReceipt(row:DeliveryRow) {

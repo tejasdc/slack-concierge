@@ -12,7 +12,7 @@ import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-r
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
 import {savedWorkSettings} from './saved-work';
-import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { isWritingSession, MACHINE_NEED_REQUIRED, WRITING_SESSION_REFUSAL } from './session-roles';
@@ -733,7 +733,7 @@ export class SessionCommunicationCoordinator {
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
-                    input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+30*60_000,
+                    input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
                     now,sourceInput,`request:${id}`,threadRoot);
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
@@ -1269,9 +1269,11 @@ export class SessionCommunicationCoordinator {
             // than report a healthy run as one; its answer settles this request when it ends.
             const healthy = turn?.status === 'running' ? !turn.stop_requested_at && !!turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id)
                 : turn?.status === 'done' && this.recipientStillWorking(request, ['running']);
-            if (healthy) {
+            // A Concierge update holds new starts and yields running work for a few minutes. Work
+            // waiting only for that is not stalled, so look again after the update instead.
+            if (healthy || updateDraining()) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
-                    .run(now + 30 * 60 * 1000, request.request_id);
+                    .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 continue;
             }
             const held = turn ? null : this.heldPrerequisite(request);
@@ -1289,7 +1291,7 @@ export class SessionCommunicationCoordinator {
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
                 if (!reported)
-                    this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
+                    this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
         }

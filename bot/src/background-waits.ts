@@ -1,6 +1,7 @@
 import { db, executionChanged } from "./state";
 import { nativeRunId } from "./session-inputs";
 import { log } from "./log";
+import { STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES } from "./request-liveness";
 import type { ClaudeBackgroundWait } from "./claude-code";
 
 // A run waiting on its own background work lives only as long as this process, so
@@ -35,7 +36,7 @@ export function turnBackgroundWait(turnId: number) {
   return wait ? { since: new Date(wait.since).toISOString(), tasks: wait.tasks.map(task => task.description),
     jobs: wait.tasks.map(task => ({ id: task.id, description: task.description,
       startedAt: new Date(task.startedAt).toISOString(), ageMs: Date.now() - task.startedAt,
-      told30: notices.has(`background-job:${nativeRunId(turnId)}:${task.id}:30`),
+      toldFirst: notices.has(`background-job:${nativeRunId(turnId)}:${task.id}:${STILL_WAITING_MINUTES}`),
       told60: notices.has(`background-job:${nativeRunId(turnId)}:${task.id}:60`) })),
     holdingOnlyOnJobs: releases.has(turnId) } : null;
 }
@@ -68,7 +69,7 @@ export function startBackgroundJobWatch(admit: (input: {
       if (!turn || turn.status !== "running") continue;
       for (const task of wait.tasks) {
         const age = now - task.startedAt;
-        for (const mark of [30, 60] as const) {
+        for (const mark of [STILL_WAITING_MINUTES, 60]) {
           if (age < mark * 60_000) continue;
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:${mark}`;
           if (notices.has(id)) continue;
@@ -78,7 +79,7 @@ export function startBackgroundJobWatch(admit: (input: {
               text: `Your background job “${task.description}” has been running for ${Math.floor(age / 60_000)} minutes.${updateWaiting ? " A Concierge update is waiting for this run." : ""} Do you still intend to keep it running? If not, stop it now. This is a service notice, not a request; no reply is owed.` });
             notices.add(id);
             noticeSentAt.set(id, now);
-            db.query(`UPDATE background_job_status SET ${mark === 30 ? "told_30" : "told_60"}=1
+            db.query(`UPDATE background_job_status SET ${mark === 60 ? "told_60" : "told_30"}=1
               WHERE turn_id=? AND task_id=?`).run(turnId, task.id);
             executionChanged();
             log("info", "background_job_notice_sent", { turn_id: turnId, task_id: task.id, mark });
@@ -87,7 +88,7 @@ export function startBackgroundJobWatch(admit: (input: {
               mark, reason: error instanceof Error ? error.message : String(error) });
           }
         }
-        if (updateWaiting && age >= 30 * 60_000) {
+        if (updateWaiting && age >= STILL_WAITING_AFTER_MS) {
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:update`;
           if (!notices.has(id)) {
             try {
