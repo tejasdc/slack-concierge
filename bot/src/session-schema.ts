@@ -134,8 +134,13 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_input ON session_owner_events(input_id);
         -- Whether a turn already declared its outcome is asked by turn alone; without this it read the whole ledger.
         CREATE INDEX IF NOT EXISTS session_owner_events_turn_kind ON session_owner_events(turn_id, kind) WHERE turn_id IS NOT NULL;
-        -- The newest event of one kind (the thread-link watermark every Inbox read checks) is one seek, not a walk back through the ledger.
-        CREATE INDEX IF NOT EXISTS session_owner_events_kind_sequence ON session_owner_events(kind, sequence);
+        -- The thread-link watermark every Inbox read checks is one seek, not a walk back through the ledger.
+        -- Partial on purpose: a general (kind, sequence) index let SQLite, which has no statistics here,
+        -- satisfy ORDER BY sequence through it and walk every message or Inbox event instead of seeking
+        -- (history 3.3 s per query, Inbox pages 30x slower, 2026-10-07). Only a query that says
+        -- kind='thread_link' can use this one.
+        DROP INDEX IF EXISTS session_owner_events_kind_sequence;
+        CREATE INDEX IF NOT EXISTS session_owner_events_thread_link ON session_owner_events(sequence) WHERE kind='thread_link';
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
