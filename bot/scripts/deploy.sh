@@ -391,48 +391,12 @@ claim_deployment_gate() {
         return 0
         ;;
       claimed_draining)
-        # Keep the gate once claimed: running turns finish untouched, while new work queues and
-        # starts right after the restart. Releasing it whenever anything ran let new turns start
-        # throughout the wait, so on a busy evening no idle moment came (the 2026-10-07 crash fix
-        # drained from 06:29 to 07:06 while agents ended turns on purpose to let it through).
-        echo "Provider work is active; new work now queues for this update while running turns finish."
-        hold_deployment_gate_until_idle || return 1
-        return 0
+        echo "Provider work is active; deployment yields and Concierge remains open."
+        release_turn_gate || return 1
+        wait_for_deployment_activity
         ;;
       *)
         echo "DEPLOY FAILED: unrecognized drain claim status: $claim_status" >&2
-        release_turn_gate || true
-        return 1
-        ;;
-    esac
-  done
-}
-
-hold_deployment_gate_until_idle() {
-  local output status failures=0
-  while true; do
-    wait_for_deployment_activity
-    set +e
-    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" check "$DRAIN_TOKEN")
-    status=$?
-    set -e
-    case "$status" in
-      0|20)
-        echo "$output"
-        echo "Running work finished under the held gate; deployment proceeds."
-        if ! claim_capture_gate; then
-          release_turn_gate || true
-          return 1
-        fi
-        return 0
-        ;;
-      10) failures=0 ;;
-      *)
-        echo "$output"
-        failures=$((failures + 1))
-        # A busy ledger can refuse one read; only a check that keeps failing ends the update.
-        [ "$failures" -lt 3 ] && continue
-        echo "DEPLOY FAILED: the held deployment gate could not be checked (drain-status exit $status)." >&2
         release_turn_gate || true
         return 1
         ;;

@@ -14,7 +14,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {STILL_WAITING_MINUTES,updateDraining} from './request-liveness';
+import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
@@ -130,7 +130,7 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(turn.dispatch_failure_class==='chosen_time')return {code:'CHOSEN_TIME_HELD',
     message:'This continuation is waiting until its chosen time.',
     clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
-  if(updateDraining())return {code:'DEPLOYMENT_HOLD',message:'A Concierge update installs once the work already running finishes. This starts by itself once the update is in.',clearsAt:null,automaticRetry:true};
+  if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`).get(input.session_id,turn.id) as {status:string}|null;
@@ -764,11 +764,7 @@ export class SessionOwner {
     input=recovered;
     if(input.turn_id!==null) return input;
     const payload=JSON.parse(input.payload_json);
-    // While an update holds the gate, running turns finish but are not extended: an agent's request
-    // or a return steered into a live run would keep it going and the update waiting, so it queues
-    // and runs right after the restart. Pinned steering (a notice about that exact run) still goes in.
-    if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer'
-      ||payload.delivery!=='steer'&&updateDraining())enqueueSessionInput(input.id);
+    if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer')enqueueSessionInput(input.id);
     else if(!this.runtime.steer(input)) {
       if(payload.delivery==='steer')db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:'The selected live run ended before this input could be steered.'}),input.id);
       // A run that stopped accepting live input between the attempt and its

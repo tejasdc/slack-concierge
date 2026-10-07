@@ -87,23 +87,6 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
     const updateWaiting = !!db.query(`SELECT 1 FROM deployment_runs
       WHERE target='concierge' AND status IN ('prepared','draining') LIMIT 1`).get();
     const now = Date.now();
-    // An update holding its gate lets running turns finish and starts nothing new, so each running
-    // turn is told once, in its own run, to stop at its next natural point: until it does, his new
-    // messages wait too. Pinned steering still reaches a live run under the gate.
-    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
-      for (const turn of db.query("SELECT id,session_id FROM turns WHERE status='running'").all() as
-        { id: number; session_id: number }[]) {
-        const id = `update-waiting:${nativeRunId(turn.id)}`;
-        if (notices.has(id)) continue;
-        try {
-          admit({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
-            sourceRunId: nativeRunId(turn.id), requestId: id, delivery: "steer",
-            text: "A Concierge update is waiting for the work already running to finish; nothing new starts until it is in, including Tejas's new messages. Finish what you are doing and end your turn at your next natural stopping point (do not cut work short or rush it). Anything sent to you meanwhile arrives right after the update. This is a service notice, not a request; no reply is owed." });
-          notices.add(id);
-          log("info", "update_waiting_notice_sent", { turn_id: turn.id });
-        } catch { /* The exact run may have ended before pinned admission. */ }
-      }
-    }
     for (const [turnId, wait] of waits) {
       const turn = db.query("SELECT session_id,status FROM turns WHERE id=?").get(turnId) as
         { session_id: number; status: string } | null;
