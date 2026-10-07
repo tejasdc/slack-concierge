@@ -167,22 +167,28 @@ A running turn holds an update only if it would end with the coordinator. One ru
 - While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new
   message is not held behind the install; other kinds wait as before, and their receipts say so
   (`DEPLOYMENT_HOLD`).
-- **Compatibility by construction.** `bot/src/host-protocols.json` holds the protocol new hosts speak
-  (`current`) and every protocol a release can take back (`adoptable`); the host program and the
-  coordinator both read it. The release lint (`retry-architecture-lint.ts`) refuses a release whose
-  `adoptable` does not hold every version from 1 to the newest, so no release can lose a protocol an
-  earlier one started, and runs admitted during an install cannot outgrow the candidate. A new
-  protocol is added to `adoptable` one release before it becomes `current` (expand, then use), so the
-  previous release, the one a rollback restores, can always take its hosts back.
-- Before a candidate is activated its own `drain-status.js adoptable-check` compares `adoptable` with
-  the protocols admitted executions speak. A refusal leaves the running release exactly as it is: the
-  run is recorded as failed and its gates released, with no restore, restart or repair handoff
-  (`PREFLIGHT_REFUSED` in `deploy.sh`).
+- **Compatibility between the real releases.** `bot/src/host-protocols.json` holds the protocol new
+  hosts speak (`current`) and every protocol a release can take back (`adoptable`); the host program
+  and the coordinator both read it, and each release answers `drain-status.js host-protocols`. Before
+  any candidate is activated (a normal update and a repair's fix alike), its own
+  `drain-status.js adoptable-check --running <installed> --rollback <last known good>` requires that
+  the candidate adopts every protocol admitted executions speak plus the running release's `current`
+  (hosts it may start until it stops), and that the last-known-good release, the one every restore
+  path brings back, adopts all of those plus the candidate's `current`. A new protocol therefore
+  ships in `adoptable` one release before it becomes `current` (expand, then use); the check refuses
+  any other order. Releases from before the command answer as protocol 1 if they ship a host and as
+  adopting nothing if they do not. The release lint's contiguous-versions rule is authoring hygiene;
+  this check is the guard.
+- A refusal leaves the running release exactly as it is: the run is recorded as failed and its gates
+  released, with no restore, restart or repair handoff (`PREFLIGHT_REFUSED` in `deploy.sh`).
+- Taking a host back speaks the protocol that host was started with, read from its status before the
+  attach, and refuses a protocol this release does not adopt (the run is held, never treated as dead).
 - A shutdown waiting for turns that end with the coordinator re-evaluates whenever an execution
   changes, so a turn that gains its host during the shutdown stops being waited for at once.
 - What he sees: while an update waits, the line says how many conversations continue through it
   (`continuing`); after it installs, `executionsOnPreviousVersion` counts running conversations
-  whose hosts were started from a previous release, and the line reads "Concierge update installed ·
+  whose host program differs in content from the installed one (`host_digest`, sha256 at launch), so
+  an update that did not touch the host leaves none on a previous version, and the line reads "Concierge update installed ·
   N finishing on the previous version" until they finish.
 - The first release that contains this rule installs at an idle moment as before (the deployment
   runs the previous control).

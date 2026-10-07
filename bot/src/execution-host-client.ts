@@ -61,6 +61,8 @@ export class HostConnection {
   private closedHandlers: Array<(reason: string) => void> = [];
   private closed = false;
   fenced = false;
+  /** The protocol this connection speaks, learned from the host at attach. */
+  protocol: number | null = null;
 
   private constructor(private readonly socket: Socket) {
     socket.setEncoding("utf8");
@@ -114,7 +116,12 @@ export class HostConnection {
   }
 
   /** Attach as the one coordinator of this execution; frames from `from` onward, replay then live. */
-  attach(from: number, onFrame: (frame: HostFrame) => void): Promise<HostStatus & { until: number }> {
+  async attach(from: number, onFrame: (frame: HostFrame) => void): Promise<HostStatus & { until: number }> {
+    // Speak the protocol this host was started with, never this release's newest: a host from an
+    // earlier release keeps its own protocol for life, and this release must be one that adopts it.
+    const { protocol } = await this.status();
+    if (!ADOPTABLE_HOST_PROTOCOLS.includes(protocol)) throw new HostUnavailableError(`host protocol ${protocol} is not adoptable by this release`);
+    this.protocol = protocol;
     this.onFrame = onFrame;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new HostUnavailableError("host did not answer the attach")), 10_000);
@@ -123,7 +130,7 @@ export class HostConnection {
         if (message.op === "refused") reject(new HostUnavailableError(`host refused the attach: ${message.reason}`));
         else resolve(message);
       };
-      try { this.send({ op: "attach", protocol: HOST_PROTOCOL_VERSION, from }); } catch (error) { clearTimeout(timer); reject(error); }
+      try { this.send({ op: "attach", protocol, from }); } catch (error) { clearTimeout(timer); reject(error); }
     });
   }
 
@@ -153,6 +160,11 @@ export type HostLaunch = {
 };
 
 /** Where a host for this release lives: beside the router helpers this run is pinned to. */
+/** What the host program is, by content: two releases with an identical host run the same host. */
+export function hostScriptDigest(path: string): string | null {
+  try { return createHash("sha256").update(readFileSync(path)).digest("hex"); } catch { return null; }
+}
+
 export function hostScriptPath(routerBotDir: string) {
   for (const name of ["scripts/execution-host.js", "scripts/execution-host.ts"]) {
     const path = join(routerBotDir, name);

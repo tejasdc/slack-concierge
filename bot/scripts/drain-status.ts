@@ -1,7 +1,10 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { isAncestorProcess, isProcessIdentityAlive, processIdentity } from "../src/runtime-identity";
-import { ADOPTABLE_HOST_PROTOCOLS } from "../src/execution-host-client";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/execution-host-client";
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
 
 function finish(code: number, payload: Record<string, unknown>): never {
@@ -9,12 +12,26 @@ function finish(code: number, payload: Record<string, unknown>): never {
   process.exit(code);
 }
 
+/**
+ * Another release's host protocols, asked of that release itself. Releases from before this command
+ * existed answer with a usage error: those that ship an execution host speak and adopt protocol 1,
+ * and those without one start no hosts and adopt none.
+ */
+function releaseHostProtocols(artifact: string): { current: number | null; adoptable: number[] } {
+  const asked = spawnSync(process.execPath, ["run", join(artifact, "control/drain-status.js"), "host-protocols"], { encoding: "utf8", timeout: 30_000 });
+  if (asked.status === 0) { const answer = JSON.parse(asked.stdout); return { current: answer.current, adoptable: answer.adoptable }; }
+  return existsSync(join(artifact, "control/bot/scripts/execution-host.js")) ? { current: 1, adoptable: [1] } : { current: null, adoptable: [] };
+}
+
+const flag = (name: string) => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] || null : null; };
+
 try {
   const command = process.argv[2];
+  if (command === "host-protocols") finish(0, { status: "host-protocols", current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS });
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
   if (!["check", "claim", "recover", "release", "adoptable-check"].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check>" });
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check [--running ARTIFACT] [--rollback ARTIFACT]|host-protocols>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true });
   database.exec("PRAGMA busy_timeout=5000");
@@ -49,14 +66,28 @@ try {
   const continuesThroughRestart = (turnId: number) => turnContinuesThroughRestart(database, turnId, proven);
 
   if (command === "adoptable-check") {
-    // Run from a candidate release before it replaces the coordinator: every host protocol an
-    // admitted execution still speaks must be one this release can adopt.
+    // Run from a candidate release before it is activated, for every activation alike. Two releases
+    // must take back hosts across this install: the candidate, and the release a failed candidate
+    // rolls back to. Each must adopt every protocol already in use and the protocol the running
+    // coordinator may still start before it stops; the rollback target must also adopt the
+    // candidate's own, which it starts the moment it runs. Compared between the real releases.
     const inUse = hasExecutions ? (database.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[]).map(row => row.host_protocol) : [];
-    const missing = inUse.filter(protocol => !ADOPTABLE_HOST_PROTOCOLS.includes(protocol));
     database.close();
-    if (missing.length) finish(1, { status: "incompatible", missing, adoptable: ADOPTABLE_HOST_PROTOCOLS,
-      error: `This release cannot take back running executions on host protocol ${missing.join(", ")}.` });
-    finish(0, { status: "compatible", in_use: inUse, adoptable: ADOPTABLE_HOST_PROTOCOLS });
+    const runningArtifact = flag("--running"), rollbackArtifact = flag("--rollback");
+    const running = runningArtifact ? releaseHostProtocols(runningArtifact) : null;
+    const rollback = rollbackArtifact ? releaseHostProtocols(rollbackArtifact) : null;
+    const beforeCandidate = [...inUse, ...(running?.current != null ? [running.current] : [])];
+    const refusals: string[] = [];
+    const lacking = (adoptable: readonly number[], needed: number[]) => [...new Set(needed.filter(protocol => !adoptable.includes(protocol)))];
+    const candidateLacks = lacking(ADOPTABLE_HOST_PROTOCOLS, beforeCandidate);
+    if (candidateLacks.length) refusals.push(`this release cannot take back hosts on protocol ${candidateLacks.join(", ")}`);
+    if (rollback) {
+      const rollbackLacks = lacking(rollback.adoptable, [...beforeCandidate, HOST_PROTOCOL_VERSION]);
+      if (rollbackLacks.length) refusals.push(`the rollback release ${rollbackArtifact} could not take back hosts on protocol ${rollbackLacks.join(", ")}`);
+    }
+    const report = { in_use: inUse, current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS, running, rollback };
+    if (refusals.length) finish(1, { status: "incompatible", ...report, error: `${refusals.join("; ")}.` });
+    finish(0, { status: "compatible", ...report });
   }
 
   const inspect = () => {

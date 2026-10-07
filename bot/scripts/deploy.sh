@@ -591,8 +591,13 @@ prepare_candidate_release() {
   # The candidate will replace a coordinator whose agents may still be running in execution hosts.
   # It must be able to take back every host protocol they speak; otherwise nothing is activated or
   # restarted (design 2026-10-07 §3.1 step 2, docs/architecture/EXECUTION-HOST.md).
+  # It is compared with the release actually running and the one a failure would restore.
+  local running_artifact rollback_artifact
+  running_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" current 2>/dev/null | jq -r '.artifact_path // empty' || true)
+  rollback_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" lkg 2>/dev/null | jq -r '.artifact_path // empty' || true)
   set +e
-  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/drain-status.js" adoptable-check)
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/drain-status.js" adoptable-check \
+    ${running_artifact:+--running "$running_artifact"} ${rollback_artifact:+--rollback "$rollback_artifact"})
   status=$?
   set -e
   printf '%s\n' "$output"

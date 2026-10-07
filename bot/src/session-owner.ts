@@ -16,7 +16,7 @@ import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart} from './execution-survival';
-import {hostScriptPath} from './execution-host-client';
+import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
@@ -924,8 +924,11 @@ export class SessionOwner {
    */
   private executionsOnPreviousVersion() {
     try {
-      const current=hostScriptPath(providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR);
-      return (db.query("SELECT count(*) AS n FROM executions WHERE state IN ('live','exited') AND host_script IS NOT NULL AND host_script<>?").get(current) as {n:number}).n;
+      const current=hostScriptDigest(hostScriptPath(providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR));
+      if(!current)return 0;
+      // Runs launched before digests were recorded are judged by their script's content; releases are kept.
+      const rows=db.query("SELECT host_script,host_digest FROM executions WHERE state IN ('live','exited') AND host_script IS NOT NULL").all() as {host_script:string;host_digest:string|null}[];
+      return rows.filter(row=>(row.host_digest??hostScriptDigest(row.host_script))!==current).length;
     } catch {return 0;}
   }
   /** A release waits for every running turn to end; name the sessions it is waiting on. */

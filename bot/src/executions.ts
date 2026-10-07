@@ -8,7 +8,7 @@
 import { rmSync } from "node:fs";
 import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
-import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostSupervisorView, releaseHost, type HostLaunch } from "./execution-host-client";
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, type HostLaunch } from "./execution-host-client";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS executions (
@@ -41,6 +41,10 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 // a finished record, or one merely claimed, proves nothing about survival.
 if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()))
   db.exec("ALTER TABLE executions ADD COLUMN adopted_live INTEGER NOT NULL DEFAULT 0");
+// The host program's content digest at launch; "on the previous version" compares this, never the
+// release folder, so an update that did not change the host leaves no run on a previous version.
+if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='host_digest'").get()))
+  db.exec("ALTER TABLE executions ADD COLUMN host_digest TEXT");
 
 /** This coordinator took the run over while its provider was still running. */
 export function recordLiveAdoption(executionId: string) {
@@ -71,9 +75,9 @@ export function retainExecutionIntent(input: { executionId: string; turnId: numb
 }
 
 export function recordExecutionLaunched(executionId: string, launch: HostLaunch) {
-  db.query(`UPDATE executions SET unit=?, host_script=?, runtime=?, manifest_digest=?, state='live', updated_at_ms=?
+  db.query(`UPDATE executions SET unit=?, host_script=?, host_digest=?, runtime=?, manifest_digest=?, state='live', updated_at_ms=?
     WHERE execution_id=? AND state='intended'`)
-    .run(launch.unit, launch.hostScript, launch.runtime, launch.manifestDigest, Date.now(), executionId);
+    .run(launch.unit, launch.hostScript, hostScriptDigest(launch.hostScript), launch.runtime, launch.manifestDigest, Date.now(), executionId);
   // A run that now has independent custody no longer ends with this coordinator: a shutdown waiting
   // on it re-evaluates (index.ts observes execution changes).
   executionChanged();
