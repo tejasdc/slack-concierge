@@ -12,6 +12,7 @@ import { errorFields, log } from "./log";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { assertUsageAvailable, codexUsageReset, recordUsageExhaustion, recordUsageSuccess, usageAttempt } from "./provider-usage";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import { SubprocessClaudeCodeTransport, type ClaudeCodeTransport, type TransportFrameMeta } from "./claude-code";
 import { webActivityDetails } from "./agent-progress";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
   CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
@@ -438,6 +439,18 @@ export interface RunCodexTurnInput {
   shutdownGraceMs?: number;
   appServerClient?: CodexAppServerClientLike;
   onRateLimits?: (snapshot: unknown) => void;
+  /**
+   * This run's turn was started by an earlier coordinator and is still the daemon's: follow it by
+   * its exact thread (and turn, when recorded), never start one (design 2026-10-07 §4.2).
+   */
+  adoptTurn?: { threadId: string; turnId: string | null };
+  /** A private app-server process's line transport (a direct child by default, or an execution host). */
+  transport?: ClaudeCodeTransport;
+  /** That private process was started by an earlier coordinator; its record is replayed, nothing resent. */
+  adopted?: boolean;
+  /** Follow-ups the earlier coordinator was sending; Codex's history decides whether each arrived. */
+  recoveredSteeringClientIds?: string[];
+  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
 }
 
 function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string, currentModel:()=>string|undefined) {
@@ -505,6 +518,13 @@ function verifyCodexConsultationPolicy(input: RunCodexTurnInput, response: any) 
   }
 }
 
+/**
+ * A Codex turn on its own app-server process (an account home bound to this turn). The process is
+ * reached through a line transport: a direct child, or an execution host (design 2026-10-07 §2,
+ * docs/architecture/EXECUTION-HOST.md), which lets a later coordinator take the run back by
+ * replaying the host's record: the predecessor's requests and the server's answers and
+ * notifications rebuild the turn's state, and nothing the predecessor sent is sent again.
+ */
 async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const submissionClientId = input.clientUserMessageId || `slack-concierge:ephemeral:${randomUUID()}`;
@@ -514,14 +534,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
   const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
 
-  const transport = codexTransport(input);
-  const proc = spawn(transport.executable, transport.args, {
-    cwd,
-    env: { ...process.env, ...input.environment },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const process_ = codexTransport(input);
+  const transport: ClaudeCodeTransport = input.transport
+    ?? new SubprocessClaudeCodeTransport(process_.executable, { inactivityMs: inactivityTimeoutMs, shutdownGraceMs });
 
-  let stdoutBuf = "";
   let stderr = "";
   let requestId = 0;
   let activeThreadId: string | null = sessionUUID;
@@ -537,6 +553,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const finalAnswerParts: string[] = [];
   const submittedSteeringClientIds = new Set<string>();
   const observedSteeringBoundaryClientIds = new Set<string>();
+  const recoveredSteering = new Set<string>();
   let latestSubmittedSteeringClientId: string | null = null;
   let suppressOutputUntilSteeringBoundary = false;
   let cancellationReason: ProviderTurnCancelledError | null = null;
@@ -547,6 +564,12 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     timeout: ReturnType<typeof setTimeout>;
     onAccepted?: (value: any) => void;
   }>();
+  // An adopted run's predecessor's requests, by id, so their answers in the replay are understood.
+  const predecessorRequests = new Map<number, { method: string; params: any }>();
+  let replaying = !!input.adopted;
+  let replayEnded!: () => void;
+  const replayDone = new Promise<void>((resolve) => { replayEnded = resolve; });
+  if (!replaying) replayEnded();
 
   let resolveTurn!: () => void;
   let rejectTurn!: (error: Error) => void;
@@ -565,20 +588,19 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   });
   void turnStarted.catch(() => {});
 
-  let resolveProcessClosed!: () => void;
-  const processClose = new Promise<void>((resolve) => {
-    resolveProcessClosed = resolve;
-  });
-
   const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
-  const writeMessage = (message: unknown) => new Promise<void>((resolve, reject) => {
-    if (processClosed || proc.stdin.destroyed || proc.stdin.writableEnded) {
-      reject(new Error("codex app-server stdin is closed"));
-      return;
-    }
-    proc.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
-  });
+  let writeLine: ((line: string, meta?: TransportFrameMeta) => Promise<void>) | null = null;
+  let closeInput: () => void = () => {};
+  let recordActivity: () => void = () => {};
+  let resolveWriter!: () => void;
+  const writerReady = new Promise<void>((resolve) => { resolveWriter = resolve; });
+
+  const writeMessage = async (message: unknown, meta?: TransportFrameMeta) => {
+    await writerReady;
+    if (processClosed || !writeLine) throw new Error("codex app-server stdin is closed");
+    await writeLine(`${JSON.stringify(message)}\n`, meta);
+  };
 
   const request = (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
     const id = ++requestId;
@@ -590,7 +612,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         pending.reject(new Error(`codex app-server ${method} timed out after ${requestTimeoutMs}ms`));
       }, requestTimeoutMs);
       pendingRequests.set(id, { resolve, reject, timeout, onAccepted });
-      void writeMessage({ method, id, params }).catch((error) => {
+      const meta: TransportFrameMeta | undefined = method === "turn/steer" && typeof (params as any)?.clientUserMessageId === "string"
+        ? { kind: "steering", clientMessageId: (params as any).clientUserMessageId, commandId: `steer-${(params as any).clientUserMessageId}` }
+        : method === "turn/interrupt" ? { kind: "interrupt" } : undefined;
+      void writeMessage({ method, id, params }, meta).catch((error) => {
         const pending = pendingRequests.get(id);
         if (pending) clearTimeout(pending.timeout);
         pendingRequests.delete(id);
@@ -649,10 +674,33 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);
     onProgress?.({ type: "steering", clientMessageId: item.clientId });
+    if (recoveredSteering.delete(item.clientId)) input.onRecoveredSteering?.(item.clientId, "acknowledged");
     if (item.clientId !== latestSubmittedSteeringClientId) return;
     messageParts.length = 0;
     finalAnswerParts.length = 0;
     suppressOutputUntilSteeringBoundary = false;
+  };
+
+  const settleCompletedTurn = (completedTurn: any, threadId: string | null) => {
+    for (const item of completedTurn.items || []) {
+      observeSteeringBoundary(item);
+      providerMessages.observe({ threadId: threadId ?? activeThreadId!, turnId: completedTurn.id, item });
+    }
+    activeTurnId = completedTurn.id || activeTurnId;
+    reportProviderTerminal();
+    if (turnSettled) return;
+    durationMs = codexTurnDurationMs(completedTurn);
+    turnSettled = true;
+    if (cancellationReason) {
+      rejectTurn(cancellationReason);
+    } else if (completedTurn.status !== "completed") {
+      rejectTurn(new Error(
+        completedTurn.error?.message || `Codex turn ended with status ${completedTurn.status || "unknown"}.`,
+      ));
+    } else {
+      onProgress?.({ type: "done", text: (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n") });
+      resolveTurn();
+    }
   };
 
   const handleNotification = (event: any) => {
@@ -716,25 +764,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         if (activeThreadId && params.threadId !== activeThreadId) break;
         const completedTurn = params.turn || {};
         if (activeTurnId && completedTurn.id !== activeTurnId) break;
-        for (const item of completedTurn.items || []) {
-          observeSteeringBoundary(item);
-          providerMessages.observe({ threadId: params.threadId, turnId: completedTurn.id, item });
-        }
-        activeTurnId = completedTurn.id || activeTurnId;
-        reportProviderTerminal();
-        if (turnSettled) break;
-        durationMs = codexTurnDurationMs(completedTurn);
-        turnSettled = true;
-        if (cancellationReason) {
-          rejectTurn(cancellationReason);
-        } else if (completedTurn.status !== "completed") {
-          rejectTurn(new Error(
-            completedTurn.error?.message || `Codex turn ended with status ${completedTurn.status || "unknown"}.`,
-          ));
-        } else {
-          onProgress?.({ type: "done", text: (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n") });
-          resolveTurn();
-        }
+        settleCompletedTurn(completedTurn, params.threadId);
         break;
       }
       case "turn/plan/updated": {
@@ -750,51 +780,76 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     }
   };
 
-  proc.stdout.on("data", (chunk: Buffer) => {
-    stdoutBuf += chunk.toString();
-    const lines = stdoutBuf.split("\n");
-    stdoutBuf = lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let ev: any;
-      try {
-        ev = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (Object.prototype.hasOwnProperty.call(ev, "id") && ("result" in ev || "error" in ev)) {
-        const pending = pendingRequests.get(Number(ev.id));
-        if (!pending) continue;
-        resetInactivityTimeout();
-        clearTimeout(pending.timeout);
-        pendingRequests.delete(Number(ev.id));
-        if (ev.error) {
-          pending.reject(new Error(`codex app-server ${ev.error.code ?? "error"}: ${ev.error.message || JSON.stringify(ev.error)}`));
-        } else {
-          try {
-            // This runs synchronously at the exact JSON-RPC acceptance
-            // boundary, before any later provider event in the same chunk.
-            pending.onAccepted?.(ev.result);
-            pending.resolve(ev.result);
-          } catch (error) {
-            pending.reject(error instanceof Error ? error : new Error(String(error)));
-          }
-        }
-      } else if (Object.prototype.hasOwnProperty.call(ev, "id") && ev.method) {
-        resetInactivityTimeout();
-        void writeMessage({
-          id: ev.id,
-          error: { code: -32601, message: `Slack Concierge cannot answer server request ${ev.method}.` },
-        }).catch(() => {});
-      } else if (ev.method) {
-        resetInactivityTimeout();
-        handleNotification(ev);
-      }
+  /** The answer to a request the predecessor made, met again in the replay. */
+  const recoverPredecessorAnswer = (id: number, result: any) => {
+    const asked = predecessorRequests.get(id);
+    if (!asked) return;
+    if ((asked.method === "thread/start" || asked.method === "thread/resume") && typeof result?.thread?.id === "string") {
+      activeThreadId = result.thread.id;
+      extractedUUID = result.thread.id;
+      if (typeof result?.model === "string") model = result.model.trim() || model;
     }
-  });
-  proc.stderr.on("data", (c: Buffer) => {
-    stderr += c.toString();
-  });
+    if (asked.method === "turn/start" && typeof result?.turn?.id === "string") activeTurnId = result.turn.id;
+  };
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) return;
+    let ev: any;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(ev, "id") && ("result" in ev || "error" in ev)) {
+      const pending = pendingRequests.get(Number(ev.id));
+      if (!pending) {
+        if (replaying && !ev.error) recoverPredecessorAnswer(Number(ev.id), ev.result);
+        return;
+      }
+      recordActivity();
+      clearTimeout(pending.timeout);
+      pendingRequests.delete(Number(ev.id));
+      if (ev.error) {
+        pending.reject(new Error(`codex app-server ${ev.error.code ?? "error"}: ${ev.error.message || JSON.stringify(ev.error)}`));
+      } else {
+        try {
+          // This runs synchronously at the exact JSON-RPC acceptance
+          // boundary, before any later provider event in the same chunk.
+          pending.onAccepted?.(ev.result);
+          pending.resolve(ev.result);
+        } catch (error) {
+          pending.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    } else if (Object.prototype.hasOwnProperty.call(ev, "id") && ev.method) {
+      // The predecessor already answered every server request in its history.
+      if (replaying) return;
+      recordActivity();
+      void writeMessage({
+        id: ev.id,
+        error: { code: -32601, message: `Slack Concierge cannot answer server request ${ev.method}.` },
+      }).catch(() => {});
+    } else if (ev.method) {
+      if (!replaying) recordActivity();
+      handleNotification(ev);
+    }
+  };
+
+  /** A request the predecessor wrote to this same process, replayed from the host's record. */
+  const recoverPredecessorRequest = (line: string, meta: TransportFrameMeta | null) => {
+    let message: any;
+    try { message = JSON.parse(line); } catch { return; }
+    if (typeof message?.id === "number") {
+      requestId = Math.max(requestId, message.id);
+      if (typeof message.method === "string") predecessorRequests.set(message.id, { method: message.method, params: message.params });
+    }
+    if (message?.method === "turn/steer" && typeof message.params?.clientUserMessageId === "string") {
+      submittedSteeringClientIds.add(message.params.clientUserMessageId);
+      latestSubmittedSteeringClientId = message.params.clientUserMessageId;
+      if (meta?.kind === "steering") recoveredSteering.add(message.params.clientUserMessageId);
+    }
+    if (message?.method === "turn/interrupt") cancellationReason ??= new ProviderTurnCancelledError();
+  };
 
   const handleProcessFailure = (error: unknown) => {
     const failure = error instanceof Error ? error : new Error(String(error));
@@ -805,83 +860,99 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     }
     if (activeTurnId) rejectActiveTurn(failure);
   };
-  let inactivityTimeout: ReturnType<typeof setTimeout> | null = null;
-  const stopInactivityTimeout = () => {
-    if (!inactivityTimeout) return;
-    clearTimeout(inactivityTimeout);
-    inactivityTimeout = null;
-  };
-  const resetInactivityTimeout = () => {
-    stopInactivityTimeout();
-    inactivityTimeout = setTimeout(() => {
-      const failure = new Error(`codex app-server produced no protocol activity for ${inactivityTimeoutMs}ms`);
-      handleProcessFailure(failure);
-      proc.kill("SIGTERM");
-    }, inactivityTimeoutMs);
-  };
-  proc.on("error", handleProcessFailure);
-  proc.stdin.on("error", handleProcessFailure);
-  proc.on("close", (code) => {
-    stopInactivityTimeout();
-    processClosed = true;
-    const failure = new Error(`codex app-server exited ${code}: ${stderr.slice(0, 800) || "(no stderr)"}`);
-    rejectPendingRequests(failure);
-    if (!turnStartSettled) {
-      turnStartSettled = true;
-      rejectTurnStarted(failure);
-    }
-    if (activeTurnId && !turnSettled) rejectActiveTurn(failure);
-    resolveProcessClosed();
-  });
-  resetInactivityTimeout();
 
-  const waitForProcessClose = (milliseconds: number) => Promise.race([
-    processClose.then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), milliseconds)),
-  ]);
+  let stdoutRest = "";
+  const processRun = transport.run({
+    args: process_.args, cwd, environment: input.environment, stdin: input.adopted ? "" : `${JSON.stringify({ method: "initialize", id: ++requestId, params: {
+      clientInfo: { name: "slack_concierge", title: "Slack Concierge", version: "0.2.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    } })}\n`,
+    onStdout: (chunk) => {
+      stdoutRest += chunk;
+      const lines = stdoutRest.split("\n");
+      stdoutRest = lines.pop() || "";
+      for (const line of lines) handleLine(line);
+    },
+    onStderr: (chunk) => { stderr += chunk; },
+    onStdinReady: (write, close) => { writeLine = write; closeInput = close; resolveWriter(); },
+    onProtocolActivityReady: (record) => { recordActivity = record; },
+    onReplayedInput: (line, meta) => recoverPredecessorRequest(line, meta),
+    onReplayEnd: () => { replaying = false; replayEnded(); },
+  });
+  const processClose = processRun.then(
+    (exit) => {
+      processClosed = true;
+      const failure = new Error(`codex app-server exited ${exit.code}: ${stderr.slice(0, 800) || "(no stderr)"}`);
+      rejectPendingRequests(failure);
+      if (!turnStartSettled) {
+        turnStartSettled = true;
+        rejectTurnStarted(failure);
+      }
+      if (activeTurnId && !turnSettled) rejectActiveTurn(failure);
+      replayEnded();
+    },
+    (error) => { processClosed = true; handleProcessFailure(error); replayEnded(); },
+  );
 
   const terminateProcess = async () => {
     if (processClosed) return;
-    if (!proc.stdin.writableEnded) proc.stdin.end();
-    if (await waitForProcessClose(shutdownGraceMs)) return;
-    proc.kill("SIGTERM");
-    if (await waitForProcessClose(shutdownGraceMs)) return;
-    proc.kill("SIGKILL");
-    if (!await waitForProcessClose(shutdownGraceMs)) {
-      throw new Error("codex app-server did not exit after SIGKILL");
-    }
+    closeInput();
+    await processClose;
   };
 
+  // The initialize request in a launch is the process's opening input; its answer arrives as any other.
+  const initializing = input.adopted ? null : new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { pendingRequests.delete(1); reject(new Error(`codex app-server initialize timed out after ${requestTimeoutMs}ms`)); }, requestTimeoutMs);
+    pendingRequests.set(1, { resolve: () => resolve(), reject, timeout });
+  });
+
   try {
-    await request("initialize", {
-      clientInfo: { name: "slack_concierge", title: "Slack Concierge", version: "0.2.0" },
-      capabilities: { experimentalApi: true, requestAttestation: false },
-    });
-    await notify("initialized");
+    let threadId: string;
+    if (input.adopted) {
+      // Taken back after a Concierge restart: the record rebuilt the thread, turn and anything already
+      // finished. What it does not settle is read from the thread's own history, never re-requested.
+      await replayDone;
+      if (!activeThreadId) throw new ProviderDispatchError({ message: "The Codex thread an earlier Concierge started is not in its record.", terminalConfirmed: false, toolsUsed, providerSessionId: null });
+      threadId = activeThreadId;
+      if (!turnSettled) {
+        const history = await request("thread/read", { threadId, includeTurns: true });
+        const turns = Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
+        const turn = turns.find((candidate: any) => candidate?.id === activeTurnId)
+          ?? turns.find((candidate: any) => (Array.isArray(candidate?.items) ? candidate.items : []).some((item: any) => item?.type === "userMessage" && item?.clientId === submissionClientId));
+        if (!turn) throw new ProviderDispatchError({ message: "The Codex turn an earlier Concierge started is not in its thread's history.", terminalConfirmed: false, toolsUsed, providerSessionId: threadId });
+        activeTurnId = turn.id;
+        providerMessages.bind(threadId, turn.id);
+        if (turn.status && turn.status !== "inProgress") settleCompletedTurn(turn, threadId);
+        else if (!turnStartSettled) { turnStartSettled = true; onProgress?.({ type: "started" }); resolveTurnStarted(); }
+      }
+    } else {
+      await initializing;
+      await notify("initialized");
 
-    const threadParams = await codexThreadParameters(input, request, input.environment);
-    const threadResponse = sessionUUID
-      ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
-      : await request("thread/start", threadParams);
-    verifyCodexConsultationPolicy(input, threadResponse);
-    const threadId = threadResponse?.thread?.id || sessionUUID;
-    model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
-    if (!threadId) throw new Error("codex app-server did not return a thread id");
-    activeThreadId = threadId;
-    extractedUUID = threadId;
-    input.onProviderThreadStarted?.(threadId);
+      const threadParams = await codexThreadParameters(input, request, input.environment);
+      const threadResponse = sessionUUID
+        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+        : await request("thread/start", threadParams);
+      verifyCodexConsultationPolicy(input, threadResponse);
+      threadId = threadResponse?.thread?.id || sessionUUID;
+      model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
+      if (!threadId) throw new Error("codex app-server did not return a thread id");
+      activeThreadId = threadId;
+      extractedUUID = threadId;
+      input.onProviderThreadStarted?.(threadId);
 
-    const turnResponse = await request("turn/start", {
-      threadId,
-      input: textInput(prompt),
-      clientUserMessageId: submissionClientId,
-      ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
-      ...turnAdditionalContext(input.applicationInstructions),
-    });
-    activeTurnId = turnResponse?.turn?.id || activeTurnId;
-    if (!activeTurnId) throw new Error("codex app-server did not return a turn id");
-    input.onProviderTurnStarted?.(activeTurnId);
-    if (typeof turnResponse?.turn?.id === "string") providerMessages.bind(threadId, turnResponse.turn.id);
+      const turnResponse = await request("turn/start", {
+        threadId,
+        input: textInput(prompt),
+        clientUserMessageId: submissionClientId,
+        ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
+        ...turnAdditionalContext(input.applicationInstructions),
+      });
+      activeTurnId = turnResponse?.turn?.id || activeTurnId;
+      if (!activeTurnId) throw new Error("codex app-server did not return a turn id");
+      input.onProviderTurnStarted?.(activeTurnId);
+      if (typeof turnResponse?.turn?.id === "string") providerMessages.bind(threadId, turnResponse.turn.id);
+    }
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
@@ -928,8 +999,8 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
 
     await turnCompletion;
   } finally {
-    stopInactivityTimeout();
     rejectPendingRequests(new Error("codex app-server turn ended before the request completed"));
+    for (const clientId of recoveredSteering) input.onRecoveredSteering?.(clientId, "unacknowledged");
     await terminateProcess();
   }
 
@@ -1075,6 +1146,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (!activity) return;
     onProgress?.({ type: "activity", ...activity, status });
   };
+  const recoveredSteering = new Set(input.recoveredSteeringClientIds ?? []);
+  for (const clientId of recoveredSteering) submittedSteeringClientIds.add(clientId);
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
     if (item.clientId === submissionClientId && !initialInputAcknowledged) {
@@ -1085,6 +1158,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);
     onProgress?.({ type: "steering", clientMessageId: item.clientId });
+    if (recoveredSteering.delete(item.clientId)) input.onRecoveredSteering?.(item.clientId, "acknowledged");
     if (item.clientId !== latestSubmittedSteeringClientId) return;
     messageParts.length = 0;
     finalAnswerParts.length = 0;
@@ -1241,6 +1315,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const waitForRecoveryRetry = (milliseconds: number) => new Promise<void>(
     (resolve) => setTimeout(resolve, milliseconds),
   );
+  // An adopted turn that its thread's history never shows did not reach the daemon from here, so
+  // following it cannot end by waiting; a turn this run submitted itself keeps the open search.
+  let adoptedSearchesLeft = input.adoptTurn ? 20 : Infinity;
   const reconcileAcceptedTurn = async () => {
     stopInactivityTimeout();
     let retryMs = 100;
@@ -1267,6 +1344,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         const turns = Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
         const turn = matchingTurn(turns);
         if (!turn) {
+          if (--adoptedSearchesLeft <= 0) {
+            parkUnconfirmedTurn(new Error("The Codex turn an earlier Concierge started is not in its thread's history."));
+            return;
+          }
           await waitForRecoveryRetry(retryMs);
           retryMs = Math.min(retryMs * 2, 5_000);
           continue;
@@ -1368,6 +1449,17 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       }
     });
     connectionGeneration = await client.connect();
+    let threadId: string;
+    if (input.adoptTurn) {
+      // Taken back after a Concierge restart: the daemon kept the turn. Its exact history settles it
+      // or shows it still running, and live notifications continue from there; nothing is resubmitted.
+      threadId = input.adoptTurn.threadId;
+      activeThreadId = threadId;
+      extractedUUID = threadId;
+      turnSubmissionAttempted = true;
+      if (input.adoptTurn.turnId) acceptActiveTurnId(input.adoptTurn.turnId);
+      await Promise.race([ensureRecovered(), turnCompletion]);
+    } else {
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
     if (interruptionReason) throw interruptionReason;
@@ -1375,7 +1467,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
     verifyCodexConsultationPolicy(input, threadResponse);
-    const threadId = threadResponse?.thread?.id || sessionUUID;
+    threadId = threadResponse?.thread?.id || sessionUUID;
     model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     activeThreadId = threadId;
@@ -1407,6 +1499,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       if (turnSettled) throw error;
       if (error instanceof CodexAppServerClientError && error.outcome === "rejected") throw error;
       await Promise.race([ensureRecovered(error), turnCompletion]);
+    }
     }
     await Promise.race([turnStarted, turnCompletion]);
 
@@ -1450,6 +1543,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     stopInactivityTimeout();
     unsubscribeNotifications();
     unsubscribeDisconnect();
+    for (const clientId of recoveredSteering) input.onRecoveredSteering?.(clientId, "unacknowledged");
   }
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
@@ -1467,7 +1561,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
-  assertUsageAvailable(attempt);
+  // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.
+  if (!input.adoptTurn && !input.adopted) assertUsageAvailable(attempt);
   let resetAt: number | null = null;
   const onRateLimits = input.onRateLimits;
   input = { ...input, onRateLimits(snapshot) {
