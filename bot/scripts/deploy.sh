@@ -592,12 +592,23 @@ prepare_candidate_release() {
   # It must be able to take back every host protocol they speak; otherwise nothing is activated or
   # restarted (design 2026-10-07 §3.1 step 2, docs/architecture/EXECUTION-HOST.md).
   # It is compared with the release actually running and the one a failure would restore.
+  # Either one unknown refuses the activation and leaves the service alone.
   local running_artifact rollback_artifact
-  running_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" current 2>/dev/null | jq -r '.artifact_path // empty' || true)
-  rollback_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" lkg 2>/dev/null | jq -r '.artifact_path // empty' || true)
   set +e
+  running_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" current | jq -er '.artifact_path')
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    rollback_artifact=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" lkg | jq -er '.artifact_path')
+    status=$?
+  fi
+  if [ "$status" -ne 0 ] || [ -z "$running_artifact" ] || [ -z "$rollback_artifact" ]; then
+    set -e
+    DEPLOY_FAILURE_REASON="The installed and last-known-good releases could not be identified, so the candidate's compatibility with agents already running could not be proven."
+    PREFLIGHT_REFUSED=1
+    return 1
+  fi
   output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/drain-status.js" adoptable-check \
-    ${running_artifact:+--running "$running_artifact"} ${rollback_artifact:+--rollback "$rollback_artifact"})
+    --running "$running_artifact" --rollback "$rollback_artifact")
   status=$?
   set -e
   printf '%s\n' "$output"

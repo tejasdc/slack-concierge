@@ -176,8 +176,10 @@ A running turn holds an update only if it would end with the coordinator. One ru
   (hosts it may start until it stops), and that the last-known-good release, the one every restore
   path brings back, adopts all of those plus the candidate's `current`. A new protocol therefore
   ships in `adoptable` one release before it becomes `current` (expand, then use); the check refuses
-  any other order. Releases from before the command answer as protocol 1 if they ship a host and as
-  adopting nothing if they do not. The release lint's contiguous-versions rule is authoring hygiene;
+  any other order. It fails closed: both releases are required, and a release whose
+  answer is missing, invalid, slow or crashed is unknown and refuses the activation. Only the exact
+  usage refusal of a release from before the command is read as its generation: protocol 1 if it
+  ships a host, adopting nothing if it does not. The release lint's contiguous-versions rule is authoring hygiene;
   this check is the guard.
 - A refusal leaves the running release exactly as it is: the run is recorded as failed and its gates
   released, with no restore, restart or repair handoff (`PREFLIGHT_REFUSED` in `deploy.sh`).

@@ -17,9 +17,24 @@ function finish(code: number, payload: Record<string, unknown>): never {
  * existed answer with a usage error: those that ship an execution host speak and adopt protocol 1,
  * and those without one start no hosts and adopt none.
  */
-function releaseHostProtocols(artifact: string): { current: number | null; adoptable: number[] } {
-  const asked = spawnSync(process.execPath, ["run", join(artifact, "control/drain-status.js"), "host-protocols"], { encoding: "utf8", timeout: 30_000 });
-  if (asked.status === 0) { const answer = JSON.parse(asked.stdout); return { current: answer.current, adoptable: answer.adoptable }; }
+function releaseHostProtocols(artifact: string, stateDir: string): { current: number | null; adoptable: number[] } {
+  const script = join(artifact, "control/drain-status.js");
+  if (!existsSync(script)) throw new Error(`${artifact} is not a release (no control/drain-status.js)`);
+  const asked = spawnSync(process.execPath, ["run", script, "host-protocols"],
+    { encoding: "utf8", timeout: 30_000, env: { ...process.env, CONCIERGE_STATE_DIR: stateDir } });
+  let answer: any = null;
+  try { answer = JSON.parse((asked.stdout ?? "").trim().split("\n").at(-1) ?? ""); } catch {}
+  if (asked.status === 0 && answer?.status === "host-protocols") {
+    const valid = (value: unknown) => Number.isInteger(value) && (value as number) > 0;
+    if (valid(answer.current) && Array.isArray(answer.adoptable) && answer.adoptable.every(valid) && answer.adoptable.includes(answer.current))
+      return { current: answer.current, adoptable: answer.adoptable };
+    throw new Error(`${artifact} answered host-protocols with an invalid contract: ${asked.stdout.slice(0, 300)}`);
+  }
+  // Only the exact refusal of a release that predates the command is read as its generation;
+  // a timeout, crash or any other answer is unknown and refuses the activation.
+  const predates = asked.status === 1 && answer?.status === "error" && typeof answer.error === "string"
+    && answer.error.startsWith("usage: bun scripts/drain-status.ts <") && !answer.error.includes("host-protocols");
+  if (!predates) throw new Error(`could not learn the host protocols of ${artifact}: ${String(asked.error ?? asked.signal ?? asked.stdout ?? "").slice(0, 300)}`);
   return existsSync(join(artifact, "control/bot/scripts/execution-host.js")) ? { current: 1, adoptable: [1] } : { current: null, adoptable: [] };
 }
 
@@ -73,18 +88,20 @@ try {
     // candidate's own, which it starts the moment it runs. Compared between the real releases.
     const inUse = hasExecutions ? (database.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[]).map(row => row.host_protocol) : [];
     database.close();
+    // Both releases are required: an unknown one is never assumed compatible.
     const runningArtifact = flag("--running"), rollbackArtifact = flag("--rollback");
-    const running = runningArtifact ? releaseHostProtocols(runningArtifact) : null;
-    const rollback = rollbackArtifact ? releaseHostProtocols(rollbackArtifact) : null;
-    const beforeCandidate = [...inUse, ...(running?.current != null ? [running.current] : [])];
+    if (!runningArtifact || !rollbackArtifact)
+      finish(1, { status: "incompatible", error: "adoptable-check needs the running release (--running) and the rollback release (--rollback)." });
+    let running: ReturnType<typeof releaseHostProtocols>, rollback: ReturnType<typeof releaseHostProtocols>;
+    try { running = releaseHostProtocols(runningArtifact, stateDir!); rollback = releaseHostProtocols(rollbackArtifact, stateDir!); }
+    catch (error) { finish(1, { status: "incompatible", error: error instanceof Error ? error.message : String(error) }); }
+    const beforeCandidate = [...inUse, ...(running.current != null ? [running.current] : [])];
     const refusals: string[] = [];
     const lacking = (adoptable: readonly number[], needed: number[]) => [...new Set(needed.filter(protocol => !adoptable.includes(protocol)))];
     const candidateLacks = lacking(ADOPTABLE_HOST_PROTOCOLS, beforeCandidate);
     if (candidateLacks.length) refusals.push(`this release cannot take back hosts on protocol ${candidateLacks.join(", ")}`);
-    if (rollback) {
-      const rollbackLacks = lacking(rollback.adoptable, [...beforeCandidate, HOST_PROTOCOL_VERSION]);
-      if (rollbackLacks.length) refusals.push(`the rollback release ${rollbackArtifact} could not take back hosts on protocol ${rollbackLacks.join(", ")}`);
-    }
+    const rollbackLacks = lacking(rollback.adoptable, [...beforeCandidate, HOST_PROTOCOL_VERSION]);
+    if (rollbackLacks.length) refusals.push(`the rollback release ${rollbackArtifact} could not take back hosts on protocol ${rollbackLacks.join(", ")}`);
     const report = { in_use: inUse, current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS, running, rollback };
     if (refusals.length) finish(1, { status: "incompatible", ...report, error: `${refusals.join("; ")}.` });
     finish(0, { status: "compatible", ...report });
