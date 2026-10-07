@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { accountsWithRoom, recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
+import { accountsWithRoom, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
@@ -443,6 +443,6 @@ export function providerAccountUsage(provider: ProviderKey): ProviderUsage | nul
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
-  try { return { ...(JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }
+  try { return { ...withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }
   catch { return null; }
 }

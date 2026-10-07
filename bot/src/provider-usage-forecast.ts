@@ -3,6 +3,7 @@ import { db } from "./state";
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
 import type { ProviderKey } from "./provider-accounts";
+import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 
 /**
  * Seeing a usage wall coming, instead of discovering it by hitting one.
@@ -79,7 +80,20 @@ function storedUsage(provider: ProviderKey): ProviderUsage | null {
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
-  try { return JSON.parse(row.usage_json) as ProviderUsage; } catch { return null; }
+  try { return withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage); } catch { return null; }
+}
+
+/**
+ * Marks as current the Claude account agents are on, not the one the usage reader calls active.
+ * The reader's "active" is whoever is signed in to the main folder, which is the terminal's login
+ * once accounts have homes of their own, so the running-low warning watched the wrong account and
+ * he heard about chann.app only once it was out (2026-10-07).
+ */
+export function withAgentsAccountCurrent(provider: ProviderKey, usage: ProviderUsage): ProviderUsage {
+  if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
+  const chosen = selectedClaudeHome()?.label ?? null;
+  if (!chosen) return usage;
+  return { ...usage, accounts: usage.accounts.map(account => ({ ...account, current: account.label === chosen })) };
 }
 
 /**

@@ -330,7 +330,7 @@ export function publishUsageForecastNotices(record: RecordEvent): void {
           inputId: null, provider, model: null, modelLabel: provider === "codex" ? "Codex" : "Claude",
           status: null, incident: null, alternatives: [],
           usage: {
-            account: currentAccount(provider)?.label ?? null,
+            account: forecast.account,
             clearsAt: forecast.resetsAt, heldInputs: 0, accountsWithRoom: spare,
             // He asked to be told "this is running low, maybe use a reset now" — so it rides
             // on the notice that already says he is running low, rather than arriving as a
