@@ -827,6 +827,15 @@ executable details; do not duplicate constants or invent another authority.
 Update the relevant current-state document in the same commit when behavior or ownership
 changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
+The owner answers every read from one event loop. When `owner_event_loop_lag` says it is held,
+`kill -URG <MainPID>` writes a 20-second JavaScript CPU profile with stacks to
+`$CONCIERGE_STATE_DIR/diagnostics/` (`owner-cpu-profile.ts`); name the code path from it before
+changing anything. Loops over ledger rows use `ledgerRows()`, never a statement's `iterate()`: an
+early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
+ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its
+columns: make new indexes partial or narrow, and time the hot reads (history projections, the
+Inbox rows) on a copy before shipping.
+
 Startup wait boundaries emit `concierge_startup_phase` with `started`, `completed`, or
 `failed`. An unmatched start identifies an unfinished dependency, not a healthy runtime;
 the deployment online marker remains the readiness authority. See the deployment runbook.
