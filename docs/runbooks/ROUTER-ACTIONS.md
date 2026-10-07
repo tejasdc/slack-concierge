@@ -183,17 +183,17 @@ identity and are never resent after a possible delivery. Thinkering applies the 
 own changes (each carries a `clientActionId`) in its server's owner client and in the browser.
 
 Each local candidate in `sessions search` and `sessions context` carries `workload`: context in use,
-compactions, running or idle, the open Inbox topics it holds, and `forTopic` for your topic
-(`--thread <message-id>`, else the topic of the message your work started from). The router decides
-([session fit](../architecture/SESSION-FIT.md)). Work on a topic a session does not hold, while it
-owns another open topic or has compacted, needs a stated reason:
+running or idle, the open Inbox topics it handles, and `forTopic` for your topic (`--thread
+<message-id>`, else the topic of the message your work started from). The router chooses; the
+receiving session judges fit ([session fit](../architecture/SESSION-FIT.md)):
 
 ```bash
-# Default for a new topic: a fresh session that starts with a pointer to the earlier one.
+# A new topic: a fresh session that starts with a pointer to the earlier one.
 router-actions.sh sessions ask --provider cc-opus --project slack-concierge --session-name "Provider Accounts switch" \
   --consult session:… <source-flags> --action-id A --requested-effect work --thread <message-id> -- <text>
-# Reusing a busy session on purpose: the reason and the owner's facts go to it and stay on the request.
-router-actions.sh sessions ask session:… --fit "<why this session>" <source-flags> --action-id A --requested-effect work --thread <message-id> -- <text>
+# A receiving session pushing back; the requester's answer opens with "Handed back (…)" and the fresh command.
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition failed \
+  --hand-back not-my-subject -- "<what context I can give>"
 ```
 
 What reaches Tejas carries its reasons, and the owner refuses it otherwise:

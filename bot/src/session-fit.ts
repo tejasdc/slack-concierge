@@ -7,21 +7,19 @@ import { log } from './log';
 import { takesManySubjects } from './session-roles';
 
 /**
- * Whether a session is a sensible place for a piece of work. The router decides; this module records
- * the facts it decides with and the one case where its decision must be stated.
+ * Whether a session is a sensible place for a piece of work. Concierge records facts; the router and
+ * the receiving session judge.
  *
  * On 2026-10-07 the Inbox sent one session — named for building the retrospective's changes — a
  * reminder change, a background-jobs simplification, an update-gate change, a Provider Accounts
  * investigation and a sign-in guard, because "Concierge internals" read as one owner. Tejas: "Why are
- * they complete random things like being handled with the same fucking session agent?" He then put the
- * decision with the router ("bring in some intelligence here … you should have access to all of those
- * … session related details about like memory and context and like, you know, jobs").
- *
- * The subject of work is its Inbox topic, and a session holds the topics it has been given work on.
- * A follow-up on a held topic is a lookup. A new topic for a session that still owns another open topic,
- * or has compacted, needs a stated reason (`--fit`), recorded with what the owner measured. Load is
- * recorded as each turn ends, never reconstructed on a read. Design:
- * docs/plans/2026-10-07-session-fit-for-routing.md.
+ * they complete random things like being handled with the same fucking session agent?" A first
+ * version made Concierge demand a stated reason; he removed it the same evening: "Concerts has no
+ * intelligence, he doesn't know, if you hear like reason is actually sound enough … make it so that,
+ * The agent can push back on it." So: the subject of work is its Inbox topic; the router sees which
+ * topics a session already handles; a session given a topic it does not handle is told so, and may
+ * hand the request back (`--hand-back`), which reaches the router with a ready fresh-session command.
+ * Design: docs/plans/2026-10-07-session-fit-for-routing.md.
  */
 
 db.run(`CREATE TABLE IF NOT EXISTS session_workload (
@@ -43,8 +41,6 @@ if (!(db.query("SELECT 1 FROM pragma_table_info('session_communication_requests'
 type WorkloadRow = { session_id: number; context_tokens: number | null; context_window: number | null; compactions: number;
   compactions_before: number | null; last_compaction_at_ms: number | null; measured_at_ms: number | null; since_ms: number };
 
-/** Live compactions since recording began, plus what the session's own record held before then. */
-const totalCompactions = (row: WorkloadRow | null) => row ? row.compactions + (row.compactions_before ?? 0) : 0;
 
 const upsert = db.query(`INSERT INTO session_workload(session_id,context_tokens,context_window,compactions,last_compaction_at_ms,measured_at_ms,since_ms)
   VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
@@ -212,34 +208,30 @@ export function heldTopics(sessionId: number): HeldTopic[] {
   return [...held.values()];
 }
 
-// --- What the router reads, and the one stated decision. ---
+// --- What the router reads, what a receiving session is told, and its hand-back. ---
 
 const iso = (ms: number | null | undefined) => ms ? new Date(ms).toISOString() : null;
 
-export type ForTopic = { topic: string; title: string; holds: boolean; compactedSinceLastWork: boolean | null; needsFit: boolean; because: string[] };
+export type ForTopic = { topic: string; title: string; holds: boolean; otherOpen: string[] };
 
+/** Whether a session already handles this topic, and which other open topics it is on. Facts only. */
 export function forTopic(session: SessionRow, topic: string | null): ForTopic | null {
   if (!topic) return null;
-  const held = heldTopics(session.id), row = workloadRow(session.id);
+  const held = heldTopics(session.id);
   const title = (db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topic) as { title: string } | null)?.title ?? topic;
-  const mine = held.find(entry => entry.topic === topic);
-  const otherOpen = held.filter(entry => entry.open && entry.topic !== topic);
-  const because: string[] = [];
-  if (!mine) {
-    if (otherOpen.length) because.push(`it owns ${otherOpen.length} other open topic${otherOpen.length === 1 ? '' : 's'}: ${otherOpen.slice(0, 4).map(entry => `“${entry.title}”`).join(', ')}`);
-    const compactions = totalCompactions(row);
-    if (compactions > 0) because.push(`it has compacted ${compactions === 1 ? 'once' : `${compactions} times`}, so its memory of earlier work is a summary`);
-  }
-  return { topic, title, holds: !!mine,
-    compactedSinceLastWork: mine && row ? (row.last_compaction_at_ms ?? 0) > mine.lastMs : null,
-    needsFit: !mine && !takesManySubjects(session) && because.length > 0, because };
+  return { topic, title, holds: held.some(entry => entry.topic === topic),
+    otherOpen: held.filter(entry => entry.open && entry.topic !== topic).map(entry => entry.title) };
 }
 
 function workloadRow(sessionId: number) {
   return db.query('SELECT * FROM session_workload WHERE session_id=?').get(sessionId) as WorkloadRow | null;
 }
 
-/** The facts beside a candidate in search and context; computed per returned session, never in view(). */
+/**
+ * The facts beside a candidate in search and context; computed per returned session, never in view().
+ * Compactions are recorded but not shown: one job can compact several times, so a count says nothing
+ * about fit (Tejas, 2026-10-07).
+ */
 export function sessionWorkload(session: SessionRow, execution: unknown, topic: string | null) {
   const row = workloadRow(session.id), held = heldTopics(session.id);
   execution ??= db.query("SELECT 1 FROM turns WHERE session_id=? AND status='running' LIMIT 1").get(session.id) ? 'running' : 'idle';
@@ -247,30 +239,35 @@ export function sessionWorkload(session: SessionRow, execution: unknown, topic: 
   return {
     context: row?.context_tokens != null ? { tokens: row.context_tokens, window: row.context_window,
       share: row.context_window ? Math.round(row.context_tokens / row.context_window * 100) / 100 : null, measuredAt: iso(row.measured_at_ms) } : null,
-    compactions: row ? { count: totalCompactions(row), last: iso(row.last_compaction_at_ms), complete: row.compactions_before !== null } : null,
     execution,
     topics: { open: open.slice(0, 8).map(entry => ({ topic: entry.topic, title: entry.title, requests: entry.requests, last: iso(entry.lastMs) })),
-      openCount: open.length, closedRecently: held.filter(entry => !entry.open && Date.now() - entry.lastMs < BACKFILL_DAYS * 86_400_000).length },
+      openCount: open.length },
     ...(topic ? { forTopic: forTopic(session, topic) } : {}),
     ...(takesManySubjects(session) ? { role: 'takes many topics by design' } : {}),
   };
 }
 
-export function fitRequired(target: SessionRow, fit: ForTopic, address: string): string {
-  const workload = sessionWorkload(target, null, null);
-  const project = basename(sessionMetadata(target).cwd ?? '') || '<project>';
-  const title = sessionMetadata(target).title?.trim() || `concierge:${target.id}`;
-  const context = workload.context ? ` It holds ${Math.round(workload.context.tokens / 1000)}k tokens of context${workload.context.window ? ` of ${Math.round(workload.context.window / 1000)}k` : ''}.` : '';
-  return `“${fit.title}” is a new topic for “${title}”, and ${fit.because.join('; ')}.${context} `
-    + `Default: start a fresh session that consults it — sessions ask --provider cc-opus --project ${project} --session-name "<this topic>" --consult ${address} <source-flags> --action-id <new id> --requested-effect work --thread <message-id> -- <text>. `
-    + `If this session is still the right one (it built this very surface, or Tejas named it), send again with --fit "<one sentence: why this session>"; the reason and these facts go to the session and stay on the request.`;
+/**
+ * What a receiving session reads first when a work request is on a topic it does not handle yet,
+ * so it can judge fit with the facts in front of it. It informs; the session decides.
+ */
+export function newTopicNote(fit: ForTopic): string {
+  const others = fit.otherOpen.length ? ` You are also on ${fit.otherOpen.length} other open topic${fit.otherOpen.length === 1 ? '' : 's'}: ${fit.otherOpen.slice(0, 4).map(title => `“${title}”`).join(', ')}.` : '';
+  return `This is a new topic for you: “${fit.title}”.${others} If it is not your subject, or you are too loaded to do it well, hand it back (--work-disposition failed --hand-back not-my-subject|too-loaded) and say what context you can give.`;
 }
 
-/** What the receiving session reads first when it was given a new topic on purpose. */
-export function fitHeader(reason: string, fit: ForTopic, snapshot: ReturnType<typeof sessionWorkload>) {
-  const context = snapshot.context ? `${Math.round(snapshot.context.tokens / 1000)}k tokens in use, ` : '';
-  return `This is a new topic for you (“${fit.title}”), sent here on purpose: “${reason}”. When it was sent you had ${context}`
-    + `${snapshot.compactions?.count ?? 'unknown'} compaction(s) and ${snapshot.topics.openCount} other open topic(s). If it is not your subject, reply --work-disposition failed saying so, and the router will start a fresh session.`;
+export const HAND_BACK_KINDS = { 'not-my-subject': 'not my subject', 'too-loaded': 'too loaded to do this well' } as const;
+export type HandBack = keyof typeof HAND_BACK_KINDS;
+
+/**
+ * A receiving session's push-back, as the requester reads it: a fixed first line naming the kind,
+ * then the ready-made command for a fresh session that consults the one that handed it back.
+ */
+export function handBackText(kind: unknown, text: string, session: SessionRow, address: string | null): string {
+  if (typeof kind !== 'string' || !Object.hasOwn(HAND_BACK_KINDS, kind)) throw new Error(`--hand-back takes ${Object.keys(HAND_BACK_KINDS).join(' or ')}.`);
+  const project = basename(sessionMetadata(session).cwd ?? '') || '<project>';
+  if (!address) return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context; it runs on another machine, so use its peer address from sessions search with --consult.\n\n${text}`;
+  return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context: sessions ask --provider cc-opus --project ${project} --session-name "<this topic>" --consult ${address} <source-flags> --action-id <new id> --requested-effect work [--thread <message-id>] -- <text>\n\n${text}`;
 }
 
 /** The pointer a fresh session starts with, so consulting the old one is as easy as reusing it. */
