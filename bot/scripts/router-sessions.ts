@@ -21,7 +21,7 @@ router-actions.sh sessions ask --peer <instance> --machine-need "<what only that
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
-router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId>]
+router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name>]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
@@ -88,7 +88,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string } }
@@ -312,6 +312,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
       || (flag === '--summary-file' && operation === 'note')
       || (flag === '--add-to' && operation === 'note')
+      || (flag === '--person' && operation === 'note')
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
       || (flag === '--quiet-because' && operation === 'outcome')
       || ((flag === '--his-words' || flag === '--why-not-answered' || flag === '--only-he-can') && (operation === 'outcome' || operation === 'reply'))
@@ -389,7 +390,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     // (Tejas, 2026-10-01: "if my platform is built on threads ... where can I find the idea").
     const addTo=flags.get('--add-to');
     if(addTo!==undefined&&!/^[0-9a-f]{64}$/.test(addTo))invalid('--add-to takes the earlier capture ID whose note this one follows up.');
-    return {operation,body:{source,action_id:actionId,captureId:identity!,summary,...(addTo?{addTo}:{})}};
+    // A fact about a person goes into that person's one note in thnkr.ing (Tejas, 2026-10-07:
+    // "start a thread for each person and keep adding to a central note").
+    const person=flags.get('--person')?.trim();
+    if(flags.has('--person')&&!person)invalid('--person takes the person\'s name, as he says it.');
+    if(person&&addTo)invalid('A note goes to one place: --person or --add-to, not both.');
+    return {operation,body:{source,action_id:actionId,captureId:identity!,summary,...(addTo?{addTo}:{}),...(person?{person}:{})}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');

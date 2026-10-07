@@ -155,6 +155,11 @@ The summary is required (Tejas, 2026-10-01: "you should not dump my whole transc
 `--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
 capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
 in the one note he reads on his Timeline (`addTo` on `/captures/note`).
+`--person <name>` instead files the capture under that person's one note (`person` on
+`/captures/note`): thnkr.ing makes the note the first time anyone names the person, keyed by the
+name, and adds each capture as a section with the capture as its Source. A capture naming several
+people is filed once per person, each with its own action ID and a summary of only what concerns
+that person (Tejas, 2026-10-07: "start a thread for each person and keep adding to a central note").
 The response is `{source:{objectId,revision},note:{objectId,revision},created}`.
 The capability owns idempotent creation by capture ID and preserves edited notes on
 retry. The owner retains confirmed note receipts; uncertain responses remain explicit.
