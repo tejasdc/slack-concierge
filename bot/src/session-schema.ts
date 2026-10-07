@@ -80,7 +80,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       // The run whose Stop hook listed this request, so only a request that hook actually showed counts as reminded.
       add('session_communication_requests','hook_offered_run','hook_offered_run TEXT');
       db.exec(`DROP INDEX IF EXISTS session_communication_final;
-        CREATE UNIQUE INDEX IF NOT EXISTS session_communication_current_final ON session_communication_events(request_id) WHERE kind='final' AND superseded_by_event_id IS NULL;`);
+        CREATE UNIQUE INDEX IF NOT EXISTS session_communication_current_final ON session_communication_events(request_id) WHERE kind='final' AND superseded_by_event_id IS NULL;
+        -- Who wrote a message is looked up per message in every history page and live update;
+        -- without these each lookup read the whole events table (2026-10-07, Inbox reads of 20 s+).
+        CREATE INDEX IF NOT EXISTS session_communication_events_accepted_input ON session_communication_events(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_communication_events_routed_request ON session_communication_events(routed_request_id) WHERE routed_request_id IS NOT NULL;`);
       db.exec(`
         CREATE TABLE IF NOT EXISTS session_inputs (
           id TEXT PRIMARY KEY,
@@ -128,6 +132,8 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- Resolving which thread an Inbox message belongs to looks events up by their input; without
         -- this the first Threads list after a restart scanned the whole ledger per message (85 s, 2026-09-22).
         CREATE INDEX IF NOT EXISTS session_owner_events_input ON session_owner_events(input_id);
+        -- Whether a turn already declared its outcome is asked by turn alone; without this it read the whole ledger.
+        CREATE INDEX IF NOT EXISTS session_owner_events_turn_kind ON session_owner_events(turn_id, kind) WHERE turn_id IS NOT NULL;
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
         -- A history page's input and metadata projections look each message up by session and

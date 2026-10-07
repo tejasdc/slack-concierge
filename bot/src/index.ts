@@ -25,6 +25,7 @@ import {
   slugifySlackChannelName,
 } from "./channel";
 import { errorFields, log } from "./log";
+import { installOwnerCpuProfileSignal } from "./owner-cpu-profile";
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
   normalizeProviderAliasKey,
@@ -3988,6 +3989,7 @@ async function drainAndStop(signal: string) {
 
 process.on("SIGTERM", () => { void drainAndStop("SIGTERM"); });
 process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
+installOwnerCpuProfileSignal();
 if (runtime.ownership.deployment) {
   process.on("SIGUSR2", () => { scheduleDeploymentWork("state-change"); });
 }

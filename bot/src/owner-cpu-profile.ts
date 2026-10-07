@@ -1,0 +1,53 @@
+import {profile} from 'bun:jsc';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {log} from './log';
+
+/**
+ * A CPU profile of the running owner, on demand: `kill -URG <pid>` samples the JavaScript
+ * thread for twenty seconds and writes what it was doing to
+ * `$CONCIERGE_STATE_DIR/diagnostics/cpu-profile-<time>.txt`. The owner answers every read from
+ * one event loop, and `owner_event_loop_lag` only says that something held it; nothing could
+ * attach a profiler to the live process, so on 2026-10-07 the cause of thirty-second Inbox reads
+ * had to be guessed from which database pages were being read. SIGURG is ignored by default, so
+ * a stray one does nothing else.
+ */
+const PROFILE_SECONDS=20;
+let running=false;
+
+type Frame={name:string;sourceURL?:string;line:number};
+const frameLabel=(frame:Frame)=>`${frame.name||'(anonymous)'} ${(frame.sourceURL??'').split('/').slice(-2).join('/')}:${frame.line>1e9?'?':frame.line}`;
+
+export function summarizeProfile(traces:{frames:Frame[]}[],seconds:number):string {
+  const self=new Map<string,number>(),inclusive=new Map<string,number>(),stacks=new Map<string,number>();
+  const bump=(map:Map<string,number>,key:string)=>map.set(key,(map.get(key)??0)+1);
+  for(const trace of traces) {
+    const frames=trace.frames.filter(frame=>frame.name!=='profile');
+    if(!frames.length)continue;
+    bump(self,frameLabel(frames[0]!));
+    for(const label of new Set(frames.map(frameLabel)))bump(inclusive,label);
+    bump(stacks,frames.slice(0,10).map(frameLabel).join('\n    <- '));
+  }
+  const total=traces.length;
+  const top=(map:Map<string,number>,count:number)=>[...map].sort((a,b)=>b[1]-a[1]).slice(0,count)
+    .map(([key,n])=>`${String(n).padStart(6)} ${(100*n/Math.max(1,total)).toFixed(1).padStart(5)}%  ${key}`).join('\n');
+  return [`Owner CPU profile: ${total} samples of JavaScript over ${seconds} s (1 ms interval; idle time has no samples).`,
+    '','Self (where the thread was):',top(self,40),'','Inclusive (anywhere on the stack):',top(inclusive,60),
+    '','Hottest stacks (innermost first):',top(stacks,25)].join('\n')+'\n';
+}
+
+export function installOwnerCpuProfileSignal() {
+  process.on('SIGURG',()=>{
+    if(running)return;
+    running=true;
+    const started=new Date();
+    Promise.resolve(profile(async()=>{await Bun.sleep(PROFILE_SECONDS*1000);},1000) as any).then((result:any)=>{
+      const directory=join(process.env.CONCIERGE_STATE_DIR??'/tmp','diagnostics');
+      mkdirSync(directory,{recursive:true});
+      const path=join(directory,`cpu-profile-${started.toISOString().replace(/[:.]/g,'-')}.txt`);
+      writeFileSync(path,summarizeProfile(result?.stackTraces?.traces??[],PROFILE_SECONDS)+'\n'+String(result?.functions??''));
+      log('info','owner_cpu_profile_written',{path,samples:result?.stackTraces?.traces?.length??0});
+    }).catch((error:unknown)=>log('warn','owner_cpu_profile_failed',{error:String(error)}))
+      .finally(()=>{running=false;});
+  });
+}
