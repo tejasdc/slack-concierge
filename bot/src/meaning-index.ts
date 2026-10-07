@@ -33,10 +33,15 @@ const DIMENSIONS=512;
 const PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
 const QUERY_PREFIX='task: search result | query: ',DOCUMENT_PREFIX='title: none | text: ';
 const IDENTITY_HEADER='{"type":"concierge-session-input"';
+/** Bumped when what a ledger passage is keyed or credited by changes; the ledger part is then rebuilt. */
+const LEDGER_FORMAT='2';
 /** The request boilerplate every delegated session opens with says nothing about its work. */
 const REQUEST_PREAMBLE=/^Session request [0-9a-f-]{36} from [^\n]*(?:\n(?!\n)[^\n]*)*\n\n/;
+const RESULT_PREAMBLE=/^Session (?:final|progress|stalled) event [0-9a-f-]{36} for requests? [0-9a-f-]{36}[^\n]*(?:\n(?!\n)[^\n]*)*\n\n/;
+/** A carried result ends with its delivery record as one line of JSON; the reply's words are what came before it. */
+const RESULT_RECORD=/\n\n\{[^\n]*\}\s*$/;
 
-export type MeaningHit={target:{kind:'session';sessionId:number}|{kind:'archive';sourceId:string;sourceVersion:string;eventId:string;branch?:unknown;nativeId?:string|null};score:number;text:string;at:string|null;ref:string};
+export type MeaningHit={target:{kind:'session';sessionId:number}|{kind:'peer';peer:string;remoteSessionId:string}|{kind:'archive';sourceId:string;sourceVersion:string;eventId:string;branch?:unknown;nativeId?:string|null};score:number;text:string;at:string|null;ref:string};
 export type MeaningSearch={available:boolean;hits:MeaningHit[];reason:string|null;indexed:number;pending:boolean};
 
 /** One llama.cpp server process, started on first use; CPU only, because the box's Vulkan path failed in September. */
@@ -54,7 +59,7 @@ class EmbeddingEngine {
   /** An engine left on the port by an earlier Concierge process is used rather than fought: a second one could not bind and would exit in a loop. */
   private async spawnOrAdopt():Promise<void> {
     if(await this.healthy()){log('info','meaning_engine_adopted',{port:PORT});return;}
-    const child=spawn('nice',['-n','10',SERVER,'-m',MODEL,'--embedding','--host','127.0.0.1','--port',String(PORT),'-c','8192','-b','2048','-ub','2048','-np','4','-t','8','--device','none','--log-disable'],{stdio:'ignore'});
+    const child=spawn('nice',['-n','10',SERVER,'-m',MODEL,'--embedding','--host','127.0.0.1','--port',String(PORT),'-c','8192','-b','2048','-ub','2048','-np','4','-t','4','--device','none','--log-disable'],{stdio:'ignore'});
     this.child=child;
     child.on('exit',code=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_exited',{code});}});
     child.on('error',error=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_failed',{error:error.message});}});
@@ -92,6 +97,7 @@ const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 export function meaningText(text:string) {
   let spoken=text;
   if(spoken.startsWith(IDENTITY_HEADER)){const end=spoken.indexOf('\n\n');spoken=end<0?'':spoken.slice(end+2);}
+  if(RESULT_PREAMBLE.test(spoken))return spoken.replace(RESULT_PREAMBLE,'').replace(RESULT_RECORD,'').trim();
   return spoken.replace(REQUEST_PREAMBLE,'').trim();
 }
 
@@ -108,7 +114,11 @@ export class MeaningIndex {
     this.store.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS passages(key TEXT PRIMARY KEY,target_json TEXT NOT NULL,text TEXT NOT NULL,at TEXT,scale REAL NOT NULL,vector BLOB NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;`);
-    this.store.exec("DELETE FROM passages WHERE key LIKE 'input:return:%'");
+    if(this.watermark('ledger-format')!==LEDGER_FORMAT){
+      // Ledger passages are a rebuildable cache; re-read them under the current crediting rule.
+      this.store.exec("DELETE FROM passages WHERE key LIKE 'input:%' OR key LIKE 'said:%'");
+      this.setWatermark('ledger','0');this.setWatermark('ledger-format',LEDGER_FORMAT);
+    }
     for(const row of this.store.query('SELECT key,target_json,text,at,scale,vector FROM passages').all() as any[])this.remember(row.key,JSON.parse(row.target_json),row.text,row.at,new Int8Array(row.vector),row.scale);
   }
   get installed(){return this.engine.installed();}
@@ -120,28 +130,46 @@ export class MeaningIndex {
   private setWatermark(name:string,value:string){this.store.query('INSERT INTO watermarks(name,value) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value').run(name,value);}
   private known(key:string){return !!this.store.query('SELECT 1 FROM passages WHERE key=?').get(key);}
   private async save(rows:Row[]) {
-    const fresh=rows.filter(row=>row.text.length>=(row.key.startsWith('title:')?3:12)&&!this.known(row.key));
+    const pageKeys=new Set<string>();
+    const fresh=rows.filter(row=>row.text.length>=(row.key.startsWith('title:')?3:12)&&!pageKeys.has(row.key)&&!this.known(row.key)&&!!pageKeys.add(row.key));
     if(!fresh.length)return;
     const vectors=await this.engine.embed(fresh.map(row=>DOCUMENT_PREFIX+row.text.slice(0,PASSAGE_CHARS)));
     const insert=this.store.query('INSERT OR REPLACE INTO passages(key,target_json,text,at,scale,vector) VALUES(?,?,?,?,?,?)');
     this.store.transaction(()=>{for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);insert.run(row.key,JSON.stringify(row.target),row.text.slice(0,SNIPPET_CHARS),row.at,scale,values);}})();
     for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);if(row.key.startsWith('title:')){const prior=(this.rowOf.get(row.key)??-1);if(prior>=0){this.matrix.set(values,prior*DIMENSIONS);this.scales[prior]=scale;this.texts[prior]=row.text.slice(0,SNIPPET_CHARS);continue;}}this.remember(row.key,row.target,row.text.slice(0,SNIPPET_CHARS),row.at,values,scale);}
   }
-  /** Requests, inputs and replies, a small page at a time; a request counts toward the session it was sent to, never its sender. */
+  /**
+   * Everything said in the ledger's conversations, a small page at a time, credited to whoever
+   * wrote it: his messages and agents' requests to the session that received them, a reply to the
+   * session that wrote it. A result carried back to its requester (an Inbox "return") is that same
+   * reply, so it is credited to its author too, including a Mac session whose reply exists on this
+   * machine only as that return. Passages are keyed by author and exact words, so a reply and its
+   * returned copy are one passage, not two.
+   */
+  private author(row:any,payload:any):MeaningHit['target']|null {
+    if(row.kind==='request'){const target=/^concierge:(\d+)$/.exec(String(payload.targetSessionId??''));return target?{kind:'session',sessionId:Number(target[1])}:null;}
+    const result=/^Session (final|progress|stalled) event [0-9a-f-]{36} for requests? ([0-9a-f-]{36})/.exec(String(payload.text??''));
+    // A stalled notice and any other service input are Concierge's words, not any session's.
+    if(result?.[1]==='stalled'||(!result&&row.origin==='service'))return null;
+    if(result){
+      const local=db.query('SELECT target_session_id FROM session_communication_requests WHERE request_id=?').get(result[2]) as {target_session_id:number}|null;
+      if(local)return {kind:'session',sessionId:local.target_session_id};
+      const peer=db.query('SELECT peer,remote_session_id FROM session_peer_requests WHERE request_id=?').get(result[2]) as {peer:string;remote_session_id:string}|null;
+      if(peer)return {kind:'peer',peer:peer.peer,remoteSessionId:peer.remote_session_id};
+    }
+    return {kind:'session',sessionId:row.session_id};
+  }
   private async ledgerPage():Promise<boolean> {
     const after=Number(this.watermark('ledger')??0);
     const rows=db.query(`SELECT rowid,id,session_id,kind,origin,payload_json,created_at FROM session_inputs WHERE rowid>? AND kind IN ('input','create','request','reply') ORDER BY rowid LIMIT ${PAGE}`).all(after) as any[];
     if(!rows.length)return false;
     const passages:Row[]=[];
     for(const row of rows){
-      // A return carries another session's reply into its requester (mostly the Inbox); that reply is
-      // already indexed under the session that wrote it, and a copy here would make the Inbox win every search.
-      if(row.origin==='service'||String(row.id).startsWith('return:'))continue;
       let payload:any;try{payload=JSON.parse(row.payload_json);}catch{continue;}
       const text=meaningText(String(payload.text??payload.firstInput?.text??''));
-      let sessionId=row.session_id as number;
-      if(row.kind==='request'){const target=/^concierge:(\d+)$/.exec(String(payload.targetSessionId??''));if(!target)continue;sessionId=Number(target[1]);}
-      passages.push({key:`input:${row.id}`,target:{kind:'session',sessionId},text,at:row.created_at});
+      const target=this.author(row,payload);if(!target)continue;
+      const who=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:'a';
+      passages.push({key:`said:${who}:${hash(text)}`,target,text,at:row.created_at});
     }
     await this.save(passages);
     this.setWatermark('ledger',String(rows[rows.length-1].rowid));
@@ -153,6 +181,20 @@ export class MeaningIndex {
     for(let start=0;start<sessions.length;start+=PAGE){
       const rows:Row[]=[];
       for(const {id} of sessions.slice(start,start+PAGE)){const title=this.titleOf(id);if(!title||title.length<3||title==='Agent session'||title==='Imported session'||title.startsWith('{'))continue;const key=`title:${id}`;const index=this.rowOf.get(key)??-1;if(index>=0&&this.texts[index]===title.slice(0,SNIPPET_CHARS))continue;this.store.query('DELETE FROM passages WHERE key=?').run(key);rows.push({key,target:{kind:'session',sessionId:id},text:title,at:null});}
+      await this.save(rows);
+    }
+    // The Mac's sessions as this machine last saw them, credited to the Mac sessions themselves.
+    const peers=db.query('SELECT peer,remote_session_id,view_json FROM session_peer_catalogue').all() as {peer:string;remote_session_id:string;view_json:string}[];
+    for(let start=0;start<peers.length;start+=PAGE){
+      const rows:Row[]=[];
+      for(const row of peers.slice(start,start+PAGE)){
+        let title:unknown;try{title=JSON.parse(row.view_json).title;}catch{continue;}
+        if(typeof title!=='string'||title.length<3||title==='Agent session'||title==='Imported session'||title.startsWith('{'))continue;
+        const key=`title:p:${row.peer}:${row.remote_session_id}`;const index=this.rowOf.get(key)??-1;
+        if(index>=0&&this.texts[index]===title.slice(0,SNIPPET_CHARS))continue;
+        this.store.query('DELETE FROM passages WHERE key=?').run(key);
+        rows.push({key,target:{kind:'peer',peer:row.peer,remoteSessionId:row.remote_session_id},text:title,at:null});
+      }
       await this.save(rows);
     }
   }
@@ -220,7 +262,7 @@ export class MeaningIndex {
       let dot=0;const offset=row*DIMENSIONS;
       for(let i=0;i<DIMENSIONS;i++)dot+=vector[i]!*this.matrix[offset+i]!;
       const score=dot*this.scales[row]!;
-      const target=this.targets[row]!;const id=target.kind==='session'?`s:${target.sessionId}`:this.keys[row]!;
+      const target=this.targets[row]!;const id=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:this.keys[row]!;
       const prior=best.get(id);if(!prior||score>prior.score)best.set(id,{index:row,score});
     }
     const ranked=[...best.values()].sort((a,b)=>b.score-a.score);
@@ -239,7 +281,7 @@ export class MeaningIndex {
           const resolved=this.resolveArchive(archive,this.keys[index]!);if(!resolved)continue;target=resolved;
         }
         // Many prompts of one archived conversation are one result.
-        const identity=target.kind==='session'?`s:${target.sessionId}`:`a:${target.nativeId??target.sourceId}`;
+        const identity=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:`a:${target.nativeId??target.sourceId}`;
         if(seen.has(identity))continue;seen.add(identity);
         hits.push({target,score:Math.round(score*1000)/1000,text:this.texts[index]!,at:this.times[index]??null,ref:this.keys[index]!});
       }

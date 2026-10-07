@@ -203,12 +203,18 @@ authorization or a change to the default rapid-iteration policy.
 - Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
   "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
   llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy.
-  It embeds titles, requests (counted toward their target session), inputs and final replies,
-  plus the archive's prompts read from Thinkering's index. It never embeds tool output,
-  assistant streaming text or transcript files. Vectors live in `meaning-index.db` beside the
-  ledger, never in it. Results fuse word and meaning ranks and say which matched. The Mac has no
-  engine and searches words only. The decision history, starting with the September QMD
-  evaluation, is in [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
+  Every passage is credited to the session that wrote it and keyed by author plus exact words: a
+  request counts toward the session that received it, a reply and its returned copy (including a
+  Mac session's reply that exists here only as a return) are one passage of the replier. Titles of
+  this machine's and the peer catalogue's sessions and the archive's prompts (read from Thinkering's
+  index, never transcript files) are included; tool output is not. Vectors live in `meaning-index.db`
+  beside the ledger, never in it. Results fuse word and meaning ranks and say which matched.
+  **One search for every machine:** a machine without the index (the Mac) sends `sessions search` to
+  the machine that has it (`searchThrough`, owner route `search` with `everywhere`), which runs the
+  same federated search the Inbox gets, including a live word search of the asking machine; the Mac
+  searches alone only when the server cannot be reached, and says so. Decision history, starting
+  with the September QMD evaluation, and the working-text measurement are in
+  [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing

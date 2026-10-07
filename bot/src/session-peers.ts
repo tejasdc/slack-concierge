@@ -6,6 +6,7 @@ import {sessionProject} from './session-projects';
 import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
+import {meaningIndex} from './meaning-index';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
@@ -200,6 +201,45 @@ export class SessionPeers {
   async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
+  /**
+   * The peer to search through when this machine has no meaning index of its own (the Mac): the
+   * machine that keeps the archive, which is any peer whose archive is not kept here. A peer known
+   * to be unreachable is skipped, so a laptop off the network searches on its own at once.
+   */
+  meaningHub():string|null {
+    if(meaningIndex()?.installed)return null;
+    const hub=[...this.dependencies.clients.values()].find(client=>!client.archives?.length);
+    return hub&&!this.offline(hub.name)?hub.name:null;
+  }
+  /**
+   * Run the whole search on `peer` and read its answer from here: its own sessions become
+   * `<peer>:<n>`, and sessions it found on this machine (named `<self>:<n>` there) are this
+   * machine's own, shown with this machine's current view of them.
+   */
+  async searchThrough(peer:string,concepts:string[],limit?:number):Promise<any> {
+    let value:any;
+    try{value=await this.client(peer).request<any>('POST','/sessions/v1/search',{query:concepts.join(' '),everywhere:true,...(limit===undefined?{}:{limit})},20_000);this.unreachable.delete(peer);}
+    catch(error){this.note(peer,error);throw error;}
+    const self=this.self;
+    const own=(item:string)=>self&&item.startsWith(`${self}:`)&&/^\d+$/.test(item.slice(self.length+1))?`concierge:${item.slice(self.length+1)}`
+      :self&&item.startsWith(`${self}/session:`)?item.slice(self.length+1):null;
+    const walk=(item:unknown):unknown=>{
+      if(typeof item==='string')return own(item)??(/^concierge:[1-9][0-9]*$/.test(item)?`${peer}:${item.slice(10)}`:/^session:[A-Za-z0-9_-]+$/.test(item)?`${peer}/${item}`:item);
+      if(Array.isArray(item))return item.map(walk);
+      if(item&&typeof item==='object'){const out:Record<string,unknown>={};for(const [key,child] of Object.entries(item as Record<string,unknown>))out[key]=walk(child);return out;}
+      return item;
+    };
+    const answer=walk(value) as any;
+    const results=(answer.results??[]).map((result:any)=>{
+      const local=typeof result.session?.id==='string'?/^concierge:(\d+)$/.exec(result.session.id):null;
+      const row=local?getSessionById(Number(local[1])):null;
+      if(row)return {...result,session:this.dependencies.owner.view(row)};
+      return typeof result.session?.id==='string'&&result.session.id.startsWith(`${peer}:`)?{...result,session:{...result.session,peer}}:result;
+    });
+    this.remember(peer,results.map((result:any)=>result.session).filter((session:any)=>session?.peer===peer));
+    log('info','session_search_through_peer',{peer,results:results.length});
+    return {...answer,results,coverage:{...answer.coverage,searchedOn:peer}};
+  }
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}
   /** A peer's answer names its sessions as `<peer>:<n>` and its addresses as `<peer>/session:…`, so an agent can use them directly. */
   private qualify(peer:string,value:unknown):unknown {

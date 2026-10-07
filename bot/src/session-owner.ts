@@ -1637,9 +1637,12 @@ export class SessionOwner {
     return createNativeSession(source.provider,{origin:'imported',title:source.title,project:source.project??null,source:retained,...(source.provider==='chatgpt'?{}:{interactionPolicy:'consultation-only' as const})});
   }
   async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
-    const input=object(body);only(input,['query','limit','includeTools']);
+    const input=object(body);only(input,['query','limit','includeTools','everywhere']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
+    // A peer without its own meaning index searches through this machine: the same search the
+    // Inbox gets here, covering this ledger, the archive of both machines and the live peers.
+    if(input.everywhere===true&&this.communication)return this.communication.searchEverywhere(input.query.trim(),limit);
     // Started before the word search; the request goes out once that synchronous scan yields.
     const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
@@ -1730,6 +1733,7 @@ export class SessionOwner {
     // Reciprocal-rank fusion of the two, as measured in the September evaluation
     // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
     const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
+    const peerHits:{rank:number;view:any;evidence:any[];score:number}[]=[];
     const meaning=meaningSearch?await meaningSearch.catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})):null;
     if(meaning?.available) {
       // Archive matches that are not a session here are retained together, as the word path does above.
@@ -1740,6 +1744,14 @@ export class SessionOwner {
       let unretained=0;
       for(const [index,hit] of meaning.hits.entries()) {
         let session:SessionRow|null=null;
+        if(hit.target.kind==='peer') {
+          // A peer session: shown as the peer last described it; the live peer answer merges over it.
+          const row=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(hit.target.peer,hit.target.remoteSessionId) as {view_json:string}|null;
+          if(!row||peerHits.some(entry=>entry.view.id===JSON.parse(row.view_json).id)){if(!row)unretained++;continue;}
+          const view=JSON.parse(row.view_json);
+          peerHits.push({rank:meaningRank.size+peerHits.length,view:{...view,peer:hit.target.peer},evidence:[{sessionId:view.id,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'assistant',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,corpus:'meaning',score:hit.score}],score:hit.score});
+          continue;
+        }
         if(hit.target.kind==='session')session=getSessionById(hit.target.sessionId);
         else {
           const outcome=retained[index]!;
@@ -1748,7 +1760,7 @@ export class SessionOwner {
           if(!session){unretained++;continue;}
         }
         if(!session||meaningRank.has(session.id))continue;
-        meaningRank.set(session.id,meaningRank.size);meaningScore.set(session.id,hit.score);
+        meaningRank.set(session.id,meaningRank.size+peerHits.length);meaningScore.set(session.id,hit.score);
         add(session,[{sessionId:`concierge:${session.id}`,sourceId:`meaning:${hit.ref}`,sourceVersion:null,eventId:null,role:'user',locator:hit.ref,textHash:null,text:hit.text,snippet:hit.text,at:hit.at?ledgerTime(hit.at):null,corpus:'meaning',score:hit.score}]);
       }
       if(unretained){coverage.complete=false;coverage.omissions.push(`${unretained} archive meaning matches could not be retained and were omitted.`);}
@@ -1757,8 +1769,9 @@ export class SessionOwner {
     if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
     coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
     const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
-    const ordered=[...results.values()].sort((a,b)=>fused(b.session.id)-fused(a.session.id));
-    return {results:ordered.slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})),coverage};
+    const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})})),
+      ...peerHits.map(hit=>({score:1/(60+hit.rank),result:()=>({session:hit.view,evidence:hit.evidence,match:{words:false,meaning:hit.score}})}))].sort((a,b)=>b.score-a.score);
+    return {results:ranked.slice(0,limit).map(entry=>entry.result()),coverage};
   }
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);

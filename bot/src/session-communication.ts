@@ -263,9 +263,27 @@ export class SessionCommunicationCoordinator {
         const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
+        // One search for every machine: where this machine has no meaning index (the Mac), the
+        // machine that has one runs the whole search, which already covers this machine's sessions
+        // through the archive and a live word search here. Only when that machine cannot be reached
+        // does this one search on its own, and the answer says so.
+        const hub = this.dependencies.peers?.meaningHub();
+        let found:any = null;
+        if (hub) {
+            try { found = await this.dependencies.peers!.searchThrough(hub, input.concepts, input.limit); }
+            catch (error) {
+                const fallback:any = await this.dependencies.peers!.federatedSearch(local, input.concepts, input.limit);
+                found = {...fallback,coverage:{...fallback.coverage,complete:false,omissions:[...(fallback.coverage?.omissions??[]),`The search on ${hub} could not be reached (${error instanceof Error?error.message:String(error)}); these results match words on this machine and whatever ${hub} answered directly.`]}};
+            }
+        }
         // Sessions live on several instances; discovery covers all of them unless one was named.
-        const found:any = await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
+        found ??= await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
         return {...found,results:this.withWorkload(found.results??[],actor,input.thread)};
+    }
+    /** The whole search from this machine, for a peer that searches through it. */
+    searchEverywhere(query: string, limit?: number) {
+        const local = () => this.dependencies.owner.search({query, limit});
+        return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local();
     }
     async context(input: {
         source: CommunicationSource;
