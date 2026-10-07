@@ -590,8 +590,28 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
     acknowledged:acknowledged?{at:acknowledged.at,by:acknowledged.by_json?JSON.parse(acknowledged.by_json):null}:null,
     pendingReply:pending,recovered:question.recovered,createdAt:question.createdAt,updatedAt:question.updatedAt};
 }
+/**
+ * A dispatch as it stands now, not as it stood when the router linked it: the linked record is a
+ * snapshot ("admitted", no outcome), so three finished requests to one session all read "Working
+ * on it now" from the session's live state (Tejas, 2026-10-07: "Why did I just see three different
+ * sends to the same session here?"). The request row carries the current outcome and status, the
+ * Inbox message the router was answering when it sent it (where the card belongs), the moment, and
+ * the words it was sent with. A row the owner no longer has leaves the snapshot as it was.
+ */
+function liveDispatch(dispatch:any) {
+  const local=db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
+  const peer=local?null:db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_peer_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
+  const row=local??peer;
+  if(!row)return dispatch;
+  let text:string|null=null;
+  try{const words=String(JSON.parse(row.payload_json)?.text??'').replace(/\s+/g,' ').trim();text=words?words.slice(0,240):null;}catch{text=null;}
+  return {...dispatch,outcome:row.outcome??null,state:row.status??dispatch.state,
+    ...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
+    ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
+    ...(text?{text}:{})};
+}
 const requestView=(request:StoredRequest)=>({id:request.requestId,topicId:request.topicId,title:request.title,brief:request.brief,
-  state:request.state,disposition:request.disposition,revision:request.revision,sources:request.sources,dispatches:request.dispatches,
+  state:request.state,disposition:request.disposition,revision:request.revision,sources:request.sources,dispatches:request.dispatches.map(liveDispatch),
   closure:request.closure,createdAt:request.createdAt,updatedAt:request.updatedAt});
 
 function topicQuestions(topicId:string):StoredQuestion[] {
