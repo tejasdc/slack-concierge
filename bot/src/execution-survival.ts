@@ -12,18 +12,17 @@
  * use the same rule.
  */
 import type { Database } from "bun:sqlite";
-import { ADOPTABLE_HOST_PROTOCOLS } from "./execution-host-client";
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_SUPERVISOR, executionHostsEnabled } from "./execution-host-client";
 
-function hostsEnabled() {
-  return process.platform === "linux" && process.env.CONCIERGE_EXECUTION_HOSTS !== "0";
-}
 
 function hasExecutions(database: Database) {
   return !!database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='executions'").get();
 }
 
 export function provenRunKinds(database: Database): Set<string> {
-  if (!hostsEnabled() || !hasExecutions(database)) return new Set();
+  // A run already in a host continues whether or not this process could start new ones (the Mac's
+  // updater shell has no agent-host launcher), so proof is read from the record alone.
+  if (!hasExecutions(database)) return new Set();
   if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
   return new Set((database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
     WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind));
@@ -32,7 +31,10 @@ export function provenRunKinds(database: Database): Set<string> {
 /** What may start while an update installs: only kinds proven to carry on through its restart. */
 export function survivableRunKinds(database: Database) {
   const proven = provenRunKinds(database);
-  return { claude: proven.has("claude-code/systemd"), codexShared: proven.has("codex/codex-daemon"), codexPrivate: proven.has("codex/systemd") };
+  // New runs survive only if they will start in a host of a proven kind on this machine.
+  const hosted = executionHostsEnabled();
+  return { claude: hosted && proven.has(`claude-code/${HOST_SUPERVISOR}`), codexShared: proven.has("codex/codex-daemon"),
+    codexPrivate: hosted && proven.has(`codex/${HOST_SUPERVISOR}`) };
 }
 
 /** A running turn the next coordinator will take back: its execution is proven and adoptable. */

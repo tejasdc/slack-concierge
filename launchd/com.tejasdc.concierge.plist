@@ -40,6 +40,8 @@
     <key>CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS</key><string>1</string>
     <key>CONCIERGE_CODEX_EXECUTABLE</key><string>@CODEX@</string>
     <key>CONCIERGE_NODE_BIN</key><string>@NODE@</string>
+    <!-- Each agent run's own launchd job starts through the same app (execution hosts). -->
+    <key>CONCIERGE_AGENT_HOST_LAUNCHER</key><string>@LAUNCHER@</string>
   </dict>
 </dict>
 </plist>

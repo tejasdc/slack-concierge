@@ -8,7 +8,7 @@
 import { rmSync } from "node:fs";
 import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
-import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, type HostLaunch } from "./execution-host-client";
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS executions (
@@ -69,7 +69,7 @@ export function retainExecutionIntent(input: { executionId: string; turnId: numb
       directory, processor_json, state, coordinator_instance_id, created_at_ms, updated_at_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(input.executionId, input.turnId, input.dispatchAttempt, input.sessionId, input.provider, HOST_PROTOCOL_VERSION,
-      input.supervisor ?? (process.platform === "darwin" ? "launchd" : "systemd"), input.directory, JSON.stringify(input.processor),
+      input.supervisor ?? HOST_SUPERVISOR, input.directory, JSON.stringify(input.processor),
       input.supervisor ? "live" : "intended", input.coordinatorInstanceId, now, now);
   executionChanged();
 }
@@ -228,6 +228,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string;
   if (adopted.length || held.length) executionChanged();
   await releaseSettledExecutions();
   pruneExecutionRecords();
+  retireFinishedHostJobs();
   return { adopted, held };
 }
 
@@ -275,7 +276,21 @@ async function releaseSettledExecutions() {
  */
 export async function releaseExecution(execution: ExecutionRow) {
   if (execution.supervisor === "codex-daemon") { recordExecutionReleased(execution.execution_id); return; }
-  if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) { recordExecutionReleased(execution.execution_id); return; }
-  if (hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
+  if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);
+  else if (hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
+  // A released host leaves within moments; its launchd job is removed once launchd reports it stopped.
+  if (execution.supervisor === "launchd") setTimeout(retireFinishedHostJobs, 10_000).unref?.();
+}
+
+/**
+ * launchd keeps a per-execution job loaded after its process ends. Jobs of released or lost runs are
+ * removed; retireHostJob removes only a job launchd reports as stopped, never a running one.
+ */
+export function retireFinishedHostJobs() {
+  if (process.platform !== "darwin") return;
+  const ended = db.query(`SELECT execution_id FROM executions WHERE supervisor='launchd' AND state IN ('released','lost')
+      AND detail IS NOT 'job retired' AND updated_at_ms > ?`).all(Date.now() - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string }[];
+  for (const { execution_id } of ended)
+    if (retireHostJob(execution_id)) db.query("UPDATE executions SET detail='job retired' WHERE execution_id=? AND detail IS NOT 'pruned'").run(execution_id);
 }
 

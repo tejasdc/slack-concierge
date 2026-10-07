@@ -38,6 +38,17 @@ main() {
     fi
     # New work waits (it is queued, not refused) from here until the restarted Concierge is up.
     trap 'drain release "$token" >/dev/null 2>&1 || true' EXIT
+    # Agents may still be running in execution hosts. Before anything changes, the new code must be
+    # able to take back every host they and this Concierge speak; a Mac has no rollback release.
+    contracts=$(mktemp -d)
+    if ! git show origin/main:bot/src/host-protocols.json > "$contracts/candidate.json"; then
+      echo "   the update's host-protocol contract could not be read; nothing changed"; exit 0
+    fi
+    if [ -f bot/src/host-protocols.json ]; then cp bot/src/host-protocols.json "$contracts/running.json"
+    else printf '{"current":null,"adoptable":[]}' > "$contracts/running.json"; fi
+    if ! drain adoptable-check --candidate-contract "$contracts/candidate.json" --running-contract "$contracts/running.json" --no-rollback; then
+      echo "   the update cannot take back agents running here; nothing changed"; exit 0
+    fi
     git pull --ff-only --quiet origin main
     echo "== at $(git log --oneline -1)"
     scripts/install-mac.sh

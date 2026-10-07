@@ -29,12 +29,24 @@ export function newExecutionId() { return randomBytes(8).toString("hex"); }
 
 /**
  * New Claude runs start in a host on a machine whose supervisor can hold one apart from the
- * coordinator (Linux today; the Mac's launchd host is its own delivery). `CONCIERGE_EXECUTION_HOSTS=0`
- * returns new runs to direct child processes without touching hosts already running.
+ * coordinator: systemd on Linux, launchd on a Mac whose service names the agent-host app it runs
+ * through (so agents keep that app's permissions). `CONCIERGE_EXECUTION_HOSTS=0` returns new runs to
+ * direct child processes without touching hosts already running.
  */
 export function executionHostsEnabled() {
-  return process.platform === "linux" && process.env.CONCIERGE_EXECUTION_HOSTS !== "0";
+  if (process.env.CONCIERGE_EXECUTION_HOSTS === "0") return false;
+  return process.platform === "linux" || (process.platform === "darwin" && !!macAgentHostLauncher());
 }
+
+/** The supervisor that holds hosts on this machine; also the kind of run execution-survival proves. */
+export const HOST_SUPERVISOR = process.platform === "darwin" ? "launchd" : "systemd";
+
+/** The signed agent-host app's executable the Mac service itself runs through (install-mac.sh). */
+function macAgentHostLauncher(): string | null {
+  const launcher = process.env.CONCIERGE_AGENT_HOST_LAUNCHER;
+  return launcher && existsSync(launcher) ? launcher : null;
+}
+const launchdDomain = () => `gui/${process.getuid?.() ?? 0}`;
 
 /** The Claude CLI by absolute path, resolved by the coordinator; a host's supervisor gives it no PATH. */
 export function claudeExecutable() {
@@ -45,7 +57,10 @@ export function claudeExecutable() {
 }
 export function executionDirectory(stateDir: string, executionId: string) { return join(stateDir, "exec", executionId); }
 export function hostSocketPath(directory: string) { return join(directory, "host.sock"); }
-export function executionUnit(executionId: string) { return `concierge-exec-${executionId}`; }
+/** The supervisor's name for an execution's host: a systemd unit, or a launchd job label on a Mac. */
+export function executionUnit(executionId: string) {
+  return process.platform === "darwin" ? `com.tejasdc.concierge.exec.${executionId}` : `concierge-exec-${executionId}`;
+}
 
 export class HostUnavailableError extends Error {}
 /** The host was certainly not started: nothing to take custody of. */
@@ -207,8 +222,23 @@ export function startHost(input: {
     // left to custody (hostCustody), which asks the supervisor what actually exists.
     if (result.error || result.signal) throw new HostUnavailableError(`systemd-run did not answer: ${String(result.error ?? result.signal)}`);
     if (result.status !== 0) throw new HostNotStartedError(`systemd-run refused the host: ${(result.stderr || result.stdout).trim()}`);
+  } else if (process.platform === "darwin") {
+    // One launchd job per execution, started through the agent-host app like the service itself, so
+    // macOS attributes the agent's permissions to that app. Its label is the one-start lock.
+    const launcher = macAgentHostLauncher();
+    if (!launcher) throw new HostNotStartedError("this Mac's service names no agent-host launcher");
+    const plist = join(directory, "job.plist");
+    try { writeFileSync(plist, launchdJob(unit, [launcher, runtime, "run", hostScript, directory], directory), { mode: 0o644, flag: "wx" }); }
+    catch (error) { throw new HostNotStartedError(error instanceof Error ? error.message : String(error)); }
+    const result = spawnSync("launchctl", ["bootstrap", launchdDomain(), plist], { encoding: "utf8", timeout: 30_000 });
+    if (result.error || result.signal) throw new HostUnavailableError(`launchctl did not answer: ${String(result.error ?? result.signal)}`);
+    if (result.status !== 0) {
+      // Only a label launchd says it does not hold proves nothing started.
+      if (launchdJobState(input.executionId) === "missing") throw new HostNotStartedError(`launchd refused the host: ${(result.stderr || result.stdout).trim()}`);
+      throw new HostUnavailableError(`launchd answered ${result.status} for a job it holds: ${(result.stderr || result.stdout).trim()}`);
+    }
   } else {
-    throw new HostNotStartedError(`no execution host supervisor on ${process.platform} yet`);
+    throw new HostNotStartedError(`no execution host supervisor on ${process.platform}`);
   }
   return { executionId: input.executionId, directory, unit, hostScript, runtime,
     manifestDigest: createHash("sha256").update(bytes).digest("hex") };
@@ -220,6 +250,10 @@ export function startHost(input: {
  */
 export type SupervisorView = "alive" | "gone" | "unknown";
 export function hostSupervisorView(executionId: string): SupervisorView {
+  if (process.platform === "darwin") {
+    const state = launchdJobState(executionId);
+    return state === "running" ? "alive" : state === "stopped" || state === "missing" ? "gone" : "unknown";
+  }
   if (process.platform !== "linux") return "unknown";
   const result = spawnSync("systemctl", ["show", `${executionUnit(executionId)}.service`, "--property=ActiveState", "--property=LoadState"],
     { encoding: "utf8", timeout: 10_000 });
@@ -231,6 +265,52 @@ export function hostSupervisorView(executionId: string): SupervisorView {
   // A transient unit that ended is collected: it reads as not found and inactive.
   if ((active === "inactive" || active === "failed") && (load === "not-found" || load === "loaded")) return "gone";
   return "unknown";
+}
+
+/**
+ * What launchd says about an execution's job: `missing` only when it answers that it holds no such
+ * label (exit 113), `stopped` when the job is loaded and its process has ended.
+ */
+function launchdJobState(executionId: string): "running" | "stopped" | "missing" | "unknown" {
+  const result = spawnSync("launchctl", ["print", `${launchdDomain()}/${executionUnit(executionId)}`], { encoding: "utf8", timeout: 10_000 });
+  if (result.error || result.signal) return "unknown";
+  if (result.status === 113) return "missing";
+  if (result.status !== 0) return "unknown";
+  // The job's own state is the first, least indented `state =` line; nested sections repeat the key.
+  const state = /^\tstate = (.+)$/m.exec(result.stdout)?.[1]?.trim();
+  if (state === "running") return "running";
+  if (state === "not running") return "stopped";
+  return "unknown";
+}
+
+/**
+ * Removes a finished execution's launchd job, which launchd keeps loaded after its process ends.
+ * Only a job launchd reports as stopped is removed, because removing a running job would end it.
+ */
+export function retireHostJob(executionId: string): boolean {
+  if (process.platform !== "darwin") return false;
+  const state = launchdJobState(executionId);
+  if (state === "stopped") spawnSync("launchctl", ["bootout", `${launchdDomain()}/${executionUnit(executionId)}`], { timeout: 10_000 });
+  return state === "missing" || (state === "stopped" && launchdJobState(executionId) === "missing");
+}
+
+function launchdJob(label: string, programArguments: string[], directory: string) {
+  const text = (value: string) => `<string>${value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</string>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key>${text(label)}
+  <key>AssociatedBundleIdentifiers</key><array>${text("com.tejasdc.agent-host")}</array>
+  <key>ProgramArguments</key><array>${programArguments.map(text).join("")}</array>
+  <key>WorkingDirectory</key>${text(directory)}
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>ProcessType</key>${text("Interactive")}
+  <key>StandardOutPath</key>${text(join(directory, "host.log"))}
+  <key>StandardErrorPath</key>${text(join(directory, "host.log"))}
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
+</dict></plist>
+`;
 }
 
 /**

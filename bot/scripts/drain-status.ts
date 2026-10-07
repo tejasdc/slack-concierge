@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { isAncestorProcess, isProcessIdentityAlive, processIdentity } from "../src/runtime-identity";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/execution-host-client";
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
@@ -38,6 +38,20 @@ function releaseHostProtocols(artifact: string, stateDir: string): { current: nu
   return existsSync(join(artifact, "control/bot/scripts/execution-host.js")) ? { current: 1, adoptable: [1] } : { current: null, adoptable: [] };
 }
 
+/**
+ * A host-protocols.json contract read from a file, validated. `current: null` with nothing adoptable
+ * describes code that starts no hosts.
+ */
+function readContract(path: string): { current: number | null; adoptable: number[] } {
+  const contract = JSON.parse(readFileSync(path, "utf8"));
+  const valid = (value: unknown) => Number.isInteger(value) && (value as number) > 0;
+  const adoptable = contract?.adoptable;
+  if (!Array.isArray(adoptable) || !adoptable.every(valid)) throw new Error(`${path} is not a host-protocols contract`);
+  if (contract.current === null && adoptable.length === 0) return { current: null, adoptable: [] };
+  if (!valid(contract.current) || !adoptable.includes(contract.current)) throw new Error(`${path} is not a host-protocols contract`);
+  return { current: contract.current, adoptable };
+}
+
 const flag = (name: string) => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] || null : null; };
 
 try {
@@ -46,7 +60,7 @@ try {
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
   if (!["check", "claim", "recover", "release", "adoptable-check"].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check [--running ARTIFACT] [--rollback ARTIFACT]|host-protocols>" });
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check (--running ARTIFACT|--running-contract FILE) (--rollback ARTIFACT|--no-rollback) [--candidate-contract FILE]|host-protocols>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true });
   database.exec("PRAGMA busy_timeout=5000");
@@ -88,21 +102,32 @@ try {
     // candidate's own, which it starts the moment it runs. Compared between the real releases.
     const inUse = hasExecutions ? (database.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[]).map(row => row.host_protocol) : [];
     database.close();
-    // Both releases are required: an unknown one is never assumed compatible.
+    // Every party is required: an unknown one is never assumed compatible. The server names release
+    // artifacts. The Mac updates a checkout in place, so it names the candidate's and the running
+    // code's contract files and states that it has no rollback release (--no-rollback).
     const runningArtifact = flag("--running"), rollbackArtifact = flag("--rollback");
-    if (!runningArtifact || !rollbackArtifact)
-      finish(1, { status: "incompatible", error: "adoptable-check needs the running release (--running) and the rollback release (--rollback)." });
-    let running: ReturnType<typeof releaseHostProtocols>, rollback: ReturnType<typeof releaseHostProtocols>;
-    try { running = releaseHostProtocols(runningArtifact, stateDir!); rollback = releaseHostProtocols(rollbackArtifact, stateDir!); }
-    catch (error) { finish(1, { status: "incompatible", error: error instanceof Error ? error.message : String(error) }); }
+    const runningContract = flag("--running-contract"), candidateContract = flag("--candidate-contract");
+    const noRollback = process.argv.includes("--no-rollback");
+    if (!(runningArtifact || runningContract) || !(rollbackArtifact || noRollback))
+      finish(1, { status: "incompatible", error: "adoptable-check needs the running release (--running or --running-contract) and the rollback release (--rollback, or --no-rollback where none exists)." });
+    type Contract = ReturnType<typeof releaseHostProtocols>;
+    let candidate: Contract = { current: HOST_PROTOCOL_VERSION, adoptable: [...ADOPTABLE_HOST_PROTOCOLS] };
+    let running: Contract, rollback: Contract | null = null;
+    try {
+      if (candidateContract) candidate = readContract(candidateContract);
+      running = runningContract ? readContract(runningContract) : releaseHostProtocols(runningArtifact!, stateDir!);
+      if (rollbackArtifact) rollback = releaseHostProtocols(rollbackArtifact, stateDir!);
+    } catch (error) { finish(1, { status: "incompatible", error: error instanceof Error ? error.message : String(error) }); }
     const beforeCandidate = [...inUse, ...(running.current != null ? [running.current] : [])];
     const refusals: string[] = [];
     const lacking = (adoptable: readonly number[], needed: number[]) => [...new Set(needed.filter(protocol => !adoptable.includes(protocol)))];
-    const candidateLacks = lacking(ADOPTABLE_HOST_PROTOCOLS, beforeCandidate);
-    if (candidateLacks.length) refusals.push(`this release cannot take back hosts on protocol ${candidateLacks.join(", ")}`);
-    const rollbackLacks = lacking(rollback.adoptable, [...beforeCandidate, HOST_PROTOCOL_VERSION]);
-    if (rollbackLacks.length) refusals.push(`the rollback release ${rollbackArtifact} could not take back hosts on protocol ${rollbackLacks.join(", ")}`);
-    const report = { in_use: inUse, current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS, running, rollback };
+    const candidateLacks = lacking(candidate.adoptable, beforeCandidate);
+    if (candidateLacks.length) refusals.push(`the candidate cannot take back hosts on protocol ${candidateLacks.join(", ")}`);
+    if (rollback) {
+      const rollbackLacks = lacking(rollback.adoptable, [...beforeCandidate, ...(candidate.current != null ? [candidate.current] : [])]);
+      if (rollbackLacks.length) refusals.push(`the rollback release ${rollbackArtifact} could not take back hosts on protocol ${rollbackLacks.join(", ")}`);
+    }
+    const report = { in_use: inUse, candidate, running, rollback };
     if (refusals.length) finish(1, { status: "incompatible", ...report, error: `${refusals.join("; ")}.` });
     finish(0, { status: "compatible", ...report });
   }

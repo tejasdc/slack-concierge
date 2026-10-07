@@ -100,8 +100,10 @@ const receipts = new Map<string, Record<string, unknown>>();
 append("h", { protocol: HOST_PROTOCOL_VERSION, executionId: manifest.executionId, hostPid: process.pid, started: Date.now() });
 provider = spawn(manifest.executable, manifest.args, {
   cwd: manifest.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"],
-  // Its own process group, so Stop's signal reaches the tools it started too.
-  detached: true,
+  // Linux: its own process group, so Stop's signal reaches the tools it started too, and the unit's
+  // cgroup still ends every process. A Mac has no cgroup: the provider stays in the host's launchd
+  // job group, which launchd ends when the host leaves, so nothing outlives a crashed host.
+  detached: process.platform !== "darwin",
 });
 const providerPid = provider.pid ?? null;
 append("h", { providerPid });
