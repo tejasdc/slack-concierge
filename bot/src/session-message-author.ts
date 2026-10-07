@@ -2,7 +2,8 @@ import {db,getSessionById,getChannel} from './state';
 import {authorCorrection,sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
-import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
+import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
+import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
 
 export function authorSession(id:number):MessageAuthor['session'] {
   const session=getSessionById(id);if(!session)return undefined;
@@ -123,7 +124,12 @@ export function doorOf(input:AcceptedSessionInput):string|null {
   const payload=JSON.parse(input.payload_json),body=input.kind==='create'?{...payload.firstInput,door:payload.door}:payload;
   if(typeof body?.door==='string')return body.door;
   const source=body?.capture?.source;
-  if(source?.kind==='pebble')return 'Pebble';
+  if(source?.kind==='pebble'){
+    // A note his phone sent late says so beside his name, so a burst of old notes reads as the
+    // phone catching up rather than as the Inbox sitting on them.
+    const wait=pebbleArrivalWaitMs(source,input.created_at);
+    return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(source.recordedAt))}, reached the server ${minutesText(wait)} later`;
+  }
   if(source?.kind==='monologue')return 'Monologue';
   if(source?.kind==='session-message')return 'saved from a conversation';
   if(source?.kind==='thinkering'){

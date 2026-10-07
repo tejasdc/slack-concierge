@@ -10,6 +10,22 @@ export type InboxCapture = {
   files?:{name:string;contentType:string;base64:string;transcript?:unknown}[];
   importOnly?:boolean;
 };
+/**
+ * How long a Pebble note waited before it reached the server, when that is longer than a note
+ * normally takes (25–90 seconds from the ring's own timestamp), else null. The wait happened
+ * upstream: the phone app pulls the recording off the ring, transcribes it and sends it once, so
+ * a note that sat on the phone for twenty minutes arrives late with nothing here having held it.
+ * He read exactly that as agents ignoring him (2026-10-07), so the late note says it was late.
+ */
+export const SLOW_PEBBLE_ARRIVAL_MS=2*60_000;
+export function pebbleArrivalWaitMs(source:{kind?:unknown;recordedAt?:unknown}|undefined,acceptedAt:string):number|null {
+  if(source?.kind!=='pebble'||typeof source.recordedAt!=='string')return null;
+  const recorded=Date.parse(source.recordedAt),arrived=Date.parse(acceptedAt.includes('T')?acceptedAt:acceptedAt.replace(' ','T')+'Z');
+  if(!Number.isFinite(recorded)||!Number.isFinite(arrived))return null;
+  const wait=arrived-recorded;
+  return wait>SLOW_PEBBLE_ARRIVAL_MS?wait:null;
+}
+export const minutesText=(ms:number)=>{const minutes=Math.round(ms/60_000);return minutes>=120?`${Math.round(minutes/60)} hours`:`${minutes} min`;};
 export const captureIdentity=(source:InboxCapture['source'])=>createHash('sha256').update(JSON.stringify([source.kind,source.id])).digest('hex');
 export function inboxSession() {
   return db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as SessionRow|null;

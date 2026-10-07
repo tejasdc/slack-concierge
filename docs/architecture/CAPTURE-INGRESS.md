@@ -58,6 +58,21 @@ For minimum latency, use Pebble's cloud transcription and send only its
 transcript. Server-side `whisper.cpp` remains the fallback for Slack audio clips
 and the historical Watch/iPhone `/audio` route; it is not in the Pebble path.
 
+### Late arrivals happen on the phone
+
+Pebble's app sends a note once, right after it has saved its own transcript, with
+no queue or retry (its `IndexWebhookApi`). A note normally reaches ingress 25–90
+seconds after the ring's `recordedAt`. When the phone holds it longer (the app
+suspended in the background, or the ring not yet synced), it arrives late, often
+in a burst with its neighbours, and every attempt is accepted on the first try.
+Ingress logs the gap as `received_after_recorded_ms` on `pebble_capture_shape`.
+Cloudflare's worker invocation count shows whether an earlier attempt reached the
+edge at all. Once the gap passes two minutes (`pebbleArrivalWaitMs` in
+`session-inbox.ts`), the Inbox message's door reads "Pebble · recorded <time>,
+reached the server N min later". The Inbox agent's input carries an "Arrived late"
+line, so a burst of old notes reads as the phone catching up, not as the Inbox
+holding them (2026-10-07: notes were 21–23 minutes late and he read that as being ignored).
+
 Public health:
 
 ```bash

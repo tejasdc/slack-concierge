@@ -20,7 +20,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
-import {INBOX_INSTRUCTIONS,relayUnpostedAnswer} from './session-inbox';
+import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
@@ -354,7 +354,11 @@ export class SessionExecutionHost {
     // The Inbox's standing instructions are in its per-run instructions, read once per run; each
     // input carries only its own facts. They used to prefix every input: 3,802 characters, 1,029
     // copies in one conversation (September 23, 2026).
-    if(sessionMetadata(getSessionById(input.session_id)!).inbox&&payload.capture)prompt=`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`+prompt;
+    if(sessionMetadata(getSessionById(input.session_id)!).inbox&&payload.capture) {
+      const wait=pebbleArrivalWaitMs(payload.capture.source,input.created_at);
+      const arrival=wait===null?'':`Arrived late: this note reached the server ${minutesText(wait)} after he recorded it. The wait happened before his phone sent it, not in the Inbox; he cannot tell that from his side.\n`;
+      prompt=`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n${arrival}\n`+prompt;
+    }
     if(payload.replyToMessage)prompt+=`\n\n<reply-target>\n${JSON.stringify(payload.replyToMessage)}\n</reply-target>`;
     // The thread this input belongs to, or the instruction to file it first.
     prompt+=topicPromptContext(input.session_id,input.id,payload);
