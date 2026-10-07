@@ -28,16 +28,16 @@ export type SessionMessageMetadataProjection=(sessionId:number,message:ProviderH
 
 /**
  * One batch per history page or event flush; no mutable cache or cross-session fallback.
- * Seeks through `session_owner_events_session_kind` for the reason given on
- * `sessionMessageInputProjection`: unindexed, this scans every event once per
- * requested message and the two projections together dominate a history read.
+ * Pinned to `session_owner_events_message_lookup` for the reason given on
+ * `sessionMessageInputProjection`: left to choose, SQLite walks message events once per
+ * requested message, and the two projections together dominate a history read.
  */
 export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]):SessionMessageMetadataProjection {
   if(!entries.length)return (_sessionId,message)=>message;
   const requested=JSON.stringify([...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
     {sessionId,id:message.id,turnId:message.turnId??null,role:message.role}])).values()]);
   const rows=db.query(`SELECT event.session_id,event.created_at,event.turn_id,event.payload_json
-    FROM session_owner_events event JOIN json_each(?) requested
+    FROM json_each(?) requested CROSS JOIN session_owner_events event INDEXED BY session_owner_events_message_lookup
       ON event.session_id=json_extract(requested.value,'$.sessionId')
       AND json_extract(event.payload_json,'$.message.id')=json_extract(requested.value,'$.id')
       AND json_extract(event.payload_json,'$.message.turnId') IS json_extract(requested.value,'$.turnId')

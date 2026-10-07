@@ -25,17 +25,19 @@ export type SessionMessageInputProjection=(sessionId:number,message:ProviderHist
  * the message, so an agent message names its request exactly rather than by its position
  * in the page. Several retained events for one message must agree; a disagreement stays
  * unknown. One batch per history page or event flush, matching the metadata projection.
- * The join seeks each requested message inside its own session through
- * `session_owner_events_session_kind`. Without that index SQLite scans the whole
- * events table once per requested message, so a page costs requested count times
- * table size — 4.5s for one 160-message page at 52k events.
+ * The join is pinned to seek each requested message by session and message id
+ * (`session_owner_events_message_lookup`), driven from the requested list. Left to choose,
+ * SQLite walks whatever index serves ORDER BY: through session_kind that was every message
+ * event of the session per requested message (4.5 s for 160 messages at 52k events), and
+ * once an index by kind and sequence existed it was every message event in the ledger
+ * (3.3 s per query, 20-second stalls during history reads, 2026-10-07).
  */
 export function sessionMessageInputProjection(entries:readonly {sessionId:number;message:ProviderHistoryMessage}[]):SessionMessageInputProjection {
   if(!entries.length)return ()=>undefined;
   const requested=JSON.stringify([...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
     {sessionId,id:message.id,turnId:message.turnId??null,role:message.role}])).values()]);
   const rows=db.query(`SELECT event.session_id,event.input_id,event.payload_json
-    FROM session_owner_events event JOIN json_each(?) requested
+    FROM json_each(?) requested CROSS JOIN session_owner_events event INDEXED BY session_owner_events_message_lookup
       ON event.session_id=json_extract(requested.value,'$.sessionId')
       AND json_extract(event.payload_json,'$.message.id')=json_extract(requested.value,'$.id')
       AND json_extract(event.payload_json,'$.message.turnId') IS json_extract(requested.value,'$.turnId')
