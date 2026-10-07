@@ -22,16 +22,21 @@ import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
  */
 // Per-login also covers what Claude stamps with the signed-in account and deletes at logout
 // (remote settings and policy limits), so one account never reads another's.
+// It also covers sign-in state and the locks Claude takes while it renews a login (`.storage-write`,
+// `.oauth_refresh.lock*`): linking a lock to the main folder's would tie this account's renewals to
+// whatever a terminal there is doing, and a lock that happened to exist during a switch would be
+// left dangling (GPT-6 Astra's stand-in review, 2026-10-07).
 const PER_LOGIN=new Set(['.credentials.json','.claude.json','.claude.json.lock','.account-email','backups',
-  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json']);
-const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name);
+  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json',
+  'hfi-auth.json','.session_ingress_token','.storage-write']);
+const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name)||/^\.oauth_refresh\.lock/.test(name);
 /**
  * Runtime scratch Claude recreates per process. Shared when possible, but a private copy is
  * harmless and is never moved: a live process may be using it (one was, at the 19:40 repair on
  * 2026-10-07).
  */
 const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','statsig','paste-cache','.last-cleanup',
-  '.last-update-result.json','mcp-needs-auth-cache.json']);
+  '.last-update-result.json','mcp-needs-auth-cache.json','teams','jobs','daemon']);
 
 /**
  * The home an extra Claude account launches from, or null when it is not a complete view of the
