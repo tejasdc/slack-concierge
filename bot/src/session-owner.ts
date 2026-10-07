@@ -33,7 +33,7 @@ import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
-import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection} from './session-topics';
+import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -95,6 +95,10 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   // A follow-up handed to a live run waits in that run's own queue for the agent's next
   // step. Nothing is held and nobody needs to act, so it carries no explanation.
   if(steering&&['queued','sending'].includes(steering.status))return null;
+  // A reply forwarded to the agent working its thread has no turn here: it waits on that agent's
+  // answer, which the thread shows. It carries an explanation only while that agent's machine is
+  // asleep and the peer path holds it (set by forwardReply, cleared when the Mac takes it).
+  if(saved.forwardedTo)return saved.statusDetail??null;
   if(!turn) {
     const request=input.request_id?db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(input.request_id,input.id) as {payload_json:string;outcome:string|null}|null:null;
     const after:string[]=request&&!request.outcome?JSON.parse(request.payload_json).after??[]:[];
@@ -1279,7 +1283,7 @@ export class SessionOwner {
     return {operation:this.receipt(this.dispatch(retained.input))};
   }
   /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
-  private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number;title:string|null;topicId:string;root:string}|null {
+  private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}|null {
     if(!sessionMetadata(session).inbox)return null;
     const messageId=input.replyToMessage?.messageId;
     if(typeof messageId!=='string'||input.deliverTo==='router')return null;
@@ -1293,9 +1297,13 @@ export class SessionOwner {
     const chosen=typeof input.deliverTo==='string'?input.deliverTo:targets.default;
     if(chosen===targets.router)return null;
     const choice=targets.choices.find(item=>item.sessionId===chosen);
+    if(!choice)throw new SessionOwnerError('That session is not working on this thread, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
     const local=localSessionNumber(chosen);
-    if(!choice||local===null)throw new SessionOwnerError('That session is not working on this thread, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
-    return {sessionId:chosen,local,title:choice.title,topicId,root};
+    // A session on his Mac is addressed through the peer path, by the address its catalogue entry
+    // carries [decision: mac-sessions-have-parity].
+    const remote=local===null?this.peers?.splitAddress(peerSessionView(chosen)?.address??'')??null:null;
+    if(local===null&&!remote)throw new SessionOwnerError('That session is on a machine this owner cannot address, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
+    return {sessionId:chosen,local,peer:remote,title:choice.title,topicId,root};
   }
   admit(input:OwnerAdmission) {
     // A returned answer can carry the files it answered with. They are retained custody the

@@ -4,7 +4,9 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, postForwardedThreadAnswer, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { forwardedReplyFraming } from './session-inbox';
+import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -792,21 +794,42 @@ export class SessionCommunicationCoordinator {
      * (`postForwardedReply`). Design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md;
      * review by concierge:3756, which ruled out inferring the answer from the agent's closing text.
      */
-    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
+    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actionId=`forward:${input.inputId}`;
         const existing=db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null;
         if(existing)return existing.request_id;
-        const target=getSessionById(input.target.local);
-        if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
+        const attachments=input.attachments?.length?input.attachments:[];
         // The schema requires a source turn; a forwarded reply has none, because no router turn
         // carries it. The Inbox's latest turn stands in as the reference and is never read for it.
         const standIn=db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(input.inbox.id) as {id:number}|null;
         if(!standIn)throw new Error('The Inbox has no turn to record this request against.');
+        if(input.target.peer) {
+            // A session on his Mac takes the same reply by the same rule [decision: mac-sessions-have-parity]:
+            // the peer path carries it as a work request under the Inbox's identity, keeps it while the
+            // Mac sleeps and hands it over when the Mac wakes (SessionPeers.ask/dispatch), and its
+            // answers post into the thread exactly as a server agent's do (SessionPeers.deliver).
+            const {peer,address}=input.target.peer;
+            const id=peerRequestId(input.inputId,actionId);
+            void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
+                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId}})
+              .then(receipt=>{
+                if(receipt.status==='queued_offline')db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+                    .run(JSON.stringify({code:'PEER_ASLEEP',message:`Queued until ${peer} wakes; the agent gets it the moment the Mac is back.`,clearsAt:null,automaticRetry:true}),input.inputId);
+                log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,peer,target_address:address,topic_id:input.target.topicId,queued:receipt.status==='queued_offline'});
+              })
+              .catch(error=>{
+                db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'failed',forwardedTo:{sessionId:input.target.sessionId,title:input.target.title},
+                    error:{code:'FORWARDED_REPLY_NOT_SENT',message:String((error as Error)?.message??error)}}),input.inputId);
+                log('warn','inbox_reply_forward_failed',{request_id:id,input_id:input.inputId,peer,error:String((error as Error)?.message??error).slice(0,300)});
+              });
+            return id;
+        }
+        const target=getSessionById(input.target.local!);
+        if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
-        const attachments=input.attachments?.length?input.attachments:[];
-        const firstInput={text:`Session request ${id}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${id} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...(attachments.length?{attachments}:{})};
+        const firstInput={text:forwardedReplyFraming(id,input.text),...(attachments.length?{attachments}:{})};
         const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},...(attachments.length?{attachments}:{})});
         db.transaction(()=>{
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
@@ -829,25 +852,11 @@ export class SessionCommunicationCoordinator {
     private postForwardedReply(request:RequestRow,event:EventRow,declared:any,forwarded:{inboxInputId:string;topicId:string}) {
         const inbox=getSessionById(request.source_session_id);
         if(!inbox)return;
-        const text=String(declared.text??'').trim();
-        const attachments=Array.isArray(declared.attachments)?declared.attachments as string[]:[];
-        const stalled=event.kind==='overdue'||!!declared.stalled;
-        const eventId=`post:forward:${event.event_id}`;
-        const root=request.thread_root_input_id??request.source_input_id!;
-        db.transaction(()=>{
-            if((text||attachments.length)&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
-                recordSessionEvent({eventId,sessionId:inbox.id,inputId:root,kind:'post',
-                    payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${inbox.id}`,messageId:forwarded.inboxInputId},requestId:request.request_id,
-                        ...(stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:`concierge:${request.target_session_id}`}),...(attachments.length?{attachments}:{})}});
-            if(event.kind==='final'||stalled) {
-                const to={sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id};
-                db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(stalled
-                    ?{state:'uncertain',forwardedTo:to,error:{code:'FORWARDED_REPLY_STALLED',message:text||'The agent did not answer.'}}
-                    :{state:declared.workDisposition==='failed'?'failed':'completed',forwardedTo:to,...(declared.workDisposition==='failed'?{error:{code:'FORWARDED_REPLY_FAILED',message:text}}:{})}),request.source_input_id!);
-            }
-            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
-        })();
-        log('info','inbox_reply_answer_posted',{request_id:request.request_id,event_kind:event.kind,thread:root,stalled});
+        postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:event.event_id,requestId:request.request_id,root:request.thread_root_input_id??request.source_input_id!,
+            inboxInputId:forwarded.inboxInputId,respondingSessionId:`concierge:${request.target_session_id}`,text:String(declared.text??''),
+            attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
+            workDisposition:declared.workDisposition??null,hisInputId:request.source_input_id!});
+        db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
     }
     reply(input: {
         source: CommunicationSource;

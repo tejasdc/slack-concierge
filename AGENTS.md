@@ -454,7 +454,15 @@ authorization or a change to the default rapid-iteration policy.
   router is woken by none of it and stays a choice he can address) (Tejas, 2026-10-07: "I should just
   be talking with the agents who are working on this thread … my responses go back to the same
   session") [decision: thread-replies-go-to-the-working-agent]; design in thinkering
-  docs/plans/2026-10-07-reply-to-who-asked.md. A service notice (no provider turn
+  docs/plans/2026-10-07-reply-to-who-asked.md. **A session on his Mac is a session, in every
+  feature** [decision: mac-sessions-have-parity]: `replyTargets` offers a `mac:<n>` agent from the
+  peer catalogue (`peerSessionView`) exactly as a local one, `forwardReply` carries his words to it
+  as a peer work request under the Inbox's identity with the same framing (`forwardedReplyFraming`),
+  queued while the Mac sleeps (his message says so, `PEER_ASLEEP`) and delivered when it wakes, and
+  `SessionPeers.deliver` posts the Mac agent's answers into the thread through the same
+  `postForwardedThreadAnswer`. The first build offered server sessions only and he rejected it the
+  same evening ("Mac needs to have the same parity as we have"); a feature that addresses, lists or
+  delivers to sessions and leaves the Mac out is not finished. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server

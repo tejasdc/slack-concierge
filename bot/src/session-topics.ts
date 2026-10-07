@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {localSessionNumber} from './peer-identity';
+import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
@@ -470,7 +470,7 @@ function workIndex(sessionId:number):WorkIndex {
   for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,peer,remote_session_id FROM session_peer_requests
       WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]) {
     const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`${row.peer}:${row.remote_session_id}`,
+    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
       title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
   }
   return {focus,focusTitle,queued,dispatches};
@@ -600,12 +600,14 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
  */
 function liveDispatch(dispatch:any) {
   const local=db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
-  const peer=local?null:db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_peer_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
+  const peer=local?null:db.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,peer,remote_session_id FROM session_peer_requests WHERE request_id=?').get(String(dispatch.requestId)) as any;
   const row=local??peer;
   if(!row)return dispatch;
   let text:string|null=null;
   try{const words=String(JSON.parse(row.payload_json)?.text??'').replace(/\s+/g,' ').trim();text=words?words.slice(0,240):null;}catch{text=null;}
-  return {...dispatch,outcome:row.outcome??null,state:row.status??dispatch.state,
+  // A peer session is named as the catalogue and the reply chooser name it (`mac:84`); records linked
+  // before 2026-10-07 spelt it `mac:concierge:84`, which opened nothing.
+  return {...dispatch,...(peer?{targetSessionId:receiveSessionFromPeer(peer.remote_session_id,peer.peer)}:{}),outcome:row.outcome??null,state:row.status??dispatch.state,
     ...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
     ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
     ...(text?{text}:{})};
@@ -877,9 +879,9 @@ function spokenBySession(sessionId:number,messageId:string):string|null {
  * Who a reply inside this thread goes to: the agents working on it (an open request's dispatch,
  * a dispatch in flight, an open question they asked, an answer they returned), the router, and
  * the default. The default is the agent whose item he is replying to; else the one agent working
- * here; else the router, which also covers "several are working", so he picks. Only a session
- * this owner runs and can still send to is a choice: a Mac session's or a closed session's thread
- * still goes through the router. The app shows these and sends his pick; nothing in the app
+ * here; else the router, which also covers "several are working", so he picks. A session on his
+ * Mac is a choice exactly as one on this server [decision: mac-sessions-have-parity]; only a
+ * session archived or suspended is left out. The app shows these and sends his pick; nothing in the app
  * re-derives them (design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md; Tejas,
  * 2026-10-07: "I should just be talking with the agents who are working on this thread … my
  * responses go back to the same session").
@@ -889,20 +891,31 @@ export function replyTargets(topicId:string,about:string|null=null,canSend:(sess
   const router=`concierge:${session.id}`;
   const roots=topicRoots(topicId);
   const choices=new Map<string,ReplyTarget>();
-  const add=(sessionId:string|null|undefined,why:string,owns:string[])=>{
-    if(!sessionId||sessionId===router)return;
+  const add=(named:string|null|undefined,why:string,owns:string[])=>{
+    if(!named||named===router)return;
+    // Older records spelt a peer session `mac:concierge:84`; the catalogue and the app say `mac:84`.
+    const sessionId=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
     const local=localSessionNumber(sessionId);
-    const row=local===null?null:getSessionById(local);
-    if(!row||!canSend(row))return;
+    let title:string|null;
+    if(local!==null){const row=getSessionById(local);if(!row||!canSend(row))return;title=sessionMetadata(row).title??null;}
+    else {
+      // A session on his Mac is a choice exactly as a server session is [decision: mac-sessions-have-parity]:
+      // its name comes from the peer catalogue this owner keeps, and the peer path carries his reply,
+      // queued while the Mac sleeps. Only a session that machine has archived is left out.
+      const view=peerSessionView(sessionId);
+      if(!view||view.archived||view.archivedAt||view.status==='archived')return;
+      title=view.title??null;
+    }
     const existing=choices.get(sessionId);
     if(existing){existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));return;}
-    choices.set(sessionId,{sessionId,title:sessionMetadata(row).title??null,why,owns:[...new Set(owns)]});
+    choices.set(sessionId,{sessionId,title,why,owns:[...new Set(owns)]});
   };
   // A dispatch counts while its request to the agent is still open; one that settled is finished
   // work, and the router's own request bookkeeping can lag by weeks (five idle sessions still
   // listed on "Action Button recording" on 2026-10-07), so a settled dispatch never catches his reply.
   // A request the owner has already marked stalled is not work in progress either.
-  const stillOpen=(requestId:string)=>!!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId);
+  const stillOpen=(requestId:string)=>!!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId)
+    ||!!db.query('SELECT 1 FROM session_peer_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId);
   for(const request of topicRequests(topicId))if(request.state==='open')
     for(const dispatch of request.dispatches as any[])if(stillOpen(String(dispatch.requestId)))add(dispatch.targetSessionId,`working on “${request.title}”`,request.sources.map((source:any)=>source.inputId));
   for(const dispatch of workIndex(session.id).dispatches)if(dispatch.root&&roots.includes(dispatch.root))add(dispatch.sessionId,'working on this thread now',[dispatch.root]);
@@ -912,6 +925,12 @@ export function replyTargets(topicId:string,about:string|null=null,canSend:(sess
   const list=[...choices.values()];
   const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
   return {router,default:owning?.sessionId??(list.length===1?list[0]!.sessionId:router),choices:list};
+}
+/** A session on another machine as the peer catalogue this owner keeps presents it (`mac:86` → its view), or null. */
+export function peerSessionView(sessionId:string):{id:string;title?:string|null;address?:string;status?:string;archived?:boolean;archivedAt?:string|null}|null {
+  if(localSessionNumber(sessionId)!==null)return null;
+  const row=db.query("SELECT view_json FROM session_peer_catalogue WHERE json_extract(view_json,'$.id')=?").get(sessionId) as {view_json:string}|null;
+  return row?JSON.parse(row.view_json):null;
 }
 export function readTopic(topicId:string,limit:number|null=null) {
   const session=inboxOrThrow();
@@ -1447,7 +1466,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const local=db.query('SELECT target_session_id,outcome,status FROM session_communication_requests WHERE request_id=?').get(dispatchId) as any;
         const peer=local?null:db.query('SELECT peer,remote_session_id,outcome,status FROM session_peer_requests WHERE request_id=?').get(dispatchId) as any;
         if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
-        const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:`${peer.peer}:${peer.remote_session_id}`,
+        const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:receiveSessionFromPeer(peer.remote_session_id,peer.peer),
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
           outcome:(local??peer).outcome??null,state:(local??peer).status??null};
         const dispatches=[...request.dispatches.filter((existing:any)=>existing.requestId!==dispatchId),dispatch];
@@ -2201,7 +2220,7 @@ function migrationDispatches(sessionId:number,root:string) {
   for(const row of db.query(`SELECT request_id,source_input_id,peer,remote_session_id,outcome,status FROM session_peer_requests
       WHERE source_session_id=?`).all(sessionId) as any[]) {
     if(rootOf(sessionId,row.source_input_id)!==root)continue;
-    dispatches.push({requestId:row.request_id,targetSessionId:`${row.peer}:${row.remote_session_id}`,targetTitle:null,
+    dispatches.push({requestId:row.request_id,targetSessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),targetTitle:null,
       outcome:row.outcome??null,state:row.status??null});
   }
   return dispatches;

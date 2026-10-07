@@ -9,6 +9,7 @@ import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
+import {postForwardedThreadAnswer} from './session-inbox';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
@@ -94,7 +95,7 @@ export function startPeerListener(input:{hostname:string;port:number;token:strin
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
-  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number};
+  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number;thread_root_input_id:string|null};
 type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
 const OFFLINE_MS=60_000;
 const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
@@ -109,7 +110,7 @@ const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
 const DUE_MS=STILL_WAITING_AFTER_MS;
 /** The request ID is a function of the source input and action, so a retry after a lost response reaches the same peer row. */
-const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
+export const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 
 export class SessionPeers {
   private readonly tasks=new Map<string,Promise<void>>();
@@ -357,13 +358,16 @@ export class SessionPeers {
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;text:string;
-    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null}) {
+    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;
+    /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
+    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     const client=this.client(input.peer);
     const effect=input.requestedEffect??'informational';
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
-      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{})});
+      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),
+      ...(input.forwardedReply?{forwardedReply:input.forwardedReply}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const previous=prior();
@@ -381,7 +385,7 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
+    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(files.length?{files}:{})};
@@ -570,6 +574,8 @@ export class SessionPeers {
       db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
         .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
       log('info','session_peer_request_delivered_late',{request_id:row.request_id,peer:row.peer});
+      // His thread reply the Mac has now taken: its message stops saying it is queued.
+      if(JSON.parse(row.payload_json).forwardedReply)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
       recordSessionEvent({eventId:`peer-delivered:${row.request_id}`,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',payload:{requestId:row.request_id,kind:'progress',text:`${row.peer} is back; the queued request was delivered to ${this.presentedSession(row.peer,accepted.sessionId)}.`}});
       row=this.row(row.request_id);
     }
@@ -646,6 +652,18 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
+    // His thread reply's answer from a Mac agent goes into the thread as that agent's words, never
+    // as a return that would start a router turn: the same road a server agent's answer takes
+    // [decision: mac-sessions-have-parity].
+    const forwarded=JSON.parse(row.payload_json).forwardedReply;
+    if(forwarded&&typeof forwarded.inboxInputId==='string'){
+      postForwardedThreadAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root:row.thread_root_input_id??row.source_input_id,
+        inboxInputId:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),text:String(declared.text??''),
+        attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
+        workDisposition:declared.workDisposition??null,hisInputId:row.source_input_id});
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+      return;
+    }
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.canSend(source)){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
