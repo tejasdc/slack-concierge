@@ -1,9 +1,9 @@
 # Execution host
 
-**Status: built for Claude Code runs on Linux (server), 2026-10-07.** The Mac host (launchd), Codex
-adoption and update without the drain gate are later deliveries of the same design:
+**Status: built on Linux (server) for Claude runs, Codex runs and updates, 2026-10-07; the Mac host
+(launchd) is a later delivery** of
 [agent work and updates without waiting](../plans/2026-10-07-agent-work-and-updates-without-waiting.md)
-§9 steps 5–7.
+§9 steps 4, 5, 7 (Linux) and 6.
 
 ## What it is for
 
@@ -130,6 +130,48 @@ own request id, so a later policy that answers them needs no reinitialize handsh
 design's `reinitialize` (§3.1 step 4) was for recovering missed frames from a cursor; a replay of the
 whole record misses none, and Concierge registers no SDK hook callbacks for it to re-register (hooks
 are command hooks in `--settings`, held by the unchanged process).
+
+## Codex runs (design step 5)
+
+- **Shared-daemon turns** (the usual kind): the Codex App Server daemon already outlives Concierge.
+  Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
+  After a restart the next coordinator follows the turn by its exact thread (the session's bound
+  provider id) and recorded provider turn id (`adoptTurn` in `runCodexTurnShared`): it resumes the
+  thread, reads its history, settles a finished turn from it or keeps following notifications, and
+  never calls `turn/start`. A turn the thread's history never shows is reported unconfirmed after a
+  bounded search. Follow-ups that were being sent are decided by the history (`clientId`).
+- **Private turns** (a turn bound to one account home, on its own `codex app-server --stdio`): the
+  process lives in an execution host like Claude, reached through the same line transport
+  (`runCodexTurnStdio` with `transport`). Replay rebuilds thread, turn and progress from the
+  predecessor's requests and the server's answers; request ids continue above the predecessor's;
+  a server request the record shows unanswered is answered once after the replay; an unfinished
+  turn is reconciled with `thread/read`.
+- Concierge's Codex turns use `approvalPolicy: "never"`, so there are no approvals to reissue.
+- Not yet exercised on a live Codex turn: the server's Codex is signed out (2026-10-07).
+
+## Updates (design step 7)
+
+A running turn holds an update only if it would end with the coordinator. One rule, in
+`bot/src/execution-survival.ts`, used by the update gate (`drain-status.ts inspect`), the queue
+(`claimNextQueuedTurn`) and the update line (`deploymentWait`):
+
+- A kind of run (provider and supervisor: `claude-code/systemd`, `codex/codex-daemon`,
+  `codex/systemd`) counts as surviving only after this machine has seen one survive: an execution
+  of that kind that a later coordinator took back and then settled and released. Until then the
+  update waits for it exactly as before. Nothing is assumed from code alone.
+- A running turn whose execution is of a proven kind and on a host protocol this release can adopt
+  is reported `continuing`, not `active`: the update does not wait for it.
+- While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new
+  message is not held behind the install; other kinds wait as before, and their receipts still say
+  so (`DEPLOYMENT_HOLD`).
+- Before a candidate is activated, its own `drain-status.js adoptable-check` must cover every host
+  protocol an admitted execution still speaks; otherwise the deployment fails before anything is
+  activated or restarted.
+- The update line receives `continuing`: how many running conversations carry on through it.
+- The first release that contains hosts installs at an idle moment as before (the installed control
+  that runs the deployment predates this rule). The first proof comes from the acceptance restart.
+- Known limit: the capture gate still holds incoming captures in ingress for the duration of a
+  deployment, as before; captures are retained and delivered afterwards.
 
 ## Shutdown
 

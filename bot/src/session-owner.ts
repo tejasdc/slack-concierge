@@ -13,7 +13,8 @@ import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairInci
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {provenRunKinds,turnContinuesThroughRestart} from './execution-survival';
 import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -130,8 +131,15 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(turn.dispatch_failure_class==='chosen_time')return {code:'CHOSEN_TIME_HELD',
     message:'This continuation is waiting until its chosen time.',
     clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
-  if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
+  if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get()) {
+    // Same rule as the queue (survivableRunKinds): a run proven to carry on through the restart is
+    // not held for the install, so only the rest is told it waits.
+    const survivable=survivableRunKinds();
+    const carriesOn=input.kind!=='fork'&&(session.provider_id==='claude-code'?survivable.claude
+      :session.provider_id==='codex'?survivable.codexShared&&(deliberate?.saved_kind!=='banked'||survivable.codexPrivate):false);
+    if(!carriesOn)return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
+  }
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`).get(input.session_id,turn.id) as {status:string}|null;
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
@@ -909,7 +917,12 @@ export class SessionOwner {
     const run=getActiveDeploymentRun();
     if(!run||!['prepared','draining'].includes(run.status))return null;
     const since=(db.query("SELECT MIN(created_at) AS at FROM deployment_run_events WHERE run_id=? AND event IN ('prepared','draining')").get(run.id) as {at:string|null}|null)?.at??run.created_at;
-    const turns=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
+    const running=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
+    // Conversations whose agents carry on through the restart are not waited for; the update line
+    // says how many continue instead of listing them as holding it (design 2026-10-07 §3.1 step 6).
+    const proven=provenRunKinds(db);
+    const turns=running.filter(turn=>!turnContinuesThroughRestart(db,turn.id,proven));
+    const continuing=running.length-turns.length;
     const sessions=turns.flatMap(turn=>{
       const session=getSessionById(turn.session_id);
       if(!session)return [];
@@ -922,7 +935,7 @@ export class SessionOwner {
     // He is told what every change in the update does, including the commit subject when its
     // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
     const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
-    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes:holds.notes,subjects:holds.subjects};
+    return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects};
   }
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every

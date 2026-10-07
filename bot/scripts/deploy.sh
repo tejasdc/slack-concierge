@@ -587,6 +587,18 @@ prepare_candidate_release() {
   fi
   CANDIDATE_ARTIFACT_PATH=$(printf '%s\n' "$output" | jq -er '.artifact_path')
   CANDIDATE_ARTIFACT_DIGEST=$(printf '%s\n' "$output" | jq -er '.artifact_digest')
+  # The candidate will replace a coordinator whose agents may still be running in execution hosts.
+  # It must be able to take back every host protocol they speak; otherwise nothing is activated or
+  # restarted (design 2026-10-07 §3.1 step 2, docs/architecture/EXECUTION-HOST.md).
+  set +e
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/drain-status.js" adoptable-check)
+  status=$?
+  set -e
+  printf '%s\n' "$output"
+  if [ "$status" -ne 0 ]; then
+    DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output:0:600}"
+    return "$status"
+  fi
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
 }

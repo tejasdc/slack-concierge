@@ -13,6 +13,7 @@ import {
 } from "./text";
 
 export { db } from "./state-database";
+import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
 
 db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
@@ -4989,10 +4990,18 @@ export function authHeldInputCount(providerId: ProviderId): number {
   return row.held;
 }
 
+/** The queue's view of execution-survival.ts: which kinds may start while an update installs. */
+export function survivableRunKinds() { return survivableRunKindsIn(db); }
+
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     settleTurnDependencies();
-    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return null;
+    // While an update is being installed, only runs that are proven to survive the coordinator's
+    // restart start; everything else waits for the install, as before. A model reply is never
+    // held for an update when its kind can carry on through it.
+    const draining = !!db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get();
+    const survivable = draining ? survivableRunKinds() : null;
+    if (survivable && !survivable.claude && !survivable.codexShared) return null;
     while (true) {
       const candidate = db.query(`
         SELECT turn.id AS turn_id, turn.session_id, session.status AS session_status
@@ -5029,9 +5038,14 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
             WHERE artifact_turn.session_id=turn.session_id
               AND artifact.status IN ('pending', 'sending')
           )
+          AND (? = 0 OR (turn.turn_kind='native'
+            AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+            AND ((session.provider_id='claude-code' AND ?=1)
+              OR (session.provider_id='codex' AND ?=1 AND (turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR ?=1)))))
         ORDER BY turn.id
         LIMIT 1
-      `).get(nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds)) as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
+        survivable ? 1 : 0, survivable?.claude ? 1 : 0, survivable?.codexShared ? 1 : 0, survivable?.codexPrivate ? 1 : 0) as { turn_id: number; session_id: number; session_status: string } | null;
       if (!candidate) return null;
 
       if (candidate.session_status === "archived") {

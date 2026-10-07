@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { isAncestorProcess, isProcessIdentityAlive, processIdentity } from "../src/runtime-identity";
+import { ADOPTABLE_HOST_PROTOCOLS } from "../src/execution-host-client";
+import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -11,10 +13,10 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!["check", "claim", "recover", "release"].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN>" });
+  if (!["check", "claim", "recover", "release", "adoptable-check"].includes(command)) {
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check>" });
   }
-  const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
+  const database = new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true });
   database.exec("PRAGMA busy_timeout=5000");
   if (command === "release") {
     const token = process.argv[3];
@@ -38,8 +40,28 @@ try {
     finish(0, { status: "recovered" });
   }
 
+  // A turn whose provider process lives in an execution host (or the Codex daemon) carries on
+  // through the coordinator's restart and is taken back by the next one. It holds the update only
+  // until its kind has been proven to survive a restart on this machine (survivableRunKinds in
+  // state.ts, the same rule the queue uses), and only if this release can adopt its host protocol.
+  const hasExecutions = !!database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='executions'").get();
+  const proven = provenRunKinds(database);
+  const continuesThroughRestart = (turnId: number) => turnContinuesThroughRestart(database, turnId, proven);
+
+  if (command === "adoptable-check") {
+    // Run from a candidate release before it replaces the coordinator: every host protocol an
+    // admitted execution still speaks must be one this release can adopt.
+    const inUse = hasExecutions ? (database.query("SELECT DISTINCT host_protocol FROM executions WHERE state IN ('intended','live','exited')").all() as { host_protocol: number }[]).map(row => row.host_protocol) : [];
+    const missing = inUse.filter(protocol => !ADOPTABLE_HOST_PROTOCOLS.includes(protocol));
+    database.close();
+    if (missing.length) finish(1, { status: "incompatible", missing, adoptable: ADOPTABLE_HOST_PROTOCOLS,
+      error: `This release cannot take back running executions on host protocol ${missing.join(", ")}.` });
+    finish(0, { status: "compatible", in_use: inUse, adoptable: ADOPTABLE_HOST_PROTOCOLS });
+  }
+
   const inspect = () => {
     const hasBackgroundJobs = !!database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='background_job_status'").get();
+    const continuing: any[] = [];
     const rows = database.query(`
     SELECT t.id AS turn_id, t.status AS turn_status, t.owner_instance_id,
            t.session_id, s.native_metadata_json,
@@ -65,7 +87,8 @@ try {
         title, background_jobs: jobs.map(job => ({ id: job.task_id, description: job.description,
           started_at: new Date(job.started_at_ms).toISOString(), age_ms: Date.now() - job.started_at_ms,
           told_30: !!job.told_30, told_60: !!job.told_60, holding_only: !!job.holding_only })) };
-      if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
+      if (continuesThroughRestart(row.turn_id)) continuing.push(summary);
+      else if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
       else stale.push(summary);
     }
     if (database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='routed_requests'").get()) {
@@ -98,7 +121,7 @@ try {
         else stale.push(summary);
       }
     }
-    return { active, stale };
+    return { active, stale, continuing };
   };
 
   if (command === "check") {

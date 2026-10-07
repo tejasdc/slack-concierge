@@ -555,7 +555,10 @@ authorization or a change to the default rapid-iteration policy.
   back by identity at startup (`claimAdoptableExecutions`), before steering and turn recovery, and
   replays the host's record to rebuild its state. The host holds no policy and is never patched in
   place; never restart, kill or "clean up" `concierge-exec-*` units by hand: they are agents at work.
-  Codex runs and the Mac keep direct child processes until their own steps land. See
+  Shared-daemon Codex turns are followed by their exact ids after a restart. An update waits only
+  for runs that would end with Concierge: a kind of run stops holding updates once this machine has
+  seen one survive a restart (`execution-survival.ts`, one rule for the gate, the queue and the update
+  line). The Mac keeps direct child processes until its own host lands. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
