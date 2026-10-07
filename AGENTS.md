@@ -430,7 +430,10 @@ authorization or a change to the default rapid-iteration policy.
   his `open` state brings one back by hand (Tejas, 2026-10-07: "remind me later … 30 minutes, 3
   hours, 6 hours, one week") [decision: remind-me-later-on-questions]. **The open-threads list is ordered by
   what needs him** (`listTopics`: a decision or something to read first, then work moving, then unread, then
-  the quiet rest, newest first within each; closed threads by closure), and **reopening a thread brings
+  the quiet rest, newest first within each by the conversation's own time; closed threads by `closedAt`), **a
+  thread's time, newest entry and unread mark come from its conversation alone** (his messages, posts and
+  returns under its roots), never from housekeeping events, which stay in the Timeline (withdrawing 39 stale
+  questions on 2026-10-07 had dated a Sept 22 thread 4:17 PM), and **reopening a thread brings
   back the questions its closure ended** (`restoreExpiredByClosure`, his reopen and the router's alike), so
   the Threads list's one-tap close can carry an Undo that loses nothing (Tejas, 2026-10-07: "everything is
   kind of cluttered and dumped on the main page here. Clean it up.") [decision: tidy-inbox-threads]. A service notice (no provider turn

@@ -537,7 +537,7 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  * that (a json_extract over 93k events per topic) and took 19 seconds (Tejas, 2026-09-22).
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
-type ReadIndex={humanReplies:Map<string,HumanReply[]>;management:Map<string,{sequence:number;at:string|null}>};
+type ReadIndex={humanReplies:Map<string,HumanReply[]>};
 function readIndex(sessionId:number):ReadIndex {
   refreshRootMemo();
   // The newest human message per thread root, newest first so the first hit wins.
@@ -557,12 +557,7 @@ function readIndex(sessionId:number):ReadIndex {
     try{const parsed=row.review?JSON.parse(row.review):[];reviews=Array.isArray(parsed)?parsed.map((item:any)=>String(item?.id??'')).filter(Boolean):[];}catch{reviews=[];}
     humanReplies.set(root,[...(humanReplies.get(root)??[]),{inputId:row.id,at:iso(row.created_at)!,reviews,replyTo:typeof row.reply_to==='string'?row.reply_to:null}]);
   }
-  const management=new Map<string,{sequence:number;at:string|null}>();
-  for(const row of db.query(`SELECT json_extract(payload_json,'$.topicId') AS topic,MAX(sequence) AS sequence,MAX(created_at) AS created_at
-      FROM session_owner_events WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) GROUP BY topic`).all(sessionId,...MANAGEMENT_KINDS) as any[]) {
-    if(row.topic)management.set(row.topic,{sequence:row.sequence,at:iso(row.created_at)});
-  }
-  return {humanReplies,management};
+  return {humanReplies};
 }
 /** His messages in this topic, newest first, so a question can find the reply that names it. */
 function latestHumanReply(index:ReadIndex,roots:string[]):HumanReply[] {
@@ -620,13 +615,21 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   const item=(question:ReturnType<typeof questionView>)=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision,
     kind:question.kind,owner:question.owner?.sessionId??null,outcome:question.kind==='reading'?'response' as const:'needs_you' as const});
   const items=needing.map(item),toRead=reading.map(item);
+  // What happened in the conversation (his messages, the router's posts, agents' returns) is the
+  // thread's time, its unread mark and its place in the list. Housekeeping on the thread (placing,
+  // settling or withdrawing questions, summaries, closing, request bookkeeping) is recorded in the
+  // Timeline and moves none of them: withdrawing 39 stale questions at 20:17 UTC on 2026-10-07 put
+  // "Action Button recording", last spoken in on Sept 22, at the top of Open as 4:17 PM (Tejas:
+  // "we need to separate what is happening within the thread and what actions you take on the
+  // thread"). A thread with no conversation yet is dated by its creation.
   const last=roots.map(root=>index.byRoot.get(root)).filter(Boolean) as {sequence:number;at:string}[];
-  const events=read.management.get(topic.topicId)??{sequence:0,at:null};
-  const lastSequence=Math.max(0,...last.map(entry=>entry.sequence),events.sequence);
-  const lastAt=[...last.map(entry=>entry.at),events.at].filter(Boolean).sort().at(-1)??topic.updatedAt;
+  const lastSequence=Math.max(0,...last.map(entry=>entry.sequence));
+  const lastAt=last.map(entry=>entry.at).sort().at(-1)??topic.createdAt;
   return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
     lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
+    // When it was closed, for the Closed list's order and its rows; a merged-away topic has no moment of its own here.
+    closedAt:topic.state==='closed'&&topic.closure?.kind!=='merged'?topic.closure?.at??topic.updatedAt:null,
     needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
     toRead:{count:toRead.length,oldestAt:toRead[0]?.at??null,items:toRead},
     questions:{open:items.length,
@@ -811,11 +814,12 @@ export function listTopics(options:{state?:string|null;query?:string|null;cursor
   else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
   else if(state==='background')summaries=summaries.filter(topic=>topic.state==='open'&&!topic.needsYou.count&&topic.work.kind!=='idle');
   // Open threads: what he can act on first, then what is moving, then what he has not read, then
-  // the quiet rest, newest first within each band. Closed threads keep plain recency, which is the
-  // order they were closed in (Tejas, 2026-10-07: "everything is kind of cluttered and dumped on
-  // the main page here. Clean it up.").
+  // the quiet rest, newest first within each band by the conversation's own time. Closed threads
+  // are ordered by when they were closed (Tejas, 2026-10-07: "everything is kind of cluttered and
+  // dumped on the main page here. Clean it up.").
   const band=(topic:ReturnType<typeof topicSummary>)=>topic.needsYou.count||topic.toRead.count?0:topic.work.kind!=='idle'?1:topic.unread?2:3;
-  summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||String(second.lastEntryAt).localeCompare(String(first.lastEntryAt)));
+  const recency=(topic:ReturnType<typeof topicSummary>)=>state==='closed'?String(topic.closedAt??topic.lastEntryAt):String(topic.lastEntryAt);
+  summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||recency(second).localeCompare(recency(first)));
   const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
   const offset=Math.max(0,Number(options.cursor)||0);
   const page=summaries.slice(offset,offset+limit);
