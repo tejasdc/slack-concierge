@@ -15,7 +15,7 @@
  * Crash-only: no state lives only in memory that the journal cannot rebuild, and nothing is owed
  * if it dies mid-step. It imports nothing from the application and never opens the ledger.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, chmodSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
@@ -24,6 +24,8 @@ import HOST_PROTOCOLS from "../src/host-protocols.json";
 export const HOST_PROTOCOL_VERSION: number = HOST_PROTOCOLS.current;
 /** A record nobody comes back for is kept this long after the provider exited, then the host leaves. */
 const ABANDONED_TERMINAL_MS = 7 * 24 * 60 * 60_000;
+/** How long an exited provider's output may stay open before its leftovers are ended, and again before the exit is recorded without it. */
+const LEFTOVER_OUTPUT_GRACE_MS = 5_000;
 /** One frame line from a client may not exceed this; a provider message is far smaller. */
 const MAX_COMMAND_BYTES = 16 * 1024 * 1024;
 
@@ -125,11 +127,56 @@ provider.stderr!.setEncoding("utf8");
 provider.stderr!.on("data", (chunk: string) => append("e", chunk));
 provider.stdin!.on("error", error => append("c", { op: "stdin-error", error: error.message }));
 provider.on("error", error => append("c", { op: "spawn-error", error: error.message }));
-provider.on("close", (code, signal) => {
+function recordExit(code: number | null, signal: string | null) {
+  if (exit) return;
   if (stdoutRest) { append("o", stdoutRest); stdoutRest = ""; }
   exit = { code, signal, at: Date.now() };
   append("x", exit);
   setTimeout(() => leave("abandoned"), ABANDONED_TERMINAL_MS).unref();
+}
+provider.on("close", (code, signal) => recordExit(code, signal));
+
+/**
+ * Every process of this execution other than the host and its launcher. Linux: the provider's own
+ * group. A Mac: the launchd job's group, which the provider shares with the host (no cgroup there).
+ */
+const ownGroup = process.platform === "darwin"
+  ? Number(spawnSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout.trim()) || null : null;
+function signalExecution(signal: NodeJS.Signals): boolean {
+  if (!providerPid) return false;
+  // Once the provider has exited its number may belong to someone else: only its group is ours.
+  const providerGone = provider?.exitCode !== null || provider?.signalCode !== null;
+  if (process.platform !== "darwin") {
+    try { process.kill(-providerPid, signal); return true; } catch {
+      if (providerGone) return false;
+      try { process.kill(providerPid, signal); return true; } catch { return false; }
+    }
+  }
+  let delivered = false;
+  if (!providerGone) { try { process.kill(providerPid, signal); delivered = true; } catch {} }
+  // An interrupt is the provider's to handle; ending the execution reaches every tool it started.
+  if (signal !== "SIGINT" && ownGroup) {
+    const members = spawnSync("ps", ["-A", "-o", "pid=,pgid="], { encoding: "utf8" }).stdout.split("\n")
+      .map(line => line.trim().split(/\s+/).map(Number)).filter(([pid, group]) => group === ownGroup && pid !== process.pid && pid !== process.ppid);
+    for (const [pid] of members) { try { process.kill(pid, signal); delivered = true; } catch {} }
+  }
+  return delivered;
+}
+
+// A provider that has exited is done even when a tool it left behind still holds its output open,
+// which would keep "close" from ever firing and the record from ever ending: end what is left of
+// the execution, then record the exit from the process itself.
+provider.on("exit", (code, signal) => {
+  setTimeout(() => {
+    if (exit) return;
+    signalExecution("SIGKILL");
+    setTimeout(() => {
+      if (exit) return;
+      provider?.stdout?.destroy(); provider?.stderr?.destroy();
+      append("c", { op: "output-abandoned", reason: "the provider exited but its output stayed open" });
+      recordExit(code, signal);
+    }, LEFTOVER_OUTPUT_GRACE_MS).unref();
+  }, LEFTOVER_OUTPUT_GRACE_MS).unref();
 });
 
 function writeLine(line: string): Promise<void> {
@@ -222,8 +269,7 @@ async function command(socket: Socket, message: any) {
     const signal = ["SIGINT", "SIGTERM", "SIGKILL"].includes(message.signal) ? message.signal as NodeJS.Signals : null;
     if (!signal) return send(socket, { op: "refused", id, reason: "SIGINT, SIGTERM or SIGKILL" });
     const frame = append("c", { op: "signal", id, signal });
-    let delivered = false;
-    if (!exit && providerPid) { try { process.kill(-providerPid, signal); delivered = true; } catch { try { process.kill(providerPid, signal); delivered = true; } catch {} } }
+    const delivered = !exit && signalExecution(signal);
     receipts.set(id, { op: "receipt", id, seq: frame.s, delivered });
     return send(socket, receipts.get(id));
   }
@@ -272,6 +318,6 @@ function leave(reason: string) {
 // KillMode takes the whole group, so nothing is left running without its transport owner.
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => {
   try { append("c", { op: "host-signal", signal }); } catch {}
-  if (providerPid && !exit) { try { process.kill(-providerPid, "SIGTERM"); } catch {} }
+  if (providerPid && !exit) signalExecution("SIGTERM");
   setTimeout(() => leave(`signal ${signal}`), 2_000).unref();
 });

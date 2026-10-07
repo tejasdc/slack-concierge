@@ -145,8 +145,12 @@ fi
 # Built before launchd is touched: a build or signing failure leaves the running agent alone.
 LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 [ -x "$LAUNCHER" ] || { echo "The agent-host app did not build; Concierge was left as it was." >&2; exit 2; }
+# Agent helpers for this commit, in a folder that is never changed afterwards (kept, never pruned).
+HELPERS=$(cd "$REPO/bot" && "$BUN" scripts/build-pinned-helpers.ts "$STATE/helpers" | tail -1)
+[ -f "$HELPERS/scripts/router-sessions.js" ] || { echo "The agent helpers did not build; Concierge was left as it was." >&2; exit 2; }
 
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
+    -e "s|@HELPERS@|$HELPERS|g" \
     -e "s|@PEERS@|$PEERS|g" -e "s|@CLAUDE@|$CLAUDE|g" -e "s|@CODEX@|$CODEX|g" -e "s|@NODE@|$NODE|g" \
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null
