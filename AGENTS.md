@@ -417,7 +417,14 @@ authorization or a change to the default rapid-iteration policy.
   topic, with a kind (decision or reading), an owner and an explicit recorded end; a
   outcome the run did not declare as a question is held unfiled until the router files it,
   never guessed into a thread ([design](docs/plans/2026-09-23-attention-that-ends.md),
-  [contract](docs/contracts/native-inbox.md#topics)). A service notice (no provider turn
+  [contract](docs/contracts/native-inbox.md#topics)). **A question he sets aside may name when it comes back** (his `question` action,
+  state `deferred` with `until`; `defer_until` on the row): `wakeDeferredQuestions`, on the owner's
+  reading cadence in both compositions, returns a due question to open through the ordinary
+  topic_question change, records a `needs_you` event shaped like a new question's so he is
+  notified, and admits a service notice to the question's owner (the Inbox router for most)
+  naming the thread, so it can refresh anything in the question that expires before he opens it;
+  his `open` state brings one back by hand (Tejas, 2026-10-07: "remind me later … 30 minutes, 3
+  hours, 6 hours, one week") [decision: remind-me-later-on-questions]. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server

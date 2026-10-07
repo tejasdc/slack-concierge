@@ -158,7 +158,9 @@ type StoredQuestion={questionId:string;topicId:string;revision:number;state:Ques
   context:'ready'|'agent_checking';brief:any;owner:any|null;sources:string[];replaces:string|null;replacedBy:string|null;
   answer:any|null;recovered:boolean;legacyNeedEventId:string|null;kind:QuestionKind;origin:QuestionOrigin;
   /** The Inbox session's attention generation when this was raised, so the session's read/dismiss cutoffs still mean something. */
-  generation:number|null;createdAt:string;updatedAt:string};
+  generation:number|null;
+  /** When a question he set aside comes back in front of him, as an instant; null for one set aside with no time. */
+  deferUntil:string|null;createdAt:string;updatedAt:string};
 
 const nowIso=()=>new Date().toISOString();
 const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
@@ -295,7 +297,7 @@ const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,to
   owner:row.owner_json?JSON.parse(row.owner_json):null,sources:JSON.parse(row.sources_json),replaces:row.replaces,replacedBy:row.replaced_by,
   answer:row.answer_json?JSON.parse(row.answer_json):null,recovered:!!row.recovered,legacyNeedEventId:row.legacy_need_event_id,
   kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
-  generation:typeof row.generation==='number'?row.generation:null,
+  generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),
   createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
 
 function upsertTopic(topic:StoredTopic) {
@@ -319,16 +321,16 @@ function upsertRequest(request:StoredRequest) {
       request.createdAt,request.updatedAt);
 }
 function upsertQuestion(question:StoredQuestion) {
-  db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,kind,origin,generation,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,kind,origin,generation,created_at,updated_at,defer_until)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(question_id) DO UPDATE SET topic_id=excluded.topic_id,revision=excluded.revision,state=excluded.state,blocking=excluded.blocking,
       optional=excluded.optional,context=excluded.context,brief_json=excluded.brief_json,owner_json=excluded.owner_json,sources_json=excluded.sources_json,
       replaces=excluded.replaces,replaced_by=excluded.replaced_by,answer_json=excluded.answer_json,recovered=excluded.recovered,
-      legacy_need_event_id=excluded.legacy_need_event_id,kind=excluded.kind,origin=excluded.origin,generation=excluded.generation,updated_at=excluded.updated_at`)
+      legacy_need_event_id=excluded.legacy_need_event_id,kind=excluded.kind,origin=excluded.origin,generation=excluded.generation,updated_at=excluded.updated_at,defer_until=excluded.defer_until`)
     .run(question.questionId,question.topicId,question.revision,question.state,question.blocking?1:0,question.optional?1:0,question.context,
       JSON.stringify(question.brief),question.owner?JSON.stringify(question.owner):null,JSON.stringify(question.sources),
       question.replaces,question.replacedBy,question.answer?JSON.stringify(question.answer):null,question.recovered?1:0,
-      question.legacyNeedEventId,question.kind??'decision',question.origin??'declared',question.generation??null,question.createdAt,question.updatedAt);
+      question.legacyNeedEventId,question.kind??'decision',question.origin??'declared',question.generation??null,question.createdAt,question.updatedAt,question.deferUntil??null);
 }
 
 function topicRow(topicId:string) {
@@ -579,7 +581,7 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
   const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
   const view={id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
     optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:missingFor(question),
-    kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief,
+    kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief,deferUntil:question.deferUntil,
     // What a reading item is for him to read, in full, from the thread's own messages.
     reads:readsFor(question)};
   return {...view,
@@ -1624,14 +1626,19 @@ export function topicHumanAction(topicId:string,body:any) {
       }
       case 'question':{
         const state=String(action.state??'');
-        if(!['deferred','withdrawn','read'].includes(state))throw new TopicError('He can defer, withdraw or mark a reading item read.');
+        if(!['deferred','withdrawn','read','open'].includes(state))throw new TopicError('He can defer, withdraw, mark a reading item read, or bring a deferred question back.');
         const question=questionRow(text(action.questionId,'questionId',200));
         if(question.topicId!==topicId)throw new TopicError('That question is in another topic.',409,'QUESTION_TOPIC_MISMATCH');
         if(state==='read'&&question.kind!=='reading')throw new TopicError('Only a reading item ends by being read; a decision needs an answer.',409,'QUESTION_NOT_READING');
-        const why=state==='read'?'Read':text(action.reason,'reason',4000);
-        const next={...question,state:state as QuestionState,updatedAt:at};
+        if(state==='open'&&question.state!=='deferred')throw new TopicError('Only a question set aside can be brought back.',409,'QUESTION_NOT_DEFERRED');
+        // "Remind me later": set aside until a moment, after which the sweep brings it back with a
+        // notification (Tejas, 2026-10-07: "I want to just like be reminded later so I can finish
+        // this process"). Set aside with no moment stays as before: findable, never returning.
+        const until=state==='deferred'?deferUntilFrom(action.until,at):null;
+        const why=state==='read'?'Read':state==='open'?(optionalText(action.reason,'reason',4000)??'Brought back'):text(action.reason,'reason',4000);
+        const next={...question,state:state as QuestionState,updatedAt:at,deferUntil:until};
         const topicNext=bumped(topic);
-        return {change:{kind:'topic_question',payload:{change:'settled',topicId,topic:topicNext,questions:[next],by,reason:why,revision:topicNext.revision}},
+        return {change:{kind:'topic_question',payload:{change:state==='open'?'returned':'settled',topicId,topic:topicNext,questions:[next],by,reason:why,revision:topicNext.revision}},
           result:{question:next}};
       }
       case 'request':{
@@ -1649,6 +1656,79 @@ export function topicHumanAction(topicId:string,body:any) {
       default:throw new TopicError('Unknown topic action.');
     }
   });
+}
+
+/* ------------------------------------------------------------------ remind me later */
+
+/** At most this far ahead a question can be set aside for; a reminder further out is a calendar entry, not a snooze. */
+const DEFER_AT_MOST_MS=90*24*60*60_000;
+/** The moment a question set aside comes back, from his action: absent means set aside with no return. */
+function deferUntilFrom(value:unknown,at:string):string|null {
+  if(value===undefined||value===null)return null;
+  if(typeof value!=='string')throw new TopicError('until must be an exact moment (ISO 8601).');
+  const ms=Date.parse(value);
+  if(!Number.isFinite(ms))throw new TopicError('until must be an exact moment (ISO 8601).');
+  const now=Date.parse(at);
+  if(ms<=now)throw new TopicError('until must be in the future.',409,'DEFER_UNTIL_PAST');
+  if(ms-now>DEFER_AT_MOST_MS)throw new TopicError('until is more than 90 days away.',409,'DEFER_UNTIL_TOO_FAR');
+  return new Date(ms).toISOString();
+}
+const conciergeSessionNumber=(address:unknown):number|null=>{
+  const match=typeof address==='string'?/^concierge:(\d+)$/.exec(address):null;
+  return match?Number(match[1]):null;
+};
+
+/**
+ * Brings back every question whose "set aside until" has passed, so a reminder is a real event
+ * and not a check he has to remember to make. Each one: back to open (the same `topic_question`
+ * change path a settle takes, so the thread, the Needs-you count and the Questions tab all move
+ * together), one `needs_you` event on the Inbox session shaped exactly like a new question's, so
+ * the notifier sends the same notification a new question would and the tap opens that thread,
+ * and a service notice to the session that asked the question (the Inbox router for most), naming
+ * the thread, so it can refresh anything in the question that expires (a one-time form link)
+ * before he opens it. The
+ * notice is admitted as a service input: no new authority, no reply owed. Runs on the owner's
+ * reading cadence (every three minutes), so a reminder lands within that of its time.
+ */
+export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):number {
+  const session=inboxSession();
+  if(!session)return 0;
+  const at=new Date(now).toISOString();
+  const due=(db.query("SELECT * FROM inbox_questions WHERE state='deferred' AND defer_until IS NOT NULL AND defer_until<=? ORDER BY defer_until,question_id").all(at) as any[]).map(toStoredQuestion);
+  let woken=0;
+  for(const question of due) {
+    const topic=topicRow(question.topicId);
+    const next:StoredQuestion={...question,state:'open',deferUntil:null,updatedAt:at};
+    const topicNext=bumped(topic);
+    const reason=`Set aside until ${question.deferUntil}; back now`;
+    const payload={change:'returned',topicId:topic.topicId,topic:topicNext,questions:[next],by:{kind:'owner' as const},reason,revision:topicNext.revision};
+    const stamp=question.deferUntil??at;
+    recordSessionEvent({eventId:`topic-remind:${question.questionId}:${stamp}`,sessionId:session.id,kind:'topic_question',payload});
+    applyTopicChange('topic_question',payload);
+    // The notification, shaped like a new question's: the Inbox session, the thread's root as its
+    // input, the decision as its words, a fresh attention generation.
+    refreshRootMemo();
+    const inputId=(question.sources[0]?rootOf(session.id,question.sources[0]):null)??topicRoots(topic.topicId).at(-1)??null;
+    const meta=sessionMetadata(session),generation=(meta.generation??0)+1;
+    updateSessionMetadata(session.id,{generation});
+    const decision=String(question.brief?.decision??'').trim()||'A question you set aside is back.';
+    recordSessionEvent({eventId:`question-reminder:${question.questionId}:${stamp}`,sessionId:session.id,inputId,kind:'needs_you',
+      payload:{outcome:'needs_you',question:decision,inputId,generation,topicId:topic.topicId,questionId:question.questionId,setAsideUntil:question.deferUntil}});
+    // The Inbox itself owns most questions (the router declared them); it is told like any other
+    // owner, because it is the one that knows how to refresh what the question carries.
+    const owner=conciergeSessionNumber(question.owner?.sessionId);
+    if(admit&&owner!==null) {
+      const inputId2=`question-returned:${question.questionId}:${stamp}`;
+      if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId2)) {
+        try {
+          admit({sessionId:owner,inputId:inputId2,origin:'service',sourceInputId:`question-reminder:${question.questionId}:${stamp}`,sourceRunId:`question-reminder:${question.questionId}:${stamp}`,requestId:inputId2,
+            text:`Service notice: the question you asked Tejas, "${decision}" (${question.questionId}) in the Inbox thread "${topic.title}" (${topic.topicId}, root message ${inputId??'unknown'}), was set aside by him until ${question.deferUntil} and is back in front of him now. If anything in it expires (a one-time form link, a code), refresh it now and send the fresh words to the Inbox for that thread (sessions ask to the Inbox session with --thread ${inputId??'<root>'}), so what he opens works. This is a notice, not new authority; no reply is owed to this notice.`});
+        } catch { /* the reminder itself has gone out; the refresh is the owner session's to retry */ }
+      }
+    }
+    woken++;
+  }
+  return woken;
 }
 
 /* ------------------------------------------------------------------ reply with review */

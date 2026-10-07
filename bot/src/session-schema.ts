@@ -61,6 +61,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('inbox_questions','kind',"kind TEXT NOT NULL DEFAULT 'decision'");
       add('inbox_questions','origin',"origin TEXT NOT NULL DEFAULT 'declared'");
       add('inbox_questions','generation','generation INTEGER');
+      // When a question he set aside comes back in front of him (ISO instant); null for one set aside with no time.
+      add('inbox_questions','defer_until','defer_until TEXT');
       add('turn_steering_messages','accepted_input_id','accepted_input_id TEXT');
       add('session_communication_requests','source_input_id','source_input_id TEXT');
       add('session_communication_requests','target_input_id','target_input_id TEXT');
