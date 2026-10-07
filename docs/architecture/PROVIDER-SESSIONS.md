@@ -249,9 +249,9 @@ report no task and do not keep a run open.
 Agents never build waiters (2026-10-07). Finished background work reports back to the agent
 that started it, nested helpers included (a nested `task_started` carries
 `owned_by_subagent`, and its completion restarts the helper), and Anthropic's sub-agents
-documentation says not to write polling or sleep loops. The pre-command hook therefore refuses
-a job made only of sleeping and looking at files: any such background Bash command or Monitor,
-and a foreground wait loop (`bot/src/background-waiter-policy.ts`). Concierge does not rely
+documentation says not to write polling or sleep loops. A pre-command refusal of wait-only jobs
+existed briefly on 2026-10-07 and was removed the same day: guessing from command text refused real
+work. Concierge does not rely
 on the notification alone: when Claude marks a job ended (a terminal `task_updated`, or the
 job leaving `background_tasks_changed`) and its report has not reached the agent two minutes
 later, the owner steers a service notice into the run and stops holding the job
