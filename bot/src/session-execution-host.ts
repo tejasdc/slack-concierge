@@ -32,7 +32,7 @@ import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAcc
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
+import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
@@ -111,12 +111,21 @@ export class SessionExecutionHost {
     const defaultAccount=currentAccount(provider);
     const selection=provider==='claude-code'?claudeAccountSelection():null;
     const saved=listProfiles(provider);
-    const profiles=provider==='claude-code'&&defaultAccount
+    // Where accounts have homes of their own, the main folder's login is a terminal's and is never
+    // offered: agents never run on it, so a hand sign-in there cannot displace theirs.
+    const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
+    const profiles=provider==='claude-code'&&ownHomes
+      ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
+      :provider==='claude-code'&&defaultAccount
       ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default',signedIn:true},
         ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
       :saved;
-    const account=provider==='claude-code'&&selection&&selection.profileId!=='default'
+    const account=provider==='claude-code'&&ownHomes
+      ?profiles.find(profile=>profile.current)??null
+      :provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
+    const terminalLogin=ownHomes&&defaultAccount&&defaultAccount.label!==account?.label
+      ?` The sign-in typed in a terminal here (${defaultAccount.label}) is that terminal's own; agents never run on it.`:'';
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
     const usage=providerAccountUsage(provider);
@@ -137,8 +146,9 @@ export class SessionExecutionHost {
       pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
-      message:account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
-        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
+      message:(account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
+        :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
+        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`)+terminalLogin,
       account,profiles:checked,usage};
   }
 /**
@@ -250,7 +260,7 @@ export class SessionExecutionHost {
   }
   private claudeProfile(profileId:string):{id:string;label:string}|null{
     const defaultAccount=currentAccount('claude-code');
-    return profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}
+    return profileId==='default'&&defaultAccount&&!claudeRunsFromOwnHomes()?{id:'default',label:defaultAccount.label}
       :listProfiles('claude-code').find(item=>item.id===profileId)??null;
   }
   private saveProviderAuthProfile(provider:string,label:string):readonly ProviderProfile[]{

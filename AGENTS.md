@@ -593,8 +593,11 @@ authorization or a change to the default rapid-iteration policy.
   writes the other's credentials, and a machine that is not answering is shown as such
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
 - For Claude, pressing an account selects the home for future turns. It never calls the
-  credential-copy activation or snapshots the outgoing credential. The default login has
-  no override; extra accounts launch from their own homes. **Changing account never takes an
+  credential-copy activation or snapshots the outgoing credential. Extra accounts launch from
+  their own homes, and once any exists agents never run on the main folder's login: a hand
+  `claude auth login` or `/login` there replaces that login with no copy, so it is the
+  terminal's alone (`claudeRunsFromOwnHomes`; it silently displaced his personal account at
+  19:31 UTC on 2026-10-07). **Changing account never takes an
   ability away from agents** [decision: account-change-keeps-agent-abilities] (Tejas, 2026-10-07: "if the login has changed, the agents are losing
   access to doing things, that ... never should happen"): an extra home keeps only its login
   (`.credentials.json`, `.claude.json`, `.account-email`, remote settings and policy limits) and

@@ -13,6 +13,7 @@ import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
 import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
+import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 
 // Making a credential change take effect on the provider runtime that is
@@ -26,11 +27,11 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 // remembered ritual; keeping them together is what removes it.
 
 export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
-type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval";
+type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_finished" | "startup" | "interval" | "home_proven";
 let pendingCodexActivation = false;
 const activationFlights = new Map<ProviderKey, Promise<ActivationReport>>();
 
-function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
+export function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
   const head = db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
     .get(provider) as { id: number | null };
@@ -233,7 +234,11 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no loaded copy to
     // invalidate — but the file being readable says nothing about it being usable.
-    if (!await claudeCredentialsAnswer()) {
+    // Where accounts have homes of their own, agents run on the selected one, so that is the
+    // login whose answer can release held work; the main folder's is a terminal's.
+    const ownHomes = claudeRunsFromOwnHomes(), selected = ownHomes ? selectedClaudeHome() : null;
+    if (ownHomes && !selected) return { status: "failed", detail: "No Claude account is selected for agents on this machine. Choose one in Accounts." };
+    if (!await claudeCredentialsAnswer(selected?.home ?? null, selected?.label ?? null)) {
       log("warn", "provider_activation_failed", { provider, reason: "credentials_did_not_answer" });
       return { status: "failed", detail: "That account is signed in on disk but did not answer, "
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
