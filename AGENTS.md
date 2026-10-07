@@ -584,7 +584,7 @@ authorization or a change to the default rapid-iteration policy.
   its own account's process runs in a host too. An update waits only for runs that would end with
   Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
-  update line). The Mac keeps direct child processes until its own host lands. See
+  update line). On the Mac each run is its own launchd job started through the agent-host app. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
