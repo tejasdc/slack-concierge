@@ -15,6 +15,7 @@
     "control/bot/scripts/service-notice.js": "bot/scripts/service-notice.ts",
     "control/bot/scripts/native-pipeline-continuation.js": "bot/scripts/native-pipeline-continuation.ts",
     "control/bot/scripts/key-change-notice.js": "bot/scripts/key-change-notice.ts",
+    "control/bot/scripts/execution-host.js": "bot/scripts/execution-host.ts",
     "control/deploy-state.js": "bot/scripts/deploy-state.ts",
     "control/release-manager.js": "bot/scripts/release-manager.ts",
     "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",

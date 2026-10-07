@@ -36,12 +36,16 @@ import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markC
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
-import {activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
+import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
+import {readFileSync,realpathSync} from 'node:fs';
+import {providerOwnerEnvironment} from './provider-owner-environment';
+import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
+import {recordExecutionExited,recordExecutionLaunched,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
@@ -469,15 +473,24 @@ export class SessionExecutionHost {
       recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
     })();
   }
-  async run(claim:QueuedTurnClaimRow) {
+  /**
+   * A run is executed here once per dispatch attempt; `adoption` is that same run taken back by a
+   * later coordinator from its execution host after a restart, through the same steps.
+   */
+  async run(claim:QueuedTurnClaimRow,adoption?:Adoption) {
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
-    recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+    if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
-        return this.runModel(claim,input,session,steeringController,closeSteering,cancellationController);
+        if(adoption)this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
+        // Only here is the run's outcome durably settled; a crash before this leaves the host's
+        // record for the next coordinator to settle from.
+        await this.releaseExecutions(claim.turn_id).catch(error=>log('warn','execution_release_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+        return outcome;
       });
     } finally {
       recordSessionEvent({eventId:`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
@@ -491,10 +504,62 @@ export class SessionExecutionHost {
       return failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,message);
     return parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:message});
   }
-  private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController) {
+  /**
+   * Follow-ups the previous coordinator had queued for this turn but never wrote to the agent are
+   * provably unsent: they fail back to their own queue. One it was writing is settled by the host's
+   * record: written means Claude's pickup decides it (during replay or later), absent means unsent.
+   */
+  private settleUnsentSteering(turnId:number,execution:ExecutionRow) {
+    const rows=db.query(`SELECT steering.id,steering.status,input.id AS input_id FROM turn_steering_messages steering
+      LEFT JOIN session_inputs input ON input.steering_id=steering.id
+      WHERE steering.turn_id=? AND steering.status IN ('queued','sending')`).all(turnId) as {id:number;status:string;input_id:string|null}[];
+    // 'queued' was never handed to the provider by anyone: provably unsent.
+    for(const row of rows)if(row.status==='queued')markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was sent to the agent; it was never delivered.');
+    const sending=rows.filter(row=>row.status==='sending');
+    if(!sending.length)return;
+    // The daemon's own history decides a Codex follow-up (recoveredSteeringClientIds).
+    if(execution.supervisor==='codex-daemon')return;
+    // A host records a write before making it, then records whether it completed. Only those
+    // records prove anything: no attempt means unsent; a recorded failure means unsent; a
+    // completed write is decided by Claude's pickup; anything unreadable or unfinished stays uncertain.
+    const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
+    let readable=true;
+    try {
+      for(const frame of readJournal(execution.directory)) {
+        if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
+        if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
+        if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);
+      }
+    } catch(error){readable=false;log('warn','execution_journal_unreadable',{execution_id:execution.execution_id,...errorFields(error)});}
+    for(const row of sending) {
+      const command=row.input_id?`steer-${row.input_id}`:null;
+      if(!readable||!command){markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while sending this message and its delivery cannot be confirmed.');continue;}
+      if(!attempted.has(command)||failed.has(command)){markTurnSteeringMessageFailed(row.id,'Concierge restarted before this message was written to the agent; it was never delivered.');continue;}
+      if(!completed.has(command))markTurnSteeringMessageAmbiguous(row.id,'Concierge restarted while this message was being written to the agent; its delivery cannot be confirmed.');
+    }
+  }
+  /** After the turn's outcome is durably the owner's, its host may let its record go. */
+  private async releaseExecutions(turnId:number) {
+    for(const execution of db.query("SELECT * FROM executions WHERE turn_id=? AND state IN ('live','exited')").all(turnId) as ExecutionRow[])
+      await releaseExecution(execution);
+  }
+  /** What Claude's record of picking up an earlier coordinator's follow-up means for its delivery. */
+  private recoveredSteering(clientMessageId:string,outcome:'acknowledged'|'unacknowledged') {
+    const row=db.query('SELECT steering_id,session_id,turn_id FROM session_inputs WHERE id=?').get(clientMessageId) as {steering_id:number|null;session_id:number;turn_id:number|null}|null;
+    if(!row?.steering_id)return;
+    // Only states this evidence can move: an acknowledgement upgrades sending or uncertain to sent;
+    // a missing pickup makes sending uncertain. A settled failure or delivery stays as it is.
+    const status=(db.query('SELECT status FROM turn_steering_messages WHERE id=?').get(row.steering_id) as {status:string}|null)?.status;
+    if(outcome==='acknowledged'&&(status==='sending'||status==='ambiguous'))markTurnSteeringMessageSent(row.steering_id);
+    else if(outcome==='unacknowledged'&&status==='sending')markTurnSteeringMessageAmbiguous(row.steering_id,'The run ended before the agent recorded picking this message up.');
+    else return;
+    recordSessionEvent({eventId:`delivery:${clientMessageId}:${outcome==='acknowledged'?'sent':'ambiguous'}`,sessionId:row.session_id,inputId:clientMessageId,
+      turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
+  }
+  private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
     const saved=savedTurn(claim.turn_id);
-    let boundAccount:{account:string;home:string|null}|null=null;
-    if(saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
+    let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
+    if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'?providerAccountUsage(session.provider_id):null;
       const rooms=usage&&['codex','claude-code'].includes(session.provider_id)
         ?savedWorkAccountRooms(session.provider_id as ProviderKey,usage):[];
@@ -513,22 +578,42 @@ export class SessionExecutionHost {
     const cwd=this.cwd(session);
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     const attachments=this.owner.attachments(payload.attachments);
-    let prompt=this.prompt(input),staging:string|null=null;
-    const additionalDirs=[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
+    // An adopted run continues exactly what was started: the same words, files and folders, never
+    // a re-preparation that could differ from what the agent already read.
+    let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
+    const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
-      if(attachments.length&&session.provider_id!=='chatgpt') {
+      if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
         const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
-      if(nativeContext)prompt=sessionInputEnvelope(input,nativeRunId(claim.turn_id),prompt);
+      if(nativeContext&&!adoption)prompt=sessionInputEnvelope(input,nativeRunId(claim.turn_id),prompt);
+      const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
-        run:async actual=>{
-          const admission=this.retainAdmission(claim,input,session,actual,attachments);
-          if(session.provider_id==='chatgpt') {
+        run:async prepared=>{
+          let actual=prepared;
+          // A Claude run keeps the account (home) it launched from. A shared-daemon Codex run has no
+          // home of its own: binding one would move it onto a private Codex process.
+          const privateCodex=session.provider_id==='codex'&&(adoption?adoption.execution.supervisor!=='codex-daemon':!!prepared.environment?.CODEX_HOME);
+          const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||privateCodex)
+            ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
+          if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
+            actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
+          } else if(privateCodex&&(adoption||executionHostsEnabled())) {
+            // A Codex turn on its own account's app-server process lives in a host, like Claude.
+            actual=adoption?this.adoptedRun(prepared,adoption,MANAGED_CODEX):this.hostedRun(prepared,claim,session,kept,MANAGED_CODEX);
+          } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
+            // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
+            actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
+          }
+          // An adopted run's admission was retained when it started, and a Stop requested meanwhile
+          // must still reach its process, so it is not re-checked here.
+          const admission=adoption?null:this.retainAdmission(claim,input,session,actual,attachments);
+          if(session.provider_id==='chatgpt'&&admission) {
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments,
@@ -549,6 +634,8 @@ export class SessionExecutionHost {
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id)},
       ...(boundAccount?{boundAccount}:{}),
+      // Admission was recorded when this run first started; taking it back is not a new admission.
+      ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         if(provider==='codex')void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
@@ -557,6 +644,54 @@ export class SessionExecutionHost {
     } finally {
       if(staging)await rm(staging,{recursive:true,force:true});
     }
+  }
+  /**
+   * A new Claude run starts in its own execution host, recorded in the ledger before the host is
+   * started, with what a later coordinator needs to take it back: the exact prompt, folders and
+   * account, never re-derived.
+   */
+  private hostedRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string):Parameters<AgentProvider['run']>[0] {
+    const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=prepared as any;
+    retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:session.provider_id,
+      directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
+    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable)} as any;
+  }
+  private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
+    const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    return {...prepared,...adoption.processor.run,adopted:true,
+      onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable)} as any;
+  }
+  private trackedCodexRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
+    retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
+      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,run:data}});
+    return prepared;
+  }
+  /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
+  private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {
+    const current=getSessionById(session.id)!;
+    const turn=db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(adoption.claim.turn_id) as {provider_turn_id:string|null}|null;
+    if(!current.agent_session_uuid)throw new ProviderDispatchError({message:'The Codex thread this run started is unknown; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
+    const sending=(db.query(`SELECT input.id FROM turn_steering_messages steering JOIN session_inputs input ON input.steering_id=steering.id
+      WHERE steering.turn_id=? AND steering.status='sending'`).all(adoption.claim.turn_id) as {id:string}[]).map(row=>row.id);
+    return {...prepared,...adoption.processor.run,
+      adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
+      recoveredSteeringClientIds:sending,
+      onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
+  }
+  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string) {
+    // From the owner, not the run's environment: an information-only consultation runs without it.
+    const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
+    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??claudeExecutable(),
+      onLaunched:launch=>recordExecutionLaunched(executionId,launch),
+      onAttached:status=>log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until}),
+      onExited:exit=>recordExecutionExited(executionId,exit)});
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);
