@@ -200,6 +200,15 @@ authorization or a change to the default rapid-iteration policy.
   same ledger. Every message mark keys the canonical session plus exact provider message
   ID; Thinkering may cache projections but must not use browser storage as cross-device
   truth or reopen a neighboring message when an exact target is unavailable.
+- Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
+  "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
+  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy.
+  It embeds titles, requests (counted toward their target session), inputs and final replies,
+  plus the archive's prompts read from Thinkering's index. It never embeds tool output,
+  assistant streaming text or transcript files. Vectors live in `meaning-index.db` beside the
+  ledger, never in it. Results fuse word and meaning ranks and say which matched. The Mac has no
+  engine and searches words only. The decision history, starting with the September QMD
+  evaluation, is in [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing
@@ -247,11 +256,12 @@ authorization or a change to the default rapid-iteration policy.
   (`WRITING_PROJECTS`, today `messaging-agent`) cannot send work requests: it reports a missing
   ability and the Inbox routes the building [decision: writing-agents-do-not-build]. A new
   session on a peer needs `--machine-need`; new work runs on the server
-  [decision: sessions-placed-by-physical-need]. The router decides whether to continue a session or start
-  fresh; search and context show each candidate's recorded context, compactions and open topics, and
-  work on a topic a session does not hold while it owns other open work or has compacted needs
-  `--fit "<why>"`, stored with the owner's snapshot (`session-fit.ts`, [session fit](docs/architecture/SESSION-FIT.md);
-  2026-10-07, five unrelated jobs piled on one session; he put the decision with the router [decision: router-decides-session-reuse]). `needs_you` and a `needs_decision` reply need
+  [decision: sessions-placed-by-physical-need]. Concierge records each session's context and the Inbox topics
+  it handles and shows them in search and context; the router chooses, and the receiving session
+  judges fit: a request on a topic new to it says so, and it may hand it back (`--hand-back
+  not-my-subject|too-loaded`, closing failed with a ready fresh-session command). Concierge never
+  requires a reason or reads compactions as fit (`session-fit.ts`, [session fit](docs/architecture/SESSION-FIT.md);
+  2026-10-07 [decision: router-decides-session-reuse] [decision: receiving-session-judges-fit]). `needs_you` and a `needs_decision` reply need
   `--his-words` (verified against his messages when they are in this ledger) and
   `--why-not-answered` [decision: questions-carry-his-words], plus `--only-he-can`
   sign-in|secret|device|ambiguous: permission, approval and design questions are refused
@@ -564,6 +574,16 @@ authorization or a change to the default rapid-iteration policy.
   reported with no attempts to count — today's failures began exactly there, with a wake loop
   that kept the runner from starting. Anything that changes how a failed or unstarted run is
   recorded keeps that read working, and nothing may claim a retry the record does not show.
+- **A Claude run on the server lives in its own execution host, not in the Concierge service**
+  (`bot/scripts/execution-host.ts`, one `concierge-exec-<id>` systemd unit per run, journal under
+  `$CONCIERGE_STATE_DIR/exec/`). Restarting Concierge leaves it working; the next Concierge takes it
+  back by identity at startup (`claimAdoptableExecutions`), before steering and turn recovery, and
+  replays the host's record to rebuild its state. The host holds no policy and is never patched in
+  place; never restart, kill or "clean up" `concierge-exec-*` units by hand: they are agents at work.
+  Shared-daemon Codex turns are followed by their exact ids after a restart, and a Codex turn on
+  its own account's process runs in a host too. Updates still wait for every running turn until the
+  deploy-without-waiting step lands; the Mac keeps direct child processes until its own host lands. See
+  [execution host](docs/architecture/EXECUTION-HOST.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex

@@ -5092,6 +5092,13 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
       db.query(`UPDATE sessions SET status='running', last_turn_at=CURRENT_TIMESTAMP
                 WHERE id=?`).run(candidate.session_id);
 
+      return queuedTurnClaimRow(candidate.turn_id)!;
+    }
+  })();
+}
+
+/** A turn as the queue hands it to its runner; an adopted execution is handed over the same way. */
+export function queuedTurnClaimRow(turnId: number): QueuedTurnClaimRow | null {
       return db.query(`
         SELECT turn.id AS turn_id, turn.session_id,
                session.slack_channel_id, session.slack_thread_ts AS session_thread_ts,
@@ -5109,9 +5116,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           ON claim.slack_channel_id=session.slack_channel_id
          AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
         WHERE turn.id=?
-      `).get(candidate.turn_id) as QueuedTurnClaimRow;
-    }
-  })();
+      `).get(turnId) as QueuedTurnClaimRow | null;
 }
 
 export function attachBotMessage(turnId: number, ts: string) {

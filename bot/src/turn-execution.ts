@@ -235,6 +235,8 @@ export interface SlackTurnExecutionInput {
   boundAccount?: {account:string;home:string|null};
   interactionPolicy?: 'standard' | 'consultation-only';
   beforeProviderAdmission?: () => void;
+  /** This run's provider process was started by an earlier coordinator and is being taken back. */
+  adopted?: boolean;
   steeringController: TurnSteeringController;
   cancellationController?: TurnCancellationController;
   closeSteering(reason?: Error): void;
@@ -519,7 +521,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
       attachmentBundle = preparedTurn.attachmentBundle;
     }
-    if (turnStopWasRequested(input.turnId)) {
+    // An adopted run's process is already working, so a Stop requested before it was taken back
+    // must be sent to it (onCancellationReady below does), not answered here without it.
+    if (!input.adopted && turnStopWasRequested(input.turnId)) {
       input.cancellationController?.register(async () => {});
       throw new ProviderTurnCancelledError();
     }
@@ -545,7 +549,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     runningClaudeHome=claudeChoice?.home??null;
-    let accountRecorded=false;
+    // An adopted run's account was recorded when it started.
+    let accountRecorded=!!input.adopted;
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
       interactionPolicy: input.interactionPolicy,

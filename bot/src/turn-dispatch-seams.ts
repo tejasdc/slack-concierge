@@ -87,6 +87,7 @@ export class ActiveTurnDispatchRegistry {
   private readonly activeSessionIds = new Set<number>();
 
   get activeSessions(): readonly number[] { return [...this.activeSessionIds]; }
+  get activeTurns(): readonly number[] { return [...this.activeTurnIds]; }
 
   constructor(private readonly lifecycle: {
     onStarted(): void;

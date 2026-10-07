@@ -15,6 +15,7 @@ import { withRetry } from "./retry-core";
 import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { isClaudeUsageExhaustion } from "./provider-failures";
 
 // Making a credential change take effect on the provider runtime that is
 // already running.
@@ -129,7 +130,7 @@ async function activateCodex(): Promise<ActivationReport> {
  * 2026-09-25 repeated the mistake by bypassing this probe entirely; run it from the proposed
  * home before selecting that account.
  */
-export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|'settings_not_in_effect'|'wrong_account'|'timeout'|'failed'}>;
+export type ClaudeAccountCheck=Readonly<{ok:boolean;reason:'works'|'signed_out'|'out_of_room'|'settings_not_in_effect'|'wrong_account'|'timeout'|'failed'}>;
 
 /**
  * Whether Claude work can actually be done from this home: started the way agents are started
@@ -178,6 +179,8 @@ export async function claudeAccountWorks(home:string|null=null,expectedAccount:s
   if(probe.timedOut)reason='timeout';
   else if(!result)reason='failed';
   else if(result.is_error===true&&/authenticat|oauth|401|log ?in|expired/i.test(text))reason='signed_out';
+  // Signed in, answering, and simply at its limit: a fact about room, not about the login.
+  else if(result.is_error===true&&isClaudeUsageExhaustion(text))reason='out_of_room';
   else if(wrote&&ran&&succeeded.has('Write')&&succeeded.has('Bash'))reason='works';
   else if(denied||result.is_error!==true)reason='settings_not_in_effect';
   else reason='failed';

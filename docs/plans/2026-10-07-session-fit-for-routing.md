@@ -1,8 +1,35 @@
-# Continue a session or start fresh: the router decides, with recorded facts and a stated reason
+# Continue a session or start fresh: the router chooses, the receiving session judges fit
 
-Status: design, reviewed (see §11). Author: concierge:4053 (Claude Opus 5.5), 2026-10-07.
-Request: Inbox request `990224b8` (replacing the withdrawn `d7ee9b03`). Originating capture: `c2ea8587…`,
-plus his reply in the same Inbox thread.
+Status: revised 2026-10-07 after Tejas's correction (§0); the required-reason gate in §5.4 was
+pushed but never installed and is removed. Author: concierge:4053 (Claude Opus 5.5).
+Requests: Inbox `990224b8` (replacing `d7ee9b03`), then `bd1137da` (this revision).
+
+## 0. Revision: the receiving session judges fit (Tejas, Oct 7, evening)
+
+> "A single compression of memory is not a reliable indicator at all. Sometimes even a single task,
+> the agent will go through like multiple levels of compression. … I don't understand, like, what is
+> the enforcement is coming in here at all? … Concerts has no intelligence, he doesn't know, if you
+> hear like reason is actually sound enough, just because you add a reason, doesn't mean anything
+> there. … make it so that, The agent can push back on it. Uh, Then like if you get the feedback from
+> the agent itself." [decision: receiving-session-judges-fit]
+
+What changed from §5 below:
+- **Removed:** the `--fit` requirement and its refusal (§5.4), and compaction count as any trigger or
+  router-visible signal. Compactions stay recorded as a raw fact only.
+- **Kept:** recorded context and topics (§5.1), the router's `workload` view with `forTopic` (§5.2,
+  now `holds` plus the other open topics, no `needsFit`), the stored topic thread on requests, and
+  `--consult` (§5.5).
+- **Added:** the receiving session judges. A work request on a topic new to it opens with a factual
+  note (the topic, the other open topics it is on, and that it may hand it back). It pushes back with
+  `--work-disposition failed --hand-back not-my-subject|too-loaded`, which is FIPA's *refuse* act in
+  the request protocol this repository already follows: the request closes as failed (dependents and
+  Inbox topic requests already treat that as not done), and the requester's answer opens with
+  `Handed back (…)` and a ready fresh-session command with `--consult` pointing at the session that
+  pushed back. It builds on the hand-back already offered (reply failed), adding one structured field
+  rather than a second mechanism. Every agent is taught it once, in `REQUEST_PROTOCOL`.
+- **Why this is still a system, not an intention:** the push-back comes from the party with the
+  context, as a typed reply the router receives through the same return it already acts on, and the
+  receiving session sees the facts at the moment it decides. Concierge enforces nothing about fit.
 
 ## 1. Requirement in his words
 
@@ -132,7 +159,7 @@ The router [decision: router-decides-session-reuse]. Its own `slack-inbox` instr
 - for a new topic, default to a fresh session with `--consult`;
 - reuse a session for a new topic only when it is genuinely the same surface and the session has room, and then say why.
 
-### 5.4 What Concierge enforces: one required, recorded reason
+### 5.4 (Superseded by §0) What Concierge enforces: one required, recorded reason
 
 The rule sits in `sessions ask` beside the existing role and placement rules in `session-roles.ts`. It applies to `--requested-effect work` sent to an existing local session when **all** of these hold:
 
@@ -243,3 +270,9 @@ Implementation review: fresh Claude Code CLI session `a9f62f84-4927-4d4c-a472-e2
 no blocking findings. Applied: hand-offs from his replies inside a thread inherit the thread's
 topic; the refusal fills in the old session's address; a returned request no longer counts as
 holding its topic; limits noted above.
+
+Revision review (§0): fresh Claude Code CLI session `46965d3a-c2ed-4e7d-8a54-d5dae5e35d53`, **SHIP**,
+no blocking findings. Applied: the Inbox and the messaging agent get no hand-back note (their role is
+many topics); the hand-back kind is stored on the reply as well as in its first line; a session on a
+peer machine hands back without a local address that would mean nothing to the requester; a stray
+token in the router help removed.
