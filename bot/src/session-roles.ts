@@ -18,6 +18,18 @@ export function isWritingSession(session: SessionRow): boolean {
   return !!cwd && WRITING_PROJECTS.includes(basename(cwd));
 }
 
+/** The Inbox router takes every capture; intake is its job, not a pile-up. */
+export const ROUTING_PROJECTS: readonly string[] = ['slack-inbox'];
+
+/**
+ * Sessions whose role is to take many unrelated subjects — the router, and a writing session that
+ * drafts every message — are exempt from the new-subject check in session-fit.ts.
+ */
+export function takesManySubjects(session: SessionRow): boolean {
+  const cwd = sessionMetadata(session).cwd;
+  return !!cwd && [...ROUTING_PROJECTS, ...WRITING_PROJECTS].includes(basename(cwd));
+}
+
 export const WRITING_SESSION_REFUSAL =
   'This session writes and sends Tejas\'s messages; it does not commission work from other sessions. '
   + 'If an ability you need is missing or broken, reply to your requester with --work-disposition failed and say exactly what is missing; '

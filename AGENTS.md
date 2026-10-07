@@ -247,7 +247,11 @@ authorization or a change to the default rapid-iteration policy.
   (`WRITING_PROJECTS`, today `messaging-agent`) cannot send work requests: it reports a missing
   ability and the Inbox routes the building [decision: writing-agents-do-not-build]. A new
   session on a peer needs `--machine-need`; new work runs on the server
-  [decision: sessions-placed-by-physical-need]. `needs_you` and a `needs_decision` reply need
+  [decision: sessions-placed-by-physical-need]. The router decides whether to continue a session or start
+  fresh; search and context show each candidate's recorded context, compactions and open topics, and
+  work on a topic a session does not hold while it owns other open work or has compacted needs
+  `--fit "<why>"`, stored with the owner's snapshot (`session-fit.ts`, [session fit](docs/architecture/SESSION-FIT.md);
+  2026-10-07, five unrelated jobs piled on one session; he put the decision with the router [decision: router-decides-session-reuse]). `needs_you` and a `needs_decision` reply need
   `--his-words` (verified against his messages when they are in this ledger) and
   `--why-not-answered` [decision: questions-carry-his-words], plus `--only-he-can`
   sign-in|secret|device|ambiguous: permission, approval and design questions are refused

@@ -12,10 +12,10 @@ router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags>
-router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] -- <concept...>
-router-actions.sh sessions context <address> <source-flags>
-router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] -- <text>
-router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
+router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
+router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] [--fit "<why this session takes a topic it does not hold>"] -- <text>
+router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --machine-need "<what only that machine can do>" --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
@@ -65,7 +65,7 @@ Every command requires one exact source pair:
 Do not mix source pairs. No source or run is inferred from the environment.
 Search returns {results:[{session,evidence}],coverage} for both source forms.
 Copy results[i].session.address and returned request IDs exactly. A concierge:<id> is not an address. The service chooses delivery.
-Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider cc-opus to create a fresh native session and first input. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
+Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider cc-opus to create a fresh native session and first input. Each local candidate in search and context carries workload: context in use and its window, compactions, running or idle, the open Inbox topics it holds, and with --thread whether it holds that thread's topic (forTopic). You decide: continue the session that holds the topic; if it compacted since it last worked on it or is nearly full, weigh a fresh one. A new topic defaults to a fresh session with --consult <address>, which starts it with a pointer to the earlier session to ask for context informationally. Sending work on a topic a session does not hold while it owns another open topic or has compacted needs --fit "<one sentence: why this session>"; without it the owner returns the facts and the fresh-session command, and with it the reason and the owner's snapshot go to that session and stay on the request. A request it returns failed as not its subject is re-sent fresh with --consult. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
 Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. Ask Tejas only for what no agent can do: needs_you (and a reply's --work-disposition needs_decision) requires --only-he-can sign-in|secret|device|ambiguous (ambiguous: readings of his words that lead to different things that cannot be undone), --his-words copied exactly from his message that started the work, and --why-not-answered; permission, approval and design choices are refused, because he said "just do as I say and fix or build things if it's not possible. Ask for forgiveness not permission". Do the work, build what is missing, and tell him afterwards. A reply with --work-disposition completed requires --all-done (everything he asked for was done; when part was not, do it, have it built, or reply failed saying what) and --checked, what you exercised on the real system (his surfaces through your own entrance, test-capture) and what you saw, or --not-checked with why no live check was possible; both are shown with your answer. Do not write unit tests to fill it. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
@@ -85,9 +85,9 @@ export type SessionCommunicationRequest =
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source } }
-  | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
-  | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
+  | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
+  | { operation: "context"; body: { source: Source; address: string; thread?: string } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; fit?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -299,7 +299,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
-      || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask"))
+      || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
@@ -318,6 +318,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || ((flag === '--his-words' || flag === '--why-not-answered' || flag === '--only-he-can') && (operation === 'outcome' || operation === 'reply'))
       || ((flag === '--checked' || flag === '--not-checked') && operation === 'reply')
       || (flag === '--machine-need' && operation === 'ask')
+      || ((flag === '--consult' || flag === '--fit') && operation === 'ask')
       || (flag === '--work-disposition' && operation === 'reply');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -358,12 +359,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if (rawLimit !== undefined && (!/^[1-9]\d*$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)))) {
       invalid("--limit requires a positive integer.");
     }
-    return { operation, body: { source, concepts: content, ...(rawLimit !== undefined ? { limit: Number(rawLimit) } : {}), ...(peer?{peer}:{}) } };
+    return { operation, body: { source, concepts: content, ...(rawLimit !== undefined ? { limit: Number(rawLimit) } : {}), ...(peer?{peer}:{}), ...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}) } };
   }
   if (operation === "context" || operation === "get") {
     if (separator >= 0) invalid(`${operation} does not accept text or a -- separator.`);
     return operation === "context"
-      ? { operation, body: { source, address: identity! } }
+      ? { operation, body: { source, address: identity!, ...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}) } }
       : { operation, body: { source, request_id: identity! } };
   }
   const actionId = flags.get("--action-id");
@@ -468,7 +469,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(flags.has('--fit')?{fit:flags.get('--fit')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--checked','checked'],['--not-checked','not_checked']]

@@ -16,6 +16,7 @@ import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { isWritingSession, MACHINE_NEED_REQUIRED, WRITING_SESSION_REFUSAL } from './session-roles';
+import { backfillSessionWorkload, consultPointer, fitHeader, fitRequired, forTopic, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -228,11 +229,26 @@ export class SessionCommunicationCoordinator {
         }
         return ids;
     }
-    search(input: {
+    /**
+     * The routing facts beside each local candidate (session-fit.ts), for the topic this caller works
+     * on: its named Inbox thread, else the topic of the human message its own work started from.
+     */
+    private withWorkload<T extends {session?:any}>(entries:T[],actor:Actor,thread:unknown):(T&{workload?:unknown})[] {
+        const source=getSessionById(actor.session)!;
+        const named=thread!==undefined&&sessionMetadata(source).inbox?inboxRequestThread(source,thread):null;
+        const topic=topicOf(topicRootFor(named,actor.inputId));
+        return entries.map(entry=>{
+            const local=typeof entry.session?.id==='string'?/^concierge:(\d+)$/.exec(entry.session.id):null;
+            const session=local?getSessionById(Number(local[1])):null;
+            return session?{...entry,workload:sessionWorkload(session,entry.session.execution,topic)}:entry;
+        });
+    }
+    async search(input: {
         source: CommunicationSource;
         concepts: string[];
         limit?: number;
         peer?: string;
+        thread?: string;
     }) {
         const actor = this.actor(input.source);
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
@@ -244,11 +260,13 @@ export class SessionCommunicationCoordinator {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // Sessions live on several instances; discovery covers all of them unless one was named.
-        return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local();
+        const found:any = await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
+        return {...found,results:this.withWorkload(found.results??[],actor,input.thread)};
     }
     async context(input: {
         source: CommunicationSource;
         address: string;
+        thread?: string;
     }) {
         const actor = this.actor(input.source);
         const remote = this.dependencies.peers?.splitAddress(input.address);
@@ -261,7 +279,8 @@ export class SessionCommunicationCoordinator {
             }
         }
         const address = this.address(input.address);
-        return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        const context:any = await this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        return this.withWorkload([context],actor,input.thread)[0];
     }
     async projects(input:{source:CommunicationSource;peer?:string}) {
         this.actor(input.source);
@@ -596,6 +615,10 @@ export class SessionCommunicationCoordinator {
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
+        /** A session a new one should consult for context; its address is put in the first input. */
+        consult?:string;
+        /** Why this session takes a topic it does not hold while it owns other open work or has compacted. */
+        fit?:string;
         saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number};
     }) {
         if (this.stopped)
@@ -605,6 +628,12 @@ export class SessionCommunicationCoordinator {
         text(input.text);
         if(input.requestedEffect==='work'&&isWritingSession(getSessionById(actor.session)!))throw new Error(WRITING_SESSION_REFUSAL);
         if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
+        if(input.consult!==undefined) {
+            if(!input.provider||input.provider==='chatgpt')throw new Error('--consult points a new coding session at earlier work; it needs --provider.');
+            if(typeof input.consult!=='string'||!/^([\w-]+\/)?session:[\w-]+$/.test(input.consult))throw new Error('--consult takes an exact session address from discovery.');
+            input={...input,text:`${consultPointer(input.consult)}\n\n${input.text}`};
+        }
+        if(input.fit!==undefined&&(typeof input.fit!=='string'||!input.fit.trim()||input.provider))throw new Error('--fit states why an existing session takes this topic; it needs an exact address and a sentence.');
         // A discovered address already says where the session lives.
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (input.resurrect && !remote) {
@@ -671,6 +700,7 @@ export class SessionCommunicationCoordinator {
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
+            ...(input.fit===undefined?{}:{fit:input.fit.trim()}),...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -694,6 +724,23 @@ export class SessionCommunicationCoordinator {
         if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
         if (target?.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
+        // A new topic for a session that owns other open work or has compacted is the router's call,
+        // stated: the reason and what the owner measured travel with the request (session-fit.ts).
+        const topicRoot=topicRootFor(threadRoot,actor.inputId);
+        let fitNote:string|null=null,fitRecord:unknown=null;
+        if(target&&targetSession&&!historical&&!consultationOnly&&targetSession.provider_id!=='chatgpt'&&input.requestedEffect==='work') {
+            const fit=forTopic(targetSession,topicOf(topicRoot));
+            if(fit?.needsFit) {
+                if(input.fit===undefined) {
+                    log('info','session_fit_reason_missing',{targetSessionId:targetSession.id,sourceSessionId:actor.session,topic:fit.topic,because:fit.because});
+                    throw new Error(fitRequired(targetSession,fit,sessionAddress(targetSession)));
+                }
+                const snapshot=sessionWorkload(targetSession,null,fit.topic);
+                fitNote=fitHeader(input.fit.trim(),fit,snapshot);
+                fitRecord={reason:input.fit.trim(),topic:fit.topic,because:fit.because,snapshot};
+                log('info','session_fit_reason',{targetSessionId:targetSession.id,sourceSessionId:actor.session,topic:fit.topic,reason:input.fit.trim(),because:fit.because});
+            }
+        }
         for (const dependency of after)
             if (this.row(dependency).source_session_id !== actor.session)
                 throw new Error('A continuation may depend only on this session’s accepted requests.');
@@ -716,7 +763,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -729,12 +776,12 @@ export class SessionCommunicationCoordinator {
             const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encoded);
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(fitRecord?{fit:fitRecord}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
                     input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
-                    now,sourceInput,`request:${id}`,threadRoot);
+                    now,sourceInput,`request:${id}`,threadRoot,topicRoot??'');
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
@@ -1355,7 +1402,9 @@ export class SessionCommunicationCoordinator {
         }
     }
     start() { if (!this.stopped)
-        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start();
+        // Routing facts for sessions that worked before they were recorded; off every read path.
+        const backfill = setTimeout(() => void backfillSessionWorkload(() => this.stopped).catch(error => log('warn', 'session_workload_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000); backfill.unref?.(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
     async idle() { do {
         await Promise.resolve();
         await Promise.all([...this.tasks.values()]);

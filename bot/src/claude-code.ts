@@ -8,6 +8,7 @@ import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
+import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
@@ -517,6 +518,23 @@ export async function runClaudeCodeTurn(input: {
   let backgroundSettle: ReturnType<typeof setTimeout> | null = null;
   let activitySinceResult = false;
   let lastAssistantOutputAt = Date.now();
+  // How full this conversation is, recorded for routing as Claude reports it (session-fit.ts): a
+  // compaction the moment it happens, the latest main-thread context at each result.
+  let workloadContext: number | null = null;
+  const recordWorkloadEvent = (event: any) => {
+    const uuid = observedSessionUuid ?? input.sessionUUID;
+    if (event.type === "assistant" && !event.parent_tool_use_id && event.message?.usage) {
+      const usage = event.message.usage;
+      const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+      if (tokens > 0) workloadContext = tokens;
+    } else if (event.type === "system" && event.subtype === "compact_boundary") {
+      workloadContext = null;
+      recordClaudeWorkload(uuid, { compactions: 1, lastCompactionAtMs: Date.now() });
+    } else if (event.type === "result") {
+      const windows = Object.values(event.modelUsage ?? {}).map((model: any) => Number(model?.contextWindow)).filter(Number.isFinite);
+      if (workloadContext !== null) recordClaudeWorkload(uuid, { contextTokens: workloadContext, contextWindow: windows.length ? Math.max(...windows) : null });
+    }
+  };
   let steeringSenderRegistered = false;
   let eventBuffer = "";
   let providerProducedResult = false;
@@ -921,6 +939,7 @@ export async function runClaudeCodeTurn(input: {
     recordBackgroundTaskEvent(event);
     recordProviderRetryEvent(event);
     if (event.type === "assistant" || event.type === "user" || event.type === "stream_event") activitySinceResult = true;
+    recordWorkloadEvent(event);
     if (event.type === "assistant" || event.type === "stream_event") {
       lastAssistantOutputAt = Date.now();
       if (backgroundWait) input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait.since));
