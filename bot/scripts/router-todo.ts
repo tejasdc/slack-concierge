@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { ledgerWriteResults } from "../src/ledger-write-results";
 import { appendTodoFile } from "../src/todo-file";
 
 const [, , channelName, sourceChannelId, sourceMessageTs, separator, ...textParts] = process.argv;
@@ -14,7 +15,7 @@ if (!channelName || !sourceChannelId || !sourceMessageTs || separator !== "--" |
 
 const statePath = process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db";
 const configPath = process.env.CONCIERGE_SLACK_CONFIG || "/root/.config/concierge/slack.toml";
-const db = new Database(statePath);
+const db = ledgerWriteResults(new Database(statePath));
 db.exec("PRAGMA busy_timeout = 5000");
 const channel = db.query(`
   SELECT slack_channel_name, vault_path

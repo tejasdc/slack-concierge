@@ -74,7 +74,7 @@ export function registerAdoptedProject(input: {
   name: string;
 }) {
   mkdirSync(dirname(input.stateDbPath), { recursive: true });
-  const database = new Database(input.stateDbPath, { create: true, strict: true });
+  const database = ledgerWriteResults(new Database(input.stateDbPath, { create: true, strict: true }));
   try {
     database.exec(`
       CREATE TABLE IF NOT EXISTS channels (

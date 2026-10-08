@@ -5,7 +5,9 @@ only directly changed rows, using SQLite `changes()` synchronously on the same c
 Bun's raw `.run().changes` also counts trigger writes: presentation journaling made one claimed
 turn report three changes, so the queue committed it as running but returned no claim. The
 adapter preserves journal triggers, transaction ownership and insert identity while making
-existing exact-one lease checks valid. The standalone project-registry writer uses it too.
+existing exact-one lease checks valid. Standalone writers that open the canonical ledger,
+including service notices, project registration and deployment controls, use the same adapter;
+the release lint refuses an unwrapped writable canonical-ledger opening.
 Telemetry stays separate from this write-result contract. See the October 8 dispatch incident.
 The presentation release gate runs `dispatch-claim-fixture.ts` against an isolated canonical
 ledger with the real journal triggers: a raw Bun update demonstrates the inflated count,

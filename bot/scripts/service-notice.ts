@@ -2,6 +2,7 @@
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ledgerWriteResults } from "../src/ledger-write-results";
 import { publishProviderFreeNotice } from "../src/provider-free-notice";
 
 const args = process.argv.slice(2);
@@ -21,7 +22,7 @@ if (textFile) text = readFileSync(textFile, "utf8");
 if (!text.trim()) throw new Error("Service notice text is empty.");
 const stateDir = process.env.CONCIERGE_STATE_DIR;
 if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required.");
-const db = new Database(join(stateDir, "state.db"));
+const db = ledgerWriteResults(new Database(join(stateDir, "state.db")));
 db.exec("PRAGMA busy_timeout=15000");
 try {
   const inserted = publishProviderFreeNotice(db, { key, text: `${title.trim()}\n\n${text.trim()}`, kind: "service_failure", payload: { key, title } });

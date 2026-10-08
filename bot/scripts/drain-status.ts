@@ -7,6 +7,7 @@ import {dirname,join,resolve} from "node:path";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/execution-host-client";
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
 import {checkReleaseApplication} from '../src/deployment-application-check';
+import { ledgerWriteResults } from '../src/ledger-write-results';
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -71,7 +72,7 @@ try {
   if (!["check", "claim", "recover", "release", "holds", "adoptable-check"].includes(command)) {
     finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN|adoptable-check (--running ARTIFACT|--running-contract FILE) (--rollback ARTIFACT|--no-rollback) [--candidate-contract FILE]|host-protocols>" });
   }
-  const database = new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true });
+  const database = ledgerWriteResults(new Database(`${stateDir}/state.db`, { readonly: command === "check" || command === "adoptable-check", strict: true }));
   database.exec("PRAGMA busy_timeout=5000");
   if (command === "holds") {
     // Whether the update gate is held under exactly this token by a live owner (the Mac installer's
