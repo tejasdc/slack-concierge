@@ -18,7 +18,7 @@ The daemon is detached from the Concierge process and may outlive a bot restart.
 - **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer or automatic updater checks for Codex releases.
 - **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
 - **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
-- **Built-in updater:** disabled because its fixed 60-second grace period and lack of Concierge admission coordination do not satisfy the active-agent contract.
+- **Built-in updater:** must not run because its fixed 60-second grace period and lack of Concierge admission coordination do not satisfy the active-agent contract. On 2026-10-08 it was unexpectedly running as a separate `pid-update-loop` process after an intentional CLI update staged 0.162.0. Its exact process was stopped without touching the active App Server; see the incident record. The CLI has no updater-only disable command or persistent disable switch. Avoid `daemon bootstrap`, which can launch it, and verify the updater is absent after maintenance. Do not infer from a staged release that the loaded App Server was activated.
 
 Autonomous deployment repair and its independent review use this same installed
 standalone CLI as root with the normal `/root` configuration. Concierge does not
@@ -40,6 +40,15 @@ These semantics are verified against the Codex 0.149.1 source used on the servic
 6. The App Server's signal handler waits for its running assistant-turn count to reach zero. An idle server therefore restarts immediately. Existing turns get at most 60 seconds to finish before the daemon sends `SIGKILL`; the stop operation times out after 70 seconds.
 
 The restart is scheduled rather than random: it can occur on the first five-minute/hourly check after a new release appears, without operator confirmation. The graceful drain makes short turns safer, but it is insufficient for Concierge because turns commonly exceed 60 seconds and the updater bypasses Concierge's durable admission gate. Keep the built-in updater disabled until activation is integrated with that gate.
+
+The 2026-10-08 incident showed that the intended disabled state is not self-enforcing:
+the updater had its own PID and process group inside the App Server's transient scope.
+After confirming its exact `pid-update-loop` command and that the managed App Server
+had a different PID and process group, maintenance sent `SIGTERM` to the updater PID
+only. The App Server stayed live, and `model/list` answered. Do not stop the shared
+scope or signal a process group to disable the updater. `codex app-server daemon
+--help` has no updater-only stop/disable control. This is a one-time runtime
+correction, not an automatic idle-activation path.
 
 `check_for_update_on_startup` is separate. It lets an interactive CLI discover and offer a newer release; accepting from the standalone CLI exits that CLI and runs the installer. It does not signal the App Server by itself.
 

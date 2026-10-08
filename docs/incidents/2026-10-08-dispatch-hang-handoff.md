@@ -66,6 +66,19 @@ The report's hot Codex process is a separate unresolved resource observation: it
 approximately one CPU core, but completed a post-repair native turn without a daemon restart.
 No evidence links that load to the dispatch failure. All nine alert delivery rows were delivered.
 
+At 19:46 UTC, a separate Codex updater process was found running despite the lifecycle
+runbook's intended disabled policy. Tejas's interactive CLI update had intentionally staged
+0.162.0; staging a release was normal and did not restart the loaded 0.161.0 server. The
+updater, however, could check that mismatch outside Concierge's admission gate. Its exact
+`pid-update-loop` PID 2868223 and distinct process group were checked before sending TERM
+to that PID only. It exited. The managed App Server retained PID 2870125 and its original
+start time, its `model/list` request returned seven models, and Concierge's Codex turn
+5657/session 3757 still had a live execution. No daemon restart was performed. The CLI
+exposes no updater-only disable command, and the runbook documents no coordinated
+automatic activation command: future activation still needs an explicit admission hold,
+idle proof, managed restart, probe and reopening. The CPU/memory load remains unexplained;
+the updater correction is not evidence that it caused that load.
+
 The remaining Grafana worker error recurred at the next startup, 19:29:08 UTC. The only firing,
 delivered alert awaiting investigation was the historical `WorkspaceSkillsSyncStale` receipt
 on `C0C03E75160`; that channel no longer exists in the channel registry. Startup tried
