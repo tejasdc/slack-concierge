@@ -137,6 +137,8 @@ authorization or a change to the default rapid-iteration policy.
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
   Loop-lag records also attribute synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
+  Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
+  an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.
   The same catalogue document owns the release gates.
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.
