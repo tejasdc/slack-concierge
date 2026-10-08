@@ -1,0 +1,1 @@
+A request stranded before an agent starts now returns to its queue on either machine, while requests that may have acted remain held for review.
