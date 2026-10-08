@@ -24,6 +24,13 @@ export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics
  const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:presentationHead(db)}):
   {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
 }
+/** Whether the prepared thread list exists yet. Until it does, the list is answered from the ledger
+ * itself, because an empty "still indexing" page read as no threads at all (2026-10-08, the rebuild
+ * after the newest-first change left his Threads empty for most of an hour). */
+export function preparedTopicsReady(){
+ const reader=prepared();if(!reader)return false;
+ return !!(reader.query('SELECT ready FROM presentation_topics_meta WHERE singleton=1').get() as {ready:number}|null)?.ready;
+}
 export function preparedTopicOverview(id:string,filter:string){
  const reader=prepared();return reader?readPreparedTopicOverview(reader,id,presentationHead(db),filter):{topic:null,coverage:indexing()};
 }

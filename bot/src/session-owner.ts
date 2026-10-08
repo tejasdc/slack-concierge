@@ -17,7 +17,7 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
@@ -55,6 +55,7 @@ import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedT
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {inboxAttribution} from './inbox-attribution-read';
+import {directTopicList} from './session-topics';
 import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -2573,7 +2574,8 @@ export class SessionOwner {
         const state=url.searchParams.get('state')??'open';
         if(!['open','closed','background','all'].includes(state))throw new SessionOwnerError('Unknown thread list.');
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Thread search is too long.');
-        result=preparedTopics({state:state as 'open'|'closed'|'background'|'all',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
+        const options={state:state as 'open'|'closed'|'background'|'all',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
+        result=preparedTopicsReady()?preparedTopics(options):directTopicList(options);
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[2]==='changes'&&parts.length===3){
         const after=url.searchParams.get('after');if(!after)throw new SessionOwnerError('A thread revision is required.');

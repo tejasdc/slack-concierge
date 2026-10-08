@@ -11,7 +11,7 @@ import {log} from './log';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
-  preparedTopicResolution,preparedQuestions,preparedTopicDetail} from './presentation-topic-reader';
+  preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -797,6 +797,11 @@ export function inboxDismiss(session:SessionRow,generation:number) {
   if(needs.length!==(sessionMetadata(session).needs??[]).length)updateSessionMetadata(session.id,{needs});
 }
 
+/** The thread list computed from the ledger, for while the prepared list is being rebuilt. Complete by construction. */
+export function directTopicList(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
+  const offset=/^\d+$/.test(options.cursor??'')?options.cursor:null;
+  return {...listTopics({...options,cursor:offset,limit:Math.min(20,Number(options.limit)||20)}),coverage:{complete:true,code:null,source:'ledger'}};
+}
 export function listTopics(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
   const session=inboxOrThrow();
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
@@ -1312,7 +1317,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':guard();return preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'list':guard();return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
     case 'read':guard(String(body?.topic_id??''));return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
     case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
