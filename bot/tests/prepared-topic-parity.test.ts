@@ -97,6 +97,8 @@ test('prepared topic preserves canonical question, request, attention, and work 
  expect(db.query('SELECT 1 FROM session_owner_events WHERE sequence=?').get(eventSequence)).not.toBeNull();
  const newerSession=Number(db.query("INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json) VALUES('fixture','2','claude-code',?)")
   .run(JSON.stringify({inbox:true,title:'New Inbox'})).lastInsertRowid);
+ db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({inbox:true,title:'Fixture Inbox',needs:[
+  {eventId:'old-unfiled',inputId:'old-input',question:'Old unfiled need',generation:91,outcome:'needs_you',at}]}),session);
  store.apply(1,[{source_table:'sessions',row_key:String(newerSession),session_id:newerSession}],[]);
  while(store.drain(1).hasMore){}
  store.checkpoint(1,8);
@@ -104,6 +106,8 @@ test('prepared topic preserves canonical question, request, attention, and work 
  expect(readPreparedQuestions(prepared,{state:'open',canonicalHead:8}).questionCounts.open).toBe(0);
  expect(readPreparedTopicOverview(prepared,'fixture-topic',8).replyTargets.router).toBe(`concierge:${newerSession}`);
  expect(readPreparedInboxAttention(prepared,newerSession,8).total).toBeGreaterThan(0);
+ expect(readPreparedInboxAttention(prepared,session,8).total).toBe(readPreparedInboxAttention(prepared,newerSession,8).total+1);
+ expect(readPreparedInboxAttention(prepared,session,8).maxGeneration).toBe(91);
  // Reusing an interrupted generation cannot leave stale request links or event displays.
  store.beginRebuild(1);
  expect(readPreparedTopicEvents(prepared,[eventSequence])).toEqual([null]);

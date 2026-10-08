@@ -119,7 +119,7 @@ export class PreparedTopics {
   this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=?').run(generation);
  }
  private inboxSession(){return (this.source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get() as {id:number}|null)?.id??0;}
- context(generation:number,sessionId:number){return topicContext(this.source,this.prepared,generation,this.inboxSession()||sessionId);}
+ context(generation:number,sessionId:number){return {...topicContext(this.source,this.prepared,generation,this.inboxSession()||sessionId),requestedSessionId:sessionId};}
  rebuildRootsPage(generation:number,after='',limit=100){
   const rows=this.prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND root_input_id>? GROUP BY root_input_id ORDER BY root_input_id LIMIT ?')
    .all(generation,after,limit+1) as {root:string}[];
@@ -184,13 +184,15 @@ export class PreparedTopics {
    .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,row.created_at.includes('T')?row.created_at:row.created_at.replace(' ','T')+'Z',text.trim().slice(0,120),topic?0:1);
  }
  updateSorting(context:TopicContext){
-  this.retainedBy={generation:context.generation,owner:`sorting:${context.sessionId}`};
+  const sessionId=context.requestedSessionId??context.sessionId;
+  this.retainedBy={generation:context.generation,owner:`sorting:${sessionId}`};
   this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(context.generation,this.retainedBy.owner);
-  const row=this.source.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(context.sessionId) as {native_metadata_json:string};
+  const row=this.source.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(sessionId) as {native_metadata_json:string};
   const needs=JSON.parse(row.native_metadata_json||'{}').needs??[];
-  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=? AND scope=?').run(context.generation,`unfiled:${context.sessionId}`);
+  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=? AND scope=?').run(context.generation,`unfiled:${sessionId}`);
   for(const need of needs)if(!this.source.query('SELECT 1 FROM inbox_questions WHERE legacy_need_event_id=? LIMIT 1').get(need.eventId))
-   this.writeAttention(context.generation,`unfiled:${context.sessionId}`,null,need);
+   this.writeAttention(context.generation,`unfiled:${sessionId}`,null,need);
+  if(sessionId!==this.inboxSession())return;
   const attention=needs.filter((need:any)=>!this.source.query('SELECT 1 FROM inbox_questions WHERE legacy_need_event_id=? LIMIT 1').get(need.eventId))
    .map((need:any)=>{const root=context.root(context.sessionId,need.inputId)??need.inputId;
     const topic=this.source.query('SELECT t.topic_id,t.title FROM inbox_topic_roots r JOIN inbox_topics t ON t.topic_id=r.topic_id WHERE r.root_input_id=?').get(root) as any;

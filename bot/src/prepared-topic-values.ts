@@ -8,7 +8,7 @@ const iso=(value:string|null|undefined)=>!value?null:value.includes('T')?value:v
 const parse=(value:string|null|undefined,fallback:any=null)=>{try{return value?JSON.parse(value):fallback;}catch{return fallback;}};
 const open=(state:string)=>OPEN_QUESTION_STATES.some(item=>item===state);
 const relaySince='2026-09-23T05:30:00.000Z';
-export type TopicContext={source:Database;prepared:Database;generation:number;sessionId:number;boundedReads?:boolean;
+export type TopicContext={source:Database;prepared:Database;generation:number;sessionId:number;requestedSessionId?:number;boundedReads?:boolean;
   root:ReturnType<typeof inboxRootResolver>;humanReplies:Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>;
   queued:{inputId:string;root:string|null;position:number}[];
   dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[];
