@@ -9,7 +9,7 @@ import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
-import {presentationContractFor} from './presentation-reader-contracts';
+import {ownerGetPolicy} from './owner-get-policy';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
   preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
@@ -2387,15 +2387,16 @@ export class SessionOwner {
     let bytes:number|null=null;
     let work:StorageWork|null=null;
     try {
-      const contract=presentationContractFor(request.method,url.pathname);
+      const policy=ownerGetPolicy(request.method,url.pathname);
+      const contract=policy?.kind==='presentation'?policy.contract:null;
       const run=()=>{
-        if(request.method==='GET'&&url.pathname.startsWith('/sessions/v1/presentation/')&&!contract)
-          return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This presentation reader has no declared cost contract.'}},{status:503});
+        if(request.method==='GET'&&!policy)
+          return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
         return contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request);
       };
       let response=await observeStorageOperation(label,run,measured=>{work=measured;});
-      if(contract&&Number(response?.headers.get('content-length'))>contract.maxResponseBytes){
-        log('error','owner_read_budget_refused',{reader:contract.name,reason:'response_bytes'});
+      if(policy&&policy.maxResponseBytes>0&&Number(response?.headers.get('content-length'))>policy.maxResponseBytes){
+        log('error','owner_read_budget_refused',{reader:contract?.name??('path' in policy?policy.path:'unknown'),reason:'response_bytes'});
         response=ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
       }
       status=response?.status??null;

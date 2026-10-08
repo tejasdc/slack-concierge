@@ -33,8 +33,17 @@ external and array-buffer sizes. They do not walk the heap when it is already la
 external host observer owns process/swap/pressure evidence during a blocked event loop.
 # Interactive read refusal
 
-Presentation GET routes must match `presentation-reader-contracts.ts`; an unregistered route
-returns `READER_CONTRACT_REQUIRED` before invoking its handler. Its database scope refuses
+Every owner GET route must match `presentation-reader-contracts.ts` or an exact named route in
+`owner-get-policy.ts`; an unregistered route returns `READER_CONTRACT_REQUIRED` before invoking
+its handler. The exceptions are existing control/exact-object entrances and explicitly named
+legacy interactive reads. Each has a response cap, and the legacy entries are migration debt,
+not a template for another page. `/sessions` is the unbounded whole catalogue and must be
+removed after its peer consumer moves to prepared pages. `/sessions/:id` still embeds legacy
+receipts; it cannot be treated as a cheap exact-object read. The exception table does not claim
+those reads have bounded CPU cost or a growth fixture. New interactive reads require a prepared
+contract and fixture; unknown old-style paths cannot become an accidental bypass.
+
+A registered presentation route's database scope refuses
 collection reads without a final SQL limit, iterators, writes, excess calls, returned rows or
 returned value bytes. The encoded response has a separate byte budget. Refusal is a visible
 503, never a silent truncation or full-history fallback. These guards bound materialization and

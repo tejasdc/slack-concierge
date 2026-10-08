@@ -2,6 +2,7 @@ import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {observedDatabase,withStorageReadBudget,StorageReadBudgetError} from '../src/storage-observation';
 import {presentationContractFor} from '../src/presentation-reader-contracts';
+import {OWNER_GET_EXCEPTIONS,ownerGetPolicy} from '../src/owner-get-policy';
 
 export function checkReaderRefusals(){
  const database=observedDatabase(new Database(':memory:'));
@@ -21,6 +22,22 @@ export function checkReaderRefusals(){
   assert.equal(withStorageReadBudget(budget,()=>database.query('SELECT value FROM sample WHERE id=1').get())?.value,'kept');
   assert.equal(presentationContractFor('GET','/sessions/v1/presentation/new-feature'),null);
   assert.equal(presentationContractFor('GET','/sessions/v1/presentation/messages/a/b/detail')?.name,'messageDetail');
+  assert.equal(ownerGetPolicy('GET','/sessions/v1/new-feature'),null);
+  assert.equal(ownerGetPolicy('GET','/sessions/v1/presentation/new-feature'),null);
+  assert.equal(ownerGetPolicy('GET','/sessions/v1/status')?.kind,'control');
+  assert.equal(ownerGetPolicy('GET','/sessions/v1/sessions')?.kind,'legacy');
+  assert.equal(ownerGetPolicy('POST','/sessions/v1/status'),null);
+  const seen=new Set<string>();
+  for(const exception of OWNER_GET_EXCEPTIONS){
+   assert(!seen.has(exception.path),`duplicate owner GET exception: ${exception.path}`);
+   seen.add(exception.path);
+   assert(exception.purpose.length>=16,`unnamed guarantee for ${exception.path}`);
+   assert(exception.maxResponseBytes>=0&&exception.maxResponseBytes<=64*1024*1024,`unbounded response for ${exception.path}`);
+   assert(!exception.path.endsWith('/*')&&!exception.path.includes('**'),`broad exception: ${exception.path}`);
+   const example='/sessions/v1'+exception.path.replaceAll(':id','example');
+   assert.equal(ownerGetPolicy('GET',example)?.kind,exception.kind,`unreachable exception: ${exception.path}`);
+   assert.equal(presentationContractFor('GET',example),null,`presentation route exempted: ${exception.path}`);
+  }
  }finally{database.close();}
 }
 if(import.meta.main){checkReaderRefusals();console.log('reader refusal checks passed');}
