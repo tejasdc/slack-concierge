@@ -21,13 +21,6 @@ RestartSec=5
 TimeoutStopSec=5min
 KillMode=mixed
 LimitNOFILE=1048576
-# A ceiling, so a runaway restarts in seconds instead of swapping the machine to a standstill.
-# The owner normally peaks near 3 GB with its search and speech engines; on 2026-10-07 the owner
-# process reached 41 GB plus 32 GB of swap three times and froze every reply for minutes.
-# Agent runs are their own units (concierge-exec-*) and are not counted here.
-MemoryHigh=10G
-MemoryMax=14G
-MemorySwapMax=1G
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
 Environment=CONCIERGE_REPO=/var/lib/slack-concierge-deployment/source
