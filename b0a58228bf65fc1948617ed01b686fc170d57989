@@ -1,0 +1,1 @@
+Waiting messages keep their order and recover after a restart without being submitted twice.
