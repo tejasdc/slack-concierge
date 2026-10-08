@@ -60,6 +60,15 @@ work aggregates both owners. Kernel memory high-water marks are sampled per owne
 including immediately before killing the first owner. Screenshots are retained in
 `tmp/reviews/loaded-offline-reopen.png` and `loaded-whole-conversation.png`.
 
+The forty synthetic `send` samples time direct owner acceptance of the prepared fixture body;
+the forty `custody` samples time raw command retention. Neither is end-to-end queue latency.
+When the browser worker is enabled, the fixture additionally asserts that all forty replacement
+process commands settle `delivered` with a successful owner response (`custodyDelivery`). The
+direct sample includes the same web origin added by real preparation. Before this correction,
+the direct sample omitted that field, causing later prepared delivery of the same action to fail
+with an identity conflict; those earlier direct timings never proved successful pipeline delivery.
+Keep original reports and their observed delays rather than replacing them with a later run.
+
 This check found a real wire mismatch: command claims sent camelCase process identity
 while the capture API requires snake_case identity. The message correctly retained custody
 but could never transfer. The worker's claim encoding must be fixed before this check passes.

@@ -4,6 +4,10 @@ Concierge is the shared session and request owner behind Thinkering. It is a per
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.
 
+The coordinated responsiveness release follows the dependency checkpoints in
+[Deployment](docs/runbooks/DEPLOYMENT.md#coordinated-responsiveness-release-dependency-order):
+remote-box, server Concierge, Thinkering, then the Mac, with installed-revision evidence.
+
 ## Current delivery policy
 
 Tejas deprecated Slack in inputs `1789490232.840229` and `1789490293.092859` on

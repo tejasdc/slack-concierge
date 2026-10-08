@@ -38,6 +38,52 @@ candidate can be built.
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
+## Coordinated responsiveness release: dependency order
+
+The responsiveness candidate spans remote-box, Concierge, Thinkering and the Mac. Prepare and
+review the complete set before starting activation; record the exact pushed revisions and sealed
+Thinkering build in one release receipt. These are dependency checkpoints within one delivery,
+not separately completed features or permission to stop after a partial activation.
+
+Activate in this order, through the existing owners:
+
+1. **remote-box on the server.** Use its normal `scripts/deploy.sh` channel. Confirm the installed
+   resource collector, monitor output, supervisor service/path/timer and alert forwarding belong
+   to the intended revision. This puts the outside observer and recovery owner in place before
+   changing the application it must observe. See remote-box's `README.md` “Work-flow supervisor”
+   and `docs/observability.md` “Concierge responsiveness”.
+2. **Concierge on the server.** Publish its reviewed main revision and let the existing desired-state
+   deployment worker perform candidate checks, activation and exact-runtime health. Do not run the
+   forced operator rollout from an ordinary agent or bypass its gates. Verify the installed revision,
+   independent command ingress, prepared readers and one retained-command acceptance through the
+   existing marked test entrance. An accepted push or built candidate is not this checkpoint.
+3. **Thinkering on the server.** Use its existing prepare/build/seal/activate procedure and release
+   lock in [Thinkering's deployment runbook](https://github.com/tejasdc/thinkering/blob/main/docs/runbooks/deployment.md).
+   Activate only after step 2 serves the required prepared APIs and command custody contract.
+   Check the exact installed build, reopen a retained conversation and exercise sending/cancellation
+   through the approved marked entrance. The old browser bundle still calls retired whole-list
+   routes; its generic load errors are not evidence of new-bundle behavior. Verify the updated bundle.
+4. **Concierge and speech on the Mac.** Coordinate with the Mac update owner before publishing the
+   shared Concierge main revision: its existing fifteen-minute automatic updater also follows main,
+   so it must not activate ahead of steps 1–3. This order is an operational prerequisite, not enforced
+   by a cross-repository release barrier. Then use the separate launchd update job described in
+   [peer installation](PEER-INSTANCES.md#install-or-update-the-mac-instance), preserving its work/drain
+   and host-adoption checks. Never run a restart from the service's own child process. Verify the
+   actual installed Mac revision, both directions of bounded peer catalogue discovery, an addressed
+   return, and the Mac browser's local speech probe through its real TLS/permission path.
+
+During the server/Mac version gap, the new server's prepared catalogue request can meet an old
+Mac 404, while an old Mac's whole-catalogue request meets the new server's 410. Remembered rows
+are explicitly stale evidence, not proof that peer discovery, reply targets or search are current.
+If the Mac is unavailable, retain this as an unfinished release checkpoint; do not claim the whole
+delivery complete or erase the gap with a new fallback API. Do not change automatic-update
+cadence, drain policy or feature behavior to manufacture a passing checkpoint.
+
+On a failed activation, use that owner's established rollback/repair path and preserve its receipt.
+Do not continue a dependent activation on an unverified predecessor. Finish the release receipt
+only after all four installed revisions and the real cross-machine checks are recorded; source
+integration and isolated fixtures alone do not establish activation.
+
 The runner creates the deployment source from the fixed GitHub origin on its first
 run, verifies its origin on later runs, fetches `main`, checks that the recorded
 desired commit belongs to pushed `main`, and checks out that exact SHA. The

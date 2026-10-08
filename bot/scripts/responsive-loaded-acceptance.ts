@@ -30,7 +30,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     await new Promise(()=>{});
     return;
   }
-  const [{HostedClaudeCodeTransport},{ClaudeOutputAccumulator},{SessionOwner},{createNativeSession},{retainHumanCommand}]=await Promise.all([
+  const [{HostedClaudeCodeTransport},{ClaudeOutputAccumulator},{SessionOwner},{createNativeSession},{retainHumanCommand,commandStatus}]=await Promise.all([
     import("../src/execution-host-client"),import("../src/claude-code"),import("../src/session-owner"),import("../src/session-inputs"),
     import("../src/human-command-state")]);
   const {db}=await import('../src/state');
@@ -97,9 +97,12 @@ async function probe(mode:"pre"|"measure",configPath:string){
     const value=await response.json() as any;
     if(kind==='page'&&value.cards?.length!==20)throw new Error('Prepared catalogue did not return the requested page');
   };
+  // This direct owner sample uses the exact body that the real preparation adapter
+  // produces for the fixture's empty-context web command. Custody retains the raw body.
+  // Omitting door here creates a different payload under the same action identity.
   const send=async(actionId:string,text:string)=>{
     const start=performance.now();const response=await owner.handle(new Request(`${baseUrl}/inputs`,{method:"POST",
-      headers:{"content-type":"application/json"},body:JSON.stringify({clientActionId:actionId,text,delivery:"queue"})}));
+      headers:{"content-type":"application/json"},body:JSON.stringify({clientActionId:actionId,text,delivery:"queue",door:"web"})}));
     delays.send.push(performance.now()-start);
     if(!response || ![200,202].includes(response.status))throw new Error(`send returned ${response?.status}`);
     return response.json() as Promise<any>;
@@ -128,7 +131,18 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(repeated.action_id!==lastAction)throw new Error("Duplicate custody changed action identity");
   const duplicate=await send(lastAction,"Synthetic input 39");
   if(JSON.stringify(accepted)!==JSON.stringify(duplicate))throw new Error("Duplicate client action changed acceptance");
-  if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1')await browserFinished;
+  let custodyDelivery:null|{count:number;status:'delivered'}=null;
+  if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1'){
+    await browserFinished;
+    // The browser journey keeps the real intake worker alive until it completes.
+    // Never label direct owner timing as successful custody-to-owner delivery.
+    for(let index=0;index<40;index++){
+      const retained=commandStatus(`loaded-${process.pid}-${index}`);
+      if(retained?.status!=='delivered'||retained.owner_status===null||retained.owner_status>=300)
+        throw new Error(`Synthetic custody delivery failed: ${retained?.action_id} ${retained?.status} ${retained?.owner_status} ${retained?.owner_response_json}`);
+    }
+    custodyDelivery={count:40,status:'delivered'};
+  }
   const hostResults=await Promise.allSettled(pending);
   const hostFailure=hostResults.find(result=>result.status==='rejected');
   if(hostFailure?.status==='rejected')throw hostFailure.reason;
@@ -142,7 +156,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     page:summary(delays.page),history:summary(delays.history),send:summary(delays.send),custody:summary(delays.custody),
     loopLag:summary(lag),peakRssBytes:peak.rss,peakHeapBytes:peak.heap,swapBytes:swap,
     cpuUserMs:cpu.user/1000,cpuSystemMs:cpu.system/1000,duplicateAccepted:true,catalogueSize:fixture.catalogueSize,
-    historySource:'synthetic provider page'}));
+    historySource:'synthetic provider page',sendScope:'direct owner acceptance of the prepared fixture body; excludes queue/preparation wait',custodyScope:'raw command retention only',custodyDelivery}));
   projector.kill('SIGTERM');
   await pause(30); // flush the result; the owner monitor's interval otherwise keeps this fixture alive
   process.exit(0);
