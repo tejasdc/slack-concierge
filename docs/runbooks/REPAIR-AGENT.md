@@ -28,6 +28,21 @@ and found something only he can do.
    already tried. The owner refuses permission, approval and design questions. A notice is
    not his message, so use the notice's own words where `--his-words` is required.
 
+## An expired Claude sign-in (`claude_signin_expired`)
+
+When an account's own home on the server is refused for its sign-in (a turn's refusal, the
+background account check, or a Switch that found it signed out), `claude-signin-renewal.ts`
+records one notice per account per episode, and the owner, while delivering it here, sends the
+Mac's browser agent (`CLAUDE_SIGNIN_WORKER`) a work request as you: renew that account through
+thnkr.ing Accounts in Tejas's Chrome. The link and code go page to page and never into a message.
+Its answer comes back to you. Completed: confirm Accounts shows the account signed in and end
+`done`. `needs_decision` because Chrome's own claude.ai sign-in for that account expired: that is
+the one thing only he can do, so declare `needs_you --only-he-can sign-in` asking him to sign in
+to claude.ai as that account in Chrome on his Mac. Never start a second sign-in yourself while
+one is waiting, and never renew for usage: an account out of room is moved off automatically.
+Tejas asked for this on 2026-10-08 (capture c7274372): "you should just use my laptop, my
+MacBook, to log in and paste the code because that just works."
+
 ## Never
 
 - Never stop, pause (SIGSTOP), kill or restart the production Concierge to test something; use

@@ -33,6 +33,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message
 import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
+import {CLAUDE_SIGNIN_RENEWAL_KIND,CLAUDE_SIGNIN_WORKER,claudeSignInRenewalAccount,claudeSignInWorkerActionId,claudeSignInWorkerText} from './claude-signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
@@ -941,10 +942,32 @@ export class SessionOwner {
       this.recordCreation(session,created,false);
     }
     const inputId=`repair-notice:${pending[0].key}`.slice(0,200);
-    this.admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
+    const admitted=this.admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
       text:repairNoticeText(pending,ms=>noticeTime(db,ms))});
     markRepairNoticesDelivered(db,pending.map(notice=>notice.key),inputId);
+    this.sendClaudeSignInRenewals(session,admitted,pending);
     return pending.length;
+  }
+  /**
+   * An expired Claude login goes straight to the Mac's browser agent as the repair agent's request,
+   * without waiting for a provider turn: when every Claude account here is signed out, the repair
+   * agent itself cannot run until this renewal lands. Its answer returns to the repair agent.
+   */
+  private sendClaudeSignInRenewals(session:SessionRow,admitted:AcceptedSessionInput,pending:{key:string;kind:string}[]){
+    const renewals=pending.filter(notice=>notice.kind===CLAUDE_SIGNIN_RENEWAL_KIND);
+    if(!renewals.length)return;
+    const peers=this.peers;
+    const turn=readInputExecution(admitted).turn?.id
+      ??(db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(session.id) as {id:number}|null)?.id;
+    if(!peers||!turn){log('error','claude_signin_renewal_not_sent',{reason:peers?'no_turn':'no_peers',count:renewals.length});return;}
+    for(const notice of renewals){
+      const account=claudeSignInRenewalAccount(notice.key);
+      if(!account)continue;
+      void peers.ask({session:session.id,turn,inputId:admitted.id},{peer:CLAUDE_SIGNIN_WORKER.peer,address:CLAUDE_SIGNIN_WORKER.address,
+        action_id:claudeSignInWorkerActionId(notice.key),text:claudeSignInWorkerText(account),requestedEffect:'work'})
+        .then(receipt=>log('info','claude_signin_renewal_sent',{account,status:(receipt as {status?:string})?.status??null}))
+        .catch(error=>log('error','claude_signin_renewal_not_sent',{account,error:String((error as Error)?.message??error).slice(0,300)}));
+    }
   }
   savedWorkList(){
     return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),

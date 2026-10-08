@@ -20,7 +20,7 @@ export const REPAIR_AGENT_TITLE = "Repair agent";
 export const REPAIR_AGENT_PROJECT = "slack-concierge";
 export const REPAIR_AGENT_PROVIDER = "cc-opus";
 
-function ensureTable(db: Database): void {
+export function ensureTable(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS repair_notices (
     key TEXT PRIMARY KEY,
     kind TEXT NOT NULL,

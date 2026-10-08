@@ -32,6 +32,7 @@ import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAcc
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
+import {needClaudeSignInRenewal} from './claude-signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
@@ -352,6 +353,7 @@ export class SessionExecutionHost {
     // reset or runs on the other account while that one has room.
     const full=check.reason==='out_of_room';
     if(!check.ok&&!full)markClaudeHomeRefused(home);
+    if(check.reason==='signed_out'&&home)needClaudeSignInRenewal(profile.label,'switching to it found it signed out');
     if(!check.ok&&!full){
       log('warn','provider_profile_switch_refused',{provider:key,reason:check.reason});
       const why=check.reason==='signed_out'?`${profile.label} needs signing in again on this machine.`

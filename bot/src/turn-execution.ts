@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
+import {needClaudeSignInRenewal} from './claude-signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -1044,7 +1045,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch { /* every account is spent; keep the existing usage hold */ }
       }
       const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
-      if(isRefreshableAuthFailure(message))markClaudeHomeRefused(runningClaudeHome);
+      if(isRefreshableAuthFailure(message)){
+        markClaudeHomeRefused(runningClaudeHome);
+        // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.
+        if(runningClaudeHome)needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
+      }
       const authWait = replaySafe && input.providerId !== 'chatgpt'
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput

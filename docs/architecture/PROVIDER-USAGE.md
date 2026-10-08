@@ -141,6 +141,18 @@ assistant output or tools. The September 23 expired-sign-in incident left six In
 inputs terminal despite Claude only writing their input to its transcript; those six
 are handled separately by the Inbox and are not migrated or replayed by this change.
 
+**A Claude account's expired sign-in on the server is renewed by the Mac, not by him**
+(Tejas, 2026-10-08, capture c7274372). When an account's own home is refused for its sign-in,
+by a turn, the background account check or a Switch, `claude-signin-renewal.ts` records one
+`claude_signin_expired` repair notice per account per episode (none while an earlier one is
+undelivered, under half an hour old, or its Mac request is unanswered). Delivering it, the owner
+sends the Mac's browser agent a work request as the repair agent, with no provider turn first,
+because the repair agent may itself be held by the same expired login. The Mac agent drives his
+Chrome through thnkr.ing Accounts' own sign-in, so the link and one-time code pass page to page
+and never enter a message or this ledger, and the account check plus the ordinary release then
+frees held work. The repair agent reaches him only if Chrome's own claude.ai sign-in expired.
+Usage exhaustion never triggers it: an account out of room is moved off automatically.
+
 ## Cost, persistence and visibility
 
 There is no poller, probe loop, worker or idle work. Lookup is one small existing-ledger

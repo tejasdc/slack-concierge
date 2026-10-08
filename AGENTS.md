@@ -707,7 +707,10 @@ authorization or a change to the default rapid-iteration policy.
   Bash change outside its folder, read back by the owner, and names the failure (signed out,
   settings not in effect, wrong account, timeout); a reply-only probe passed for a home without
   settings on 2026-10-07. Automatic moves go only to a home proven by that check or by a finished
-  turn from it; a sign-in refusal or a newly filed login withdraws the proof. Pressing
+  turn from it; a sign-in refusal or a newly filed login withdraws the proof. An expired sign-in
+  is renewed without him: one repair notice per account per episode, and the owner sends the Mac's
+  browser agent a request to sign it in through thnkr.ing Accounts in his Chrome
+  (`claude-signin-renewal.ts`; [sign-in holds](docs/architecture/PROVIDER-USAGE.md#sign-in-holds)). Pressing
   Switch prepares the links, runs the check from the proposed home and checks Claude's reported
   account identity before recording the choice. A credential file and a usage reading alone do not
   establish that its expired OAuth login can renew. A failed probe leaves the previous
