@@ -10,15 +10,15 @@ The daemon is detached from the Concierge process and may outlive a bot restart.
 - Installing and activating are separate transitions. The standalone installer may stage a release and repoint `current` while the loaded App Server continues running. Only a later restart activates it.
 - App Server activation must share Concierge's admission boundary: close new provider admission, prove every owned provider turn idle, restart once, probe `model/list`, reconnect the persistent client, and then reopen admission.
 - A reported version is not topology proof. Verify the selected CLI, managed target, running process, `current` symlink, internal `codex` symlink, and code-mode host separately.
-- `daemon bootstrap` is not routine pairing repair. In Codex 0.149.1 it also starts an updater whose restart policy is not coordinated with Concierge's durable queue or deployment gate.
+- `daemon bootstrap` is not routine pairing repair. With automatic updates enabled, it starts an updater whose restart policy is not coordinated with Concierge's durable queue or deployment gate; ordinary `daemon start` can do the same.
 
 ## Current Update Policy
 
 - **Install channel:** standalone only. The redundant global npm package was removed on 2026-08-24. Do not add npm, Homebrew, or another parallel Codex installation on this host.
-- **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer or automatic updater checks for Codex releases.
+- **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer checks for Codex releases.
 - **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
 - **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
-- **Built-in updater:** must not run because its fixed 60-second grace period and lack of Concierge admission coordination do not satisfy the active-agent contract. On 2026-10-08 it was unexpectedly running as a separate `pid-update-loop` process after an intentional CLI update staged 0.162.0. Its exact process was stopped without touching the active App Server; see the incident record. The CLI has no updater-only disable command or persistent disable switch. Avoid `daemon bootstrap`, which can launch it, and verify the updater is absent after maintenance. Do not infer from a staged release that the loaded App Server was activated.
+- **Built-in updater:** disabled by Codex's supported `updater.autoUpdateEnabled: false` in `/root/.codex/app-server-daemon/settings.json`, preserving the other settings. Both `daemon start` and `daemon bootstrap` otherwise launch an updater, even if the App Server is already running. The updater's fixed 60-second grace and lack of Concierge admission coordination do not satisfy the active-agent contract. An intentional CLI update may stage a new release without activating the loaded App Server.
 
 Autonomous deployment repair and its independent review use this same installed
 standalone CLI as root with the normal `/root` configuration. Concierge does not
@@ -39,7 +39,10 @@ permissions; do not assume the repair CLI executes inside the provider daemon.
 
 ## Built-In Updater Semantics
 
-These semantics are verified against the Codex 0.149.1 source used on the service peer:
+These semantics were verified against Codex 0.149.1 and observed again with 0.162.0
+on 2026-10-08. The [pinned 0.162.0 daemon documentation](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server-daemon/README.md#commands)
+documents the native disable setting and that ordinary `start` also ensures an updater
+when enabled.
 
 1. The updater waits five minutes after it starts, then runs hourly.
 2. Each check runs the official standalone installer.
@@ -50,14 +53,16 @@ These semantics are verified against the Codex 0.149.1 source used on the servic
 
 The restart is scheduled rather than random: it can occur on the first five-minute/hourly check after a new release appears, without operator confirmation. The graceful drain makes short turns safer, but it is insufficient for Concierge because turns commonly exceed 60 seconds and the updater bypasses Concierge's durable admission gate. Keep the built-in updater disabled until activation is integrated with that gate.
 
-The 2026-10-08 incident showed that the intended disabled state is not self-enforcing:
-the updater had its own PID and process group inside the App Server's transient scope.
-After confirming its exact `pid-update-loop` command and that the managed App Server
-had a different PID and process group, maintenance sent `SIGTERM` to the updater PID
-only. The App Server stayed live, and `model/list` answered. Do not stop the shared
-scope or signal a process group to disable the updater. `codex app-server daemon
---help` has no updater-only stop/disable control. This is a one-time runtime
-correction, not an automatic idle-activation path.
+The 2026-10-08 incident showed that stopping an updater process alone is insufficient:
+the next ordinary service start launched another while the older App Server was still
+serving work. That updater forced the server down 60 seconds after requesting shutdown.
+Set the native disable preference before `daemon start`. Verify it with
+`jq -e '.updater.autoUpdateEnabled == false' /root/.codex/app-server-daemon/settings.json`;
+a missing or malformed setting is not disabled. For an updater already running,
+confirm its exact `pid-update-loop` PID and process group before stopping that PID only.
+Never stop the shared scope or signal a
+process group to contain the updater. `daemon --help` offers no updater-only command;
+its supported persistent control is the settings file, not an invented CLI flag.
 
 `check_for_update_on_startup` is separate. It lets an interactive CLI discover and offer a newer release; accepting from the standalone CLI exits that CLI and runs the installer. It does not signal the App Server by itself.
 

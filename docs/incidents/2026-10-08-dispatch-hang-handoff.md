@@ -73,11 +73,20 @@ updater, however, could check that mismatch outside Concierge's admission gate. 
 `pid-update-loop` PID 2868223 and distinct process group were checked before sending TERM
 to that PID only. It exited. The managed App Server retained PID 2870125 and its original
 start time, its `model/list` request returned seven models, and Concierge's Codex turn
-5657/session 3757 still had a live execution. No daemon restart was performed. The CLI
-exposes no updater-only disable command, and the runbook documents no coordinated
-automatic activation command: future activation still needs an explicit admission hold,
-idle proof, managed restart, probe and reopening. The CPU/memory load remains unexplained;
-the updater correction is not evidence that it caused that load.
+5657/session 3757 still had a live execution. No daemon restart was performed then.
+That check was incomplete: normal Concierge startup at 19:47:41 UTC created a *second*
+updater, PID 4016711, because `daemon start` ensures one by default even for an already
+running App Server. Its scheduled check requested shutdown of PID 2870125 at 19:52:42,
+then forced it at 19:53:42 after the 60-second grace. Turn 5657 ended in error. The
+replacement launch failed readiness, and a new 0.162.0 listener appeared outside the
+managed-daemon path; it was not restarted during this containment. The second updater
+was then stopped by exact PID without stopping that listener. Codex's pinned 0.162.0
+source documents a native persistent `updater.autoUpdateEnabled: false` preference;
+it was applied to the machine-owned settings while retaining remote control. A subsequent
+`daemon start` returned `alreadyRunning` without spawning an updater or replacing the
+current listener. Future managed activation still needs explicit admission hold,
+idle proof, restart, probe and reopening. The original CPU/memory load remains unexplained;
+the updater failure is proven separately from that resource observation.
 
 The remaining Grafana worker error recurred at the next startup, 19:29:08 UTC. The only firing,
 delivered alert awaiting investigation was the historical `WorkspaceSkillsSyncStale` receipt
