@@ -7,6 +7,10 @@ turn report three changes, so the queue committed it as running but returned no 
 adapter preserves journal triggers, transaction ownership and insert identity while making
 existing exact-one lease checks valid. The standalone project-registry writer uses it too.
 Telemetry stays separate from this write-result contract. See the October 8 dispatch incident.
+The presentation release gate runs `dispatch-claim-fixture.ts` against an isolated canonical
+ledger with the real journal triggers: a raw Bun update demonstrates the inflated count,
+then the shipping queue coordinator must hand one claimed turn to a recording runner exactly
+once and find no second claim. No provider starts.
 
 The shared ledger connection is wrapped by `observedDatabase` in `state-database.ts`.
 `observeStorageOperation` scopes synchronous database work through async request execution;
