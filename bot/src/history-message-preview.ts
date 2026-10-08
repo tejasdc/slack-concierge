@@ -6,7 +6,6 @@ const MESSAGE_BYTES=8192;
 export const HISTORY_DETAIL_PART_BYTES=4096;
 
 export type HistoryContentDetail={digest:string;bytes:number;parts:number};
-const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
 const byteLength=(text:string)=>Buffer.byteLength(text,'utf8');
 function prefix(text:string,maxBytes:number):string {
   const bytes=Buffer.from(text,'utf8');
@@ -22,17 +21,38 @@ export function historyContent(message:Pick<ProviderHistoryMessage,'content'|'ri
 }
 
 export function historyContentDetail(message:Pick<ProviderHistoryMessage,'content'|'richContent'>):HistoryContentDetail {
-  const full=historyContent(message),bytes=byteLength(full);
-  return {digest:digest(full),bytes,parts:Math.ceil(bytes/HISTORY_DETAIL_PART_BYTES)};
+  const prepared=prepareHistoryDetail(historyContent(message));
+  return {digest:prepared.digest,bytes:prepared.bytes,parts:prepared.parts};
+}
+
+export function prepareHistoryDetail(full:string) {
+  const data=Buffer.from(full,'utf8'),boundaries=[0];
+  let at=0;
+  while(at<data.length){
+    let end=Math.min(data.length,at+HISTORY_DETAIL_PART_BYTES);
+    if(end<data.length)while(end>at&&(data[end]!&0xc0)===0x80)end--;
+    if(end<=at)throw new Error('HISTORY_DETAIL_UTF8_BOUNDARY');
+    boundaries.push(end);at=end;
+  }
+  const hash=createHash('sha256').update(data).digest('hex');
+  return {digest:hash,bytes:data.length,parts:boundaries.length-1,
+    body(){return data;},
+    part(index:number){
+      if(!Number.isSafeInteger(index)||index<0)throw new Error('INVALID_HISTORY_DETAIL_PART');
+      if(index>=boundaries.length-1)throw new Error('HISTORY_DETAIL_PART_NOT_FOUND');
+      const content=data.subarray(boundaries[index]!,boundaries[index+1]!).toString('utf8');
+      return {content,digest:hash,bytes:data.length,part:index,nextPart:index+1<boundaries.length-1?index+1:null};
+    }};
 }
 
 /** Never let one provider answer or imported evidence make the list response grow with its body. */
 export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:T):T&{contentDetail?:HistoryContentDetail} {
   const source=message as T&{source?:Record<string,unknown>};
+  const upstream=(message as T&{contentDetail?:HistoryContentDetail}).contentDetail;
   const normal={...message,...(source.source?{source:{...source.source,text:undefined}}:{}),richContent:undefined};
-  const full=historyContent(message);
-  if(byteLength(full)<=MESSAGE_BYTES&&byteLength(JSON.stringify(message))<=MESSAGE_BYTES)return message;
-  const detail=historyContentDetail(message);
+  const full=upstream?null:historyContent(message);
+  if(!upstream&&byteLength(full!)<=MESSAGE_BYTES&&byteLength(JSON.stringify(message))<=MESSAGE_BYTES)return message;
+  const detail=upstream??historyContentDetail(message);
   const preview={...normal,content:prefix(message.content,PREVIEW_BYTES),contentDetail:detail};
   if(byteLength(JSON.stringify(preview))<=MESSAGE_BYTES)return preview;
   // Untrusted provider metadata may itself be large. The detail retains all fields, while
@@ -56,18 +76,5 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
 }
 
 export function historyDetailPart(full:string,part:number):{content:string;digest:string;bytes:number;part:number;nextPart:number|null} {
-  if(!Number.isSafeInteger(part)||part<0)throw new Error('INVALID_HISTORY_DETAIL_PART');
-  const bytes=Buffer.from(full,'utf8');
-  const parts=Math.ceil(bytes.length/HISTORY_DETAIL_PART_BYTES);
-  if(part>=parts)throw new Error('HISTORY_DETAIL_PART_NOT_FOUND');
-  const boundary=(offset:number)=>{
-    let at=Math.min(bytes.length,offset);
-    if(at<bytes.length)while(at>0&&(bytes[at]!&0xc0)===0x80)at--;
-    return at;
-  };
-  const start=boundary(part*HISTORY_DETAIL_PART_BYTES);
-  const end=boundary((part+1)*HISTORY_DETAIL_PART_BYTES);
-  if(start>=end)throw new Error('HISTORY_DETAIL_PART_GAP');
-  return {content:bytes.subarray(start,end).toString('utf8'),digest:digest(full),bytes:bytes.length,
-    part,nextPart:part+1<parts?part+1:null};
+  return prepareHistoryDetail(full).part(part);
 }

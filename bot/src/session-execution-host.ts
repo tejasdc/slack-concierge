@@ -21,7 +21,8 @@ import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
-import {readClaudeCachedMessage,readCodexHistoryMessage} from './provider-history';
+import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
+import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
@@ -66,6 +67,7 @@ const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
 };
 
 export class SessionExecutionHost {
+  private readonly historyPages=new ProviderHistoryPageClient();
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
@@ -114,6 +116,10 @@ export class SessionExecutionHost {
       capabilities:session=>this.capabilities(session),
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
+      projectedHistory:options.history||Object.entries(options.providers).some(([provider,value])=>
+        (provider==='codex'||provider==='claude-code')&&value?.history!==
+          (provider==='codex'?readCodexHistory:readClaudeHistory))?undefined:((session,operation,cursor,limit,after)=>
+        this.historyPages.request({operation,sessionId:`concierge:${session.id}`,cwd:this.cwd(session),cursor,limit,after})),
       historyMessage:(session,messageId,turnId)=>this.historyMessage(session,messageId,turnId),
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
@@ -423,7 +429,7 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
-  async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop()]);}
+  async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';

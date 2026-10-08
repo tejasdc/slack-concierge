@@ -12,7 +12,7 @@ import {observeStorageOperation,storageObservationFailures,withStorageReadBudget
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
-import {historyContent,historyContentDetail,previewHistoryMessage} from './history-message-preview';
+import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
   preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
@@ -334,6 +334,7 @@ export type SessionOwnerRuntime = {
   stop(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   history?(session:SessionRow,cursor:string|null,limit:number):Promise<unknown>;
+  projectedHistory?(session:SessionRow,operation:'page'|'delta',cursor:string|null,limit:number,after:string|null):Promise<unknown>;
   historyMessage?(session:SessionRow,messageId:string,turnId:string|null):Promise<ProviderHistoryMessage|null>;
   detail?(session:SessionRow,key:string):Promise<unknown>;
   artifact?(session:SessionRow,id:string):Promise<unknown>;
@@ -1675,7 +1676,14 @@ export class SessionOwner {
   /** Every page states the ledger position it reflects, read before the page itself so
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
   async history(id:string,cursor:string|null,limit:number) {
-    const head=ledgerHead(),session=this.session(id);
+    const session=this.session(id);
+    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)){
+      try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
+      catch(error){const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
+        throw new SessionOwnerError(error instanceof Error?error.message:'History preparation failed.',status,
+          status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
+    }
+    const head=ledgerHead();
     const page=await this.readHistory(id,cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit))) as ProviderHistoryPage,metadata=sessionMetadata(session);
     const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages));
     if((page as any)[ledgerHistory])return {...page,asOf,messages:page.messages.map(previewHistoryMessage)};
@@ -1689,6 +1697,13 @@ export class SessionOwner {
    * latest-page read; a wrong delta would leave a client silently showing stale history.
    */
   async historyDelta(id:string,after:string) {
+    const delegated=this.session(id);
+    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)){
+      try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
+      catch(error){const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
+        throw new SessionOwnerError(error instanceof Error?error.message:'History changes unavailable.',status,
+          status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
+    }
     const reset={reset:true as const};
     const position=decodePosition(after),session=this.session(id);
     if(!position||position.k==='none'||position.n>HISTORY_WINDOW||position.g!==(session.binding_generation??1))return reset;
@@ -1727,13 +1742,13 @@ export class SessionOwner {
     return {messages:projectSessionHistory(session.id,{...page,messages}).messages.map(previewHistoryMessage),
       asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};
   }
-  async historyMessageDetail(id:string,messageId:string,digest:string,part:number,turnId:string|null) {
+  async historyMessageDetail(id:string,messageId:string,digest:string,part:number|null,turnId:string|null) {
     if(!messageId||messageId.length>512||!/^[a-f0-9]{64}$/.test(digest)
-      ||!Number.isSafeInteger(part)||part<0||turnId!==null&&turnId.length>512)
+      ||part!==null&&(!Number.isSafeInteger(part)||part<0)||turnId!==null&&turnId.length>512)
       throw new SessionOwnerError('An exact message version and part are required.');
     const session=this.session(id),metadata=sessionMetadata(session);
     const key=JSON.stringify([session.id,session.binding_generation??1,messageId,turnId,digest]);
-    try{return await this.historyDetails.part(key,part,async()=>{
+    try{const load=async()=>{
     const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
       AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC LIMIT 1`)
       .get(session.id,messageId) as {payload_json:string}|null;
@@ -1759,11 +1774,14 @@ export class SessionOwner {
     // provider scaffolding; the detail must use those same words and exact attribution.
     if(!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
     else if(metadata.inbox)message=this.projectInboxMessage(message as any);
-    if(historyContentDetail(message).digest!==digest)throw new SessionOwnerError('That message changed. Refresh it and try again.',409,'HISTORY_DETAIL_RESET_REQUIRED');
     return historyContent(message);
-    });}
+    };
+    return await (part===null?this.historyDetails.body(key,digest,load):this.historyDetails.part(key,digest,part,load));}
     catch(error){if(error instanceof Error&&error.message==='HISTORY_DETAIL_PART_NOT_FOUND')
-      throw new SessionOwnerError('That message part does not exist.',404,'MESSAGE_PART_NOT_FOUND');throw error;}
+      throw new SessionOwnerError('That message part does not exist.',404,'MESSAGE_PART_NOT_FOUND');
+      if(error instanceof Error&&error.message==='HISTORY_DETAIL_RESET_REQUIRED')
+        throw new SessionOwnerError('That message changed. Refresh it and try again.',409,'HISTORY_DETAIL_RESET_REQUIRED');
+      throw error;}
   }
   private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
     return inboxAttribution(db)(message);
@@ -2597,9 +2615,13 @@ export class SessionOwner {
         result=after!==null?await this.historyDelta(parts[1]!,after)
           :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)));
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6)
-        result=await this.historyMessageDetail(parts[1]!,parts[4]!,url.searchParams.get('digest')??'',
-          Number(url.searchParams.get('part')??'0'),url.searchParams.get('turnId'));
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6){
+        const part=url.searchParams.has('part')?Number(url.searchParams.get('part')):null;
+        result=await this.historyMessageDetail(parts[1]!,parts[4]!,url.searchParams.get('digest')??'',part,url.searchParams.get('turnId'));
+        if(part===null){const body=result as Buffer;
+          return new Response(body,{status:200,headers:{'content-type':'application/json; charset=utf-8',
+            'content-length':String(body.byteLength),'x-content-sha256':url.searchParams.get('digest')??''}});}
+      }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.receipt(this.input(parts[1]!));

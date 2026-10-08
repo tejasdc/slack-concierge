@@ -1,14 +1,29 @@
-import {historyDetailPart} from './history-message-preview';
+import {prepareHistoryDetail} from './history-message-preview';
 
 /** One selected message, never a session history. Repeated part reads cannot reparse it. */
 export class HistoryDetailCache {
-  private held:{key:string;full:string;at:number}|null=null;
-  private readonly retainedBytes=32*1024*1024;
-  async part(key:string,part:number,load:()=>Promise<string>):Promise<ReturnType<typeof historyDetailPart>> {
-    const now=Date.now();
-    const cached=this.held?.key===key&&now-this.held.at<60_000?this.held.full:null;
-    const full=cached??await load();
-    if(cached===null)this.held=Buffer.byteLength(full)<=this.retainedBytes?{key,full,at:now}:null;
-    return historyDetailPart(full,part);
+  private held:{key:string;value:ReturnType<typeof prepareHistoryDetail>}|null=null;
+  private pending:{key:string;value:Promise<ReturnType<typeof prepareHistoryDetail>>}|null=null;
+  private timer:ReturnType<typeof setTimeout>|null=null;
+  private async selected(key:string,expectedDigest:string,load:()=>Promise<string>) {
+    if(this.held?.key===key)return this.held.value;
+    if(this.pending?.key!==key){
+      const value=load().then(full=>{
+        const prepared=prepareHistoryDetail(full);
+        if(prepared.digest!==expectedDigest)throw new Error('HISTORY_DETAIL_RESET_REQUIRED');
+        return prepared;
+      });
+      this.pending={key,value};
+      void value.then(prepared=>{
+        if(this.pending?.key!==key)return;
+        this.held={key,value:prepared};this.pending=null;
+        if(this.timer)clearTimeout(this.timer);
+        this.timer=setTimeout(()=>{if(this.held?.key===key)this.held=null;this.timer=null;},60_000);
+        this.timer.unref?.();
+      },()=>{if(this.pending?.key===key)this.pending=null;});
+    }
+    return this.pending!.value;
   }
+  async part(key:string,expectedDigest:string,part:number,load:()=>Promise<string>){return (await this.selected(key,expectedDigest,load)).part(part);}
+  async body(key:string,expectedDigest:string,load:()=>Promise<string>){return (await this.selected(key,expectedDigest,load)).body();}
 }
