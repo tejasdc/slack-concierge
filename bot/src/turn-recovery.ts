@@ -101,6 +101,23 @@ interface AgentSessionStatusProjectionResult {
  */
 export const GHOST_TURN_INTERRUPT_AGE_MS = 120_000;
 
+/** Null means ownership changed before the evidence read. */
+function neverAdmittedWithoutEffects(turn: RecoverableTurnRow): boolean | null {
+  const evidence = db.query(`SELECT
+    (provider_admission_intended_at IS NOT NULL OR provider_started_at IS NOT NULL
+      OR provider_turn_id IS NOT NULL OR provider_input_acknowledged_at IS NOT NULL
+      OR EXISTS (SELECT 1 FROM turn_steering_messages
+        WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
+      OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)) AS effect_possible
+    FROM turns WHERE id=? AND status='running' AND owner_instance_id IS ?`)
+    .get(turn.id, turn.owner_instance_id) as { effect_possible: number } | null;
+  if (!evidence) return null;
+  const batch = getTurnArtifactBatch(turn.id);
+  const artifactActivity = batch && (batch.status !== "collecting"
+    || (existsSync(batch.directory_path) && findTurnArtifacts(batch.directory_path).length > 0));
+  return !evidence.effect_possible && !artifactActivity && !turnHasAmbiguousAgentProgressStart(turn.id);
+}
+
 /**
  * Recovers turns the current coordinator holds in 'running' with no matching executions row,
  * created more than `maxAgeMs` ago. These are the ghosts the 2026-10-08 incident uncovered:
@@ -110,7 +127,7 @@ export const GHOST_TURN_INTERRUPT_AGE_MS = 120_000;
  * periodic watchdog cadence throughout the coordinator's lifetime.
  *
  * Returns the number of turns recovered. Never-admitted work returns to the existing FIFO;
- * turns with possible effects or Stop remain terminal and require reconciliation.
+ * an unattempted Stop is cancelled, while possible effects require reconciliation.
  */
 export function sweepGhostRunningTurns(instanceId: string, activeTurnIds: readonly number[], maxAgeMs = GHOST_TURN_INTERRUPT_AGE_MS): number {
   let recovered = 0;
@@ -118,19 +135,17 @@ export function sweepGhostRunningTurns(instanceId: string, activeTurnIds: readon
     // Forks, ChatGPT and direct children have no execution-host row. The local runner is
     // authoritative while it owns the turn, including preparation before host admission.
     if (activeTurnIds.includes(turn.id)) continue;
-    const evidence = db.query(`SELECT
-      (provider_admission_intended_at IS NOT NULL OR provider_started_at IS NOT NULL
-        OR provider_turn_id IS NOT NULL OR provider_input_acknowledged_at IS NOT NULL
-        OR EXISTS (SELECT 1 FROM turn_steering_messages
-          WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
-        OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)) AS effect_possible
-      FROM turns WHERE id=? AND status='running' AND owner_instance_id IS ?`)
-      .get(turn.id, instanceId) as { effect_possible: number } | null;
-    if (!evidence) continue;
-    const batch = getTurnArtifactBatch(turn.id);
-    const artifactActivity = batch && (batch.status !== "collecting"
-      || (existsSync(batch.directory_path) && findTurnArtifacts(batch.directory_path).length > 0));
-    const unattempted = !evidence.effect_possible && !artifactActivity && !turnHasAmbiguousAgentProgressStart(turn.id);
+    const unattempted = neverAdmittedWithoutEffects(turn);
+    if (unattempted === null) continue;
+    if (unattempted && turn.stop_requested_at) {
+      const reason = "Stopped before provider admission.";
+      abandonTurnArtifactBatch(turn.id, reason);
+      if (cancelRunningTurnAndReleaseSession(turn.id, instanceId, reason)) {
+        recovered += 1;
+        log("warn", "ghost_running_turn_cancelled", { turn_id: turn.id, session_id: turn.session_id, turn_kind: turn.turn_kind });
+      }
+      continue;
+    }
     if (unattempted && !turn.stop_requested_at && requeueOrphanedPreAdmissionTurn(turn.id, instanceId)) {
       recovered += 1;
       log("warn", "ghost_running_turn_requeued", { turn_id: turn.id, session_id: turn.session_id, turn_kind: turn.turn_kind });
@@ -584,19 +599,8 @@ async function recoverTurnWithoutSlack(
   turn: RecoverableTurnRow,
 ): Promise<"done" | "stopped"> {
   if (turn.status === "running") {
-    const evidence = db.query(`SELECT
-      (provider_admission_intended_at IS NOT NULL OR provider_started_at IS NOT NULL
-        OR provider_turn_id IS NOT NULL OR provider_input_acknowledged_at IS NOT NULL
-        OR EXISTS (SELECT 1 FROM turn_steering_messages
-          WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
-        OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)) AS effect_possible
-      FROM turns WHERE id=? AND status='running' AND owner_instance_id IS ?`)
-      .get(turn.id, turn.owner_instance_id) as { effect_possible: number } | null;
-    if (!evidence) return "done";
-    const batch = getTurnArtifactBatch(turn.id);
-    const artifactActivity = batch && (batch.status !== "collecting"
-      || (existsSync(batch.directory_path) && findTurnArtifacts(batch.directory_path).length > 0));
-    const unattempted = !evidence.effect_possible && !artifactActivity && !turnHasAmbiguousAgentProgressStart(turn.id);
+    const unattempted = neverAdmittedWithoutEffects(turn);
+    if (unattempted === null) return "done";
     if (unattempted && turn.stop_requested_at) {
       const reason = "Stopped before provider admission.";
       abandonTurnArtifactBatch(turn.id, reason);
