@@ -69,8 +69,8 @@ try{
  // New builder verifies older sealed artifacts and emits application provenance itself.
  const next=await modern.prepare('modern-control-fixture',candidate);
  old.verify(next.artifactPath);assert.equal(next.manifest.application_bundle_source_digest,next.manifest.source_tree_digest);
- // Control-only upgrade must keep worker bytes from the application commit. The old builder
- // cannot prove this hybrid, so its candidate refuses before activation; the new builder can.
+ // A control-only upgrade keeps worker bytes from the application commit. Older installed
+ // builders may or may not already emit the exact application-source proof.
  const speechSource=join(repo,'bot/src/speech-job-worker.ts');
  writeFileSync(speechSource,readFileSync(speechSource,'utf8')+'\nexport const fixtureControlOnly="CONTROL_WORKER_MUST_NOT_REPLACE_APPLICATION";\n');
  run(['git','add','.'],repo);run(['git','-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-qm','Isolated control change'],repo);
@@ -79,15 +79,21 @@ try{
  assert.equal(readFileSync(join(hybrid.artifactPath,'control/application/speech-job-worker.js'),'utf8').includes('CONTROL_WORKER_MUST_NOT_REPLACE_APPLICATION'),false);
  assert.equal(checkReleaseApplication(hybrid.artifactPath,repo,releases).status,'passed');
  const oldHybrid=await old.prepare('old-hybrid-fixture',candidate,control);
- assert.throws(()=>checkReleaseApplication(oldHybrid.artifactPath,repo,releases),/provenance/);
- // An older builder happily seals a candidate with its gate missing. The candidate's existing
- // preactivation command is the enforcement boundary that refuses that otherwise valid seal.
+ if(oldHybrid.manifest.application_bundle_source_digest===oldHybrid.manifest.source_tree_digest)
+  assert.equal(checkReleaseApplication(oldHybrid.artifactPath,repo,releases).status,'passed');
+ else assert.throws(()=>checkReleaseApplication(oldHybrid.artifactPath,repo,releases),/provenance/);
+ // A missing gate must be refused before activation, whether the installed builder already
+ // refuses preparation or only the candidate's preactivation check knows that boundary.
  rmSync(join(repo,'bot/scripts/presentation-release-check.ts'));
  run(['git','add','.'],repo);run(['git','-c','user.name=Fixture','-c','user.email=fixture@invalid','-c','core.hooksPath=/dev/null','commit','-qm','Isolated missing gate'],repo);
  const missingGateCommit=run(['git','rev-parse','HEAD'],repo).toString().trim();
- const missingGate=await old.prepare('missing-gate-fixture',missingGateCommit);
- assert.throws(()=>checkReleaseApplication(missingGate.artifactPath,repo,releases),/missing its presentation release check/);
+ let missingGate:Awaited<ReturnType<typeof old.prepare>>|undefined;
+ let missingGateRefusedAt='preactivation';
+ try{missingGate=await old.prepare('missing-gate-fixture',missingGateCommit);}
+ catch(error){assert.match(String(error),/missing its presentation release check/);missingGateRefusedAt='preparation';}
+ if(missingGate)assert.throws(()=>checkReleaseApplication(missingGate.artifactPath,repo,releases),/missing its presentation release check/);
  console.log(JSON.stringify({check:'release-application-compatibility',status:'passed',oldControl:installed.control_git_commit,
   workers:paths.length,oldToNewPreactivation:true,newToOldVerification:true,isolatedState:true,
-  hybridApplicationPinned:true,unprovenHybridRefused:true,missingGateRefused:true}));
+  hybridApplicationPinned:true,installedHybridHasProvenance:oldHybrid.manifest.application_bundle_source_digest===oldHybrid.manifest.source_tree_digest,
+  unprovenHybridRefused:oldHybrid.manifest.application_bundle_source_digest!==oldHybrid.manifest.source_tree_digest,missingGateRefused:true,missingGateRefusedAt}));
 }finally{rmSync(scratch,{recursive:true,force:true});}
