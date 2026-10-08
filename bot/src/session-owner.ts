@@ -33,7 +33,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message
 import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
-import {CLAUDE_SIGNIN_RENEWAL_KIND,CLAUDE_SIGNIN_WORKER,claudeSignInRenewalAccount,claudeSignInWorkerActionId,claudeSignInWorkerText} from './claude-signin-renewal';
+import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
@@ -945,28 +945,27 @@ export class SessionOwner {
     const admitted=this.admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
       text:repairNoticeText(pending,ms=>noticeTime(db,ms))});
     markRepairNoticesDelivered(db,pending.map(notice=>notice.key),inputId);
-    this.sendClaudeSignInRenewals(session,admitted,pending);
+    this.sendSignInRenewals(session,admitted,pending);
     return pending.length;
   }
   /**
-   * An expired Claude login goes straight to the Mac's browser agent as the repair agent's request,
+   * An expired Claude or Codex login goes straight to the Mac's browser agent as the repair agent's request,
    * without waiting for a provider turn: when every Claude account here is signed out, the repair
    * agent itself cannot run until this renewal lands. Its answer returns to the repair agent.
    */
-  private sendClaudeSignInRenewals(session:SessionRow,admitted:AcceptedSessionInput,pending:{key:string;kind:string}[]){
-    const renewals=pending.filter(notice=>notice.kind===CLAUDE_SIGNIN_RENEWAL_KIND);
+  private sendSignInRenewals(session:SessionRow,admitted:AcceptedSessionInput,pending:{key:string;kind:string}[]){
+    const renewals=pending.map(notice=>({notice,renewal:signInRenewalOf(notice)})).filter(each=>each.renewal);
     if(!renewals.length)return;
     const peers=this.peers;
     const turn=readInputExecution(admitted).turn?.id
       ??(db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(session.id) as {id:number}|null)?.id;
-    if(!peers||!turn){log('error','claude_signin_renewal_not_sent',{reason:peers?'no_turn':'no_peers',count:renewals.length});return;}
-    for(const notice of renewals){
-      const account=claudeSignInRenewalAccount(notice.key);
-      if(!account)continue;
-      void peers.ask({session:session.id,turn,inputId:admitted.id},{peer:CLAUDE_SIGNIN_WORKER.peer,address:CLAUDE_SIGNIN_WORKER.address,
-        action_id:claudeSignInWorkerActionId(notice.key),text:claudeSignInWorkerText(account),requestedEffect:'work'})
-        .then(receipt=>log('info','claude_signin_renewal_sent',{account,status:(receipt as {status?:string})?.status??null}))
-        .catch(error=>log('error','claude_signin_renewal_not_sent',{account,error:String((error as Error)?.message??error).slice(0,300)}));
+    if(!peers||!turn){log('error','signin_renewal_not_sent',{reason:peers?'no_turn':'no_peers',count:renewals.length});return;}
+    for(const {notice,renewal} of renewals){
+      const {provider,account}=renewal!;
+      void peers.ask({session:session.id,turn,inputId:admitted.id},{peer:SIGNIN_WORKER.peer,address:SIGNIN_WORKER.address,
+        action_id:signInWorkerActionId(notice.key),text:signInWorkerText(provider,account),requestedEffect:'work'})
+        .then(receipt=>log('info','signin_renewal_sent',{provider,account,status:(receipt as {status?:string})?.status??null}))
+        .catch(error=>log('error','signin_renewal_not_sent',{provider,account,error:String((error as Error)?.message??error).slice(0,300)}));
     }
   }
   savedWorkList(){

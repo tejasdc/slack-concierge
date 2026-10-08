@@ -76,7 +76,7 @@ const at = (value: string | null | undefined): number | null => {
 };
 
 /** The latest stored reading, read from its own table so this module owes the reader nothing. */
-function storedUsage(provider: ProviderKey): ProviderUsage | null {
+export function storedUsage(provider: ProviderKey): ProviderUsage | null {
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;

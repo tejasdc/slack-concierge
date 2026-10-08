@@ -12,7 +12,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
 import {log} from './log';
-import {needClaudeSignInRenewal} from './claude-signin-renewal';
+import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 
 /**

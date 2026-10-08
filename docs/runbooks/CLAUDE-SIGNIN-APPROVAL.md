@@ -10,7 +10,7 @@ The server owns the pending sign-in, credential storage, account validation and
 execution-account selection. The Mac worker drives the browser only. The automatic
 trigger belongs to [provider usage](../architecture/PROVIDER-USAGE.md#sign-in-holds).
 The worker address is currently `mac/session:WzIsMTAwLDFd`, owned by
-`CLAUDE_SIGNIN_WORKER` in `bot/src/claude-signin-renewal.ts`.
+`SIGNIN_WORKER` in `bot/src/signin-renewal.ts`.
 
 For an addressed request from a server agent:
 

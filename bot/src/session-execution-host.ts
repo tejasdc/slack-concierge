@@ -32,13 +32,13 @@ import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAcc
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
-import {needClaudeSignInRenewal} from './claude-signin-renewal';
+import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
-import {usagePressureBrief} from './provider-usage-forecast';
+import {storedUsage,usagePressureBrief} from './provider-usage-forecast';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
-import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork} from './state';
+import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
 import {noticeTime} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
@@ -72,9 +72,18 @@ export class SessionExecutionHost {
   private readonly claudeLogin:ClaudeAccountLogin;
   // One Codex switch at a time: two moves sharing one restart would undo in the wrong order.
   private codexSwitching=false;
+  /** An account a move to just failed is not tried again for this long, so a dead login costs one restart, not one a minute. */
+  private readonly codexMoveFailedAt=new Map<string,number>();
+  private readonly stopCodexMoves:()=>void;
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+    // Codex work moves to an account with room by itself, as Claude's does (Tejas, 2026-10-08, capture
+    // f48861f1: "Can we extend the same Claude code automation for account switching here to Codex too").
+    // Checked whenever work stops or starts and once a minute, since a usage reading can arrive between.
+    const detach=observeExecutionChanges(()=>void this.moveCodexOffSpentAccount());
+    const timer=setInterval(()=>void this.moveCodexOffSpentAccount(),60_000);
+    this.stopCodexMoves=()=>{detach();clearInterval(timer);};
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
     // process exiting is the only signal that credentials changed. Activation
@@ -386,7 +395,24 @@ export class SessionExecutionHost {
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
     return this.putCodexAccountInUse(source);
   }
-  async stop():Promise<void>{await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop()]);}
+  /**
+   * Codex runs every turn on one shared login, so it cannot pick an account per turn the way Claude
+   * does: the whole machine moves, through the same proven switch as the Accounts button. It moves
+   * only off the account in use when that account's allowance is spent, only to an account whose
+   * every window has room, and only while no Codex turn is running (a turn on a spent account has
+   * already been refused, so this waits seconds, not hours). The switch releases the work that was
+   * held for the spent account's reset. Nothing is said to him about it, as for Claude.
+   */
+  private async moveCodexOffSpentAccount():Promise<void>{
+    if(this.codexSwitching||runningCodexTurns()!==0)return;
+    const target=codexAccountWithRoomWhileInUseIsSpent();
+    if(!target||Date.now()-(this.codexMoveFailedAt.get(target.label)??0)<15*60_000)return;
+    log('info','codex_account_move_started',{reason:'in_use_account_spent'});
+    const result=await this.putCodexAccountInUse(target.source).catch(error=>({status:'failed' as const,detail:String((error as Error)?.message??error)}));
+    if(result.status==='completed')log('info','codex_account_moved',{released:'resumedTurnIds' in result?result.resumedTurnIds?.length??0:0});
+    else {this.codexMoveFailedAt.set(target.label,Date.now());log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});}
+  }
+  async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
@@ -876,4 +902,27 @@ export class SessionExecutionHost {
     settleTurnDependencies(turn.id);
     recordSessionEvent({eventId:`reconciled-terminal:${turn.id}`,sessionId:turn.session_id,inputId:operation.id,turnId:turn.id,kind:'run',payload:{run:this.owner.run(nativeRunId(turn.id))}});
   }
+}
+
+/**
+ * The kept Codex login to move to when the one in use has spent an allowance window: the account
+ * in use is read from the login on disk, never from the reading, so a reading taken before a move
+ * cannot send the machine back. Among accounts with room in every window, the least used wins.
+ */
+function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|null{
+  const inUse=currentAccount('codex')?.label;
+  const usage=storedUsage('codex');
+  if(!inUse||!usage)return null;
+  const current=usage.accounts.find(account=>account.label===inUse);
+  if(!current||current.problem||!current.windows.some(window=>window.usedPercent>=100))return null;
+  const used=(account:{windows:readonly {usedPercent:number}[]})=>Math.max(...account.windows.map(window=>window.usedPercent));
+  const room=usage.accounts.filter(account=>account.label!==inUse&&!account.problem&&!account.signedOut&&account.windows.length>0
+    &&account.windows.every(window=>window.usedPercent<100)).sort((a,b)=>used(a)-used(b));
+  const profiles=listProfiles('codex');
+  for(const account of room){
+    const profile=profiles.find(each=>each.label===account.label);
+    const source=profile?codexProfileSource(profile.id):null;
+    if(source)return {label:account.label,source};
+  }
+  return null;
 }

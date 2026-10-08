@@ -685,7 +685,11 @@ authorization or a change to the default rapid-iteration policy.
   login can be the one that starts a stopped daemon, so Concierge also raises the daemon's soft
   open-file limit to its hard limit every time it connects (`codex-daemon-file-limit.ts`); one such
   daemon ran out at 1,024 and failed the 2026-10-07 7:24 PM update restart. This does not permit
-  an agent to restart the App Server for any other reason.
+  an agent to restart the App Server for any other reason. The owner itself makes the same switch
+  when the Codex account in use has spent an allowance window and another kept account has room in
+  every window, once no Codex turn is running (`moveCodexOffSpentAccount` in session-execution-host.ts;
+  Tejas, 2026-10-08, capture f48861f1: "extend the same Claude code automation for account switching
+  here to Codex too") [decision: provider-accounts-switch-automatically]; nothing is said to him about it, and the usage warning says Codex moves by itself.
   That surface covers every instance, not only the one serving the page: the auth routes
   take a `machine`, and a call for the peer is forwarded over the existing peer channel to
   the peer's identical route, where its own Concierge runs the login. Neither instance ever
@@ -710,7 +714,7 @@ authorization or a change to the default rapid-iteration policy.
   turn from it; a sign-in refusal or a newly filed login withdraws the proof. An expired sign-in
   is renewed without him: one repair notice per account per episode, and the owner sends the Mac's
   browser agent a request to sign it in through thnkr.ing Accounts in his Chrome
-  (`claude-signin-renewal.ts`; [sign-in holds](docs/architecture/PROVIDER-USAGE.md#sign-in-holds)). Pressing
+  (`signin-renewal.ts`, Codex too; [sign-in holds](docs/architecture/PROVIDER-USAGE.md#sign-in-holds)). Pressing
   Switch prepares the links, runs the check from the proposed home and checks Claude's reported
   account identity before recording the choice. A credential file and a usage reading alone do not
   establish that its expired OAuth login can renew. A failed probe leaves the previous

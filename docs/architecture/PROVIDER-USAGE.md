@@ -143,7 +143,7 @@ are handled separately by the Inbox and are not migrated or replayed by this cha
 
 **A Claude account's expired sign-in on the server is renewed by the Mac, not by him**
 (Tejas, 2026-10-08, capture c7274372). When an account's own home is refused for its sign-in,
-by a turn, the background account check or a Switch, `claude-signin-renewal.ts` records one
+by a turn, the background account check or a Switch, `signin-renewal.ts` records one
 `claude_signin_expired` repair notice per account per episode (none while an earlier one is
 undelivered, under half an hour old, or its Mac request is unanswered). Delivering it, the owner
 sends the Mac's browser agent a work request as the repair agent, with no provider turn first,
@@ -152,6 +152,17 @@ Chrome through thnkr.ing Accounts' own sign-in, so the link and one-time code pa
 and never enter a message or this ledger, and the account check plus the ordinary release then
 frees held work. The repair agent reaches him only if Chrome's own claude.ai sign-in expired.
 Usage exhaustion never triggers it: an account out of room is moved off automatically.
+Codex is renewed the same way (`codex_signin_expired`): a Codex turn refused for its sign-in, or any
+account whose usage reading says its sign-in stopped working, sends the Mac agent to start that
+account's device sign-in from Accounts and enter the code at OpenAI in his Chrome.
+
+**Codex moves off a spent account by itself.** Codex runs every turn on one shared login, so it cannot
+choose per turn as Claude does. Instead the owner checks once a minute and whenever execution changes:
+when the account whose login is on disk has spent any window in the latest reading, another kept
+account has room in every window, and no Codex turn is running, it puts the least-used such account in
+use through the Accounts switch (move the login, restart the App Server, prove it renews), which
+releases work held for the spent account's reset. A failed move is not retried for that account for
+fifteen minutes.
 
 ## Cost, persistence and visibility
 

@@ -356,8 +356,8 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
   settleRefilledUsageWarnings();
 }
 
-/** Claude turns pick, each time, an account that still has room; a Codex login is switched by hand. */
-const movesAutomatically = (provider: UsageProvider) => provider === "claude-code" && claudeRunsFromOwnHomes();
+/** Claude turns pick, each time, an account that still has room; Codex moves its one login once the account in use is spent. */
+const movesAutomatically = (provider: UsageProvider) => provider === "codex" || claudeRunsFromOwnHomes();
 
 function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
   const name = provider === "codex" ? "Codex" : "Claude";

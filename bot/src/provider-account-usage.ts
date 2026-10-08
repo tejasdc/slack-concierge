@@ -8,6 +8,7 @@ import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
 import { proveClaudeHomesAhead } from "./provider-account-dispatch";
+import { needSignInRenewal } from "./signin-renewal";
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -399,6 +400,8 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       recordUsageReading(provider, usage);
       releaseIfAccountChanged(provider, usage);
       if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
+      // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
+      for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
       const current=usage.accounts.find(account=>account.current);
       const activeHasRoom=!!current && !current.problem && current.windows.length>0
         && current.windows.every(window=>window.usedPercent<100);

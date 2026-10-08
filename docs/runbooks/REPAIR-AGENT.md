@@ -28,12 +28,12 @@ and found something only he can do.
    already tried. The owner refuses permission, approval and design questions. A notice is
    not his message, so use the notice's own words where `--his-words` is required.
 
-## An expired Claude sign-in (`claude_signin_expired`)
+## An expired Claude or Codex sign-in (`claude_signin_expired`, `codex_signin_expired`)
 
 When an account's own home on the server is refused for its sign-in (a turn's refusal, the
-background account check, or a Switch that found it signed out), `claude-signin-renewal.ts`
+background account check, or a Switch that found it signed out), `signin-renewal.ts`
 records one notice per account per episode, and the owner, while delivering it here, sends the
-Mac's browser agent (`CLAUDE_SIGNIN_WORKER`) a work request as you: renew that account through
+Mac's browser agent (`SIGNIN_WORKER`) a work request as you: renew that account through
 thnkr.ing Accounts in Tejas's Chrome. The link and code go page to page and never into a message.
 Its answer comes back to you. Completed: confirm Accounts shows the account signed in and end
 `done`. `needs_decision` because Chrome's own claude.ai sign-in for that account expired: that is
