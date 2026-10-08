@@ -942,6 +942,7 @@ export class SessionCommunicationCoordinator {
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
         if(input.batch!==undefined&&(typeof input.batch!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(input.batch)))throw new Error('A batch name is letters, digits, dots, dashes and underscores.');
+        if(input.batch!==undefined&&input.thread!==undefined)throw new Error('A request for an Inbox thread answers into that thread; it cannot also join a batch.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
@@ -1618,7 +1619,8 @@ export class SessionCommunicationCoordinator {
             if (batch) {
                 const members = db.query(`SELECT * FROM session_communication_requests WHERE source_session_id=? AND json_extract(payload_json,'$.batch')=?`)
                     .all(request.source_session_id, batch) as RequestRow[];
-                if (members.some(member => !member.outcome)) {
+                // A member reported stalled no longer holds the others: they return, and its answer, if it comes, returns on its own.
+                if (members.some(member => !member.outcome && member.stalled_at_ms === null)) {
                     db.query("UPDATE session_communication_events SET status='batched',error=NULL WHERE event_id=? AND status IS NOT 'batched'").run(event.event_id);
                     return;
                 }
@@ -1633,7 +1635,7 @@ export class SessionCommunicationCoordinator {
                 });
                 const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
                     sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                    text:`Batch "${batch}": all ${members.length} requests are answered (${answers.length} answers below). This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${parts.join('\n\n')}`,
+                    text:`Batch "${batch}": ${(()=>{const stalled=members.filter(member=>!member.outcome);return stalled.length?`${answers.length} answers below; still open after a stall: ${stalled.map(member=>`${member.request_id} (concierge:${member.target_session_id})`).join(', ')}, whose answer will return on its own if it comes.`:`all ${members.length} requests are answered (${answers.length} answers below).`;})()} This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${parts.join('\n\n')}`,
                     ...(()=>{const files=answers.flatMap(answer=>JSON.parse(answer.payload_json).attachments??[]);return files.length?{attachments:files as string[]}:{};})()});
                 for (const answer of answers)
                     db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(accepted.id, answer.event_id);
@@ -1744,7 +1746,7 @@ export class SessionCommunicationCoordinator {
             // A Concierge update holds new starts and yields running work for a few minutes. Work
             // waiting only for that is not stalled, so look again after the update instead.
             // A recipient waiting on its own request to another session, or on a watch, is working through it, not stalled.
-            if (healthy || updateDraining() || waitingOnDependency(request.target_session_id)) {
+            if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 continue;

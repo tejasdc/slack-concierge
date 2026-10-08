@@ -37,10 +37,10 @@ export function sessionProjects(workspaceRoot:string):SessionProject[] {
  * "Why do we have an expertise folder in the root workspace?"). The folder must already exist and
  * must not leave the project through a link.
  */
-export function sessionProject(workspaceRoot:string,requested:string):SessionProject|null {
+export function sessionProject(workspaceRoot:string,requested:string,options:{inside?:boolean}={}):SessionProject|null {
   const projects=sessionProjects(workspaceRoot);
   const exact=projects.find(project=>project.name===requested||project.cwd===requested);
-  if(exact)return exact;
+  if(exact||!options.inside)return exact??null;
   for(const project of projects) {
     const inside=requested.startsWith(`${project.name}/`)?join(project.cwd,requested.slice(project.name.length+1))
       :requested.startsWith(`${project.cwd}/`)?requested:null;
@@ -73,3 +73,8 @@ function canonicalChildren(parent:string):string[] {
 function isDirectory(path:string):boolean {try {return lstatSync(path).isDirectory();} catch {return false;}}
 function isFile(path:string):boolean {try {return lstatSync(path).isFile();} catch {return false;}}
 function resolvesToFile(path:string):boolean {try {return statSync(path).isFile();} catch {return false;}}
+
+/** The registered project a folder belongs to: itself, or the project it is inside. Task lists and instructions belong to the project, not its subfolders. */
+export function containingProject(workspaceRoot:string,cwd:string):SessionProject|null {
+  return sessionProjects(workspaceRoot).find(project=>cwd===project.cwd||cwd.startsWith(`${project.cwd}/`))??null;
+}

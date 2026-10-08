@@ -32,7 +32,7 @@ export const LAB_PROJECT_PREFIX = 'expertise-';
 /** Any folder inside a lab project is lab work too, so agent-ecology/expertise/<name> needs no registration of its own. */
 export function isLabProject(cwd: string | null | undefined): boolean {
   if (!cwd) return false;
-  return cwd.split('/').some(name => LAB_PROJECTS.includes(name) || name.startsWith(LAB_PROJECT_PREFIX));
+  return cwd.split('/').some(name => LAB_PROJECTS.includes(name)) || basename(cwd).startsWith(LAB_PROJECT_PREFIX);
 }
 
 export type SessionSpace = 'lab' | 'everyday';

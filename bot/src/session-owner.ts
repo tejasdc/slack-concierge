@@ -35,7 +35,7 @@ import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
-import {sessionProject,sessionProjects} from './session-projects';
+import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
@@ -730,7 +730,7 @@ export class SessionOwner {
    * refused, so no turn starts in a folder that is being moved.
    */
   moveSession(sessionId:number,requested:string) {
-    const project=sessionProject(this.defaultCwd,requested);
+    const project=sessionProject(this.defaultCwd,requested,{inside:true});
     if(!project)throw new SessionOwnerError('Choose a registered project or an existing folder inside one (for example agent-ecology/expertise/alan-kay).');
     const busy=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(sessionId);
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
@@ -1144,7 +1144,7 @@ export class SessionOwner {
   }
   createTask(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
-    const project=metadata.project?sessionProject(this.defaultCwd,metadata.project):null;
+    const project=metadata.project?containingProject(this.defaultCwd,metadata.project):null;
     if(!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
     const accepted=db.transaction(()=>{
       const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -1259,7 +1259,7 @@ export class SessionOwner {
       selector.effort=effort;
     }
     if(typeof input.project!=='string'||!input.project)throw new SessionOwnerError('New coding sessions require an explicit registered project; use sessions projects.');
-    const project=sessionProject(this.defaultCwd,input.project);
+    const project=sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
@@ -1294,7 +1294,7 @@ export class SessionOwner {
         if(existing.kind!=='create'||stablePayload(JSON.parse(existing.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
-      const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project);
+      const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
       const preferred=project&&input.provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
@@ -1534,9 +1534,9 @@ export class SessionOwner {
     let rerunSessionId:string|null=null;
     if(chosen&&chosen.provider!==session.provider_id) {
       const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
-      const project=sessionProjects(this.defaultCwd).find(item=>item.cwd===(meta.project??meta.cwd));
+      const project=sessionProject(this.defaultCwd,String(meta.project??meta.cwd??''),{inside:true});
       const created=this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'&&project?'develop':'chat',
-        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project:project.name}:{}),model:chosen.model,
+        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project:project.cwd}:{}),model:chosen.model,
         firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}});
       rerunSessionId=created.session.id;
     }

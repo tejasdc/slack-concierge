@@ -15,7 +15,7 @@ router-actions.sh sessions usage <source-flags> [--by-session] [--period today|w
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--batch <name>] -- <text>
-Requests sent with the same --batch name return together: you are woken once, with every answer, after the last one is answered. Use it when you ask several sessions and need all the answers before acting; each wake re-reads your whole conversation.
+Requests sent with the same --batch name return together: you are woken once, with every answer, after the last one is answered (a stalled one no longer holds the rest). Use a fresh name for each round. Use it when you ask several sessions and need all the answers before acting; each wake re-reads your whole conversation.
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --machine-need "<what only that machine can do>" --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
