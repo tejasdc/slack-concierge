@@ -19,8 +19,8 @@ Requests sent with the same --batch name return together: you are woken once, wi
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --machine-need "<what only that machine can do>" --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
-router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
-router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name>]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
