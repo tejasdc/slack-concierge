@@ -938,7 +938,10 @@ changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
 The owner answers every read from one event loop. When `owner_event_loop_lag` says it is held,
 `kill -URG <MainPID>` writes a 20-second JavaScript CPU profile with stacks to
-`$CONCIERGE_STATE_DIR/diagnostics/` (`owner-cpu-profile.ts`); name the code path from it before
+`$CONCIERGE_STATE_DIR/diagnostics/` (`owner-cpu-profile.ts`), but only when the service runs with
+`CONCIERGE_OWNER_CPU_PROFILE=1`: on 2026-10-07 starting it froze the owner 20–40 s each time and twice
+preceded a 40 GB runaway, so it is refused by default. `owner_memory` logs the owner's memory each
+minute (object types above 4 GB), and the unit's `MemoryMax` restarts a runaway. Name the code path before
 changing anything. Loops over ledger rows use `ledgerRows()`, never a statement's `iterate()`: an
 early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
 ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its

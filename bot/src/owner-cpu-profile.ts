@@ -64,9 +64,16 @@ export function startOwnerMemoryReadings() {
   timer.unref?.();
 }
 
+/**
+ * Off: on 2026-10-07 starting this profiler froze the owner for 20–40 s every time, and twice it
+ * was followed within minutes by the owner growing to 40 GB. The signal is acknowledged and
+ * refused until that is understood; CONCIERGE_OWNER_CPU_PROFILE=1 turns it back on deliberately.
+ */
+const PROFILE_ENABLED=process.env.CONCIERGE_OWNER_CPU_PROFILE==='1';
 export function installOwnerCpuProfileSignal() {
   startOwnerMemoryReadings();
   process.on('SIGURG',()=>{
+    if(!PROFILE_ENABLED){log('warn','owner_cpu_profile_refused',{reason:'disabled after it preceded 40 GB runaways on 2026-10-07'});return;}
     if(running)return;
     running=true;
     const started=new Date();
