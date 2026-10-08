@@ -1058,7 +1058,8 @@ deploy() {
     DEPLOY_FAILURE_REASON="Capture admission could not be restored after replacing capture ingress."
     unblock_capture_admission
     CAPTURE_RESTARTED=1
-  elif capture_runtime_needs_restart; then
+  elif capture_runtime_needs_restart || ! systemctl is-active --quiet "$CAPTURE_SERVICE"; then
+    # Also revive an ingress that is not running (a start limit hit earlier), whatever changed.
     DEPLOY_FAILURE_REASON="The capture ingress service could not be restarted."
     restart_unit "$CAPTURE_SERVICE"
     CAPTURE_RESTARTED=1

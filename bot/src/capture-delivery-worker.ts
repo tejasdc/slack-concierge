@@ -313,6 +313,8 @@ export class CaptureDeliveryWorker {
         if (!this.queueAvailable) {
           this.queueAvailable = true;
           this.queueError = null;
+          // An outage the breaker announced ends here, with "running again" on the same notice.
+          if (this.queueObservedFailure) clearRetryBreaker("capture-queue");
           log("info", this.queueObservedFailure ? "capture_delivery_queue_reconnected" : "capture_delivery_queue_connected",
             { queue_url: this.options.queueUrl });
         }
@@ -320,6 +322,11 @@ export class CaptureDeliveryWorker {
       } catch (error) {
         if (!(error instanceof CaptureQueueUnavailable)) throw error;
         this.queueObservedFailure = true;
+        // One episode, one notice: the breaker announces a queue that stays unreachable (or keeps
+        // refusing claims) and closes it when delivery resumes; Concierge itself stays up meanwhile.
+        recordRetryFailure({ key: "capture-queue", site: "capture", what: "Capture delivery",
+          failure: { kind: "transient", reason: error.cause instanceof Error ? error.cause.message : String(error.cause),
+            restartSignal: "capture ingress answers again" } });
         if (this.queueAvailable || !this.queueError) {
           this.queueAvailable = false;
           this.queueError = error.cause instanceof Error ? error.cause.message : String(error.cause);
