@@ -1,4 +1,5 @@
 import {createRequire} from 'node:module';
+import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import assert from 'node:assert/strict';
@@ -50,7 +51,23 @@ const server=await createServer({configFile:false,root:repository,cacheDir:join(
  server:{host:'127.0.0.1',port:0,hmr:false,proxy:{'/api/session-owner':`http://127.0.0.1:${gateway.server.address().port}`,'/fixture':`http://127.0.0.1:${ownerPort}`}},
  define:{__BUILD_ID__:JSON.stringify('loaded-fixture'),'import.meta.env.VITE_THINKERING_BUILD':JSON.stringify('loaded-fixture')}});
 await server.listen();const url=`http://127.0.0.1:${server.httpServer.address().port}/agents?sessionView=sessions&conversation=concierge%3A${session}`;
-const browser=await chromium.launch({headless:true}),context=await browser.newContext({viewport:{width:1440,height:900}});
+const browser=await chromium.launch({headless:true}),context=await browser.newContext({viewport:{width:1440,height:900},permissions:['clipboard-read','clipboard-write']});
+const exactContent='Full message Unicode 🙂 café\n'+'A complete retained sentence. '.repeat(20000)+'\nEXACT FULL MESSAGE END';
+const detailBody=JSON.stringify({content:exactContent}),detailBytes=Buffer.byteLength(detailBody),detailDigest=createHash('sha256').update(detailBody).digest('hex');
+let detailReads=0,corruptDetail=false;
+// Synthetic retained bytes isolate the real browser controller, adapter verifier,
+// renderer and clipboard from provider/storage behavior covered in other probes.
+await context.route('**/api/session-owner/**/history**',async route=>{
+ const requestUrl=new URL(route.request().url());
+ if(requestUrl.pathname.endsWith('/messages/full-message-fixture/detail')){
+  detailReads++;assert.equal(requestUrl.searchParams.get('digest'),detailDigest);assert.equal(requestUrl.searchParams.has('part'),false);
+  return route.fulfill({status:200,contentType:'application/json',body:corruptDetail?detailBody.replace('café','cafe'):detailBody});
+ }
+ if(!requestUrl.pathname.endsWith('/history'))return route.continue();
+ const response=await route.fetch(),value=await response.json();
+ if(Array.isArray(value.messages))value.messages.push({id:'full-message-fixture',role:'assistant',content:'Retained preview only.',tool:null,phase:null,contentDetail:{digest:detailDigest,bytes:detailBytes,parts:Math.ceil(detailBytes/4096)}});
+ return route.fulfill({response,json:value});
+});
 const errors=[];let page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
 try{
  await fetch(`http://127.0.0.1:${ownerPort}/fixture/start-load`,{method:'POST'});
@@ -99,8 +116,27 @@ try{
  assert.equal(notificationHandled,true);
  const target=page.locator('[data-message-id="fixture-message"][data-message-target="true"]');
  await expect(target).toBeInViewport();const notificationMs=Date.now()-notificationStarted;
+ assert.equal(detailReads,0);
+ const fullMessage=page.locator('[data-message-id="full-message-fixture"]');
+ await fullMessage.getByRole('button',{name:'Read full message',exact:true}).click();
+ await expect(fullMessage).toContainText('EXACT FULL MESSAGE END');assert.equal(detailReads,1);
+ await page.screenshot({path:join(process.cwd(),"tmp/reviews/full-message-expanded.png")});
+ await fullMessage.getByRole('button',{name:'Show preview',exact:true}).click();
+ await expect(fullMessage).not.toContainText('EXACT FULL MESSAGE END');
+ async function copyAction(label){await fullMessage.getByRole('button',{name:'Message actions',exact:true}).click();await fullMessage.locator('.session-message-menu').getByRole('button',{name:label,exact:true}).click();}
+ await copyAction('Copy text');
+ await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toBe(exactContent);
+ await fullMessage.getByRole('button',{name:'Show preview',exact:true}).click();
+ await copyAction('Copy as quote');
+ await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toBe(exactContent.split('\n').map(line=>'> '+line).join('\n'));
+ await fullMessage.getByRole('button',{name:'Show preview',exact:true}).click();
+ corruptDetail=true;await fullMessage.getByRole('button',{name:'Read full message',exact:true}).click();
+ await expect(fullMessage).toContainText('The full message could not be loaded. Try again.');
+ await expect(fullMessage).not.toContainText('EXACT FULL MESSAGE END');
+ assert.equal(detailReads,4);
+ const fullMessageEvidence={kind:'full-message-browser',bytes:detailBytes,noEagerDetailRead:true,singleRequestPerExpansion:true,exactUnicodeCopy:true,exactQuote:true,corruptionRefused:true,detailReads,source:'synthetic retained bytes; real whole App, browser adapter, renderer and clipboard'};
  assert.deepEqual(errors,[]);
  const directory=join(process.cwd(),'tmp/reviews');await mkdir(directory,{recursive:true});const screenshot=join(directory,'loaded-whole-conversation.png');await page.screenshot({path:screenshot,fullPage:true});
- console.log(JSON.stringify({kind:'browser-boundary',engine:'Chromium on Linux',paintMs,coldMs,warmCachedMs,notificationMs,notification:'synthetic service-worker delivery; actual notification routing and exact-message viewport',restart,tabClosure:true,cachedViewWhileRefreshUnavailable:true,stableActionAndSequence:true,acceptedExactlyOnce:true,serverCustodyBeforeClosure:true,screenshot,productionGateway:true,wholeConversationController:true,authentication:'synthetic approved-device identity',providerObservation:after.providerObservation,providerAdmission:'fixture starts actual adapter after owner acceptance; normal queue coordinator is not exercised'}));
+ console.log(JSON.stringify({kind:'browser-boundary',fullMessageEvidence,engine:'Chromium on Linux',paintMs,coldMs,warmCachedMs,notificationMs,notification:'synthetic service-worker delivery; actual notification routing and exact-message viewport',restart,tabClosure:true,cachedViewWhileRefreshUnavailable:true,stableActionAndSequence:true,acceptedExactlyOnce:true,serverCustodyBeforeClosure:true,screenshot,productionGateway:true,wholeConversationController:true,authentication:'synthetic approved-device identity',providerObservation:after.providerObservation,providerAdmission:'fixture starts actual adapter after owner acceptance; normal queue coordinator is not exercised'}));
 }catch(error){console.error(JSON.stringify({failure:String(error),page:await page.locator('body').innerText(),errors,commands:await page.evaluate(()=>window.fixture?.retainedBrowserCommands()),server:await page.evaluate(()=>fetch('/fixture/state').then(r=>r.json()))}));throw error;}
 finally{await browser.close();await server.close();ownerClient.close();await gateway.close();await loader.close();await rm(fixtureDirectory,{recursive:true,force:true});}

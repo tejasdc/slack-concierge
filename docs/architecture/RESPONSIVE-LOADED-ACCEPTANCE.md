@@ -77,6 +77,15 @@ authentication, production asset loading, Safari/iOS and native notification del
 outside this fixture. Late peer return is covered by the separate restart fixture below,
 not by the loaded browser journey. A transport pause alone is never reported as tab closure.
 
+The full-App browser also receives a synthetic 600 KB retained Unicode message preview.
+It must make no eager detail request, expand through one verified full-body request, collapse,
+and copy the exact complete text and newline-prefixed quote through the real clipboard.
+A response with altered bytes must leave the preview intact and report failure. These checks
+exercise the shipping browser adapter, conversation renderer and message actions; the retained
+body is intercepted at the browser network boundary, so this is not backend storage/proxy proof.
+`browser.fullMessageEvidence` records that boundary and the four explicit detail requests.
+The expanded viewport is retained as `tmp/reviews/full-message-expanded.png`.
+
 `responsive-restart-acceptance.ts` separately exercises a real owner-process death after
 canonical acceptance but before delivery acknowledgement. The capture process stays alive;
 a replacement owner recovers the dead claim, reuses the accepted input, and settles the
