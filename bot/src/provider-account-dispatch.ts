@@ -10,7 +10,7 @@ import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
-import {claudeAccountSelection} from './provider-account-selection';
+import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
 import {log} from './log';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 
@@ -120,18 +120,19 @@ const proving=new Set<string>();
 /** A home that just failed is not checked again for this long, so a dead login costs one check, not one per turn. */
 const RECHECK_AFTER_FAILURE_MS=10*60_000;
 const failedAt=new Map<string,number>();
-export function markClaudeHomeVerified(home:string|null){if(home){provenHomes.add(home);failedAt.delete(home);}}
-export function markClaudeHomeRefused(home:string|null){if(home){provenHomes.delete(home);failedAt.set(home,Date.now());}}
+export function markClaudeHomeVerified(home:string|null){if(home){provenHomes.add(home);failedAt.delete(home);recordClaudeHomeProof(home,true);}}
+export function markClaudeHomeRefused(home:string|null){if(home){provenHomes.delete(home);failedAt.set(home,Date.now());recordClaudeHomeProof(home,false);}}
 /** A newly filed login or an explicit switch starts the home's evidence over. */
-export function forgetClaudeHomeCheck(home:string|null){if(home){provenHomes.delete(home);failedAt.delete(home);}}
+export function forgetClaudeHomeCheck(home:string|null){if(home){provenHomes.delete(home);failedAt.delete(home);recordClaudeHomeProof(home,false);}}
 function provenOrProve(account:string,home:string):boolean{
   if(provenHomes.has(home))return true;
+  if(claudeHomeProven(home)){provenHomes.add(home);return true;}
   if(Date.now()-(failedAt.get(home)??0)<RECHECK_AFTER_FAILURE_MS)return false;
   if(!proving.has(home)){
     proving.add(home);
     void claudeAccountWorks(home,account).then(check=>{
       // Work held because no account had room may now have one: release it to try again.
-      if(check.ok){provenHomes.add(home);releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
+      if(check.ok){markClaudeHomeVerified(home);releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
       else {failedAt.set(home,Date.now());log('warn','claude_account_home_unproven',{account,reason:check.reason});}
     }).catch(()=>{}).finally(()=>proving.delete(home));
   }

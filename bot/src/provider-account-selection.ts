@@ -16,3 +16,20 @@ export function selectClaudeAccount(profileId:string,label:string):void {
   db.query(`INSERT INTO provider_account_selection(provider,profile_id,account_label,revision) VALUES('claude-code',?,?,1)
     ON CONFLICT(provider) DO UPDATE SET profile_id=excluded.profile_id,account_label=excluded.account_label,revision=revision+1`).run(profileId,label);
 }
+
+/**
+ * Claude account homes proven to do real work (the account check, or a finished turn). Kept in the
+ * ledger so a restart does not forget them: on 2026-10-07 a restart at 8:43 PM left the account
+ * with room unproven, its new check took two minutes, and work kept failing on the full account.
+ */
+db.exec(`CREATE TABLE IF NOT EXISTS claude_home_proof (
+  home TEXT PRIMARY KEY,
+  proven_at_ms INTEGER NOT NULL
+)`);
+export function claudeHomeProven(home:string):boolean {
+  return !!db.query('SELECT 1 FROM claude_home_proof WHERE home=?').get(home);
+}
+export function recordClaudeHomeProof(home:string,proven:boolean):void {
+  if(proven)db.query('INSERT INTO claude_home_proof(home,proven_at_ms) VALUES(?,?) ON CONFLICT(home) DO UPDATE SET proven_at_ms=excluded.proven_at_ms').run(home,Date.now());
+  else db.query('DELETE FROM claude_home_proof WHERE home=?').run(home);
+}

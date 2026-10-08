@@ -1330,8 +1330,17 @@ export async function runClaudeCodeTurn(input: {
   if (cancellationReason) throw cancellationReason;
   if (modelSwitchError) {
     const failed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
-    throw new ProviderDispatchError({ message: modelSwitchError.message, terminalConfirmed: true,
-      toolsUsed: failed.toolsUsed, providerSessionId: failed.sessionUUID });
+    // A model switch is only ever attempted because this account's usage was refused, so its
+    // failure is that refusal: reported as usage exhaustion, the turn moves to an account with
+    // room. Reported as a plain error ("429 … model not changed"), it failed on the full account
+    // while the other had room (2026-10-07, 9:02 PM).
+    const waitsForReset = usageResetAt !== null && usageResetAt > Date.now();
+    throw new ProviderDispatchError({
+      message: `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} ${waitsForReset ? 'This input keeps its place and is tried again then.' : 'This input will not retry automatically.'} ${modelSwitchError.message}`,
+      failureClass: "parked_terminal", terminalConfirmed: true,
+      toolsUsed: failed.toolsUsed, assistantOutput: failed.assistantOutput, providerSessionId: failed.sessionUUID,
+      ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
+    });
   }
   if (!initialPromptAcknowledged) {
     throw new Error("Claude Code ended before acknowledging the initial user message.");
