@@ -1,9 +1,46 @@
 {
  "about": "Which of Concierge's sentences Tejas reads in thnkr.ing: everything passed to a carrier call, written inside a carrier function, or in a file whose words are all for him. Checked at every commit by thinkering's scripts/check-user-words.mjs (rules: scripts/his-words-rules.json there). A new path that puts words in front of him is added here in the same commit.",
- "sources": ["bot/src", "bot/scripts"],
+ "sources": [
+  "bot/src",
+  "bot/scripts"
+ ],
  "select": {
-  "calls": ["publishProviderFreeNotice", "publishRetryBreakerNotice", "hisWords"],
-  "functions": ["providerAuthView", "claudeInUseSentence", "inputStatusDetail", "inputHold", "heldRequestNotice", "providerTroubleText", "noticeUsageHold", "noticeAuthHold", "noticeTurnContinuation", "usageWarningText", "publishExpiringResetNotices", "openNotice", "closeNotices", "resolveRetryNotices", "stuckUpdate", "deploymentWait"],
-  "files": ["bot/scripts/key-change-notice.ts", "bot/scripts/service-notice.ts"]
- }
+  "calls": [
+   "publishProviderFreeNotice",
+   "publishRetryBreakerNotice",
+   "hisWords"
+  ],
+  "functions": [
+   "providerAuthView",
+   "claudeInUseSentence",
+   "inputStatusDetail",
+   "inputHold",
+   "heldRequestNotice",
+   "providerTroubleText",
+   "noticeUsageHold",
+   "noticeAuthHold",
+   "noticeTurnContinuation",
+   "usageWarningText",
+   "publishExpiringResetNotices",
+   "openNotice",
+   "closeNotices",
+   "resolveRetryNotices",
+   "stuckUpdate",
+   "deploymentWait",
+   "fileAgentAnswer"
+  ],
+  "files": [
+   "bot/scripts/key-change-notice.ts",
+   "bot/scripts/service-notice.ts"
+  ]
+ },
+ "derived": [
+  {
+   "about": "The line his Lock Screen and reading item show for an agent's answer, made from the answer at run time. Run over real answers whose first sentence alone was a fragment; every result must pass the module's own fragment test.",
+   "module": "bot/src/answer-line.ts",
+   "export": "answerLine",
+   "judge": "fragmentReason",
+   "samples": "bot/src/answer-line-samples.json"
+  }
+ ]
 }

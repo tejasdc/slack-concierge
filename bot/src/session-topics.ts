@@ -1,4 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
+import {answerLine,fragmentReason} from './answer-line';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
@@ -1119,7 +1120,11 @@ function questionBrief(item:any) {
     if(!text)throw new TopicError(`uncertain[${index}] needs text.`);
     return {text,owner:typeof entry==='object'&&entry?.owner==='agent'?'agent':'human'};
   });
-  return {decision:text(item.decision,'decision',2000),
+  const decision=text(item.decision,'decision',2000);
+  // The decision is the body of his notification; a fragment there is what reached his Lock Screen as "1.".
+  const fragment=fragmentReason(decision);
+  if(fragment)throw new TopicError(`decision ${fragment}`,400,'DECISION_FRAGMENT');
+  return {decision,
     why:{text:typeof why.text==='string'?why.text:'',sources:idList(why.sources,'why.sources')},
     known:typeof item.known==='string'?item.known:'',
     choices,uncertain,
@@ -1835,7 +1840,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   }
   return post;
 }
-const headline=(value:string)=>firstSentence(value.replace(/^\s*TL;DR:\s*/i,''),200);
+const headline=(value:string)=>answerLine(value);
 function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
@@ -1872,7 +1877,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const brief=decision
       ?{decision:words.slice(0,2000),why:{text:`${agent} needs this from you to go on. Reply in this thread: your reply goes straight to that agent.`,sources:[answer.postId]},
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
-      :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:headline(words)||'An agent answered in this thread.',
+      :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
     if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)))return;
     const at=nowIso(),generation=raiseGeneration(session);
