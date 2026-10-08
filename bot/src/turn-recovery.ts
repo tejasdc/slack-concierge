@@ -96,35 +96,56 @@ interface AgentSessionStatusProjectionResult {
 /**
  * How long a turn may stay 'running' with no executions row written before this coordinator
  * declares it a ghost. Dispatch should either reach `retainExecutionIntent` or raise an error
- * within a few seconds; 120 s leaves generous headroom for pre-dispatch work (account check,
- * usage read, history preparation) without letting a silent stall sit for an hour.
+ * within a few seconds. The age is measured from turn creation, not claim; the active
+ * queue and dispatch registries protect work that is actually running.
  */
 export const GHOST_TURN_INTERRUPT_AGE_MS = 120_000;
 
 /**
- * Interrupts turns the current coordinator holds in 'running' with no matching executions row,
- * started more than `maxAgeMs` ago. These are the ghosts the 2026-10-08 incident uncovered:
+ * Recovers turns the current coordinator holds in 'running' with no matching executions row,
+ * created more than `maxAgeMs` ago. These are the ghosts the 2026-10-08 incident uncovered:
  * dispatch marked the turn running but something swallowed the launch before an executions row
  * was written, and neither existing recovery path catches a stalled turn owned by the LIVE
  * coordinator. The sweep runs at startup (next to the dead-owner reconciliation) and on a
  * periodic watchdog cadence throughout the coordinator's lifetime.
  *
- * Returns the number of turns interrupted. Each interrupt uses the shared
- * `interruptOrphanedTurn` transaction so triggers fire and the sessions move back to idle.
+ * Returns the number of turns recovered. Never-admitted work returns to the existing FIFO;
+ * turns with possible effects or Stop remain terminal and require reconciliation.
  */
 export function sweepGhostRunningTurns(instanceId: string, activeTurnIds: readonly number[], maxAgeMs = GHOST_TURN_INTERRUPT_AGE_MS): number {
-  let interrupted = 0;
+  let recovered = 0;
   for (const turn of listGhostRunningTurnsForOwner(instanceId, maxAgeMs)) {
     // Forks, ChatGPT and direct children have no execution-host row. The local runner is
     // authoritative while it owns the turn, including preparation before host admission.
     if (activeTurnIds.includes(turn.id)) continue;
-    const reason = `Coordinator held this turn running without producing an execution host record for ${Math.round(maxAgeMs / 1000)} s; interrupted so the session's queued work can dispatch. The input is preserved in history.`;
+    const evidence = db.query(`SELECT
+      (provider_admission_intended_at IS NOT NULL OR provider_started_at IS NOT NULL
+        OR provider_turn_id IS NOT NULL OR provider_input_acknowledged_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM turn_steering_messages
+          WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
+        OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)) AS effect_possible
+      FROM turns WHERE id=? AND status='running' AND owner_instance_id IS ?`)
+      .get(turn.id, instanceId) as { effect_possible: number } | null;
+    if (!evidence) continue;
+    const batch = getTurnArtifactBatch(turn.id);
+    const artifactActivity = batch && (batch.status !== "collecting"
+      || (existsSync(batch.directory_path) && findTurnArtifacts(batch.directory_path).length > 0));
+    const unattempted = !evidence.effect_possible && !artifactActivity && !turnHasAmbiguousAgentProgressStart(turn.id);
+    if (unattempted && !turn.stop_requested_at && requeueOrphanedPreAdmissionTurn(turn.id, instanceId)) {
+      recovered += 1;
+      log("warn", "ghost_running_turn_requeued", { turn_id: turn.id, session_id: turn.session_id, turn_kind: turn.turn_kind });
+      continue;
+    }
+    const reason = turn.stop_requested_at
+      ? "Stopped before confirmed provider cancellation; any effects require reconciliation."
+      : `Coordinator lost this turn before a confirmed result; possible effects require reconciliation.`;
+    abandonTurnArtifactBatch(turn.id, reason);
     if (interruptOrphanedTurn(turn.id, instanceId, reason)) {
-      interrupted += 1;
+      recovered += 1;
       log("warn", "ghost_running_turn_interrupted", { turn_id: turn.id, session_id: turn.session_id, turn_kind: turn.turn_kind });
     }
   }
-  return interrupted;
+  return recovered;
 }
 
 export async function reconcileRecoverableTurns(input: {

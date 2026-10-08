@@ -25,6 +25,8 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
 
   constructor(private readonly options: SessionTurnQueueCoordinatorOptions<TClaim>) {}
 
+  get activeTurns(): readonly number[] { return [...this.activeTurnIds]; }
+
   wake() {
     if (this.stopped || this.options.shouldStop()) return;
     if (this.pumping) {
