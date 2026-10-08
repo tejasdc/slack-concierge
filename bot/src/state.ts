@@ -115,7 +115,6 @@ CREATE TABLE IF NOT EXISTS turns (
   UNIQUE(session_id, slack_user_msg_ts)
 );
 CREATE INDEX IF NOT EXISTS turns_queued_order ON turns(id) WHERE status='queued';
-CREATE INDEX IF NOT EXISTS turns_session_order_status ON turns(session_id,id,status);
 
 CREATE TABLE IF NOT EXISTS turn_dependencies (
   turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
