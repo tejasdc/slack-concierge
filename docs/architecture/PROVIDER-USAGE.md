@@ -610,6 +610,12 @@ seven days. A separate worker reads provider transcripts incrementally and keeps
 cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
 the ledger. The ledger is read only for session titles, projects, and account choices.
 The worker does not copy or modify transcripts and does not hold the owner event loop.
+It runs in the background: every usage reading starts a scan when the last one is over five
+minutes old, and a read answers from the latest result with its `computedAt` (only the first
+read after a start waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
+was stalling for other reasons one read took 50 s, the Accounts page gave up at 30 s and told
+Tejas the session owner had not answered. `usage_breakdown_refreshed` / `_refresh_failed` log
+each scan's duration.
 
 Shares use published API token prices as an **allowance proxy**, not a claim that a
 subscription's five-hour meter is denominated in dollars. The response includes the
