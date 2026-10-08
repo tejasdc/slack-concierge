@@ -122,7 +122,8 @@ authorization or a change to the default rapid-iteration policy.
   retry and database-retry primitives, but never the application notice worker, retry adapter or
   Concierge ledger; the service user is deliberately not given that production state path.
   It also keeps exact authenticated human commands until the canonical owner answers; a server
-  custody receipt is never an owner receipt. See [human command intake](docs/architecture/HUMAN-COMMAND-INTAKE.md).
+  custody receipt is never an owner receipt. Notification replies use the same intake, freeze their
+  resolved owner target, and publish one Inbox notice if later refused. See [human command intake](docs/architecture/HUMAN-COMMAND-INTAKE.md).
 - An outside CLI agent uses `router-actions.sh external` for Inbox capture or an addressed request;
   its named authorship and pollable reply live in the owner ledger, with no invented requester session.
   Outside capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.

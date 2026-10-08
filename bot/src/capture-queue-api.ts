@@ -67,7 +67,7 @@ async function requestBody(request: Request): Promise<Record<string, unknown>> {
   return parsed as Record<string, unknown>;
 }
 
-const commandPath = /^\/sessions\/v1\/(?:sessions(?:\/[a-z][a-z0-9-]*%3A[1-9][0-9]*\/(?:inputs|actions|actions\/[A-Za-z0-9_-]+\/cancel|message-actions|stop|outage-choice|reconcile|bind|forks|comparisons|captures|tasks))?|operations\/[A-Za-z0-9:_-]+\/cancel|inbox\/topics(?:\/[A-Za-z0-9:_-]+\/actions)?|consultations|resurrections|saved-work(?:\/settings|\/[0-9]+\/(?:start|time|schedule|drop)))$/i;
+const commandPath = /^\/sessions\/v1\/(?:sessions(?:\/[a-z][a-z0-9-]*%3A[1-9][0-9]*\/(?:inputs|notification-replies|actions|actions\/[A-Za-z0-9_-]+\/cancel|message-actions|stop|outage-choice|reconcile|bind|forks|comparisons|captures|tasks))?|operations\/[A-Za-z0-9:_-]+\/cancel|inbox\/topics(?:\/[A-Za-z0-9:_-]+\/actions)?|consultations|resurrections|saved-work(?:\/settings|\/[0-9]+\/(?:start|time|schedule|drop)))$/i;
 
 function humanCommand(body:Record<string,unknown>):HumanCommand {
   const command=body as Record<string,unknown>;

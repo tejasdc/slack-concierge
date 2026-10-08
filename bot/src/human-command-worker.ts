@@ -46,6 +46,7 @@ export class HumanCommandWorker {
     queueUrl:string;queueToken:string;
     prepare:(command:HumanCommand)=>Promise<CommandDelivery>;
     deliver:(command:HumanCommand,prepared:unknown)=>Promise<CommandDelivery>;
+    refused?:(command:HumanCommand,result:CommandDelivery)=>Promise<void>|void;
     fetch?:typeof fetch;
   }>){ }
 
@@ -108,6 +109,9 @@ export class HumanCommandWorker {
         await this.queue(`/commands/${encodeURIComponent(command.actionId)}/retry`,{claimId,nextAttemptMs:Date.now()+delay});
         return;
       }
+      // A notification can close after transport custody. A later semantic refusal must
+      // still reach its human; publish idempotently before settling that retained command.
+      if(result.status>=400)await this.options.refused?.(command,result);
       await this.queue(`/commands/${encodeURIComponent(command.actionId)}/settle`,{
         claimId,ownerStatus:result.status,ownerResponse:result.value,decisionStage,
       });

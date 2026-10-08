@@ -291,6 +291,7 @@ import {
   loadCaptureQueueTokenFromPath,
 } from "./capture-delivery-worker";
 import { HumanCommandWorker, callThinkeringCommand } from "./human-command-worker";
+import {publishProviderFreeNotice} from './provider-free-notice';
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
   getLatestDeploymentTurnReactionStateForSession,
@@ -4099,6 +4100,14 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         deliver: (command,prepared)=>callThinkeringCommand("/session/command-deliver-prepared",{
           version:1,method:command.method,path:command.path,prepared,
         },process.env.THINKERING_SESSION_CAPABILITY_SOCKET || "/run/thinkering/session-capabilities.sock"),
+        refused:command=>{
+          if(!command.path.endsWith('/notification-replies'))return;
+          const path='/agents?'+new URLSearchParams({conversation:command.sessionId});
+          publishProviderFreeNotice(db,{key:`notification-reply-refused:${command.actionId}`,kind:'notification_reply_refused',
+            text:`Your notification reply was refused. [Open the conversation](https://thnkr.ing${path}) to retry with the words kept below.\n\n${String(command.body.text??'')}`,
+            payload:{actionId:command.actionId,sessionId:command.sessionId,inputId:command.body.inputId??null}});
+          fileServiceNotices();
+        },
       });
       humanCommandWorker.start();
     }

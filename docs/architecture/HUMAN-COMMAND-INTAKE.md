@@ -47,3 +47,12 @@ forwarding. A Thinkering outage does not remove ingress custody, but no owner ac
 until the gateway returns. The browser outbox covers outages before ingress can answer. The
 command worker starts independently of Slack sign-in and capture delivery readiness. Logs name
 action IDs and stage durations, never command text.
+
+Notification replies use this same intake before consulting the owner. Each reply UUID names a
+one-message stream, so a device retry retains exactly the same envelope. At preparation, the
+gateway resolves the original Inbox thread or outage choice and freezes both the owner path and
+body. A later retry cannot reinterpret an outage answer as new agent input. A lagging projection
+holds preparation rather than declaring the thread missing. The native app distinguishes a saved,
+queued reply from one already accepted by the conversation. If preparation or the owner later
+refuses a retained notification reply, the worker publishes one provider-free Inbox notice with
+the retained words before settling it; notice failure leaves the command recoverable.
