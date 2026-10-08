@@ -78,6 +78,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'owed') return Response.json(sessions.owed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
+        if (operation === 'move') return Response.json(sessions.move(input));
         if (operation === 'post') return Response.json(sessions.post(input));
         if (operation === 'outcome') return Response.json(sessions.outcome(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));

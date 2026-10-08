@@ -486,6 +486,24 @@ export class SessionCommunicationCoordinator {
      * there through three refused corrections from the session it belonged to (September 22,
      * 2026). A name Tejas set himself still wins and is never written over.
      */
+    /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
+    move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        if(!actor.inputId)throw new Error('Moving a session needs a native source input.');
+        const target=resolveSessionAddress(input.address);
+        return db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...JSON.parse(saved.input.receipt_json??'{}').moved};
+            const moved=this.dependencies.owner!.moveSession(target.id,input.project);
+            recordSessionEvent({eventId:`moved:${saved.input.id}`,sessionId:target.id,inputId:saved.input.id,kind:'moved',payload:{...moved,by:`concierge:${actor.session}`}});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
+            return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
+        })();
+    }
     title(input:{source:CommunicationSource;action_id:string;title:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source),title=normalizeSessionTitle(input.title);

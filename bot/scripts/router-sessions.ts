@@ -23,6 +23,8 @@ router-actions.sh sessions bank --provider <alias> --project <registered-project
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name>]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
+router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
+Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
@@ -97,6 +99,7 @@ Use sessions cancel <request-id> to withdraw your own request, for example one y
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
+  | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
@@ -303,6 +306,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
   }
   if(first==='board')return parseBoardArgs(args);
+  if(first==='move') {
+    // sessions move <address> --project <project or project/folder> <source-flags> --action-id A
+    const address=args.shift();
+    if(!address||address.startsWith('--'))invalid('move needs the exact session address first.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--project'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid move option ${flag}.`);
+      flags.set(flag,value);
+    }
+    if(!flags.get('--project')||!flags.get('--action-id'))invalid('move needs --project <project or project/folder> and a stable --action-id.');
+    return {operation:'move',body:{source:sourceFrom(flags),action_id:flags.get('--action-id'),address,project:flags.get('--project')}} as SessionCommunicationRequest;
+  }
   if(first==='watch') {
     const sub=args.shift();
     if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');

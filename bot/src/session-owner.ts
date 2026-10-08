@@ -724,6 +724,20 @@ export class SessionOwner {
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
       capabilities:{send:this.canSend(session),resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
+  /**
+   * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
+   * the next turn resumes the same conversation there; a session with work running or queued is
+   * refused, so no turn starts in a folder that is being moved.
+   */
+  moveSession(sessionId:number,requested:string) {
+    const project=sessionProject(this.defaultCwd,requested);
+    if(!project)throw new SessionOwnerError('Choose a registered project or an existing folder inside one (for example agent-ecology/expertise/alan-kay).');
+    const busy=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(sessionId);
+    if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
+    const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
+    updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd});
+    return {from,to:project.cwd};
+  }
   list(space?:SessionSpace){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).filter(row=>!space||sessionSpace(row)===space).map(row=>this.view(row));}
   /**
    * The lab as he supervises it: its sessions and every request that crossed into, out of or

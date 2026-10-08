@@ -30,8 +30,28 @@ export function sessionProjects(workspaceRoot:string):SessionProject[] {
   return [...byName.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 
+/**
+ * A registered project, or a folder inside one: `agent-ecology/expertise/alan-kay` (or its absolute
+ * path) starts a session in that folder under the project's authority. Work that belongs to a
+ * project stays inside it instead of becoming a top-level project of its own (Tejas, 2026-10-08:
+ * "Why do we have an expertise folder in the root workspace?"). The folder must already exist and
+ * must not leave the project through a link.
+ */
 export function sessionProject(workspaceRoot:string,requested:string):SessionProject|null {
-  return sessionProjects(workspaceRoot).find(project=>project.name===requested||project.cwd===requested)??null;
+  const projects=sessionProjects(workspaceRoot);
+  const exact=projects.find(project=>project.name===requested||project.cwd===requested);
+  if(exact)return exact;
+  for(const project of projects) {
+    const inside=requested.startsWith(`${project.name}/`)?join(project.cwd,requested.slice(project.name.length+1))
+      :requested.startsWith(`${project.cwd}/`)?requested:null;
+    if(!inside)continue;
+    try {
+      const cwd=realpathSync(inside);
+      if(cwd.startsWith(`${project.cwd}/`)&&lstatSync(cwd).isDirectory())return {name:`${project.name}/${cwd.slice(project.cwd.length+1)}`,cwd};
+    } catch {/* no such folder */}
+    return null;
+  }
+  return null;
 }
 
 // A vault is a workspace child (the server's vault/) or grandchild (the Mac's
