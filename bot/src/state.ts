@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS session_communication_requests (
 CREATE INDEX IF NOT EXISTS session_communication_pending ON session_communication_requests(status) WHERE outcome IS NULL;
 CREATE INDEX IF NOT EXISTS session_communication_due ON session_communication_requests(due_at_ms) WHERE outcome IS NULL AND overdue_at_ms IS NULL;
 CREATE INDEX IF NOT EXISTS session_communication_turn_lookup ON session_communication_requests(target_turn_id);
+CREATE INDEX IF NOT EXISTS session_communication_lab_source ON session_communication_requests(source_session_id,request_id);
+CREATE INDEX IF NOT EXISTS session_communication_lab_target ON session_communication_requests(target_session_id,request_id);
 CREATE TABLE IF NOT EXISTS session_communication_events (
   event_id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES session_communication_requests(request_id) ON DELETE CASCADE,
@@ -802,6 +804,7 @@ CREATE TABLE IF NOT EXISTS session_saved_messages (
   PRIMARY KEY(session_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS session_saved_messages_recent ON session_saved_messages(created_at DESC);`);
+db.exec("CREATE INDEX IF NOT EXISTS session_saved_messages_page ON session_saved_messages(created_at DESC,session_id DESC,message_id DESC)");
 // The text is kept as it read when saved, so the Saved list can show what was kept
 // without re-reading every provider transcript it came from.
 addColumn("session_saved_messages", "excerpt", "excerpt TEXT");
@@ -816,6 +819,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS session_followed_messages (
   PRIMARY KEY(session_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS session_followed_messages_recent ON session_followed_messages(created_at DESC);`);
+db.exec("CREATE INDEX IF NOT EXISTS session_followed_messages_page ON session_followed_messages(created_at DESC,session_id DESC,message_id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS saved_work_queued_page ON turns(id DESC) WHERE saved_kind IS NOT NULL AND status='queued'");
 db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");

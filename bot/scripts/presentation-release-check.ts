@@ -24,7 +24,7 @@ for(const entry of ['presentation-message-worker.ts','presentation-search-read.t
   readOnlyDependency(join(root,'src',entry));
 
 const fixtures:Record<string,()=>Promise<unknown>|unknown>={};
-for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixtures.ts','topic-growth-fixtures.ts']){
+for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixtures.ts','topic-growth-fixtures.ts','owner-collection-growth-fixtures.ts','lab-growth-fixtures.ts']){
   const path=join(import.meta.dir,module);
   if(!existsSync(path))throw new Error(`Presentation release gate is incomplete: missing ${module}`);
   const exported=(await import(path)).READ_GROWTH_FIXTURES;

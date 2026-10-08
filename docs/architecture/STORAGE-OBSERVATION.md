@@ -54,3 +54,6 @@ Each request now records a normalized start and completion under one random requ
 including actual encoded JSON response bytes. A blocked or crashed request therefore leaves a
 start even when no completion can be logged. Concurrent calls to the same route retain separate
 in-flight identities. Streams retain separate lifetime/transport observations.
+# Bounded owner collections
+
+Saved messages, followed messages, waiting saved work, and the Lab's agent sessions and requests are separate indexed pages. Each page has a cursor and explicit coverage; the browser must offer continuation rather than treating the first page as the whole collection. Lab request membership follows the current project space of either participating session. A session move enqueues bounded reclassification slices in the presentation worker; the owner reads only the prepared request IDs and a fixed number of exact records. These reads have release fixtures at 100, 1,000, and 10,000 source rows and registered storage and response budgets. See `owner-collection-pages.ts`, `prepared-lab-requests.ts`, and the presentation reader registry.

@@ -36,9 +36,6 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/sessions/:id',purpose:'legacy receipts page; MUST REMOVE after prepared consumers migrate',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/sessions/:id/view',purpose:'selected exact view; attention prepared, other costs under review',maxResponseBytes:2*MiB,kind:'legacy'},
  {path:'/sessions/:id/history',purpose:'legacy cursor-paged provider history; retire after prepared message readers',maxResponseBytes:8*MiB,kind:'legacy'},
- {path:'/lab',purpose:'legacy bounded lab list; retire after prepared catalogue',maxResponseBytes:8*MiB,kind:'legacy'},
- {path:'/saved',purpose:'legacy saved-session collection; migrate to prepared catalogue',maxResponseBytes:8*MiB,kind:'legacy'},
- {path:'/saved-work',purpose:'legacy saved-work collection; add page contract',maxResponseBytes:8*MiB,kind:'legacy'},
 ];
 function matches(pattern:string,path:string){
  const expected=pattern.split('/').slice(1),actual=path.split('/').slice(1);

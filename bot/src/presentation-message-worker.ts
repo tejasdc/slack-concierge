@@ -9,6 +9,7 @@ import {preparedInboxDisplay} from './presentation-inbox-display';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
+import {PreparedLabRequests} from './prepared-lab-requests';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -86,6 +87,7 @@ const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueL
   {...row,native_metadata_json:row.native_metadata_json??'{}'}));
 const receipts=new PreparedReceipts(source,prepared);
 const topics=new PreparedTopics(source,prepared);
+const labRequests=new PreparedLabRequests(source,prepared);
 const leaseToken=randomUUID();
 const leaseTimeoutMs=10_000;
 function claimLease():boolean {
@@ -245,6 +247,7 @@ async function rebuild() {
       cards.beginRebuild(generation);
       receipts.beginRebuild(generation);
       topics.beginRebuild(generation);
+      labRequests.beginRebuild(generation);
     })();
     let after=0,more=true;
     const resolveRoot=inboxRootResolver(source);
@@ -275,9 +278,17 @@ async function rebuild() {
       const rows=source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT 50').all(sessionAfter) as {id:number}[];
       if(!rows.length)break;
       prepared.transaction(()=>{keepLease();for(const row of rows)writeSession(row.id);
-        cards.rebuildPage(generation,sessionAfter,50);})();
+        cards.rebuildPage(generation,sessionAfter,50);
+        for(const row of rows)labRequests.rebuildSession(generation,row.id);})();
       sessionAfter=rows.at(-1)!.id;
       await Bun.sleep(5);
+    }
+    let requestAfter='';
+    while(true){
+      const page=prepared.transaction(()=>{keepLease();return labRequests.rebuildPage(generation,requestAfter,20);})();
+      requestAfter=page.lastId;
+      if(!page.hasMore)break;
+      await Bun.sleep(0);
     }
     let rootAfter='';
     while(true){
@@ -306,6 +317,7 @@ async function rebuild() {
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
       topics.activate(generation,startHead);
+      labRequests.activate(generation,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation<?').run(generation);
@@ -319,7 +331,7 @@ async function rebuild() {
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
@@ -398,6 +410,7 @@ async function catchUp() {
     receipts.apply(current.generation,changes);
     receipts.refreshDue(current.generation);
     topics.apply(current.generation,changes,changedRoots);
+    labRequests.apply(current.generation,changes);
     // A legacy channel name/path is a fallback label for every session in that channel.
     // Process only affected sessions, in fixed pages; the worker remains off the owner loop.
     for(const channel of new Set(changes.filter(change=>change.source_table==='channels').map(change=>change.row_key))){
@@ -418,11 +431,13 @@ async function catchUp() {
     if(!drained.hasMore)break;
     await Bun.sleep(0);
   }
+  while(prepared.transaction(()=>{keepLease();return labRequests.drain(current.generation);})())await Bun.sleep(0);
   prepared.transaction(()=>{
     keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
     receipts.checkpoint(current.generation,changes.at(-1)!.sequence);
     topics.checkpoint(current.generation,changes.at(-1)!.sequence);
+    labRequests.checkpoint(current.generation,changes.at(-1)!.sequence);
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);
   })();

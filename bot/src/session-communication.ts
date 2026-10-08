@@ -773,9 +773,9 @@ export class SessionCommunicationCoordinator {
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
-    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string}) {
+    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string;cursor?:string}) {
         this.actor(input.source);
-        if(input.verb==='list')return this.dependencies.owner.savedWorkList();
+        if(input.verb==='list')return this.dependencies.owner.savedWorkList(input.cursor??null);
         if(input.verb!=='start'&&input.verb!=='cancel')throw new Error('Choose a saved work action.');
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);

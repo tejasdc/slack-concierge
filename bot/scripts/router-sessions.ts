@@ -31,7 +31,7 @@ router-actions.sh sessions thread <inputId> <source-flags> --action-id A --threa
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--hand-back not-my-subject|too-loaded (with failed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
-router-actions.sh sessions saved list <source-flags>
+router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
@@ -121,7 +121,7 @@ export type SessionCommunicationRequest =
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
-  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } }
+  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
@@ -311,13 +311,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(sub!=='list'&&(!turnId||!/^[1-9]\d*$/.test(turnId)||!Number.isSafeInteger(Number(turnId))))invalid('Name the exact saved turn ID.');
     const flags=new Map<string,string>();
     while(args.length){const flag=args.shift()!,value=args.shift();
-      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--cursor'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id');
     if(sub==='list'&&actionId)invalid('Listing saved work takes no action ID.');
+    if(sub!=='list'&&flags.has('--cursor'))invalid('Only a saved work list can continue at a cursor.');
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
-    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
+    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{}),...(flags.has('--cursor')?{cursor:flags.get('--cursor')!}:{})}};
   }
   if(first==='board')return parseBoardArgs(args);
   if(first==='move') {

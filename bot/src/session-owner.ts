@@ -10,6 +10,7 @@ import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {ownerGetPolicy} from './owner-get-policy';
+import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
   preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
@@ -53,13 +54,13 @@ import {containingProject,sessionProject,sessionProjects} from './session-projec
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
-import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention} from './presentation-session-reader';
+import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
 import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
-import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
+import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 
 export class SessionOwnerError extends Error {
@@ -706,26 +707,32 @@ export class SessionOwner {
    * within it, newest first, with who asked whom and how each ended. Read straight from the
    * request table so no receipt or session view is built per row.
    */
-  lab(limit:number) {
-    const sessions=(db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).filter(row=>sessionSpace(row)==='lab');
-    const ids=new Set(sessions.map(row=>row.id));
-    const title=(id:number)=>{const row=getSessionById(id);return row?sessionMetadata(row).title??null:null;};
-    const rows=db.query('SELECT request_id,source_session_id,target_session_id,status,outcome,payload_json,result_json,created_at_ms FROM session_communication_requests ORDER BY created_at_ms DESC LIMIT 2000').all() as
-      {request_id:string;source_session_id:number;target_session_id:number;status:string;outcome:string|null;payload_json:string;result_json:string|null;created_at_ms:number}[];
-    const requests=rows.filter(row=>ids.has(row.source_session_id)||ids.has(row.target_session_id)).slice(0,limit).map(row=>{
+  lab(requestCursor:string|null=null,sessionCursor:string|null=null) {
+    const requestPage=preparedLabRequestIds(requestCursor,20);
+    const sessionPage=preparedSessionWindow({space:'lab',cursor:sessionCursor,limit:20});
+    const sessions=sessionPage.cards.map(card=>this.session(card.id));
+    const parties=new Map<number,{id:string;title:string|null;lab:boolean}>();
+    const party=(id:number)=>{const prior=parties.get(id);if(prior)return prior;const row=getSessionById(id);
+      const value={id:`concierge:${id}`,title:row?sessionMetadata(row).title??null:null,lab:!!row&&sessionSpace(row)==='lab'};
+      parties.set(id,value);return value;};
+    const requests=requestPage.requestIds.map(id=>db.query(`SELECT request_id,source_session_id,target_session_id,status,outcome,payload_json,result_json,created_at_ms
+      FROM session_communication_requests WHERE request_id=?`).get(id) as
+      {request_id:string;source_session_id:number;target_session_id:number;status:string;outcome:string|null;payload_json:string;result_json:string|null;created_at_ms:number}|null).filter((row):row is NonNullable<typeof row>=>!!row).map(row=>{
       const payload=JSON.parse(row.payload_json),result=row.result_json?JSON.parse(row.result_json):null;
       const ended=db.query("SELECT created_at_ms AS at,payload_json FROM session_communication_events WHERE request_id=? AND kind='final' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {at:number;payload_json:string}|null;
       const answered=ended?JSON.parse(ended.payload_json):null;
       // One line first, the body behind it; a line the author did not write is the first line of the words, marked as such.
       const line=(summary:unknown,text:string)=>typeof summary==='string'&&summary?{summary,summaryWritten:true}:{summary:text.trim().split('\n')[0]!.slice(0,200),summaryWritten:false};
-      return {requestId:row.request_id,from:{id:`concierge:${row.source_session_id}`,title:title(row.source_session_id),lab:ids.has(row.source_session_id)},
-        to:{id:`concierge:${row.target_session_id}`,title:title(row.target_session_id),lab:ids.has(row.target_session_id)},
+      return {requestId:row.request_id,from:party(row.source_session_id),to:party(row.target_session_id),
         effect:payload.requestedEffect??'informational',...line(payload.summary,String(payload.text??'')),text:String(payload.text??'').slice(0,4000),
         state:row.outcome?'ended':'open',outcome:row.outcome,disposition:result?.workDisposition??null,answer:result?.text?String(result.text).slice(0,4000):null,
         answerSummary:result?.text?line(answered?.summary,String(result.text)):null,
         askedAt:new Date(row.created_at_ms).toISOString(),endedAt:ended?new Date(ended.at).toISOString():null};
     });
-    return {sessions:sessions.map(row=>{const meta=sessionMetadata(row);return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,project:meta.cwd??null,provider:row.provider_id,archived:row.status==='archived',outcome:meta.outcome??'open'};}),requests};
+    return {sessions:sessions.map(row=>{const meta=sessionMetadata(row);return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,project:meta.cwd??null,provider:row.provider_id,archived:row.status==='archived',outcome:meta.outcome??'open'};}),requests,
+      next:{sessions:sessionPage.nextCursor,requests:requestPage.nextCursor},
+      coverage:{complete:sessionPage.coverage.complete&&requestPage.coverage.complete,
+        code:sessionPage.coverage.complete?requestPage.coverage.code:sessionPage.coverage.code}};
   }
   /**
    * A receipt that has settled for good cannot change (the same rule `changedAfter` relies
@@ -939,12 +946,14 @@ export class SessionOwner {
         .catch(error=>log('error','signin_renewal_not_sent',{provider,account,error:String((error as Error)?.message??error).slice(0,300)}));
     }
   }
-  savedWorkList(){
-    return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
+  savedWorkList(cursor:string|null=null){
+    const page=savedWorkPage(db,cursor);
+    return {items:page.items.map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
       savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:savedStartAt(turn),
         savedAt:new Date(turn.saved_at_ms).toISOString(),
         expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
-        account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}}))};
+        account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}})),
+      nextCursor:page.nextCursor,coverage:{complete:true}};
   }
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
@@ -1534,11 +1543,12 @@ export class SessionOwner {
     });
     return {session:this.view(getSessionById(session.id)!),marks:this.messageMarks(session.id,action.messageId),operation:this.receipt(operation)};
   }
-  saved() {
-    const sessions=(db.query(`SELECT * FROM sessions WHERE COALESCE(json_extract(native_metadata_json,'$.saved'),0)=1 ORDER BY last_turn_at DESC, id DESC`).all() as SessionRow[]).map(session=>this.view(session));
-    const messages=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_saved_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,savedAt:iso(row.created_at)}));
-    const followed=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_followed_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,followedAt:iso(row.created_at)}));
-    return {sessions,messages,followed};
+  saved(kind:'messages'|'followed'='messages',cursor:string|null=null) {
+    const page=savedMessagePage(db,kind,cursor);
+    const items=page.items.map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,
+      excerpt:row.excerpt,...(kind==='messages'?{savedAt:iso(row.created_at)}:{followedAt:iso(row.created_at)})}));
+    return {sessions:[],messages:kind==='messages'?items:[],followed:kind==='followed'?items:[],
+      nextCursor:page.nextCursor,coverage:{complete:true}};
   }
   private cancelQueuedInput(target:AcceptedSessionInput) {
     const current=readInputExecution(target);
@@ -2454,9 +2464,14 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1)
         throw new SessionOwnerError('Read a prepared session window with a continuation cursor.',410,'PAGED_READER_REQUIRED');
-      else if(request.method==='GET'&&parts[0]==='lab'&&parts.length===1) result=this.lab(boundedLimit(url.searchParams.get('limit'),500)??200);
-      else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
-      else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList();
+      else if(request.method==='GET'&&parts[0]==='lab'&&parts.length===1)
+        result=this.lab(url.searchParams.get('requestCursor'),url.searchParams.get('sessionCursor'));
+      else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1){
+        const kind=url.searchParams.get('kind')??'messages';
+        if(kind!=='messages'&&kind!=='followed')throw new SessionOwnerError('Choose saved messages or followed threads.');
+        result=this.saved(kind,url.searchParams.get('cursor'));
+      }
+      else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList(url.searchParams.get('cursor'));
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='breakdown'&&parts.length===2){
         const period=url.searchParams.get('period')??'today';
