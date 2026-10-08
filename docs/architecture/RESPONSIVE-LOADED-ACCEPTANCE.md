@@ -34,9 +34,13 @@ which forwards the named custody, pre-custody refusal, status, resume and withdr
 the private queue handler. The HumanCommandWorker and a separately running SessionOwner
 complete delivery. Distinct synthetic public and private tokens prove that a public caller
 cannot claim private work; the browser uses a synthetic approved-device identity, not
-production cookies. The fixture also verifies that a 413 or malformed command settles its
-ordered slot, a later command reaches the owner, and Retry after lost acknowledgement
-rejoins the original action. Workspace replication is disabled in
+production cookies. The fixture also verifies that a fixture-injected 413 after full body
+parsing or a malformed command settles its ordered slot, a later command reaches the owner,
+and Retry after lost acknowledgement rejoins the original action. A synthetic 502 leaves
+the original browser action retained as acceptance-unknown; it is never converted to a
+terminal refusal. The fixture's parser uses the shipping 32 MiB limit. These checks prove
+the command protocol through the public listener, not the production reverse proxy's
+behavior for bodies over that transport limit. Workspace replication is disabled in
 this fresh synthetic browser profile. The PWA update registration is stubbed, not notification
 navigation, conversation storage or message custody.
 

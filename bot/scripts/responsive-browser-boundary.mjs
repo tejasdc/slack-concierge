@@ -30,9 +30,21 @@ const service=new WorkspaceService(repository,{id:()=>crypto.randomUUID(),now:()
 await service.open();
 createRoot(document.getElementById('root')).render(<DiagnosticsProvider service={service}><App service={service} namespace={namespace} createPracticeWorkspace={async()=>{throw new Error('Outside acceptance scope');}}/></DiagnosticsProvider>);
 `);
-const gateway=require("fastify")();
+const gateway=require("fastify")({bodyLimit:32*1024*1024});
 gateway.decorateRequest("session",null);
 gateway.addHook("onRequest",async request=>{request.session={get:()=> "device"};});
+let ambiguousResponses=0;
+// The shipping server accepts up to 32 MiB. This semantic refusal happens after
+// parsing, so it exercises the browser's pre-custody path without closing a stream.
+gateway.addHook('preHandler',async(request,reply)=>{
+ if(request.url.includes('/sessions/')&&request.url.endsWith('/inputs')
+  &&request.body?.clientActionId==='browser-oversize-fixture')
+  return reply.code(413).send({error:'FIXTURE_COMMAND_TOO_LARGE'});
+ if(request.url.includes('/sessions/')&&request.url.endsWith('/inputs')
+  &&request.body?.clientActionId==='browser-ambiguous-fixture'){
+  ambiguousResponses++;return reply.code(502).send({error:'FIXTURE_UPSTREAM_UNCONFIRMED'});
+ }
+});
 const loader=await createServer({configFile:false,root:repository,cacheDir:join(fixtureDirectory,'ssr-cache'),optimizeDeps:{noDiscovery:true,include:[]},server:{middlewareMode:true,hmr:false,ws:false}});
 // Import the shipping adapter, including its cursor validation and durable command
 // envelope. Only sign-in identity is synthetic; no user cookie or credential is used.
@@ -125,8 +137,8 @@ try{
   assert.equal(custody.status,'delivered');assert.equal(custody.decisionStage,'owner');
  }
  assert.ok(encodedTopicRequests.some(value=>value.includes(encodeURIComponent(fixtureTopicId))));
- // The real queue's 1 MiB transport refusal must become a terminal slot before the
- // next command in this same conversation. The later small message reaches the owner.
+ // A fully parsed, synthetic 413 must become a terminal slot before the next
+ // command in this conversation. The later small message reaches the owner.
  const oversizedId='browser-oversize-fixture',afterSizeId='browser-after-size-fixture';
  const tooLarge=await page.evaluate(async({id,session})=>{
   try{await window.fixture.sessionClient.submit({id,sessionId:'concierge:'+session,text:'x'.repeat(1_100_000),selection:undefined,intent:undefined,delivery:'queue'});return null;}
@@ -219,6 +231,18 @@ try{
  await expect(fullMessage).not.toContainText('EXACT FULL MESSAGE END');
  assert.equal(detailReads,4);
  const fullMessageEvidence={kind:'full-message-browser',bytes:detailBytes,noEagerDetailRead:true,singleRequestPerExpansion:true,exactUnicodeCopy:true,exactQuote:true,corruptionRefused:true,detailReads,source:'synthetic retained bytes; real whole App, browser adapter, renderer and clipboard'};
+ // A gateway failure says nothing about owner acceptance. Keep the original action
+ // while its named retry policy runs; never replace it with a compact refusal.
+ const ambiguousId='browser-ambiguous-fixture';
+ await page.evaluate(({id,session})=>{void window.fixture.sessionClient.submit({id,sessionId:'concierge:'+session,
+  text:'An upstream acknowledgement was lost.',selection:undefined,intent:undefined,delivery:'queue'}).catch(()=>{});},
+  {id:ambiguousId,session});
+ await expect.poll(()=>ambiguousResponses,{timeout:10000}).toBeGreaterThan(0);
+ const ambiguousRetained=await page.evaluate(id=>window.fixture.getBrowserCommand(id),ambiguousId);
+ assert.equal(ambiguousRetained?.actionId,ambiguousId);
+ assert.notEqual(ambiguousRetained?.serverRetained,true);
+ const ambiguousOwner=await page.evaluate(id=>fetch('/fixture/accepted?actionId='+id).then(r=>r.json()),ambiguousId);
+ assert.equal(ambiguousOwner.accepted,0);assert.equal(ambiguousOwner.status,null);
  assert.deepEqual(errors,[]);
  const directory=join(process.cwd(),'tmp/reviews');await mkdir(directory,{recursive:true});const screenshot=join(directory,'loaded-whole-conversation.png');await page.screenshot({path:screenshot,fullPage:true});
  console.log(JSON.stringify({kind:'browser-boundary',fullMessageEvidence,engine:'Chromium on Linux',paintMs,coldMs,warmCachedMs,notificationMs,notification:'synthetic service-worker delivery; actual notification routing and exact-message viewport',restart,tabClosure:true,cachedViewWhileRefreshUnavailable:true,stableActionAndSequence:true,acceptedExactlyOnce:true,serverCustodyBeforeClosure:true,screenshot,productionGateway:true,wholeConversationController:true,authentication:'synthetic approved-device identity',providerObservation:after.providerObservation,providerAdmission:'fixture starts actual adapter after owner acceptance; normal queue coordinator is not exercised'}));
