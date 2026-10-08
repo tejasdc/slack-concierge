@@ -8,6 +8,7 @@ import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
+import {PreparedTopics} from './prepared-topics';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -37,6 +38,10 @@ prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
     ON presentation_messages(generation,topic_id,event_sequence DESC);
   CREATE INDEX IF NOT EXISTS presentation_messages_input
     ON presentation_messages(generation,session_id,input_id,event_sequence);
+  CREATE INDEX IF NOT EXISTS presentation_messages_global_id
+    ON presentation_messages(generation,message_id,event_sequence);
+  CREATE INDEX IF NOT EXISTS presentation_messages_return_input
+    ON presentation_messages(generation,input_id,event_sequence);
   CREATE UNIQUE INDEX IF NOT EXISTS presentation_messages_exact
     ON presentation_messages(generation,session_id,message_id);
   CREATE TABLE IF NOT EXISTS presentation_message_display(
@@ -80,6 +85,7 @@ const search=new PreparedSearchIndex(prepared);
 const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
   {...row,native_metadata_json:row.native_metadata_json??'{}'}));
 const receipts=new PreparedReceipts(source,prepared);
+const topics=new PreparedTopics(source,prepared);
 const leaseToken=randomUUID();
 const leaseTimeoutMs=10_000;
 function claimLease():boolean {
@@ -238,6 +244,7 @@ async function rebuild() {
       prepared.query('DELETE FROM presentation_owner_message_versions WHERE generation=?').run(generation);
       cards.beginRebuild(generation);
       receipts.beginRebuild(generation);
+      topics.beginRebuild(generation);
     })();
     let after=0,more=true;
     const resolveRoot=inboxRootResolver(source);
@@ -272,12 +279,33 @@ async function rebuild() {
       sessionAfter=rows.at(-1)!.id;
       await Bun.sleep(5);
     }
+    let rootAfter='';
+    while(true){
+      const page=prepared.transaction(()=>{keepLease();return topics.rebuildRootsPage(generation,rootAfter,100);})();
+      rootAfter=page.lastRoot;
+      if(!page.hasMore)break;
+      await Bun.sleep(0);
+    }
+    const inboxes=source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id")
+      .all() as {id:number}[];
+    for(const inbox of inboxes){
+      let topicAfter='';
+      while(true){
+        const page=prepared.transaction(()=>{keepLease();return topics.rebuildPage(generation,inbox.id,topicAfter,20);})();
+        topicAfter=page.lastId;
+        if(!page.hasMore)break;
+        await Bun.sleep(0);
+      }
+      prepared.transaction(()=>{keepLease();topics.updateSorting(topics.context(generation,inbox.id));})();
+      await Bun.sleep(0);
+    }
     prepared.transaction(()=>{
       keepLease();
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
+      topics.activate(generation,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation<?').run(generation);
@@ -303,9 +331,12 @@ async function catchUp() {
   }
   const resolveRoot=inboxRootResolver(source);
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
+  const changedReturnEvents=new Set<string>();
   const changedRoots=new Set<string>();
   for(const change of changes){
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
+    if(change.source_table==='session_communication_events'||change.source_table==='session_peer_events')
+      changedReturnEvents.add(change.row_key);
     else if(change.source_table==='session_owner_events'){
       const row=source.query('SELECT kind,input_id,turn_id FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
         {kind:string;input_id:string|null;turn_id:number|null}|null;
@@ -333,6 +364,16 @@ async function catchUp() {
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
+    for(const eventId of changedReturnEvents){
+      const inputId=`return:${eventId}`;
+      const event=(source.query('SELECT kind FROM session_communication_events WHERE event_id=?').get(eventId)
+        ??source.query('SELECT kind FROM session_peer_events WHERE event_id=?').get(eventId)) as {kind:string}|null;
+      const existing=prepared.query(`SELECT DISTINCT root_input_id AS root FROM presentation_messages
+        WHERE generation=? AND input_id=?`).all(current.generation,inputId) as {root:string}[];
+      for(const row of existing)changedRoots.add(row.root);
+      prepared.query(`UPDATE presentation_messages SET entry_kind=? WHERE generation=? AND input_id=?`)
+        .run(event?.kind==='final'?'final':'other',current.generation,inputId);
+    }
     for(const row of newTopicEvents)insertTopicEvent.run(current.generation,row.topicId,row.sequence,row.sessionId,row.eventId);
     for(const row of newOwnerMessages)writeOwnerVersion(current.generation,row);
     for(const turnId of turnsToRefresh){
@@ -355,6 +396,7 @@ async function catchUp() {
         ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
     receipts.apply(current.generation,changes);
     receipts.refreshDue(current.generation);
+    topics.apply(current.generation,changes,changedRoots);
     // A legacy channel name/path is a fallback label for every session in that channel.
     // Process only affected sessions, in fixed pages; the worker remains off the owner loop.
     for(const channel of new Set(changes.filter(change=>change.source_table==='channels').map(change=>change.row_key))){
@@ -369,8 +411,17 @@ async function catchUp() {
         after=rows.at(-1)!.id;
       }
     }
+  })();
+  while(true){
+    const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20);})();
+    if(!drained.hasMore)break;
+    await Bun.sleep(0);
+  }
+  prepared.transaction(()=>{
+    keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
     receipts.checkpoint(current.generation,changes.at(-1)!.sequence);
+    topics.checkpoint(current.generation,changes.at(-1)!.sequence);
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);
   })();
