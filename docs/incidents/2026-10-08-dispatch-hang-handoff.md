@@ -120,6 +120,79 @@ and started at 19:44 UTC. No `grafana_alert_worker_failed` event appeared in the
 from the `fd767c0` startup through 19:44 UTC. This confirms installation and the observed clean
 startup interval, not every future alert firing or the earlier release timeout's cause.
 
+### Whole-recovery review and corrections
+
+The Inbox coordinated an independent review in session 4570 across ledger writes,
+turn survival, release fixtures and the adjacent changes. Its first review found
+additional concrete defects; the receiving agent retained delivery ownership and
+corrected them through the normal deployment path:
+
+- All identified standalone writable ledger entrances now use the direct-write-count
+  adapter, including provider-free notices. The existing release lint rejects bypasses.
+  An isolated reproduction demonstrated the previous half-save. A read-only production
+  audit found 90 provider-free inputs with all 90 acceptance events and no new key-change
+  inputs in the affected window; no missing notice was established or reissued.
+- Same-owner recovery now shares the dead-owner no-effect check: unattempted work returns
+  to its existing FIFO, an unattempted explicit Stop cancels, and potentially admitted
+  effects are never replayed. Both runtime compositions protect active work and run the
+  periodic sweep. Thirteen isolated assertions and both runtime bundles passed. No
+  production ghost was injected; Mac installation was not inspected in this recovery.
+- The release fixture owns its process group and settles its original 45-second deadline
+  independently of inherited output pipes. A forced-hang exercise started the real native
+  worker, reported the timeout phase, and left neither owned child nor worker alive.
+  Both final-source lifecycle checks passed. Bun's inflated raw count is now diagnostic,
+  not a release requirement; correct direct counts and real dispatch remain assertions.
+- The existing repair owner removed unmanaged Codex startup fallback and changed transient
+  busy-ledger communication errors to retryable responses, preserving reply custody.
+
+The Codex interruption did not lose the source-search work: turn 5659 was already queued
+before 5657 failed and intentionally suppressed an extra automatic continuation. It resumed
+the same durable provider thread at 19:54:04; its first retained assistant message explicitly
+continued the correction. Empty `agent_text` on a running turn was not evidence of no progress.
+No replay or additional continuation was created. A separate marked request
+`765a88c8-c38f-4130-adde-e8979dc5a737` was admitted and acknowledged at 20:03:46 and returned
+an explicit completed answer containing `CODEX_POST_UPDATE_OK`. This proves functional
+dispatch and reply, not literal-only or no-tools compliance.
+
+The archive-search failure was separate: a bounded history page no longer carried the source
+metadata that the meaning-search consumer expected. Session 3757 owned the single accepted
+repair; a competing uncommitted approach was paused. Search now requires validated pinned
+source metadata plus proof that the matched event belongs to that exact retained source.
+Unprovable hits become named omissions rather than crashing the search. The source host and
+consumer were independently reviewed; the normal owner installed Concierge `46a0e17` at
+20:14:52 UTC. The previously failing `Delivery test progress notes` query returned HTTP 200
+in 0.755 seconds, including an archived meaning match. Search still reports incomplete
+historical coverage; this result is not proof that every archive source was indexed.
+
+The outside recovery CLI remains intentionally separate from the shared service. Updating
+the CLI release is not itself a dispatch failure. Codex's native updater preference is the
+minimal persistent containment for unscheduled daemon replacement; no second updater,
+restart controller, provider fallback chain or replay mechanism was introduced.
+
+At 20:19 UTC the focused independent correction review accepted the installed server
+corrections. Both formerly failing search queries returned HTTP 200 (0.755 and 0.60 seconds).
+The active Thinkering release `2ed81cc` includes the source-host correction `571b5fc`.
+The server had zero updater loops, zero aged running turns without admission/execution,
+and no new Grafana worker failures since activation; a resolved alert was delivered at
+20:17:03. These are observed checks, not an assertion that every historical request is done.
+
+The same review found a live Mac updater and no native opt-out setting there. The receiving
+agent verified updater PID 27186's exact command and sent TERM only to that PID; managed
+daemon 28324 retained its original 15:15:28 start time. Normal-installation enforcement of
+the native preference is being added for both hosts; the server preference already survives
+ordinary service starts. Separately, the current server listener remains unmanaged. The
+repair owner confirmed account activation cannot manage it, but replacing it during active
+work is unsafe; no such replacement has occurred. The existing owner is evaluating whether
+the established generic admission drain can safely cover the one-time maintenance operation.
+
+Archive discovery's fresh response still reports a stopped reader and 26 unindexed sources.
+The stopped-reader flag is runtime state, not merely the old 19:46:11 index timestamp.
+Search returns retained results with incomplete coverage. Source owner 3757 received this
+remaining investigation under request `19c16c30-6eae-46d0-8c79-f608957d0ab0`; no blind restart
+or competing source implementation was performed.
+
+## Original handoff (historical, superseded by the investigation above)
+
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not
 identify the root cause after extensive investigation and is unwilling to make
