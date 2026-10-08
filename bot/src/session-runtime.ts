@@ -21,6 +21,7 @@ import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {migrateInboxTopics,wakeDeferredQuestions} from './session-topics';
 import {log,errorFields} from './log';
+import {startStuckWorkWatch} from './stuck-work-watch';
 import {CodexSessionObserver} from './codex-session-observer';
 import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
@@ -125,7 +126,8 @@ export async function startSessionRuntime() {
   await reconcileRecoverableTurns({client:null,instanceId,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,wake,()=>registry.activeSessions);
+  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
+  startStuckWorkWatch(wake,()=>registry.activeSessions);
   const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
   // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
   const liveSpeech=startLiveSpeechListener();

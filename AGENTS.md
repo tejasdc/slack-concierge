@@ -113,8 +113,7 @@ authorization or a change to the default rapid-iteration policy.
   Concierge ledger; the service user is deliberately not given that production state path.
 - An outside CLI agent uses `router-actions.sh external` for Inbox capture or an addressed request;
   its named authorship and pollable reply live in the owner ledger, with no invented requester session.
-  The root-only supervisor flow reads the queue's claim predicate and return audit directly; outside
-  capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.
+  Outside capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.
   The [router helper](docs/runbooks/ROUTER-ACTIONS.md) and [wire contract](docs/contracts/session-owner-v1.md) own this entrance.
 - Retained audio attachments keep their original bytes and an optional transcript
   in the same attachment row. The authenticated human surface can request transcription
@@ -997,9 +996,12 @@ minute (object types above 4 GB). Never cap Concierge's memory: Tejas rejected c
 (2026-10-07) and wants the cause found and fixed. A freeze also reaches him without anyone reading the journal: `owner-responsiveness.ts` counts the
 lag, and a minute of freezing in five, or one freeze of 30 s, files one provider-free Inbox notice naming
 the slow pages, closed with "answering normally again" after ten quiet minutes. It runs on the owner's
-own loop, so it reports when a freeze ends; a total hang still needs a watcher outside Concierge with a
-delivery path that does not pass through it (none exists yet; 2026-10-08, after an account-list cycle
-froze the owner for hours unnoticed). Name the code path before
+own loop, so it reports when a freeze ends; a total hang or a stopped service is caught by the work-flow
+supervisor in remote-box, outside Concierge, which kills or restarts it and pages through Thinkering's own
+socket when it cannot (2026-10-08, after an account-list cycle froze the owner for hours unnoticed). Work
+that should be moving while Concierge is up is Concierge's own `stuck-work-watch.ts`: it wakes its queues
+once, then files one provider-free Inbox notice. Each repair has one owner; the table is in remote-box
+README's work-flow supervisor section. Name the code path before
 changing anything. Loops over ledger rows use `ledgerRows()`, never a statement's `iterate()`: an
 early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
 ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its

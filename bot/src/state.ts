@@ -5047,7 +5047,7 @@ function currentClaimSurvivability() {
 
 export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:string};
 
-/** The owner queue's own admission view, bounded for the local supervisor read. */
+/** The owner queue's own admission view, bounded for the stuck-work watch. */
 export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly number[]=[],olderThanMs=10*60_000,limit=30):ClaimableNotClaimedRow[] {
   const survivable=currentClaimSurvivability();
   if(survivable&&!survivable.claude&&!survivable.codexShared)return [];

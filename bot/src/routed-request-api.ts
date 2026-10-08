@@ -6,8 +6,6 @@ import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
 import {usageBreakdown} from './usage-breakdown';
 import {log} from './log';
-import {claimableNotClaimed} from './state';
-import {undeliveredReturnRows} from './session-return-audit';
 
 // macOS has no /proc: the only proof that nothing listens on a leftover socket entry is
 // a refused connection to it. A connection that opens proves a live listener.
@@ -109,26 +107,12 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
 }
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
-function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[],activeSessionIds?:()=>readonly number[]) {
+function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request:Request):Promise<Response> {
     try {
       const url=new URL(request.url);
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release});
-      if(request.method==='POST'&&url.pathname==='/supervisor/wake') {
-        const woken=wake?.()??[];
-        log('info','supervisor_wake',{woken});
-        return Response.json({woken});
-      }
-      if(request.method==='GET'&&url.pathname==='/supervisor/flow') {
-        const now=Date.now();
-        return Response.json({
-          claimableNotClaimed:claimableNotClaimed(now,activeSessionIds?.()??[],10*60_000,30),
-          undeliveredReturns:undeliveredReturnRows(now,30).map(row=>({eventId:row.event_id,requestId:row.request_id,
-            status:row.status,sourceSessionId:row.source_session_id,peer:row.peer})),
-          checkedAt:new Date(now).toISOString(),
-        });
-      }
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
         const input=await request.json() as any;
         if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
@@ -148,14 +132,14 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
   };
 }
 
-export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[],activeSessionIds?:()=>readonly number[]) {
+export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   const path = join(stateDir, "requests.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
   await removeUnboundSocket(path);
   const server = Bun.serve({
     unix: path,
     idleTimeout: 0,
-    fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner,wake,activeSessionIds),
+    fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner),
   });
   chmodSync(path, 0o600);
   return server;

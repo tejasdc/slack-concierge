@@ -2,28 +2,19 @@
 
 ## Outside-agent owner socket entrance
 
-The root-only `requests.sock` also accepts `GET /supervisor/ping`, `GET
-/supervisor/flow` and `POST /supervisor/wake`. Ping reads no ledger; it returns
-`{ok,pid,startedAt,release}`.
-Wake requests the existing queue, communication, peer, project and watch paths to
-run, and returns `{woken:[...]}` without replaying input.
+The root-only `requests.sock` also accepts `GET /supervisor/ping`. It reads no ledger and
+returns `{ok,pid,startedAt,release}`; the outside work-flow supervisor uses it only to tell
+a frozen owner from a working one. Stuck work is not read through this socket: Concierge
+watches its own queues (`stuck-work-watch.ts`, below), so the outside supervisor's single job
+is reviving Concierge when it is down or frozen.
 
-Flow returns the owner's bounded view of work that should already be moving:
-
-```json
-{
-  "claimableNotClaimed": [{"turnId": 123, "sessionId": 45, "queuedAt": "2026-10-08T12:34:56.000Z"}],
-  "undeliveredReturns": [{"eventId": "event-id", "requestId": "request-id", "status": "recorded", "sourceSessionId": 45, "peer": false}],
-  "checkedAt": "2026-10-08T12:45:00.000Z"
-}
-```
-
-`claimableNotClaimed` contains at most 30 turns queued for more than ten minutes
-that the queue's own current admission predicate would accept, including update
-drain, per-session ordering, active execution, saved-work, dependency and artifact
-delivery gates. `undeliveredReturns` contains at most 30 local and peer rows older
-than the return audit's ten-minute grace, from that audit's query. Partial indexes
-bound both reads. This route is installed only on the local owner socket.
+Concierge checks once a minute for work that should already be moving: turns queued more than
+ten minutes that the queue's own admission predicate would accept (update drain, per-session
+ordering, active execution, saved-work, dependency and artifact gates included), and results
+still undelivered after the return audit's ten-minute grace. It wakes its own queue,
+communication, peer, project and watch paths once, without replaying any input, and if the same
+work is still waiting five minutes later files one provider-free Inbox notice, which closes
+itself once nothing is waiting.
 
 `POST /external/capture` accepts `{name,id,recordedAt,text,files?}` and calls the
 normal Inbox capture intake with `source.kind:"outside-agent"` and retained

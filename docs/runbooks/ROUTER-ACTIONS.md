@@ -24,11 +24,9 @@ an imaginary session. The owner socket is root only. The old `test-capture` comm
 remains a path check by an agent already inside Concierge and starts no Inbox turn.
 
 The same root-only owner socket answers `GET /supervisor/ping` with process identity,
-start time and installed release, `GET /supervisor/flow` with the bounded owner-native
-claimable-turn and undelivered-return view, and `POST /supervisor/wake` with the owner
-paths it woke. Flow reuses the queue claim predicate and return audit query; it does
-not infer state from ledger rows independently. Wake schedules existing work without
-replaying any input.
+start time and installed release, which the outside work-flow supervisor uses to tell a
+frozen owner from a working one. Stuck work is watched inside Concierge, not through this
+socket; see the shared wire contract.
 
 ## Waiting for a local process
 
