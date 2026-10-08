@@ -30,7 +30,7 @@ const PORT=Number(process.env.CONCIERGE_MEANING_PORT)||8796;
 const ARCHIVE_INDEX=process.env.CONCIERGE_ARCHIVE_SEARCH_INDEX||'/var/lib/thinkering/production/agents/sources/search.sqlite';
 /** EmbeddingGemma is Matryoshka-trained; 512 of 768 dimensions keep nearly all quality at two thirds the memory. */
 const DIMENSIONS=512;
-const PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
+const INDEX_BATCH=4,PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
 const QUERY_PREFIX='task: search result | query: ',DOCUMENT_PREFIX='title: none | text: ';
 const IDENTITY_HEADER='{"type":"concierge-session-input"';
 /** Bumped when what a ledger passage is keyed or credited by changes; the ledger part is then rebuilt. */
@@ -110,6 +110,7 @@ export class MeaningIndex {
   private readonly engine=new EmbeddingEngine();
   private keys:string[]=[];private rowOf=new Map<string,number>();private scales:number[]=[];private matrix=new Int8Array(DIMENSIONS*4096);private count=0;
   private targets:MeaningHit['target'][]=[];private texts:string[]=[];private times:(string|null)[]=[];
+  private searching=0;
   private timer:ReturnType<typeof setTimeout>|null=null;private caughtUp=false;private stopped=false;private failure:string|null=null;
   constructor(path:string,private readonly titleOf:(sessionId:number)=>string|null) {
     this.store=new Database(path,{create:true});
@@ -135,7 +136,13 @@ export class MeaningIndex {
     const pageKeys=new Set<string>();
     const fresh=rows.filter(row=>row.text.length>=(row.key.startsWith('title:')?3:12)&&!pageKeys.has(row.key)&&!this.known(row.key)&&!!pageKeys.add(row.key));
     if(!fresh.length)return;
-    const vectors=await this.engine.embed(fresh.map(row=>DOCUMENT_PREFIX+row.text.slice(0,PASSAGE_CHARS)));
+    // A search waits behind whatever the engine is computing, so indexing hands it small batches
+    // and steps aside while a search is waiting (a 24-passage batch held a query for 3.7 s).
+    const vectors:Float32Array[]=[];
+    for(let start=0;start<fresh.length;start+=INDEX_BATCH){
+      while(this.searching>0)await Bun.sleep(50);
+      vectors.push(...await this.engine.embed(fresh.slice(start,start+INDEX_BATCH).map(row=>DOCUMENT_PREFIX+row.text.slice(0,PASSAGE_CHARS))));
+    }
     const insert=this.store.query('INSERT OR REPLACE INTO passages(key,target_json,text,at,scale,vector) VALUES(?,?,?,?,?,?)');
     this.store.transaction(()=>{for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);insert.run(row.key,JSON.stringify(row.target),row.text.slice(0,SNIPPET_CHARS),row.at,scale,values);}})();
     for(const [index,row] of fresh.entries()){const {values,scale}=quantize(vectors[index]!);if(row.key.startsWith('title:')){const prior=(this.rowOf.get(row.key)??-1);if(prior>=0){this.matrix.set(values,prior*DIMENSIONS);this.scales[prior]=scale;this.texts[prior]=row.text.slice(0,SNIPPET_CHARS);continue;}}this.remember(row.key,row.target,row.text.slice(0,SNIPPET_CHARS),row.at,values,scale);}
@@ -256,8 +263,10 @@ export class MeaningIndex {
     if(!this.engine.installed())return {available:false,hits:[],reason:'The meaning search engine is not installed on this machine.',indexed,pending:false};
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     let vector:Float32Array;
+    this.searching++;
     try{[vector]=(await this.engine.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
+    finally{this.searching--;}
     // Best passage per session (or per archived prompt): one strong match is the signal, many weak ones are not.
     const best=new Map<string,{index:number;score:number}>();
     for(let row=0;row<this.count;row++){
