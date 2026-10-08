@@ -684,7 +684,9 @@ authorization or a change to the default rapid-iteration policy.
   subscriptions, which is why this restart must not be done over SSH. Any `codex` command in an SSH
   login can be the one that starts a stopped daemon, so Concierge also raises the daemon's soft
   open-file limit to its hard limit every time it connects (`codex-daemon-file-limit.ts`); one such
-  daemon ran out at 1,024 and failed the 2026-10-07 7:24 PM update restart. This does not permit
+  daemon ran out at 1,024 and failed the 2026-10-07 7:24 PM update restart. The same step moves the
+  daemon into its own systemd scope, because it otherwise dies with whatever unit or login started it
+  (2026-10-08; [the runbook](docs/runbooks/CODEX-APP-SERVER.md#the-daemon-lives-in-its-own-scope)). This does not permit
   an agent to restart the App Server for any other reason. The owner itself makes the same switch
   when the Codex account in use has spent an allowance window and another kept account has room in
   every window, once no Codex turn is running (`moveCodexOffSpentAccount` in session-execution-host.ts;

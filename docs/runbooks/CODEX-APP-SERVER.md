@@ -102,6 +102,18 @@ Repair an unmanaged listener once Concierge admission is idle (`turns` has no no
 4. Concierge's observer reconnects by itself: one `codex_remote_observer_disconnected` warning at the kill, then a burst of `codex_remote_thread_subscribed` events. No bot restart is needed.
 5. Probe with `codex exec` on the default model. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
 
+## The Daemon Lives In Its Own Scope
+
+A detached daemon stays in the systemd cgroup of whoever started it, and systemd ends every
+process in a unit's cgroup when that unit stops. On 2026-10-08 the daemon had been started from an
+SSH login and died at 6:47 AM when that login closed; its replacement was started by an agent's
+`codex` call inside a `concierge-exec-*` unit, and the next by the account switch inside
+`concierge-bot.service`, which every update restarts. Each connection Concierge opens therefore
+moves the daemon, its updater and their children into a transient `codex-app-server-<pid>.scope`
+(`moveCodexDaemonToOwnScope` in `codex-daemon-file-limit.ts`, beside the open-file raise), logging
+`codex_daemon_moved_to_own_scope` or `codex_daemon_scope_move_failed`. Moving changes only the
+cgroup; nothing restarts. `systemd-cgls -u 'codex-app-server*'` shows where it lives.
+
 ## OAuth Token Revocation Triggers The Same Restart
 
 An account-side OAuth token revocation while the App Server is loaded leaves
