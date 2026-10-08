@@ -1078,3 +1078,4 @@ outcome concisely, distinguishing committed/integrated work from actual activati
 known limitations. Concierge owns the final provider-reported model/cwd footer.
 
 - Durable intake may cancel a human action before import through the exact-session action-cancel route; the ledger tombstone prevents later dispatch without inventing a target operation. See [owner contract](docs/contracts/session-owner-v1.md). Isolated responsiveness acceptance checks use `CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622`, authorized by the Oct 7 investigation and Oct 8 implementation request; test preload and the production-path refusal remain mandatory.
+- Prepared topic read models share attention predicates with the canonical owner and keep large exact values behind digest-addressed chunks; lifecycle and remaining integration requirements are in [prepared topics](docs/architecture/PREPARED-TOPICS.md).

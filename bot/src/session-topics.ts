@@ -8,6 +8,8 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
+import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
+  toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
 /**
  * Topics: the Inbox's recognizable conversations. A topic owns a set of thread roots, the
@@ -36,11 +38,6 @@ export type TopicActor={sessionId:number;turnId:number;inputId:string;runId:stri
  */
 type QuestionState='open'|'partial'|'answered'|'declined'|'withdrawn'|'superseded'|'deferred'|'read'|'expired';
 const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','withdrawn','superseded','deferred','read','expired'];
-const OPEN_QUESTION_STATES=['open','partial'];
-/** A decision waits on him; a reading item is something an agent wants him to read, and waits on nobody. */
-type QuestionKind='decision'|'reading';
-/** `declared` with `topics questions`; `marker` filed from a turn's end-of-turn marker; `recovered` by a migration. */
-type QuestionOrigin='declared'|'marker'|'recovered';
 /**
  * A question is agent-owned preparation until its brief can be answered: it must say why the
  * decision came up and exactly what he can answer now; choices are optional (a factual question
@@ -48,26 +45,14 @@ type QuestionOrigin='declared'|'marker'|'recovered';
  * approved design, docs/plans/2026-09-22-topic-threads.md; Tejas, 2026-09-22, on finding a
  * headline with nothing under it in Needs your answer). Returns what is still missing.
  */
-function briefMissing(brief:any):string[] {
-  const missing:string[]=[];
-  if(!String(brief?.decision??'').trim())missing.push('decision');
-  if(!String(brief?.why?.text??'').trim())missing.push('why');
-  if(!String(brief?.answerable??'').trim())missing.push('answerable');
-  if(Array.isArray(brief?.choices)&&brief.choices.some((choice:any)=>!String(choice?.label??'').trim()))missing.push('choices[].label');
-  return missing;
-}
 /**
  * What a question still lacks before he can answer it. A question filed from a turn's marker
  * is answerable by construction — the agent asked him that sentence directly — so it needs only
  * the decision; a declared one needs its why and what he can answer now. Without this, the 12
  * decisions the migration filed would have landed under "Agent checking" (dry run, 2026-09-23).
  */
-const missingFor=(question:{brief:any;origin?:QuestionOrigin}):string[]=>question.origin==='marker'?(String(question.brief?.decision??'').trim()?[]:['decision']):briefMissing(question.brief);
-const questionReadiness=(question:{context:string;brief:any;origin?:QuestionOrigin}):'ready'|'preparing'=>question.context==='ready'&&!missingFor(question).length?'ready':'preparing';
 /** The one rule for whether a question is waiting on him. Every count, list and filter uses it;
  * a client displays this answer and never recomputes it. */
-const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any;kind?:QuestionKind})=>
-  (question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'&&(question.blocking||!question.optional)&&!question.pendingReply;
 /**
  * What a reading item is for him to read, resolved from the owner's own records and never
  * copied: the messages the turn that raised it wrote into this thread — its posts there, else
@@ -147,9 +132,8 @@ const NOTHING_TO_READ='Nothing to read: the turn that raised this posted nothing
  * and ends only with his own Read. One with nothing to read is nobody's: it is never listed, and
  * `expireUnreadableReadingItems` ends it with its reason at startup. */
 const toReadByHim=(question:{state:string;kind?:QuestionKind;reads?:ReadingText[];topicId:string;legacyNeedEventId?:string|null;owner?:any;brief?:any;sources?:string[]})=>
-  question.kind==='reading'&&OPEN_QUESTION_STATES.includes(question.state)
-  &&(question.reads?question.reads.length>0:readsFor({topicId:question.topicId,kind:question.kind,legacyNeedEventId:question.legacyNeedEventId??null,owner:question.owner,brief:question.brief,sources:question.sources}).length>0);
-const preparingForHim=(question:{state:string;context:string;brief:any;kind?:QuestionKind})=>(question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='preparing';
+  toReadByHimWithReads({...question,reads:question.reads??readsFor({topicId:question.topicId,kind:question.kind,
+    legacyNeedEventId:question.legacyNeedEventId??null,owner:question.owner,brief:question.brief,sources:question.sources})});
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
 type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
