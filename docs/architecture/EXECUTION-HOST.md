@@ -164,14 +164,9 @@ A running turn holds an update only if it would end with the coordinator. One ru
   as before. The first proof is the acceptance restart with a marked test run (see below).
 - A running turn whose execution is of a proven kind and on an adoptable host protocol is reported
   `continuing`, not `active`: the update does not wait for it.
-- From the moment an update is under way — its gate is held, or its run is `prepared`/`draining`
-  with a live runner — the queue keeps starting turns of proven kinds (not forks), so a new message
-  is not held behind the install; other kinds wait, and their receipts say so (`DEPLOYMENT_HOLD`).
-  The run's own record counts, not only the gate: the runner releases the gate while it waits for
-  work to finish, and on 2026-10-08 every lab Codex turn started in that gap kept one update
-  waiting for over an hour. Holding only what would end with the restart makes the set the update
-  waits for shrink and never grow, so it finishes once the runs already going have ended
-  (`currentClaimSurvivability` in `state.ts`).
+- While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new
+  message is not held behind the install; other kinds wait as before, and their receipts say so
+  (`DEPLOYMENT_HOLD`).
 - **Compatibility between the real releases.** `bot/src/host-protocols.json` holds the protocol new
   hosts speak (`current`) and every protocol a release can take back (`adoptable`); the host program
   and the coordinator both read it, and each release answers `drain-status.js host-protocols`. Before
