@@ -51,6 +51,7 @@ import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges} from './presentation-session-reader';
+import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
 import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import type {ProjectSetup} from './project-setup';
@@ -813,73 +814,14 @@ export class SessionOwner {
     return {session:this.view(row),operations,asOf:encodeReceiptPosition(row.id,watermark,page,operations)};
   }
   presentationReceiptWindow(id:string,requestedLimit:number|null,cursor:string|null) {
-    const session=this.session(id),limit=Math.min(PRESENTATION_PAGE,Math.max(1,requestedLimit??PRESENTATION_PAGE));
-    const decoded=cursor?decodeReceiptWindowPosition(cursor,session.id):null;
-    const epoch=presentationEpoch(db);
-    if(cursor&&(!decoded||decoded.e!==epoch.epoch))
-      throw new SessionOwnerError('This receipt window has expired; start a bounded window again.',409,'PRESENTATION_RESET_REQUIRED');
-    // The head and exact page of identities are one short read transaction. A concurrent update
-    // after it is caught from that head by the change stream, including while older pages load.
-    const page=db.transaction(()=>{
-      const head=decoded?.h??presentationHead(db);
-      const watermark=decoded?.w??newestInputRow(session.id);
-      const before=decoded?.b??watermark+1;
-      const rows=db.query(`SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? AND rowid<=? AND rowid<?
-        ORDER BY rowid DESC LIMIT ?`).all(session.id,watermark,before,limit+1) as (AcceptedSessionInput&{sequence:number})[];
-      return {head,watermark,rows};
-    })();
-    const visible=page.rows.slice(0,limit);
-    const operations=visible.map(input=>this.receipt(input));
-    const nextCursor=page.rows.length>limit&&visible.length?Buffer.from(JSON.stringify({v:2,k:'window',s:session.id,e:epoch.epoch,
-      h:page.head,w:page.watermark,b:visible.at(-1)!.sequence} satisfies ReceiptWindowPosition)).toString('base64url'):null;
-    const asOf=encodePresentationPosition({v:2,k:'receipts',s:session.id,e:epoch.epoch,a:page.head,h:page.head});
-    return {operations,nextCursor,asOf};
+    const session=this.session(id);
+    return preparedReceiptWindow(session.id,cursor,requestedLimit??PRESENTATION_PAGE);
   }
   /** A compact, fixed-head change position. Unlike v1, it never contains the open receipt set.
    * This resolves only the changed page; it is not an all-history export. */
   presentationReceiptChanges(id:string,token:string,requestedLimit:number|null) {
-    const session=this.session(id),position=decodePresentationPosition(token,session.id);
-    const epoch=presentationEpoch(db);
-    if(!position||position.e!==epoch.epoch||position.a<epoch.retained_after)
-      throw new SessionOwnerError('This presentation position has expired; start a bounded window again.',409,'PRESENTATION_RESET_REQUIRED');
-    const limit=Math.min(PRESENTATION_PAGE,Math.max(1,requestedLimit??PRESENTATION_PAGE));
-    const head=position.a===position.h?presentationHead(db):position.h;
-    if(position.a>head)throw new SessionOwnerError('This presentation position is ahead of the owner.',409,'PRESENTATION_RESET_REQUIRED');
-    const changes=presentationChangesForSession(db,session.id,position.a,head,limit);
-    const after=changes.at(-1)?.sequence??head;
-    const inputIds=new Set<string>();const turnIds=new Set<number>();const requestIds=new Set<string>();
-    const topicIds=new Set<string>();const sessionIds=new Set<number>();
-    for(const change of changes) {
-      if(change.input_id)inputIds.add(change.input_id);
-      if(change.target_input_id)inputIds.add(change.target_input_id);
-      if(change.turn_id)turnIds.add(change.turn_id);
-      if(change.request_id)requestIds.add(change.request_id);
-      if(change.topic_id)topicIds.add(change.topic_id);
-      if(change.session_id)sessionIds.add(change.session_id);
-      if(change.target_session_id)sessionIds.add(change.target_session_id);
-    }
-    const ids=<T extends string|number>(values:ReadonlySet<T>)=>JSON.stringify([...values]);
-    if(turnIds.size) {
-      for(const found of db.query(`SELECT accepted_input_id AS id FROM turns WHERE id IN (SELECT value FROM json_each(?)) AND accepted_input_id IS NOT NULL
-        UNION SELECT id FROM session_inputs WHERE turn_id IN (SELECT value FROM json_each(?))`).all(ids(turnIds),ids(turnIds)) as {id:string}[])inputIds.add(found.id);
-    }
-    if(requestIds.size) {
-      const parameter=ids(requestIds);
-      for(const found of db.query(`SELECT source_input_id AS id FROM session_communication_requests WHERE request_id IN (SELECT value FROM json_each(?))
-        UNION SELECT target_input_id AS id FROM session_communication_requests WHERE request_id IN (SELECT value FROM json_each(?))
-        UNION SELECT source_input_id AS id FROM session_peer_requests WHERE request_id IN (SELECT value FROM json_each(?))
-        UNION SELECT target_input_id AS id FROM session_peer_deliveries WHERE request_id IN (SELECT value FROM json_each(?))
-        UNION SELECT target_input_id AS id FROM session_external_requests WHERE request_id IN (SELECT value FROM json_each(?))`).all(parameter,parameter,parameter,parameter,parameter) as {id:string|null}[])
-        if(found.id)inputIds.add(found.id);
-    }
-    const rows=inputIds.size?db.query(`SELECT * FROM session_inputs WHERE session_id=? AND id IN (SELECT value FROM json_each(?))`)
-      .all(session.id,ids(inputIds)) as AcceptedSessionInput[]:[];
-    const operations=rows.map(input=>this.receipt(input));
-    const found=new Set(rows.map(row=>row.id));
-    const removed=[...inputIds].filter(inputId=>!found.has(inputId)&&changes.some(change=>change.input_id===inputId&&change.session_id===session.id));
-    const next=encodePresentationPosition({v:2,k:'receipts',s:session.id,e:epoch.epoch,a:after,h:head});
-    return {operations,removed,affectedTopics:[...topicIds],affectedSessions:[...sessionIds].map(value=>`concierge:${value}`),
-      asOf:next,hasMore:after<head};
+    const session=this.session(id);
+    return preparedReceiptChanges(session.id,token,requestedLimit??PRESENTATION_PAGE);
   }
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;

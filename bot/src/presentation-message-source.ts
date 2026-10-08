@@ -1,10 +1,11 @@
 import type {Database} from 'bun:sqlite';
 
-export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string};
+export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
+  entryKind:'final'|'post'|'other'};
 
 /** This is the Inbox's retained message predicate, with a bounded event-sequence walk. */
 export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event.event_id,event.input_id,event.kind,event.created_at,
-  json_extract(owner.native_metadata_json,'$.inbox') AS is_inbox,
+  json_extract(owner.native_metadata_json,'$.inbox') AS is_inbox,input.origin AS input_origin,
   CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.capture') IS NOT NULL ELSE 0 END AS has_capture,
   CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
   CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
@@ -18,6 +19,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   WHERE 1=1`;
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
+  input_origin:string|null;
   is_inbox:number|null;has_capture:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
   return row.kind==='result'||row.kind==='post'?row.event_id:row.input_id;
@@ -74,7 +76,15 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     const messageId=sourceMessageId(row);
     if(!messageId)return [];
     const root=resolveRoot(row.session_id,messageId);
-    return root?[{sequence:row.sequence,sessionId:row.session_id,messageId,inputId:row.input_id??root,root,createdAt:row.created_at}]:[];
+    let entryKind:PreparedInboxMessage['entryKind']=row.kind==='post'?'post':'other';
+    if(row.kind==='accepted'&&row.input_origin==='service'&&row.input_id?.startsWith('return:')){
+      const eventId=row.input_id.slice('return:'.length);
+      const returned=(db.query('SELECT kind FROM session_communication_events WHERE event_id=?').get(eventId)
+        ??db.query('SELECT kind FROM session_peer_events WHERE event_id=?').get(eventId)) as {kind:string}|null;
+      if(returned?.kind==='final')entryKind='final';
+    }
+    return root?[{sequence:row.sequence,sessionId:row.session_id,messageId,inputId:row.input_id??root,
+      root,createdAt:row.created_at,entryKind}]:[];
   });
   const topicEvents=rows.flatMap(row=>{
     if(!row.is_inbox||!['topic','topic_request','topic_question','topic_answer'].includes(row.kind))return [];

@@ -14,6 +14,8 @@ export const PRESENTATION_CHANGE_TABLES={
   slack_agent_session_status_projections:{key:"{row}.slack_channel_id || ':' || {row}.slack_thread_ts",
     session:'(SELECT id FROM sessions WHERE slack_channel_id={row}.slack_channel_id AND slack_thread_ts={row}.slack_thread_ts LIMIT 1)'},
   turns:{key:'{row}.id',session:'{row}.session_id',turn:'{row}.id'},
+  provider_retry_observations:{key:'{row}.turn_id',session:'(SELECT session_id FROM turns WHERE id={row}.turn_id)',turn:'{row}.turn_id'},
+  provider_outage_offers:{key:'{row}.turn_id',session:'{row}.session_id',input:'{row}.input_id',turn:'{row}.turn_id'},
   turn_steering_messages:{key:'{row}.id',session:'(SELECT session_id FROM turns WHERE id={row}.turn_id)',turn:'{row}.turn_id',input:'{row}.accepted_input_id'},
   turn_dependencies:{key:"{row}.turn_id || ':' || {row}.prerequisite_turn_id",session:'(SELECT session_id FROM turns WHERE id={row}.turn_id)',turn:'{row}.turn_id'},
   session_inputs:{key:'{row}.id',session:'{row}.session_id',input:'{row}.id',turn:'{row}.turn_id',request:'{row}.request_id'},

@@ -26,6 +26,17 @@ set/choice transitions and the retry observation rows. The worker's checkpoint a
 prepared rows commit together, so a crash replays changes without claiming that an
 unwritten explanation is current.
 
-The scratch `receipt-projection-fixture.ts` exercises retry set, restart invalidation,
-clear, queued hold and large retained text without opening production state. A release
-needs the worker journal hooks and the browser list migration before this path is live.
+The worker now writes receipts into a disposable generation in finite pages. Its
+checkpoint and the receipt change row commit in the same prepared-database
+transaction. A reader holds one generation and a fixed change head: unrelated
+ledger growth cannot expand a window or a delta. The owner still supplies the
+exact selected operation through its existing detail route. The browser keeps
+only the bounded preview in its receipt list; Retry loads the exact operation
+before it resubmits a message whose preview was truncated.
+
+The scratch `receipt-projection-fixture.ts` exercises retry set, restart
+invalidation, clear, queued hold, provenance and oversized retained text.
+`presentation-growth-fixtures.ts` drives the actual window and change readers
+through the runtime storage budget against small and large unrelated histories.
+Neither fixture opens production state. Activation still requires an installed
+owner and a browser migration observed end to end on Tejas's surface.

@@ -16,11 +16,11 @@ export const PRESENTATION_READERS={
     sourceTables:['presentation_session_changes'],fixture:'sessions-changes-growth'},
   receiptWindow:{route:'GET /sessions/v1/presentation/receipts/:session',collection:'receipts',
     growth:'settled receipts and unrelated session history',maxRows:40,maxResponseBytes:262_144,
-    sourceTables:['session_inputs','turns','session_communication_requests','session_peer_requests'],
+    sourceTables:['presentation_receipts'],
     fixture:'receipts-window-growth'},
   receiptChanges:{route:'GET /sessions/v1/presentation/receipts/:session/changes',collection:'receipts',
     growth:'unrelated events and previously settled receipts',maxRows:40,maxResponseBytes:262_144,
-    sourceTables:['presentation_change_log','session_inputs','turns','session_communication_requests'],
+    sourceTables:['presentation_receipt_changes'],
     fixture:'receipts-changes-growth'},
 } as const;
 export type PresentationReaderName=keyof typeof PRESENTATION_READERS;
