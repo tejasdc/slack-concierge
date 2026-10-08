@@ -1,0 +1,1 @@
+Recovery checks now verify delivery of waiting messages, and updates follow the server and device dependencies.
