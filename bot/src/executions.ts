@@ -8,6 +8,7 @@
 import { rmSync } from "node:fs";
 import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
+import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
@@ -278,7 +279,13 @@ async function releaseSettledExecutions() {
  * the supervisor positively reports gone needs no socket to be let go of.
  */
 export async function releaseExecution(execution: ExecutionRow) {
-  if (execution.supervisor === "codex-daemon") { recordExecutionReleased(execution.execution_id); return; }
+  if (execution.supervisor === "codex-daemon") {
+    recordExecutionReleased(execution.execution_id);
+    // The turn is settled: its conversation's filed helpers go, unless a later turn filed its own.
+    const thread = (db.query("SELECT agent_session_uuid FROM sessions WHERE id=?").get(execution.session_id) as { agent_session_uuid: string | null } | null)?.agent_session_uuid;
+    if (thread && process.env.CONCIERGE_STATE_DIR) unpinCodexThreadHooks(process.env.CONCIERGE_STATE_DIR, thread, execution.execution_id);
+    return;
+  }
   if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);
   else if (hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
   // A released host leaves within moments; its launchd job is removed once launchd reports it stopped.

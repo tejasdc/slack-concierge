@@ -45,6 +45,7 @@ import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
+import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
@@ -704,9 +705,17 @@ export class SessionExecutionHost {
     kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
-    retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
+    const executionId=newExecutionId();
+    retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
       directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,run:data}});
-    return prepared;
+    // The daemon's hooks carry no run of their own: file this release's helpers under the Codex
+    // conversation before its turn starts, so they stay the same if an update installs mid-turn.
+    const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!),botDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
+    return {...prepared,onProviderThreadStarted:(threadId:string)=>{
+      try{if(botDir)pinCodexThreadHooks(stateDir,threadId,executionId,botDir);}
+      catch(error){log('warn','codex_hook_pin_failed',{execution_id:executionId,...errorFields(error)});}
+      onProviderThreadStarted?.(threadId);
+    }} as any;
   }
   /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
   private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {

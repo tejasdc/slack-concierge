@@ -66,12 +66,16 @@ install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actio
 # password once: a run from a terminal asks for it; the unattended update job only reports it. The
 # hook itself lives in this checkout, so later updates reach it without another password.
 # The same run installs the refusal of rewritten pushed history for Codex, Claude and git.
-# The wrappers dispatch to each run's own pinned helpers ("dispatch: per-run v1"); an older,
+# The wrappers dispatch to each run's own pinned helpers ("dispatch: per-run v1" or later); an older,
 # checkout-bound wrapper is not accepted as installed. Until they are, Mac agents are not started
 # in execution hosts (below), so no agent outlives an update whose hooks would change under it.
-hooks_per_run() { grep -Fqs '# dispatch: per-run v1' /etc/codex/hooks/concierge-owed-reply \
-  && grep -Fqs '# dispatch: per-run v1' /etc/codex/hooks/concierge-history-guard; }
-if hooks_per_run && grep -Fqs "dir='$REPO/bot'" /etc/codex/hooks/concierge-owed-reply \
+# v2 also follows shared Codex turns; Concierge reads that itself before letting an update proceed
+# past one (hook-pins.ts), and a terminal run installs it when only v1 is present.
+hooks_per_run() { grep -Eqs '# dispatch: per-run v[12]$' /etc/codex/hooks/concierge-owed-reply \
+  && grep -Eqs '# dispatch: per-run v[12]$' /etc/codex/hooks/concierge-history-guard; }
+hooks_current() { grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-owed-reply \
+  && grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-history-guard; }
+if hooks_current && grep -Fqs "dir='$REPO/bot'" /etc/codex/hooks/concierge-owed-reply \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-history-guard"' /etc/codex/requirements.toml \
   && grep -Fqs 'hooks = true' /etc/codex/requirements.toml; then :

@@ -13,6 +13,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_SUPERVISOR, executionHostsEnabled } from "./execution-host-client";
+import { managedHooksFollowRuns } from "./hook-pins";
 
 
 function hasExecutions(database: Database) {
@@ -26,16 +27,12 @@ export function provenRunKinds(database: Database): Set<string> {
   if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
   return new Set((database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
     WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind)
-    .filter(kind => !HOOKS_NOT_PINNED_PER_RUN.has(kind)));
+    .filter(kind => kind !== "codex/codex-daemon" || managedHooksFollowRuns()));
 }
-
-/**
- * Kinds whose machine-wide hooks cannot yet follow the run: the shared Codex daemon's hooks carry no
- * per-run helper folder, so they fall back to the installed copy, which an update replaces under the
- * running turn. Until those hooks select the run's own helpers, an update waits for these turns
- * however well they survive a restart (step-6 review, 2026-10-07).
- */
-const HOOKS_NOT_PINNED_PER_RUN = new Set(["codex/codex-daemon"]);
+// A shared Codex turn's hooks run from the machine-wide wrappers with the daemon's environment. They
+// follow the turn only when the installed wrappers look up its filed helper folder (hook-pins.ts);
+// until then (an older wrapper, the Mac before its password step) an update waits for these turns
+// however well they survive a restart (step-6 review, 2026-10-07).
 
 /** What may start while an update installs: only kinds proven to carry on through its restart. */
 export function survivableRunKinds(database: Database) {

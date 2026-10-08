@@ -221,7 +221,7 @@ A running turn holds an update only if it would end with the coordinator. One ru
   bundles a server release carries) for the installed commit into `$STATE/helpers/<commit>`, never
   changed or pruned, and the service names it (`CONCIERGE_PINNED_HELPERS_DIR`); each run's
   `CONCIERGE_ROUTER_BOT_DIR` is that folder. The machine-wide hook wrappers in `/etc/codex/hooks`
-  (also Claude's managed history guard) dispatch per run ("dispatch: per-run v1"): a run's own
+  (also Claude's managed history guard) dispatch per run ("dispatch: per-run v2"): a shared Codex turn's helpers filed under its conversation, then a run's own
   folder when it names one, the installed copy for any other agent, on both machines. Installing
   those wrappers needs the Mac's admin password once (`install-mac.sh` from a terminal); until they
   are installed the Mac starts no hosts (`CONCIERGE_AGENT_HOST_LAUNCHER` is left empty), so its
@@ -234,10 +234,14 @@ A running turn holds an update only if it would end with the coordinator. One ru
   an updater from before the token calls it) and otherwise hands over to `update-mac.sh`.
 - Not proven here: whether macOS's Background Task Management lists these jobs (it needs an
   administrator to read).
-- Shared-daemon Codex turns (both machines) are still taken back after a restart, but an update
-  always waits for them (`HOOKS_NOT_PINNED_PER_RUN` in `execution-survival.ts`): their machine-wide
-  hooks carry no per-run helper folder, so they would run whatever copy an update installs under
-  the running turn. Selecting the run's own helpers for those hooks is the open follow-up.
+- Shared-daemon Codex turns (both machines) are taken back after a restart by their exact thread
+  and turn ids. Their hooks run with the daemon's environment, so when such a turn starts the
+  coordinator files the installed release's helper folder under the Codex conversation id
+  (`hook-pins.ts`, `<state>/hook-pins/codex/<id>`, removed when the turn is released), and the v2
+  wrappers look it up from the `session_id` Codex passes on stdin. An update stops waiting for these
+  turns only when that machine's installed wrappers are v2 (`managedHooksFollowRuns`, read from the
+  wrappers themselves) and a shared Codex turn has been seen alive at takeover there. The server's
+  wrappers are reinstalled by every deployment; the Mac's need its password step.
 
 ## Shutdown
 
