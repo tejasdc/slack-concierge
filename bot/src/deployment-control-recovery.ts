@@ -99,9 +99,6 @@ function verifyCurrentRollback(artifactPath: string, invocationId: string,
     throw new Error("The observed healthy rollback invocation is no longer running.");
   }
   command([manager.environment.bunExecutable, join(artifactPath, "control/healthcheck.js")]);
-  const captureHealth = JSON.parse(command([manager.environment.bunExecutable,
-    join(artifactPath, "control/capture-healthcheck.js")]));
-  if (captureHealth.ok !== true) throw new Error("Current capture ingress is unhealthy.");
 }
 
 export function containControlRecovery(runId: string, manager: TrustedRootReleaseManager,

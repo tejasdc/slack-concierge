@@ -19,7 +19,7 @@ import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity
 import type { CaptureEventRow, CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
 import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
-import { withRetry } from "./retry";
+import { withRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
 
 
@@ -57,6 +57,9 @@ export interface InboxCaptureDelivery {
 }
 
 class CaptureWorkerStopped extends Error {}
+class CaptureQueueUnavailable extends Error {
+  constructor(readonly cause: unknown) { super("Capture queue is unreachable"); }
+}
 
 export interface CaptureDeliveryWorkerOptions {
   queueUrl: string;
@@ -252,8 +255,10 @@ export class CaptureDeliveryWorker {
   private readonly pollIntervalMs: number;
   private stopping = false;
   private running: Promise<void> | null = null;
-  private ready: Promise<void> | null = null;
   private fatalReported = false;
+  private queueAvailable = false;
+  private queueError: string | null = null;
+  private queueObservedFailure = false;
 
   constructor(private readonly options: CaptureDeliveryWorkerOptions) {
     this.owner = options.owner || currentProcessIdentity();
@@ -275,20 +280,10 @@ export class CaptureDeliveryWorker {
   }
 
   async start(): Promise<void> {
-    if (this.running) {
-      await this.ready;
-      return;
-    }
+    if (this.running) return;
     this.stopping = false;
-    let resolveReady!: () => void;
-    let rejectReady!: (error: unknown) => void;
-    this.ready = new Promise<void>((resolve, reject) => {
-      resolveReady = resolve;
-      rejectReady = reject;
-    });
-    this.running = this.run(resolveReady)
+    this.running = this.run()
       .catch((error) => {
-        rejectReady(error);
         if (error instanceof CaptureWorkerStopped || this.stopping) return;
         this.stopping = true;
         if (this.fatalReported) return;
@@ -296,29 +291,41 @@ export class CaptureDeliveryWorker {
         log("error", "capture_delivery_worker_fatal", errorFields(error));
         this.options.onFatal?.(error);
       });
-    await this.ready;
-    log("info", "capture_delivery_worker_online", { queue_url: this.options.queueUrl, owner_pid: this.owner.pid });
+    log("info", "capture_delivery_worker_started", { queue_url: this.options.queueUrl, owner_pid: this.owner.pid });
+  }
+
+  status() {
+    return { available: this.queueAvailable, reason: this.queueAvailable ? null : this.queueError ?? "Waiting for capture ingress." };
   }
 
   async stop() {
     this.stopping = true;
     await this.running;
+    this.queueAvailable = false;
   }
 
-  private async run(reportReady: () => void) {
-    let ready = false;
+  private async run() {
     while (!this.stopping) {
-      const claimId = randomUUID();
-      const event = await this.claimNext(claimId);
-      if (!ready) {
-        ready = true;
-        reportReady();
+      try {
+        const claimId = randomUUID();
+        const event = await this.claimNext(claimId);
+        if (!this.queueAvailable) {
+          this.queueAvailable = true;
+          this.queueError = null;
+          log("info", this.queueObservedFailure ? "capture_delivery_queue_reconnected" : "capture_delivery_queue_connected",
+            { queue_url: this.options.queueUrl });
+        }
+        if (event) await this.deliver(claimId, event);
+      } catch (error) {
+        if (!(error instanceof CaptureQueueUnavailable)) throw error;
+        this.queueObservedFailure = true;
+        if (this.queueAvailable || !this.queueError) {
+          this.queueAvailable = false;
+          this.queueError = error.cause instanceof Error ? error.cause.message : String(error.cause);
+          log("warn", "capture_delivery_queue_unavailable", { queue_url: this.options.queueUrl, error: this.queueError });
+        }
       }
-      if (!event) {
-        await this.wait(this.pollIntervalMs);
-        continue;
-      }
-      await this.deliver(claimId, event);
+      if (!this.stopping) await this.wait(this.pollIntervalMs);
     }
   }
 
@@ -340,7 +347,7 @@ export class CaptureDeliveryWorker {
         return response;
       },
       classifyError: () => "transient",
-    });
+    }).catch((error) => { throw new CaptureQueueUnavailable(error); });
   }
 
   private async claimNext(claimId: string): Promise<CaptureEventRow | null> {

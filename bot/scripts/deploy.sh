@@ -15,6 +15,7 @@ CAPTURE_STATE_DIR=${CONCIERGE_CAPTURE_STATE_DIR:-/var/lib/concierge-capture}
 CAPTURE_AUDIO_DIR=${CONCIERGE_CAPTURE_AUDIO_DIR:-/var/agent-inbox}
 CAPTURE_USER=${CONCIERGE_CAPTURE_USER:-concierge-capture}
 CAPTURE_RUNTIME_DIR=${CONCIERGE_CAPTURE_RUNTIME_DIR:-/usr/local/lib/slack-concierge}
+CAPTURE_RUNNING_FINGERPRINT="$CAPTURE_RUNTIME_DIR/capture-running.sha256"
 CAPTURE_CONFIG_DEST=${CONCIERGE_CAPTURE_CONFIG_DEST:-/etc/concierge/capture-routes.toml}
 SYSUSERS_DIR=${CONCIERGE_SYSUSERS_DIR:-/etc/sysusers.d}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
@@ -69,6 +70,8 @@ DEPLOY_WAIT_PID=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
 CAPTURE_ADMISSION_BLOCKED=0
+CAPTURE_RESTARTED=0
+CAPTURE_PROBE_RESULT="unchanged; not restarted or probed"
 PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
@@ -265,7 +268,7 @@ record_deployment_success() {
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   local evidence
   evidence=$(jq -cn \
-    --arg capture "functional health passed" \
+    --arg capture "$CAPTURE_PROBE_RESULT" \
     --arg service "functional health passed" \
     --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
     --arg release_digest "$CANDIDATE_ARTIFACT_DIGEST" \
@@ -509,11 +512,11 @@ handoff_failed_deployment_to_repair() {
     | sha256sum | awk '{print $1}')
 
   DEPLOYED_COMMIT="$restored_commit"
-  if probe_capture_ingress && probe_service; then
+  if probe_service; then
     restored_health=1
   else
     restart_unit "$SERVICE" || true
-    if probe_capture_ingress && probe_service; then restored_health=1; fi
+    if probe_service; then restored_health=1; fi
   fi
   if [ "$restored_health" = "1" ]; then
     release_deployment_gate || return 1
@@ -701,6 +704,34 @@ install_capture_runtime() {
   install -m 0644 "$CONTROL_CONFIG_DIR/capture-routes.toml" "$CAPTURE_CONFIG_DEST"
 }
 
+capture_runtime_fingerprint() {
+  # This records the bytes a successfully started ingress loaded, not merely the
+  # files a candidate installed. A failed update cannot make an old process look current.
+  sha256sum \
+    "$CAPTURE_RUNTIME_DIR/capture-ingress.js" "$CAPTURE_RUNTIME_DIR/bun" \
+    "$CAPTURE_CONFIG_DEST" "$SYSTEMD_DIR/agent-inbox.service" \
+    /etc/agent-inbox.token /etc/concierge/pebble-index.token \
+    /etc/concierge/thinkering.token /etc/concierge/capture-queue.token \
+    | sha256sum | awk '{print $1}'
+}
+
+record_capture_running_fingerprint() {
+  local fingerprint temporary
+  fingerprint=$(capture_runtime_fingerprint)
+  temporary="$CAPTURE_RUNNING_FINGERPRINT.$$"
+  printf '%s\n' "$fingerprint" > "$temporary"
+  chmod 0600 "$temporary"
+  mv "$temporary" "$CAPTURE_RUNNING_FINGERPRINT"
+}
+
+capture_runtime_needs_restart() {
+  local installed current
+  [ -f "$CAPTURE_RUNNING_FINGERPRINT" ] || return 0
+  installed=$(capture_runtime_fingerprint)
+  current=$(cat "$CAPTURE_RUNNING_FINGERPRINT")
+  [ "$installed" != "$current" ]
+}
+
 probe_capture_ingress() {
   local attempt state main_pid
   for attempt in $(seq 1 10); do
@@ -775,7 +806,6 @@ restore_last_known_good_and_start_repair() {
   restored_commit=$(printf '%s\n' "$restore_output" | jq -er '.git_commit')
   DEPLOYED_COMMIT="$restored_commit"
   restart_unit "$SERVICE"
-  probe_capture_ingress
   probe_service
   record_deployment_phase releasing "$(jq -cn \
     --arg failed_commit "$failed_commit" \
@@ -1012,11 +1042,11 @@ deploy() {
 
   DEPLOY_FAILURE_REASON="The durable restarting checkpoint could not be recorded."
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
-  echo "=== gracefully replace $CAPTURE_SERVICE ==="
+  echo "=== verify whether $CAPTURE_SERVICE changed ==="
   CURRENT_DEPLOY_STAGE=capture-restart-and-health
   DEPLOY_FAILURE_REASON="The capture ingress service could not be enabled."
   systemctl enable "$CAPTURE_SERVICE" >/dev/null
-  if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
+  if capture_runtime_needs_restart && [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     DEPLOY_FAILURE_REASON="New capture connections could not be blocked before replacing capture ingress."
     block_new_capture_connections
     DEPLOY_FAILURE_REASON="Existing capture connections did not drain safely."
@@ -1027,12 +1057,20 @@ deploy() {
     start_unit "$CAPTURE_SERVICE"
     DEPLOY_FAILURE_REASON="Capture admission could not be restored after replacing capture ingress."
     unblock_capture_admission
-  else
+    CAPTURE_RESTARTED=1
+  elif capture_runtime_needs_restart; then
     DEPLOY_FAILURE_REASON="The capture ingress service could not be restarted."
     restart_unit "$CAPTURE_SERVICE"
+    CAPTURE_RESTARTED=1
   fi
-  DEPLOY_FAILURE_REASON="Capture ingress did not pass its authenticated functional health check."
-  probe_capture_ingress
+  if [ "$CAPTURE_RESTARTED" = "1" ]; then
+    DEPLOY_FAILURE_REASON="Capture ingress did not pass its authenticated functional health check."
+    probe_capture_ingress
+    record_capture_running_fingerprint
+    CAPTURE_PROBE_RESULT="functional health passed after restart"
+  else
+    echo "Capture ingress runtime and configuration match its last healthy start; no restart or health gate."
+  fi
 
   if [ "$CAPTURE_DRAIN_HELD" != "1" ]; then
     DEPLOY_FAILURE_REASON="The capture delivery gate could not be held until Concierge passed functional health."
@@ -1097,7 +1135,7 @@ control_recovery_failed() {
   set +e
   recovery_error="Controller recovery stopped at $CURRENT_DEPLOY_STAGE (exit $code)."
   if [ "$CONTROL_RECOVERY_ACTIVATED" = 1 ]; then
-    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && restart_unit "$SERVICE" && probe_capture_ingress && probe_service; then
+    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && restart_unit "$SERVICE" && probe_service; then
       release_deployment_gate
     else
       recovery_error="$recovery_error Healthy release restoration requires explicit recovery."
@@ -1138,7 +1176,6 @@ recover_control() {
     CONTROL_RECOVERY_ACTIVATED=1
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg
     restart_unit "$SERVICE"
-    probe_capture_ingress
     probe_service
   fi
   record_deployment_phase updating
@@ -1150,7 +1187,6 @@ recover_control() {
   restart_unit "$SERVICE"
   record_deployment_phase verifying
   CURRENT_DEPLOY_STAGE=control-recovery-health
-  probe_capture_ingress
   probe_service
   [ "$(control_recovery_app_server_identity)" = "$app_server_before" ] || {
     echo "The shared App Server identity changed during control recovery." >&2; return 1;

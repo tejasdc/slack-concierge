@@ -379,7 +379,8 @@ jobs ends with a boundary continuation, so it can resume after the update. Activ
 continues to hold the release; see [waiting and retrying](../plans/2026-09-24-waiting-and-retrying.md).
 Success additionally requires:
 
-- active capture ingress with its authenticated local health check;
+- capture ingress's authenticated local health check when its executable, service
+  settings, routes or credentials changed and it was restarted;
 - active Concierge with a nonzero systemd `MainPID`;
 - an online marker from the current systemd invocation;
 - the exact candidate Git SHA in that marker;
@@ -546,6 +547,16 @@ readiness. Each phase emits `started` followed by `completed` or `failed`; an un
 `started` in the same systemd invocation identifies the outstanding wait. These records
 contain only phase and status, not credentials or user content. They do not replace the
 exact-SHA online marker or change admission, retries, or health-check deadlines.
+The capture worker starts without waiting for capture ingress. If the ingress queue is
+unreachable, Concierge stays online, logs `capture_delivery_queue_unavailable`, and shows
+capture delivery as unavailable in owner status. The worker retries and logs
+`capture_delivery_queue_reconnected` when a claim succeeds. Captures remain in the
+ingress-owned queue until delivery resumes; an invalid claim response remains a fatal
+worker error. Deployment records the bytes loaded by capture ingress after a healthy
+start. When the next candidate has identical executable, service settings, routes and
+credentials, deployment leaves ingress running and does not use its health as a gate
+for the Concierge release. A changed ingress is restarted and must pass its authenticated
+health check before that release is verified.
 
 Incident `2ef0a592-2f82-4f88-ab36-af8815159bf7` exposed the missing boundary evidence.
 Candidate `efa9fc09805e4619d338fa1030071afb397a9064` completed recovery at

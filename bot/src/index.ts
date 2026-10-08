@@ -506,6 +506,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   },
 });
 const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
+sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.status() ?? { available: false, reason: "Capture delivery has not started." };
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
 sessionExecutionHost.owner.projectSetup=projectSetup;
@@ -4080,7 +4081,6 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           void drainAndStop("capture-worker-fatal");
         },
       });
-      await captureDeliveryWorker.prepare();
     }
     const auth: any = await app.client.auth.test();
     const authenticatedAppId = await resolveAuthenticatedSlackAppId(runtime, auth, async (botId) => {

@@ -490,6 +490,7 @@ export function readInputExecution(input:AcceptedSessionInput) {
 export class SessionOwner {
   projectSetup?:ProjectSetup;
   communication?:SessionCommunicationCoordinator;
+  captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
   private readonly openStreams=new Set<()=>void>();
   private streamsClosed=false;
   // A subscriber never ends its own event stream, so the owner ends every open one when it drains.
@@ -982,7 +983,7 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   status() {
-    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate(),
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
