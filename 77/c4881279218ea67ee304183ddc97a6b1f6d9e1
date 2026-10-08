@@ -1,0 +1,1 @@
+Recovery checks distinguish a rejected request from a connection failure that leaves delivery uncertain.
