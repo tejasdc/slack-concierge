@@ -130,7 +130,6 @@ export class SessionPeers {
       catch(error) {return {name:client.name,url:client.url,reachable:false,error:error instanceof Error?error.message:String(error)};}
     }))};
   }
-  peerClientOrNull(name:string):PeerClient|null {return this.dependencies.clients.get(name)??null;}
   client(name:unknown):PeerClient {
     if(typeof name!=='string'||!this.dependencies.clients.has(name))throw new SessionOwnerError(`Unknown peer instance${typeof name==='string'?` ${name}`:''}; see sessions peers.`,404,'PEER_UNKNOWN');
     return this.dependencies.clients.get(name)!;

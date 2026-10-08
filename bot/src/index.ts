@@ -3912,7 +3912,7 @@ async function reconcilePriorInstanceTurns() {
 // forecast check, which is what turns a number on a screen into a warning before the wall.
 startProviderUsageWatch({ stopped: () => draining, onReading: () => { wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
-const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!, self: peering.self ?? 'local', cloud: () => sessionPeers?.peerClientOrNull('cloud') ?? null});
+const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
 watchAuthHeldCredentials();
 

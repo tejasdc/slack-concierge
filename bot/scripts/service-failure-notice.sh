@@ -12,6 +12,13 @@ fi
 sub_state=$(systemctl show --property=SubState --value "$unit" || true)
 restarts=$(systemctl show --property=NRestarts --value "$unit" || true)
 when=$(TZ=America/New_York date '+%-I:%M %p')
+# One notice per episode: a service failing to start keeps restarting every few seconds, and each
+# restart used to file its own notice (five within a minute on 2026-10-08). Only the first failure
+# after a deliberate start is announced; if it never recovers, the "stopped" notice follows.
+if [[ "$sub_state" == "auto-restart" && "${restarts:-0}" != "0" ]]; then
+  echo "${unit} restart ${restarts} in an episode already announced; no new notice"
+  exit 0
+fi
 if [[ "$sub_state" == "auto-restart" ]]; then
   title="${unit} crashed and is restarting"
   body="${unit} crashed at ${when} and is restarting on its own (restart ${restarts:-?} since it was last started deliberately). Work that was running at that moment was interrupted."

@@ -17,7 +17,6 @@ import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart} from './execution-survival';
-import {acceptUpdateWaitNotice} from './update-wait-notices';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {STILL_WAITING_MINUTES} from './request-liveness';
@@ -2422,7 +2421,6 @@ export class SessionOwner {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
         else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
-        else if(request.method==='POST'&&parts[1]==='update-wait-notices'&&parts.length===2)result=acceptUpdateWaitNotice(body);
         else if(parts[1]==='operations'&&this.projectSetup){
           if(request.method==='POST'&&parts.length===2)result=await this.projectSetup.receive(body);
           else if(request.method==='GET'&&parts.length===3)result=this.projectSetup.receipt(parts[2]!);

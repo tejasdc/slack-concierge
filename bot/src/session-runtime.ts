@@ -138,7 +138,7 @@ export async function startSessionRuntime() {
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
     onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
-  const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!,self:peering.self??'local',cloud:()=>peers?.peerClientOrNull('cloud')??null});
+  const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();queue.wake();});
