@@ -5,7 +5,7 @@ import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
-import {ledgerRows} from './ledger-rows';
+import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,type StorageWork} from './storage-observation';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
@@ -39,7 +39,7 @@ import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} fro
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
-import {preparedMessages} from './presentation-message-reader';
+import {preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -236,11 +236,6 @@ function searchSnippet(text:string,terms:string[]) {
   if(start>0){const space=flat.indexOf(' ',start);if(space>=0&&space<at)start=space+1;}
   if(end<flat.length){const space=flat.lastIndexOf(' ',end);if(space>at)end=space;}
   return `${start>0?'… ':''}${flat.slice(start,end)}${end<flat.length?' …':''}`;
-}
-/** Narrow a JSON payload scan in SQLite before parsing; terms LIKE cannot compare faithfully are verified after parsing only. */
-function likePrefilter(column:string,terms:string[]) {
-  const usable=terms.filter(term=>/^[\x20-\x7e]+$/.test(term)&&!/["\\]/.test(term));
-  return {sql:usable.map(()=>` AND ${column} LIKE ? ESCAPE '\\'`).join(''),params:usable.map(term=>`%${term.replace(/[%_]/g,match=>'\\'+match)}%`)};
 }
 const ledgerTime=(value:string|null)=>{
   const time=value?Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)?`${value.replace(' ','T')}Z`:value):NaN;
@@ -1927,10 +1922,10 @@ export class SessionOwner {
     // A peer without its own meaning index searches through this machine: the same search the
     // Inbox gets here, covering this ledger, the archive of both machines and the live peers.
     if(input.everywhere===true&&this.communication)return this.communication.searchEverywhere(input.query.trim(),limit);
-    // Started before the word search; the request goes out once that synchronous scan yields.
+    // Word and meaning work run independently outside this request thread.
     const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
-    const matches=(text:string)=>{const lower=text.toLocaleLowerCase();return terms.every(term=>lower.includes(term.toLocaleLowerCase()));};
+    const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true).catch(()=>null);
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
     const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
     const add=(session:SessionRow,evidence:any[])=>{
@@ -1948,33 +1943,13 @@ export class SessionOwner {
       // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
       routingFailure=`Historical Slack routing evidence unavailable (${error.code}): ${error.message}`;
     }
-    const inputFilter=likePrefilter('input.payload_json',terms),messageFilter=likePrefilter('event.payload_json',terms);
-    for(const row of ledgerRows<any>(db,`SELECT input.id,input.session_id,input.payload_json,input.created_at FROM session_inputs input
-      WHERE input.kind IN ('input','create')${inputFilter.sql} ORDER BY input.rowid DESC`,...inputFilter.params)) {
-      if(results.size>=limit)break;
-      const payload=JSON.parse(row.payload_json),text=payload.text??payload.firstInput?.text??'';
-      if(typeof text!=='string'||!matches(text))continue;
-      const session=getSessionById(row.session_id);
-      if(session)add(session,[{sessionId:`concierge:${row.session_id}`,sourceId:`input:${row.id}`,sourceVersion:hash(text),eventId:row.id,ordinal:0,role:'user',locator:row.id,textHash:hash(text),text,snippet:searchSnippet(text,terms),at:ledgerTime(row.created_at)}]);
-    }
-    // Only a message's latest streamed version counts; the message-version index answers that per candidate.
-    for(const event of ledgerRows<any>(db,`SELECT event.sequence,event.session_id,event.payload_json,event.created_at FROM session_owner_events event
-      WHERE event.kind='message'${messageFilter.sql} AND NOT EXISTS (SELECT 1 FROM session_owner_events later WHERE later.kind='message'
-        AND later.turn_id IS event.turn_id AND json_extract(later.payload_json,'$.message.id')=json_extract(event.payload_json,'$.message.id')
-        AND later.sequence>event.sequence)
-      ORDER BY event.sequence DESC`,...messageFilter.params)) {
-      if(results.size>=limit)break;
-      const message=JSON.parse(event.payload_json).message;
-      if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))continue;
-      if((message.role==='tool'||message.tool)&&input.includeTools!==true)continue;
-      const spoken=withoutIdentityHeader(message.content);
-      if(!matches(spoken))continue;
-      const session=getSessionById(event.session_id);
-      if(session)add(session,[{sessionId:`concierge:${session.id}`,sourceId:`native:${session.id}`,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal:event.sequence,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,snippet:searchSnippet(spoken,terms),at:ledgerTime(event.created_at),...(message.detailKey?{detailKey:message.detailKey}:{})}]);
-    }
-    for(const session of db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]) {
-      const labels=this.catalogueLabels(session);
-      if([labels.title,labels.summary,labels.project].some(value=>typeof value==='string'&&matches(value)))add(session,[]);
+    const words=await wordSearch;
+    for(const hit of words?.hits??[]) {
+      const session=getSessionById(hit.sessionId);
+      if(!session)continue;
+      if(hit.kind==='session'){add(session,[]);continue;}
+      const {kind,...evidence}=hit;
+      add(session,[{...evidence,sessionId:`concierge:${session.id}`,locator:hit.eventId,at:ledgerTime(hit.at)}]);
     }
     for(const match of routing?.results??[]) {
       const channel=getChannel(match.channel_id);
@@ -1982,6 +1957,14 @@ export class SessionOwner {
       if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',snippet:searchSnippet(match.snippet??'',terms),at:new Date(Number(match.root_ts)*1000).toISOString(),corpus:'routing_evidence'}]);
     }
     let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:routing?.omissions.join(' ')||'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routing?.omissions??[]),...(routingFailure?[routingFailure]:[])]};
+    const wordOmissions=words?.omissions??['Prepared word search is unavailable; it is not replaced by a ledger scan.'];
+    if(!words?.coverage.complete||words.hasMore||wordOmissions.length){
+      coverage.complete=false;
+      const reason=!words?'Prepared word search unavailable.':!words.coverage.complete?'Prepared word search is catching up.':null;
+      coverage.reason=[coverage.reason,reason,...wordOmissions].filter(Boolean).join(' ')||null;
+      coverage.omissions.push(...wordOmissions);
+    }
+    coverage.wordIndex=words?.coverage??{complete:false};
     if(this.runtime.sources) {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
@@ -2010,7 +1993,7 @@ export class SessionOwner {
           add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null})));
         }
         if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
-        coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
+        coverage={...coverage,complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}
     // Word matches keep the order they were found in; meaning matches are ranked by closeness.
@@ -2563,11 +2546,12 @@ export class SessionOwner {
         result=this.presentationReceiptWindow(parts[2]!,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE),url.searchParams.get('cursor'));
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='messages'&&parts.length===2){
         const session=this.session(url.searchParams.get('sessionId')??'');
-        const root=url.searchParams.get('root')??'';
-        if(!root||root.length>256)throw new SessionOwnerError('A thread root is required.');
+        const target=url.searchParams.get('input')??url.searchParams.get('root')??'';
+        if(!target||target.length>256)throw new SessionOwnerError('An exact thread message is required.');
+        const root=preparedThreadRoot(session.id,target);
         const sourceHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
-        const page=preparedMessages(session.id,root,Math.min(20,boundedLimit(url.searchParams.get('limit'),20)??20),url.searchParams.get('cursor'),sourceHead);
-        result={messages:page.keys.map(key=>inboxMessageById(session.id,key.messageId)).filter(Boolean),
+        const page=preparedMessages(session.id,root??target,Math.min(20,boundedLimit(url.searchParams.get('limit'),20)??20),url.searchParams.get('cursor'),sourceHead);
+        result={root,messages:page.keys.map(key=>inboxMessageById(session.id,key.messageId)).filter(Boolean),
           nextCursor:page.nextCursor,coverage:page.coverage};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)

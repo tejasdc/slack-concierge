@@ -13,6 +13,16 @@ function preparedDb():Database|null {
 }
 
 export type PreparedMessageKey={sequence:number;messageId:string};
+/** Exact prepared lineage lookup; resolving a notification never walks the Inbox history. */
+export function preparedThreadRoot(sessionId:number,messageId:string):string|null {
+  const database=preparedDb();if(!database)return null;
+  const meta=database.query('SELECT generation,ready FROM presentation_message_meta WHERE singleton=1').get() as {generation:number;ready:number}|null;
+  if(!meta?.ready)return null;
+  const row=database.query('SELECT root_input_id FROM presentation_messages WHERE generation=? AND session_id=? AND message_id=?')
+    .get(meta.generation,sessionId,messageId)??database.query('SELECT root_input_id FROM presentation_messages WHERE generation=? AND session_id=? AND input_id=? ORDER BY event_sequence LIMIT 1')
+    .get(meta.generation,sessionId,messageId);
+  return (row as {root_input_id:string}|null)?.root_input_id??null;
+}
 export type PreparedTopicEntryKey={sequence:number;messageId?:string;topicEventId?:string};
 export type PreparedMessagePage={keys:PreparedMessageKey[];nextCursor:string|null;coverage:{complete:boolean;code?:'presentation_indexing';retryAfterMs?:number;appliedSequence:number}};
 export function preparedMessages(sessionId:number,root:string,limit:number,cursor:string|null,sourceHead=0):PreparedMessagePage {
