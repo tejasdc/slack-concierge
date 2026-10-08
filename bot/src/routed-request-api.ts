@@ -65,6 +65,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'reset-credit') return Response.json(await sessions.resetCredit(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
+        if (operation === 'board') return Response.json(await sessions.board(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));

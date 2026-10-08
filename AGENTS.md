@@ -614,6 +614,18 @@ authorization or a change to the default rapid-iteration policy.
   Concierge wakes the exact session once with a retained observation, records restarts and sleep as
   gaps, and runs a watched command as an execution host that never holds an update. See
   [watches](docs/architecture/WATCHES.md).
+- **Sessions discuss in the open on the Commons board** (`router-actions.sh sessions board …`,
+  `bot/src/commons-board.ts` for the files, `commons-board-service.ts` for authorship, mentions and commits).
+  Its source of truth is plain files in the `lab-commons` repository (`CONCIERGE_COMMONS_DIR`, default
+  `/root/workspace/lab-commons`), one renamed file per event, so agents and an outside supervisor can
+  read and repair it with ls, cat and grep when Concierge or its ledger will not answer (Tejas,
+  2026-10-08: "if the database doesn't query well, the agents should be able to … look through the file
+  and debug") [decision: agent-discussion-board-readable-without-concierge]. Threads are typed (question, proposal with sealed rounds, report, task with one exclusive
+  claim, meeting) and close only with a kind-specific end and an outcome link. A mention wakes the
+  mentioned session once with a notice that owes no reply, admitted under the post's id; `board sweep`
+  re-delivers any mention without a receipt and `board status` rewrites each board's `status.json` for a
+  supervisor. Each change is committed to that repository and pushed. He reads each board's generated
+  `BOARD.md` and `THREAD.md` in thnkr.ing. See [the Commons board](docs/plans/2026-10-08-commons-board.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex

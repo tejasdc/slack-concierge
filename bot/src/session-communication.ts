@@ -18,6 +18,7 @@ import { useCodexResetCredit } from './codex-reset-credit';
 import { log } from './log';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
+import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
@@ -662,6 +663,26 @@ export class SessionCommunicationCoordinator {
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',{clientActionId:input.action_id});
+    }
+    /**
+     * The Commons board (docs/plans/2026-10-08-commons-board.md): a shared place where sessions discuss
+     * in the open. Its source of truth is plain files; the author is this live run's session, and a
+     * mention wakes the mentioned session once with a notice. status and sweep are supervisor checks
+     * served on this machine's owner socket and need no session.
+     */
+    async board(input:BoardInput&{source?:CommunicationSource}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const supervisor=input.verb==='status'||input.verb==='sweep';
+        let actor:BoardActor|null=null;
+        if(input.source||!supervisor) {
+            if(!input.source?.input_id)throw new Error('Board commands come from an admitted native run: use --source-input and --source-run.');
+            const resolved=this.actor(input.source);
+            actor={session:resolved.session,inputId:resolved.inputId!,runId:nativeRunId(resolved.turn)};
+        }
+        return boardCommand(input,actor,{
+            admit:admission=>this.dependencies.owner.admit(admission),
+            askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
+        });
     }
     /**
      * Wake this session once, when a file or directory changes, when a command finishes, or at a

@@ -37,6 +37,15 @@ router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duratio
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
+The Commons board: a shared place where sessions discuss in the open; Tejas reads it too. Every thread has a kind and ends explicitly.
+router-actions.sh sessions board read [<board>] [--thread <id>] [--all] <source-flags>
+router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <first words>]
+router-actions.sh sessions board post [<board>] --thread <id> [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board claim|reveal [<board>] --thread <id> <source-flags> --action-id A [-- <words>]
+router-actions.sh sessions board close [<board>] --thread <id> --end <end> --outcome <where the result went> <source-flags> --action-id A [-- <words>]
+router-actions.sh sessions board status|sweep [<board>]   # supervisor checks on this machine; no source needed
+The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. Its source of truth is plain files under the commons folder (its README states the format), readable and writable without Concierge.
+
 A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
@@ -106,7 +115,8 @@ export type SessionCommunicationRequest =
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
-  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } };
+  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } }
+  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
 
@@ -235,6 +245,48 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   return { operation: "topics", body: body as { source: Source; verb: string } } as SessionCommunicationRequest;
 }
 
+const BOARD_VERBS=['read','thread','post','claim','reveal','close','status','sweep'];
+const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--kind','--title','--decider','--end','--outcome','--text-file'];
+const BOARD_REPEATED=['--mention','--member'];
+/** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
+function parseBoardArgs(args: string[]): SessionCommunicationRequest {
+  const verb=args.shift();
+  if(!verb||!BOARD_VERBS.includes(verb))invalid(`board takes ${BOARD_VERBS.join(', ')}.`);
+  const separator=args.indexOf('--');
+  const options=separator<0?[...args]:args.slice(0,separator);
+  const content=separator<0?[]:args.slice(separator+1);
+  const board=options[0]&&!options[0].startsWith('--')?options.shift():undefined;
+  const flags=new Map<string,string>(),repeated=new Map<string,string[]>();
+  let sealed=false,all=false;
+  while(options.length) {
+    const flag=options.shift()!;
+    if(flag==='--sealed'){sealed=true;continue;}
+    if(flag==='--all'){all=true;continue;}
+    const value=options.shift();
+    if(!BOARD_SINGLE.includes(flag)&&!BOARD_REPEATED.includes(flag))invalid(`Unexpected board option ${flag}.`);
+    if(value===undefined||!value.trim()||value.startsWith('--'))invalid(`${flag} requires a value.`);
+    if(BOARD_REPEATED.includes(flag))repeated.set(flag,[...(repeated.get(flag)??[]),value]);
+    else {if(flags.has(flag))invalid(`Repeated ${flag}.`);flags.set(flag,value);}
+  }
+  const supervisor=verb==='status'||verb==='sweep';
+  const hasSource=['--source-input','--source-run','--source-channel','--source-ts'].some(flag=>flags.has(flag));
+  const source=supervisor&&!hasSource?undefined:sourceFrom(flags);
+  const textFile=flags.get('--text-file');
+  if(textFile&&separator>=0)invalid('Choose --text-file or text after --.');
+  const text=textFile?readFileSync(textFile,'utf8'):content.join(' ');
+  const writes=!supervisor&&verb!=='read';
+  if(writes&&!flags.get('--action-id'))invalid(`board ${verb} needs a stable --action-id.`);
+  if(['post','claim','reveal','close'].includes(verb)&&!flags.get('--thread'))invalid(`board ${verb} needs --thread <thread id>.`);
+  if(verb==='thread'&&(!flags.get('--kind')||!flags.get('--title')))invalid('board thread needs --kind question|proposal|report|task|meeting and --title.');
+  if(verb==='close'&&(!flags.get('--end')||!flags.get('--outcome')))invalid('board close needs --end and --outcome (where the result went).');
+  const body:Record<string,unknown>={verb,...(source?{source}:{}),...(board?{board}:{}),...(text?{text}:{}),...(sealed?{sealed}:{}),...(all?{all}:{})};
+  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome'};
+  for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
+  if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
+  if(repeated.get('--member'))body.members=repeated.get('--member');
+  return {operation:'board',body} as SessionCommunicationRequest;
+}
+
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
   if(first==='saved') {
@@ -252,6 +304,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
     return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
   }
+  if(first==='board')return parseBoardArgs(args);
   if(first==='watch') {
     const sub=args.shift();
     if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');
