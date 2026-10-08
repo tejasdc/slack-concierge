@@ -1,0 +1,1 @@
+Update checks now show where a stalled or stopped background check ended, making release failures easier to diagnose.
