@@ -21,7 +21,11 @@ function sessionTitle(source:Database,id:number):string|null{
 function peerAddress(peer:string,id:string){return `${peer}:${String(id).replace(/^concierge:/,'')}`;}
 /** All shared read indexes are assembled once for a bounded change batch, in the worker. */
 export function topicContext(source:Database,prepared:Database,generation:number,sessionId:number):TopicContext{
- const root=inboxRootResolver(source),humanReplies=new Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>();
+ const resolve=inboxRootResolver(source);
+ const root:ReturnType<typeof inboxRootResolver>=(session,id,seen)=>resolve(session,id,seen)??
+  (prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND message_id=? ORDER BY event_sequence LIMIT 1')
+   .get(generation,id) as {root:string|null}|null)?.root??null;
+ const humanReplies=new Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>();
  const replyRows=source.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
    json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to FROM session_inputs
    WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
@@ -124,7 +128,7 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   replaces:row.replaces,replacedBy:row.replaced_by,answer:parse(row.answer_json),recovered:!!row.recovered,
   legacyNeedEventId:row.legacy_need_event_id,kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
   generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
- const reading=[context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='exposed' AND revision=? LIMIT 1")
+ const reading=[context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='exposed' AND revision=? ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id,question.revision),
   context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id)].filter(Boolean);

@@ -5,7 +5,8 @@ import {readTopic,listTopics,invalidateTopicRoots} from '../src/session-topics';
 import {topicContext,preparedTopicValue} from '../src/prepared-topic-values';
 import {preparedInboxDisplay} from '../src/presentation-inbox-display';
 import {observedDatabase,observeStorageOperation} from '../src/storage-observation';
-import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChunk,readPreparedQuestions,readPreparedTopicOverview,readPreparedTopicItems} from '../src/prepared-topics';
+import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChunk,readPreparedQuestions,readPreparedTopicOverview,readPreparedTopicItems,readPreparedTopicEvents,readPreparedTopicChanges,readPreparedInboxAttention} from '../src/prepared-topics';
+import {topicEventSentence} from '../src/topic-event-display';
 
 test('prepared topic preserves canonical question, request, attention, and work values',()=>{
  const session=Number(db.query("INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json) VALUES('fixture','1','claude-code',?)")
@@ -48,7 +49,7 @@ test('prepared topic preserves canonical question, request, attention, and work 
  expect(value.summary).toEqual(listTopics().topics[0]);
  const store=new PreparedTopics(db,prepared);store.beginRebuild(1);store.write(store.context(1,session),'fixture-topic');store.activate(1,7);
  expect(readPreparedTopics(prepared,{canonicalHead:7}).topics[0].needsYou.count).toBe(1);
- expect(readPreparedQuestions(prepared,{state:'open',canonicalHead:7}).questions?.map((q:any)=>q.id)).toEqual(['ready']);
+ expect(readPreparedQuestions(prepared,{state:'open',canonicalHead:7}).topics.flatMap((g:any)=>g.questions.map((q:any)=>q.id))).toEqual(['ready']);
  const detail=readPreparedTopic(prepared,'fixture-topic',7);
  let raw='';for(let chunk=0;;chunk++){const part=readPreparedTopicChunk(prepared,detail.detailRef!.hash,chunk)!;raw+=part.text;if(chunk+1===part.count)break;}
  expect(JSON.parse(raw).collections).toBe('paged');
@@ -82,5 +83,30 @@ test('prepared topic preserves canonical question, request, attention, and work 
  expect(readPreparedTopicOverview(prepared,'fixture-topic',7).questionCounts.history).toBe(1001);
  expect(Buffer.byteLength(JSON.stringify(readPreparedTopicOverview(prepared,'fixture-topic',7)))).toBeLessThan(32*1024);
  console.log(JSON.stringify({fixture:'1000-reading-items-one-8MB-answer',db_result_bytes:bytes,db_calls:calls}));
+ const management={change:'reconciled',topicId:'fixture-topic',questions:Array.from({length:2000},()=>({brief:{decision:'x'.repeat(1000)}})),by:{kind:'human'},revision:4};
+ const eventSequence=Number(db.query('INSERT INTO session_owner_events(event_id,session_id,kind,payload_json,created_at) VALUES(?,?,?,?,?)')
+  .run('management-one',session,'topic_question',JSON.stringify(management),at).lastInsertRowid);
+ store.writeEvent(1,eventSequence);
+ expect(readPreparedTopicEvents(prepared,[eventSequence])[0]?.content).toBe(topicEventSentence(management));
+ expect(Buffer.byteLength(JSON.stringify(readPreparedTopicEvents(prepared,[eventSequence])))).toBeLessThan(4096);
+ const oldCursor=readPreparedTopics(prepared,{canonicalHead:7}).asOf!;
+ prepared.query("INSERT INTO presentation_topic_changes(generation,topic_id,created_ms) VALUES(1,'fixture-topic',0)").run();
+ // An expired change cursor resets explicitly; immutable source events remain intact.
+ store.collectPage(Date.now()+8*24*60*60*1000);
+ expect(readPreparedTopicChanges(prepared,oldCursor,7).coverage.code).toBe('reset_required');
+ expect(db.query('SELECT 1 FROM session_owner_events WHERE sequence=?').get(eventSequence)).not.toBeNull();
+ const newerSession=Number(db.query("INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json) VALUES('fixture','2','claude-code',?)")
+  .run(JSON.stringify({inbox:true,title:'New Inbox'})).lastInsertRowid);
+ store.apply(1,[{source_table:'sessions',row_key:String(newerSession),session_id:newerSession}],[]);
+ while(store.drain(1).hasMore){}
+ store.checkpoint(1,8);
+ expect(readPreparedTopics(prepared,{canonicalHead:8}).topics).toEqual([]);
+ expect(readPreparedQuestions(prepared,{state:'open',canonicalHead:8}).questionCounts.open).toBe(0);
+ expect(readPreparedTopicOverview(prepared,'fixture-topic',8).replyTargets.router).toBe(`concierge:${newerSession}`);
+ expect(readPreparedInboxAttention(prepared,newerSession,8).total).toBeGreaterThan(0);
+ // Reusing an interrupted generation cannot leave stale request links or event displays.
+ store.beginRebuild(1);
+ expect(readPreparedTopicEvents(prepared,[eventSequence])).toEqual([null]);
+ expect(prepared.query('SELECT count(*) AS n FROM presentation_topic_request_links WHERE generation=1').get()).toEqual({n:0});
  prepared.close();
 });

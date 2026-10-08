@@ -32,7 +32,11 @@ background CPU per topic. Reverse dependency indexes keep unrelated token events
 The overview returns exact per-filter question totals plus one selected-filter page, request
 count and a request page. Additional pages are explicit. Requests may also be paged by their
 source input for cards beside a visible conversation entry. Global question pages retain
-topic groups and exact filter counts. Inbox attention uses those prepared facts and indexed
+topic groups (without a duplicate flat question array) and exact filter counts. The current
+Inbox owns catalogue and global-question visibility. Older topics remain directly readable,
+with work and reply routing derived from the current Inbox, matching the canonical owner.
+Inbox attention still includes actionable questions from older topics, as the owner does.
+Inbox attention uses those prepared facts and indexed
 maximum generation; incomplete coverage returns unknown attention, never false.
 
 Whole-topic detail is metadata only (`collections: 'paged'`), suitable for an explicit Manage
@@ -54,5 +58,8 @@ compares actual canonical and prepared detail/summary values, including a long r
 then exercises streaming preparation of a thousand historical reading references to one
 eight-MB answer (about two MB total database result bytes, not eight GB of copied text).
 `bun run scripts/topic-growth-fixtures.ts` checks indexed deep pagination at 100, 1,000 and
-10,000 topics under actual read budgets, explicit stale coverage, deletion changes and generation resets. These are
+10,000 topics with near-four-KiB summaries/questions/targets under actual read budgets,
+including management displays and nonempty attention pages. It checks explicit stale
+coverage, deletion changes and generation resets. The parity fixture also exercises Inbox
+cutover, expired change cursors and interrupted rebuild cleanup. These are
 local fixture results, not live product acceptance.
