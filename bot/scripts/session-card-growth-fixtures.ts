@@ -89,6 +89,13 @@ async function windowGrowth(){
       const delta=changes(prepared,first.asOf,'everyday',1);
       assert.equal(delta.changes.length,1,'moved card must be in the revision feed');
       assert.equal(delta.changes[0]?.after?.title,'Moved after opening');
+      source.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({title:'Workflow conversation',workflowId:'paper-writing'}),count-2);
+      cards.apply(1,[{sequence:2,source_table:'sessions',row_key:String(count-2),session_id:count-2}]);cards.checkpoint(1,2);
+      const workflow=readPreparedSessionWindow(prepared,{space:'everyday',workflowId:'paper-writing',limit:20,canonicalHead:2});
+      assert.deepEqual(workflow.cards.map(card=>card.id),[`concierge:${count-2}`]);
+      const plan=prepared.query("EXPLAIN QUERY PLAN SELECT session_id FROM presentation_session_cards WHERE generation=? AND space=? AND json_extract(card_json,'$.workflowId')=? AND sort_ms<? ORDER BY sort_ms DESC,session_id DESC LIMIT ?")
+        .all(1,'everyday','paper-writing',Number.MAX_SAFE_INTEGER,21) as {detail:string}[];
+      assert.ok(plan.some(row=>row.detail.includes('presentation_session_workflow_window')),JSON.stringify(plan));
     } finally {source.close();prepared.close();}
   }
 }

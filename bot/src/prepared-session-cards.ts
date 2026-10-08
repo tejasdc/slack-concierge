@@ -1,13 +1,15 @@
 import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
 import {savedStartAt} from './saved-start-time';
+import {sessionAddress} from './session-address';
 
 type SourceSession={id:number;provider_id:string;status:string;native_metadata_json:string|null;
-  agent_session_uuid:string|null;slack_channel_id:string|null;slack_thread_ts:string|null;created_at:string;last_turn_at:string|null};
+  agent_session_uuid:string|null;binding_generation:number|null;slack_channel_id:string|null;slack_thread_ts:string|null;created_at:string;last_turn_at:string|null};
 type Labels={title:string;summary:string;project:string|null};
 type SourceChange={sequence:number;source_table?:string;row_key?:string;session_id?:number|null;target_session_id?:number|null};
 export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;summary:string;summaryTruncated:boolean;
   project:string|null;projectTruncated:boolean;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
+  address:string;bindingGeneration:number;runtimeThreadId:string|null;workflowId:string|null;purpose:string;mode:string;
   createdAt:string;updatedAt:string;archived:boolean;suspended:boolean;pinned:boolean;saved:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
@@ -42,6 +44,8 @@ export class PreparedSessionCards {
     );
     CREATE INDEX IF NOT EXISTS presentation_session_window
       ON presentation_session_cards(generation,space,sort_ms DESC,session_id DESC);
+    CREATE INDEX IF NOT EXISTS presentation_session_workflow_window
+      ON presentation_session_cards(generation,space,json_extract(card_json,'$.workflowId'),sort_ms DESC,session_id DESC);
     CREATE INDEX IF NOT EXISTS presentation_session_attention_window
       ON presentation_session_cards(generation,space,needs_attention,sort_ms DESC,session_id DESC);
     CREATE TABLE IF NOT EXISTS presentation_session_changes(
@@ -127,7 +131,9 @@ export class PreparedSessionCards {
     const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
     const timed=active??latest;
-    const card:SessionCard={id:`concierge:${sessionId}`,title:title.text,titleTruncated:title.truncated,
+    const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
+      runtimeThreadId:session.agent_session_uuid,workflowId:typeof meta.workflowId==='string'?meta.workflowId:null,
+      purpose:meta.purpose??'chat',mode:meta.purpose??'chat',title:title.text,titleTruncated:title.truncated,
       summary:summary.text,summaryTruncated:summary.truncated,project:project?.text??null,projectTruncated:project?.truncated??false,
       provider:session.provider_id,origin,catalogueKind:origin==='imported'&&!meta.nativeBinding?'historical-evidence':'conversation',
       createdAt:iso(session.created_at),updatedAt:iso(session.last_turn_at??session.created_at),
@@ -165,14 +171,14 @@ export class PreparedSessionCards {
   }
 }
 
-type WindowCursor={v:1;g:number;h:number;sort:number;id:number;space:SessionSpace;attention:boolean};
+type WindowCursor={v:1;g:number;h:number;sort:number;id:number;space:SessionSpace;attention:boolean;workflowId:string|null};
 const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)).toString('base64url');
 const decode=<T>(value:string):T|null=>{try{
   return value.length<=512&&/^[A-Za-z0-9_-]+$/.test(value)?JSON.parse(Buffer.from(value,'base64url').toString('utf8')) as T:null;
 }catch{return null;}};
 export type SessionWindow={cards:SessionCard[];nextCursor:string|null;asOf:string;
   coverage:{complete:boolean;code?:'presentation_indexing'|'reset'|'attention_catching_up'|'catching_up';appliedSequence:number}};
-export function readPreparedSessionWindow(database:Database,options:{space:SessionSpace;needsAttention?:boolean;cursor?:string|null;limit?:number;canonicalHead:number}):SessionWindow{
+export function readPreparedSessionWindow(database:Database,options:{space:SessionSpace;needsAttention?:boolean;workflowId?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}):SessionWindow{
   const limit=Math.min(MAX_PAGE,Math.max(1,options.limit??20));
   return database.transaction(()=>{
     const meta=database.query('SELECT generation,source_head,change_base,ready FROM presentation_session_meta WHERE singleton=1')
@@ -182,13 +188,15 @@ export function readPreparedSessionWindow(database:Database,options:{space:Sessi
       .get(meta.change_base,meta.generation) as {n:number}).n;
     const position=options.cursor?decode<WindowCursor>(options.cursor):null;
     if(options.cursor&&(!position||position.v!==1||position.g!==meta.generation||position.space!==options.space||
-      position.attention!==!!options.needsAttention||!Number.isSafeInteger(position.h)||position.h>head||
+      position.attention!==!!options.needsAttention||(position.workflowId??null)!==(options.workflowId??null)||!Number.isSafeInteger(position.h)||position.h>head||
       position.h<meta.change_base||!Number.isSafeInteger(position.id)||!Number.isFinite(position.sort)))
       return {cards:[],nextCursor:null,asOf:encode({v:1,g:meta.generation,h:head,space:options.space}),coverage:{complete:false,code:'reset',appliedSequence:meta.source_head}};
+    const workflow=options.workflowId??null;
     const rows=database.query(`SELECT session_id,sort_ms,card_json,revision FROM presentation_session_cards WHERE generation=? AND space=?
+      ${workflow!==null?"AND json_extract(card_json,'$.workflowId')=?":''}
       ${options.needsAttention?'AND needs_attention=1':''}
       AND (sort_ms,session_id)<(?,?)
-      ORDER BY sort_ms DESC,session_id DESC LIMIT ?`).all(meta.generation,options.space,
+      ORDER BY sort_ms DESC,session_id DESC LIMIT ?`).all(meta.generation,options.space,...(workflow!==null?[workflow]:[]),
         position?.sort??Number.MAX_SAFE_INTEGER,position?.id??Number.MAX_SAFE_INTEGER,limit+1) as CardRow[];
     const cards:SessionCard[]=[];let bytes=0;
     for(const row of rows.slice(0,limit)){
@@ -201,7 +209,7 @@ export function readPreparedSessionWindow(database:Database,options:{space:Sessi
     const attentionUnknown=!!options.needsAttention&&!!database.query(`SELECT 1 FROM presentation_session_cards
       WHERE generation=? AND space=? AND needs_attention IS NULL LIMIT 1`).get(meta.generation,options.space);
     return {cards,nextCursor:hasMore&&last?encode({v:1,g:meta.generation,h:position?.h??head,sort:last.sort_ms,id:last.session_id,
-      space:options.space,attention:!!options.needsAttention} satisfies WindowCursor):null,
+      space:options.space,attention:!!options.needsAttention,workflowId:workflow} satisfies WindowCursor):null,
       asOf:encode({v:1,g:meta.generation,h:position?.h??head,space:options.space}),
       coverage:attentionUnknown?{complete:false,code:'attention_catching_up',appliedSequence:meta.source_head}:
         meta.source_head<options.canonicalHead?{complete:false,code:'catching_up',appliedSequence:meta.source_head}:

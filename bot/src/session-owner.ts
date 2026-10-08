@@ -44,6 +44,7 @@ import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-o
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
+import {sessionAddress} from './session-address';
 import {inboxAttribution} from './inbox-attribution-read';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
@@ -358,7 +359,7 @@ export function parseSessionId(value:string):number {
   if(!Number.isSafeInteger(id)) throw new SessionOwnerError('Invalid session ID.');
   return id;
 }
-export const sessionAddress=(session:SessionRow)=>'session:'+Buffer.from(JSON.stringify([2,session.id,session.binding_generation??1])).toString('base64url');
+export {sessionAddress} from './session-address';
 export function resolveSessionAddress(address:string):SessionRow {
   let tuple:any;
   try {tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());} catch {throw new SessionOwnerError('Invalid exact session address.');}
@@ -2434,7 +2435,10 @@ export class SessionOwner {
         if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
         const attention=url.searchParams.get('needsAttention');
         if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
-        result=preparedSessionWindow({space,needsAttention:attention==='true',cursor:url.searchParams.get('cursor'),
+        const workflowId=url.searchParams.get('workflowId');
+        if(workflowId!==null&&!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(workflowId)||workflowId!==null&&workflowId.length>64)
+          throw new SessionOwnerError('Invalid workflow identity.');
+        result=preparedSessionWindow({space,needsAttention:attention==='true',workflowId,cursor:url.searchParams.get('cursor'),
           limit:boundedLimit(url.searchParams.get('limit'),40)??20});
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='changes'&&parts.length===3){

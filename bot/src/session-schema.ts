@@ -393,6 +393,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           UNIQUE(topic_id,item_id,revision,kind)
         );
         CREATE INDEX IF NOT EXISTS inbox_topic_reading_topic ON inbox_topic_reading(topic_id,item_id);
+        CREATE INDEX IF NOT EXISTS inbox_topic_reading_latest ON inbox_topic_reading(topic_id,item_id,kind,at DESC);
         -- What the router says it is working on right now, bound to its exact run.
         CREATE TABLE IF NOT EXISTS inbox_focus (
           session_id INTEGER PRIMARY KEY REFERENCES sessions(id),

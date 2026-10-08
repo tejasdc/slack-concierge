@@ -24,7 +24,7 @@ const canonicalHead=()=>Number((db.query('SELECT COALESCE(MAX(sequence),0) AS n 
   .get() as {n:number}).n);
 const indexing:SessionWindow={cards:[],nextCursor:null,asOf:'',coverage:{complete:false,code:'presentation_indexing',appliedSequence:0}};
 
-export function preparedSessionWindow(options:{space:SessionSpace;needsAttention?:boolean;cursor?:string|null;limit?:number}):SessionWindow {
+export function preparedSessionWindow(options:{space:SessionSpace;needsAttention?:boolean;workflowId?:string|null;cursor?:string|null;limit?:number}):SessionWindow {
   const reader=prepared();
   return reader?readPreparedSessionWindow(reader,{...options,canonicalHead:canonicalHead()}):indexing;
 }
