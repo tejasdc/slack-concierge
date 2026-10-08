@@ -216,7 +216,11 @@ export interface ClaudeCodeParseResult {
 }
 
 export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: string | null = null, initialPrompt?: string): ClaudeCodeParseResult {
-  const events = parseClaudeEvents(stdout);
+  return claudeOutputFromEvents(parseClaudeEvents(stdout), fallbackSessionUUID, initialPrompt, stdout);
+}
+
+/** The same reading over events already parsed, so a live run never re-parses what it printed. */
+export function claudeOutputFromEvents(events: readonly JsonValue[], fallbackSessionUUID: string | null = null, initialPrompt?: string, stdout = ""): ClaudeCodeParseResult {
   let sessionUUID = fallbackSessionUUID;
   let finalResult = "";
   let isError = false;
@@ -575,6 +579,12 @@ export async function runClaudeCodeTurn(input: {
   };
   let steeringSenderRegistered = false;
   let eventBuffer = "";
+  // Every event this run printed, parsed once as its line arrives. Live narration used to re-split
+  // and re-parse the whole accumulated output on every chunk: a long turn prints tens of megabytes,
+  // so each chunk allocated tens of megabytes, and on 2026-10-07 the owner grew to 41 GB, swapped
+  // and froze while several runs streamed (profiles: parseClaudeEvents under onStdout).
+  const streamEvents: JsonValue[] = [];
+  let narrationDue: ReturnType<typeof setTimeout> | null = null;
   let providerProducedResult = false;
   let providerTerminalReported = false;
   let cancellationRegistered = false;
@@ -1299,23 +1309,28 @@ export async function runClaudeCodeTurn(input: {
       try {
         for (const line of lines) {
           const event = parseJson(line.trim());
-          if (isRecord(event)) handleProtocolEvent(event);
+          if (isRecord(event)) { streamEvents.push(event); handleProtocolEvent(event); }
         }
       } finally { eventAt = null; }
-      // Narration is live status only. Re-parsing the whole output for every replayed line would
-      // make adopting a long turn quadratic; the next live line brings the narration up to date.
-      if (at !== undefined) return;
-      const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
-      if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
+      // Narration is live status only: replayed lines wait for the next live one, and a burst of
+      // chunks is read once, a quarter second after it starts.
+      if (at !== undefined || narrationDue) return;
+      narrationDue = setTimeout(() => {
+        narrationDue = null;
+        const parsed = claudeOutputFromEvents(streamEvents, input.sessionUUID, input.prompt);
+        if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
+      }, 250);
     },
     onStderr: (chunk) => {
       stderr += chunk;
     },
   }).catch((error) => {
+    if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
     stopTranscriptWatch();
     closeProviderInput();
     throw error;
   });
+  if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
   stopTranscriptWatch();
   const finalBufferedEvent = parseJson(eventBuffer.trim());
   if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
