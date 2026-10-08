@@ -54,6 +54,7 @@ class ResidentEngine {
   private buffer = "";
   private sequence = 0;
   private idle: ReturnType<typeof setTimeout> | null = null;
+  private stopsOnExit = false;
 
   get loadsOnDemand(): boolean { return this.spec.idleMs !== null; }
 
@@ -68,8 +69,15 @@ class ResidentEngine {
     const started = Date.now();
     // Raised priority keeps a waiting person ahead of builds and batch agents; nice only warns
     // without the privilege, so this can only help.
-    const child = spawn("nice", ["-n", "-10", this.spec.server, ...this.spec.args], { stdio: ["pipe", "pipe", "pipe"] });
+    // The engine dies with Concierge, as the meaning engine does: killed by the kernel if Concierge is
+    // killed (Linux), and on exit below; a leftover parakeet-server outlived the 2026-10-07 8:16 PM stop.
+    const launch = process.platform === "linux" ? ["setpriv", "--pdeathsig", "KILL", this.spec.server] : [this.spec.server];
+    const child = spawn("nice", ["-n", "-10", ...launch, ...this.spec.args], { stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
+    if (!this.stopsOnExit) {
+      this.stopsOnExit = true;
+      process.once("exit", () => { try { this.child?.kill("SIGKILL"); } catch {} });
+    }
     this.ready = new Promise<void>((resolve, reject) => {
       let settled = false;
       child.stdout.setEncoding("utf8");
