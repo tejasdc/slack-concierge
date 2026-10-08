@@ -28,6 +28,15 @@ managed App Server remains on its loaded executable until an explicit App Server
 maintenance restart. Repair prompts and supervisors never install Codex or
 restart that daemon.
 
+Tejas clarified on 2026-10-08 that the recovery agent's CLI running outside
+the shared App Server is intentional and acceptable. He recalls a prior
+permission issue as the reason, but described that connection as probable;
+this incident did not re-establish the original failure. The repair CLI and
+shared provider server may therefore load different staged versions without
+that difference being an incident or a reason to merge their process paths.
+When diagnosing access, check which process actually made the call and its
+permissions; do not assume the repair CLI executes inside the provider daemon.
+
 ## Built-In Updater Semantics
 
 These semantics are verified against the Codex 0.149.1 source used on the service peer:
