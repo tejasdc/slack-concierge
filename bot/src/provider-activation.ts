@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
@@ -197,7 +197,9 @@ async function replaceUnmanagedServer(): Promise<{ code: number | null; output: 
     const gone = Date.now() + 5_000;
     while (servers.some(alive) && Date.now() < gone) await new Promise(resolve => setTimeout(resolve, 100));
     if (await socketAnswers(CONTROL_SOCKET)) return { code: 0, output: "Another start already brought a server up." };
-    if (existsSync(CONTROL_SOCKET)) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    // lstat, not exists: the control path is a link, and its target may already be gone.
+    let present = false; try { lstatSync(CONTROL_SOCKET); present = true; } catch { /* absent */ }
+    if (present) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     return await startCodexDaemonInOwnScope();
   } finally {
     holdCodexDaemonAutoStart(false);
@@ -222,7 +224,8 @@ let pendingCodexRepair = false;
  * Puts a server started outside its manager back under it, at a moment nothing would be cut: no
  * Concierge Codex turn running, none observed running from another client, and new Codex work held
  * for the seconds it takes. Unlike an account switch it changes no account, so it releases no held
- * work. Server only. Retried on every execution change until it is done.
+ * work. Server only. Retried on execution changes while it is waiting for running work; a finished
+ * attempt, successful or not, is not repeated until the next start or account switch.
  */
 function repairUnmanagedCodexServer(): Promise<void> {
   return oneCodexRestartAtATime(async () => {
