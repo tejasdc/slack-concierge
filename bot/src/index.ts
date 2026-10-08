@@ -3977,6 +3977,14 @@ setInterval(() => {
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
+  // Closing the deprecated Slack socket while it is mid-reconnect rejects with no error at all;
+  // unhandled, Bun exits 1, systemd records a crash and Tejas is told Concierge crashed. That was
+  // the 8:03 and 8:18 PM "failures" on 2026-10-07: both were planned update restarts.
+  for (const kind of ["unhandledRejection", "uncaughtException"] as const) {
+    process.on(kind, (reason: unknown) => {
+      log("warn", "service_drain_error_ignored", { signal, kind, error: reason instanceof Error ? reason.message : String(reason) });
+    });
+  }
   stopBackgroundJobWatch();
   stopWatchWorker();
   serviceOnline = false;
@@ -4010,7 +4018,7 @@ async function drainAndStop(signal: string) {
   await grafanaAlerts?.stop();
   if (codexRemoteObserver) await codexRemoteObserver.stop();
   if (codexSessionObserver) await codexSessionObserver.stop();
-  await app.stop();
+  try { await app.stop(); } catch (error) { log("warn", "slack_app_stop_failed", { signal, error: error instanceof Error ? error.message : String(error) }); }
   if (turnsThatEndWithThisProcess() > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
