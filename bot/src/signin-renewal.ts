@@ -36,7 +36,7 @@ export function signInRenewalOf(notice: { key: string; kind: string }): { provid
   return end > 0 ? { provider, account: rest.slice(0, end) } : null;
 }
 export function signInWorkerActionId(key: string): string {
-  return key.replace(/[^A-Za-z0-9_.@:-]/g, "-").slice(0, 120);
+  return key.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 100);
 }
 
 /**
@@ -45,7 +45,7 @@ export function signInWorkerActionId(key: string): string {
  * the Mac (asleep, or working), nothing new is started, so two sign-ins never race.
  */
 export function needSignInRenewal(provider: RenewableProvider, account: string | null, why: string): boolean {
-  if (!account || process.platform === "darwin") return false;
+  if (!account) return false;
   const name = NAME[provider];
   try {
     ensureTable(db);
@@ -53,14 +53,20 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
     const recent = db.query(`SELECT 1 FROM repair_notices WHERE key LIKE ? AND (delivered_input_id IS NULL OR created_at_ms>?) LIMIT 1`)
       .get(like, Date.now() - SAME_EPISODE_MS);
     if (recent) return false;
-    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NULL LIMIT 1`).get(like);
+    const sent = `${signInWorkerActionId(`${PREFIX[provider]}${account}:`)}%`;
+    const open = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NULL
+      UNION ALL SELECT 1 FROM session_external_requests WHERE action_id LIKE ? AND outcome IS NULL LIMIT 1`).get(sent, sent);
     if (open) return false;
+    const onWorkerMachine = process.platform === "darwin";
     const recorded = recordRepairNotice(db, { key: `${PREFIX[provider]}${account}:${Date.now()}`, kind: SIGNIN_RENEWAL_KINDS[provider],
       text: `The ${name} sign-in for ${account} on the server was refused (${why}). Concierge sent the Mac's browser agent `
-        + `(mac/${SIGNIN_WORKER.address}) a request to renew it through thnkr.ing Accounts in his Chrome; its answer comes back to you. `
-        + `When it answers completed, check Accounts shows ${account} signed in and end done. If it answers needs_decision because Chrome's own `
-        + `${SITE[provider]} sign-in for that account has expired, that is the one thing only he can do: declare needs_you --only-he-can sign-in, `
-        + `telling him to sign in to ${SITE[provider]} as ${account} in Chrome on his Mac, nothing else. Do not start another sign-in yourself.` });
+        + `(mac/${SIGNIN_WORKER.address}) a request to renew it through thnkr.ing Accounts in his Chrome`
+        + (onWorkerMachine
+          ? `; it runs on this same Mac, so its answer stays with the request and it tells Tejas itself if only he can act. Check Accounts later shows ${account} signed in; nothing else is yours. `
+          : `; its answer comes back to you. When it answers completed, check Accounts shows ${account} signed in and end done. If it answers needs_decision because Chrome's own `
+            + `${SITE[provider]} sign-in for that account has expired, that is the one thing only he can do: declare needs_you --only-he-can sign-in, `
+            + `telling him to sign in to ${SITE[provider]} as ${account} in Chrome on his Mac, nothing else. `)
+        + `Do not start another sign-in yourself.` });
     if (recorded) log("warn", "signin_renewal_needed", { provider, account, why });
     return recorded;
   } catch (error) {
@@ -74,7 +80,7 @@ export function needClaudeSignInRenewal(account: string | null, why: string): bo
 }
 
 /** What the Mac's browser agent is asked to do. No link or code is in it, and none may come back. */
-export function signInWorkerText(provider: RenewableProvider, account: string): string {
+export function signInWorkerText(provider: RenewableProvider, account: string, local = false): string {
   const name = NAME[provider], site = SITE[provider];
   const approve = provider === "codex"
     ? `Accounts shows a code and a link: open the link in Chrome, sign in to OpenAI as ${account} (switch account first if another one is showing), and enter the code there`
@@ -82,5 +88,8 @@ export function signInWorkerText(provider: RenewableProvider, account: string): 
   return `Renew the server's ${name} sign-in for ${account}: the server's login for it was refused. In Chrome on this Mac, open thnkr.ing `
     + `Accounts, start ${account}'s ${name} sign-in for the server, ${approve}. Keep the link and the code out of every message, `
     + `file and reply. Reply completed once Accounts shows ${account} signed in on the server. Reply needs_decision --only-he-can sign-in only `
-    + `if Chrome's own ${site} sign-in for ${account} has expired and needs him. Do not start a second sign-in while one is waiting.`;
+    + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`
+    + (local ? `, and because this request comes from this Mac's own Concierge with nobody reading its answer, then also declare `
+      + `sessions outcome needs_you --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)
+    + `. Do not start a second sign-in while one is waiting.`;
 }

@@ -154,7 +154,10 @@ frees held work. The repair agent reaches him only if Chrome's own claude.ai sig
 Usage exhaustion never triggers it: an account out of room is moved off automatically.
 Codex is renewed the same way (`codex_signin_expired`): a Codex turn refused for its sign-in, or any
 account whose usage reading says its sign-in stopped working, sends the Mac agent to start that
-account's device sign-in from Accounts and enter the code at OpenAI in his Chrome.
+account's device sign-in from Accounts and enter the code at OpenAI in his Chrome. The Mac renews its own accounts the
+same way: there the browser agent is a session of the same instance, so the owner sends it the
+request through the outside-agent entrance (`signin-renewal`), and the agent itself declares
+needs_you when only he can act, since no session reads that request's answer.
 
 **Codex moves off a spent account by itself.** Codex runs every turn on one shared login, so it cannot
 choose per turn as Claude does. Instead the owner checks once a minute and whenever execution changes:

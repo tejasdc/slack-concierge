@@ -957,6 +957,20 @@ export class SessionOwner {
     const renewals=pending.map(notice=>({notice,renewal:signInRenewalOf(notice)})).filter(each=>each.renewal);
     if(!renewals.length)return;
     const peers=this.peers;
+    // On the Mac the browser agent is a session of this same instance: the request goes to it through the
+    // entrance for requests no agent session sends, so nothing waits for a provider turn here either.
+    if((peers?.self??(process.platform==='darwin'?'mac':null))===SIGNIN_WORKER.peer){
+      if(!this.communication){log('error','signin_renewal_not_sent',{reason:'no_communication',count:renewals.length});return;}
+      for(const {notice,renewal} of renewals){
+        const {provider,account}=renewal!;
+        try{
+          this.communication.externalAsk({name:'signin-renewal',address:SIGNIN_WORKER.address,action_id:signInWorkerActionId(notice.key),
+            text:signInWorkerText(provider,account,true),requestedEffect:'work'});
+          log('info','signin_renewal_sent',{provider,account,status:'local'});
+        }catch(error){log('error','signin_renewal_not_sent',{provider,account,error:String((error as Error)?.message??error).slice(0,300)});}
+      }
+      return;
+    }
     const turn=readInputExecution(admitted).turn?.id
       ??(db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(session.id) as {id:number}|null)?.id;
     if(!peers||!turn){log('error','signin_renewal_not_sent',{reason:peers?'no_turn':'no_peers',count:renewals.length});return;}
