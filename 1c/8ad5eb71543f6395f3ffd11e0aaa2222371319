@@ -1,0 +1,1 @@
+Every update now checks that a saved request actually reaches an agent, even while conversation views are being updated.
