@@ -57,6 +57,33 @@ CONF
 fi
 security unlock-keychain -p "$PASS" "$KEYCHAIN"
 
+# An earlier build is moved aside, never deleted while in use: agents still running started
+# through it (execution hosts). It keeps its own name inside a dated folder, because macOS names
+# an app by its file: a process running from "thnkr.ing-20261008T063145-49797.app" made his
+# Accessibility prompt and Settings list show that name on 2026-10-08. A moved copy is also
+# unregistered from Launch Services, so only the copy under app/ is ever the one listed, and it is
+# removed once no running process uses it, which every install checks.
+RETIRED="$STATE/app-retired"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+in_use() { grep -qF "n$1/" <<<"$OPEN_FILES"; }
+prune_retired() {
+  [ -d "$RETIRED" ] || return 0
+  OPEN_FILES=$(lsof -Fn 2>/dev/null || true)
+  for old in "$RETIRED"/*; do
+    [ -e "$old" ] || continue
+    in_use "$old" && continue
+    for bundle in "$old" "$old"/*.app; do if [ -d "$bundle" ]; then "$LSREGISTER" -u "$bundle" >/dev/null 2>&1 || true; fi; done
+    rm -rf "$old"
+  done
+}
+retire_app() {
+  local dir="$RETIRED/$(date +%Y%m%dT%H%M%S)-$$"
+  mkdir -p "$dir"
+  mv "$1" "$dir/$(basename "$1")"
+  "$LSREGISTER" -u "$dir/$(basename "$1")" >/dev/null 2>&1 || true
+}
+prune_retired
+
 # Rebuild only when the launcher, its metadata or the name changes.
 fingerprint=$( { cat "$SRC/launcher.c" "$SRC/Info.plist"; echo "$DISPLAY_NAME"; } | shasum -a 256 | cut -d' ' -f1)
 if [ -x "$APP/Contents/MacOS/$DISPLAY_NAME" ] && [ "$(cat "$STATE/app/.fingerprint" 2>/dev/null)" = "$fingerprint" ] \
@@ -65,10 +92,6 @@ if [ -x "$APP/Contents/MacOS/$DISPLAY_NAME" ] && [ "$(cat "$STATE/app/.fingerpri
   exit 0
 fi
 
-# An earlier build is moved aside, never deleted: agents still running started through it
-# (execution hosts), and only the copy under app/ is registered, so only it holds the approvals.
-RETIRED="$STATE/app-retired"
-retire_app() { mkdir -p "$RETIRED"; mv "$1" "$RETIRED/$(basename "$1" .app)-$(date +%Y%m%dT%H%M%S)-$$.app"; }
 for old in "$STATE/app/"*.app; do if [ -e "$old" ] && [ "$old" != "$APP" ]; then retire_app "$old"; fi; done
 rm -rf "$APP.build"
 mkdir -p "$APP.build/Contents/MacOS"
