@@ -47,6 +47,16 @@ for(const part of [0,1,2,3])await selected.part('same-exact-version',selectedDig
 assert.equal(selectedLoads,1,'consecutive selected-detail parts must not reconstruct the source repeatedly');
 assert.equal((await selected.body('same-exact-version',selectedDigest,async()=>{selectedLoads++;return unicode;})).toString('utf8'),unicode);
 assert.equal(selectedLoads,1,'single-body detail must use the same exact prepared version');
+const versionA=historyContent({content:'version A'}),versionB=historyContent({content:'version B'});
+const digestA=createHash('sha256').update(versionA).digest('hex');
+const digestB=createHash('sha256').update(versionB).digest('hex');
+const [resolvedA,resolvedB]=await Promise.all([
+  selected.body('session-1:binding-1:message-1:'+digestA,digestA,async()=>{
+    await new Promise(resolve=>setTimeout(resolve,10));return versionA;}),
+  selected.body('session-1:binding-2:message-1:'+digestB,digestB,async()=>versionB),
+]);
+assert.equal(resolvedA.toString('utf8'),versionA,'concurrent old version must keep its own bytes');
+assert.equal(resolvedB.toString('utf8'),versionB,'concurrent new version must keep its own bytes');
 for(let part=0;part<parts;part++)assert.ok(Buffer.byteLength(historyDetailPart(unicode,part).content)<=4096,
   'every UTF-8-safe part must stay under the declared byte bound');
 
