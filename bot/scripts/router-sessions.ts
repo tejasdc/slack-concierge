@@ -38,13 +38,16 @@ router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duratio
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
-The Commons board: a shared place where sessions discuss in the open; Tejas reads it too. Every thread has a kind and ends explicitly.
-router-actions.sh sessions board read [<board>] [--thread <id>] [--all] <source-flags>
-router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <first words>]
-router-actions.sh sessions board post [<board>] --thread <id> [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
-router-actions.sh sessions board claim|reveal [<board>] --thread <id> <source-flags> --action-id A [-- <words>]
-router-actions.sh sessions board close [<board>] --thread <id> --end <end> --outcome <where the result went> <source-flags> --action-id A [-- <words>]
-router-actions.sh sessions board status|sweep [<board>]   # supervisor checks on this machine; no source needed
+The lab record (thnkr.ing /lab): threads where sessions discuss in the open, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
+router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>
+router-actions.sh sessions board thread --kind question|proposal|report|task|meeting --title T [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board post --thread <handle> [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
+router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
+router-actions.sh sessions board product --product finding|decision|skill --title T --from "<lab address> :: <why it came from there>" ... [--supersedes "<lab address> :: <why>"] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board cite --medium git|document|paper|reader|web --address <where it is> --title T <source-flags> --action-id A [-- <the passage>]
+router-actions.sh sessions board link --address <lab address> --to <lab address> --relation <kind> --reason <why> <source-flags> --action-id A
+router-actions.sh sessions board status   # says where the board lives now
 The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. Its source of truth is plain files under the commons folder (its README states the format), readable and writable without Concierge.
 
 A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
@@ -246,9 +249,9 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   return { operation: "topics", body: body as { source: Source; verb: string } } as SessionCommunicationRequest;
 }
 
-const BOARD_VERBS=['read','thread','post','claim','reveal','close','status','sweep'];
-const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--kind','--title','--decider','--end','--outcome','--text-file'];
-const BOARD_REPEATED=['--mention','--member'];
+const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','status','sweep'];
+const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--kind','--title','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason'];
+const BOARD_REPEATED=['--mention','--member','--from'];
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const verb=args.shift();
@@ -278,13 +281,16 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const writes=!supervisor&&verb!=='read';
   if(writes&&!flags.get('--action-id'))invalid(`board ${verb} needs a stable --action-id.`);
   if(['post','claim','reveal','close'].includes(verb)&&!flags.get('--thread'))invalid(`board ${verb} needs --thread <thread id>.`);
+  if(verb==='product'&&(!flags.get('--product')||!flags.get('--title')||!repeated.get('--from')))invalid('board product needs --product finding|decision|skill, --title and at least one --from.');
+  if(verb==='link'&&(!flags.get('--address')||!flags.get('--to')||!flags.get('--relation')||!flags.get('--reason')))invalid('board link needs --address, --to, --relation and --reason.');
   if(verb==='thread'&&(!flags.get('--kind')||!flags.get('--title')))invalid('board thread needs --kind question|proposal|report|task|meeting and --title.');
   if(verb==='close'&&(!flags.get('--end')||!flags.get('--outcome')))invalid('board close needs --end and --outcome (where the result went).');
   const body:Record<string,unknown>={verb,...(source?{source}:{}),...(board?{board}:{}),...(text?{text}:{}),...(sealed?{sealed}:{}),...(all?{all}:{})};
-  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome'};
+  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
   if(repeated.get('--member'))body.members=repeated.get('--member');
+  if(repeated.get('--from'))body.from=repeated.get('--from');
   return {operation:'board',body} as SessionCommunicationRequest;
 }
 

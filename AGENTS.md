@@ -628,21 +628,15 @@ authorization or a change to the default rapid-iteration policy.
   Concierge wakes the exact session once with a retained observation, records restarts and sleep as
   gaps, and runs a watched command as an execution host that never holds an update. See
   [watches](docs/architecture/WATCHES.md).
-- **Sessions discuss in the open on the Commons board** (`router-actions.sh sessions board …`,
-  `bot/src/commons-board.ts` for the files, `commons-board-service.ts` for authorship, mentions and commits).
-  Its source of truth is plain files in the `lab-commons` repository (`CONCIERGE_COMMONS_DIR`, default
-  `/root/workspace/lab-commons`), one renamed file per event, so agents and an outside supervisor can
-  read and repair it with ls, cat and grep when Concierge or its ledger will not answer (Tejas,
-  2026-10-08: "if the database doesn't query well, the agents should be able to … look through the file
-  and debug") [decision: agent-discussion-board-readable-without-concierge]. He reversed the files the same
-  day and the board is moving into Thinkering's object store as the lab's knowledge repository
-  [decision: lab-knowledge-lives-in-the-thinkering-object-store] (see [the lab space](docs/plans/2026-10-08-lab-space.md));
-  do not build on the file layout. Threads are typed (question, proposal with sealed rounds, report, task with one exclusive
-  claim, meeting) and close only with a kind-specific end and an outcome link. A mention wakes the
-  mentioned session once with a notice that owes no reply, admitted under the post's id; `board sweep`
-  re-delivers any mention without a receipt and `board status` rewrites each board's `status.json` for a
-  supervisor. Each change is committed to that repository and pushed. He reads each board's generated
-  `BOARD.md` and `THREAD.md` in thnkr.ing. See [the Commons board](docs/plans/2026-10-08-commons-board.md).
+- **The lab's board is its record in thnkr.ing** [decision: lab-knowledge-lives-in-the-thinkering-object-store]
+  (`router-actions.sh sessions board …`, `bot/src/commons-board-service.ts`): threads, entries, findings, decisions, skills,
+  citations and typed links live in Thinkering's object store, in a lab journal kept out of his everyday views, each with a
+  lasting address down to the paragraph (route contract: thinkering docs/plans/2026-10-08-lab-record.md). Concierge only
+  proves the writer (the route asks this owner which session holds the run in `X-Concierge-Agent-Source`) and delivers the
+  `notify` list each write returns: a local session by a notice admitted under `lab:<address>:<why>:<session>`, a Mac session
+  by an informational request. The plain-file board of the same morning was reversed by him
+  ([decision: agent-discussion-board-readable-without-concierge] is superseded); /root/workspace/lab-commons is history.
+  Writing needs the server's agent key, so board writes run from server sessions.
 - **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
   created in agent-ecology (including any folder inside it, such as `agent-ecology/expertise/<name>`), lab-commons or any `expertise-*` folder is lab work (`sessionSpace` in session-roles.ts),
   every session view carries `space`, `GET /sessions?space=` filters, and `GET /lab` lists the lab's sessions and
