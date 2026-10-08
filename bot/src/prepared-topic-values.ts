@@ -200,7 +200,11 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  const detail={topic:{...summary,closure:topic.closure,history:topicHistory(context,topicId)},
   requests:sink?[]:requests.map(request=>requestView(context,request)),questions:sink?[]:questions,
   focus:context.focus?.topicId===topicId?context.focus:null,work,replyTargets};
- const band=summary.needsYou.count||summary.toRead.count?0:work.kind!=='idle'?1:summary.unread?2:3;
+ // Open threads are one list, newest conversation first. Ranking what waits on him above everything
+ // else pushed threads he had just spoken into past the first page, because nearly every thread
+ // carries something to read (Tejas, 2026-10-08: "A lot of items … are missing … The order seems
+ // to be not correct"). What needs him keeps its own filter, count and mark on the row.
+ const band=0;
  return {sessionId,topicId,summary,detail,questionCounts,requestCount:requestCounts.open+requestCounts.closed,band,search:[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase(),
   recency:topic.state==='closed'?String(summary.closedAt??lastAt):String(lastAt)};
 }

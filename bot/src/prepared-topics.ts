@@ -25,7 +25,7 @@ export class PreparedTopics {
  private collectAfter='';
  constructor(private source:Database,private prepared:Database){
   const columns=prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[];
-  if(columns.length&&!columns.some(column=>column.name==='inbox_session')){
+  if(columns.length&&!columns.some(column=>column.name==='own_items_only')){
    // These are disposable projections, never source ledger tables or message indexes.
    for(const table of ['presentation_topic_search','presentation_topic_short','presentation_topics_meta','presentation_topics',
     'presentation_topic_roots','presentation_topic_sorting','presentation_topic_chunks','presentation_topic_changes',
@@ -34,7 +34,7 @@ export class PreparedTopics {
     'presentation_topic_event_display','presentation_inbox_attention','presentation_inbox_attention_counts','presentation_topic_chunk_refs','presentation_topic_blobs'])prepared.exec(`DROP TABLE IF EXISTS ${table}`);
   }
   prepared.exec(`CREATE TABLE IF NOT EXISTS presentation_topics_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-   generation INTEGER NOT NULL DEFAULT 0,source_head INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0,retained_after INTEGER NOT NULL DEFAULT 0,inbox_session INTEGER NOT NULL DEFAULT 0);
+   generation INTEGER NOT NULL DEFAULT 0,source_head INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0,retained_after INTEGER NOT NULL DEFAULT 0,inbox_session INTEGER NOT NULL DEFAULT 0,own_items_only INTEGER NOT NULL DEFAULT 1);
    INSERT OR IGNORE INTO presentation_topics_meta(singleton) VALUES(1);
    CREATE TABLE IF NOT EXISTS presentation_topic_roots(generation INTEGER NOT NULL,root_id TEXT NOT NULL,topic_id TEXT,
     session_id INTEGER NOT NULL,sequence INTEGER NOT NULL,at TEXT NOT NULL,text TEXT NOT NULL,unfiled INTEGER NOT NULL,
@@ -173,7 +173,10 @@ export class PreparedTopics {
    .get(generation,root) as {session_id:number;event_sequence:number;created_at:string}|null;
   if(!row){this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=? AND root_id=?').run(generation,root);return;}
   const topic=this.source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null;
-  const input=this.source.query('SELECT payload_json FROM session_inputs WHERE id=?').get(root) as {payload_json:string}|null;
+  const input=this.source.query('SELECT payload_json,origin FROM session_inputs WHERE id=?').get(root) as {payload_json:string;origin:string}|null;
+  // Only what he sent himself waits to be filed. Agents' requests to the router showed in his Inbox
+  // as raw "Session request … agent-authored input" rows, marked Being sorted forever (2026-10-08).
+  const his=input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
   const payload=input?JSON.parse(input.payload_json):{},body=payload.firstInput??payload;
   let text=typeof body.text==='string'?body.text:'';
   if(body.capture?.source?.kind==='thinkering'&&text.startsWith('Thinkering bug report\n')&&text.includes('\nDescription:\n')){
@@ -181,7 +184,7 @@ export class PreparedTopics {
   }
   this.prepared.query(`INSERT INTO presentation_topic_roots VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
    DO UPDATE SET topic_id=excluded.topic_id,session_id=excluded.session_id,sequence=excluded.sequence,at=excluded.at,text=excluded.text,unfiled=excluded.unfiled`)
-   .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,row.created_at.includes('T')?row.created_at:row.created_at.replace(' ','T')+'Z',text.trim().slice(0,120),topic?0:1);
+   .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,row.created_at.includes('T')?row.created_at:row.created_at.replace(' ','T')+'Z',text.trim().slice(0,120),topic||!his?0:1);
  }
  updateSorting(context:TopicContext){
   const sessionId=context.requestedSessionId??context.sessionId;

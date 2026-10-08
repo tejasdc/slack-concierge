@@ -640,9 +640,14 @@ function readableText(input:AcceptedSessionInput):string {
     return capturePresentation({source:body.capture.source,text:body.text}).text;
   return typeof body.text==='string'?body.text:'';
 }
+/** Something he sent himself: agents' requests to the router and agent-authored captures are never his to sort. */
+function isHisOwnRoot(root:string){
+  const input=getAcceptedSessionInput(root);
+  return input?.origin==='human'&&!db.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
+}
 /** Thread roots nobody has filed yet: the sorting pile above the topic list. */
 function sortingCaptures(session:SessionRow,index:EntryIndex) {
-  const unplaced=[...index.byRoot.entries()].filter(([root])=>!topicOfRoot(root));
+  const unplaced=[...index.byRoot.entries()].filter(([root])=>!topicOfRoot(root)&&isHisOwnRoot(root));
   unplaced.sort((first,second)=>second[1].sequence-first[1].sequence);
   const captures=unplaced.slice(0,5).map(([root,entry])=>{
     const input=getAcceptedSessionInput(root);
@@ -804,11 +809,11 @@ export function listTopics(options:{state?:string|null;query?:string|null;cursor
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
   else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
   else if(state==='background')summaries=summaries.filter(topic=>topic.state==='open'&&!topic.needsYou.count&&topic.work.kind!=='idle');
-  // Open threads: what he can act on first, then what is moving, then what he has not read, then
-  // the quiet rest, newest first within each band by the conversation's own time. Closed threads
+  // Open threads: newest first by the conversation's own time, one list (see the prepared order in
+  // prepared-topic-values.ts for why there are no bands). Closed threads
   // are ordered by when they were closed (Tejas, 2026-10-07: "everything is kind of cluttered and
   // dumped on the main page here. Clean it up.").
-  const band=(topic:ReturnType<typeof topicSummary>)=>topic.needsYou.count||topic.toRead.count?0:topic.work.kind!=='idle'?1:topic.unread?2:3;
+  const band=(_topic:ReturnType<typeof topicSummary>)=>0;
   const recency=(topic:ReturnType<typeof topicSummary>)=>state==='closed'?String(topic.closedAt??topic.lastEntryAt):String(topic.lastEntryAt);
   summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||recency(second).localeCompare(recency(first)));
   const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
