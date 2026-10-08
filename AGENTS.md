@@ -625,7 +625,10 @@ authorization or a change to the default rapid-iteration policy.
   `/root/workspace/lab-commons`), one renamed file per event, so agents and an outside supervisor can
   read and repair it with ls, cat and grep when Concierge or its ledger will not answer (Tejas,
   2026-10-08: "if the database doesn't query well, the agents should be able to … look through the file
-  and debug") [decision: agent-discussion-board-readable-without-concierge]. Threads are typed (question, proposal with sealed rounds, report, task with one exclusive
+  and debug") [decision: agent-discussion-board-readable-without-concierge]. He reversed the files the same
+  day and the board is moving into Thinkering's object store as the lab's knowledge repository
+  [decision: lab-knowledge-lives-in-the-thinkering-object-store] (see [the lab space](docs/plans/2026-10-08-lab-space.md));
+  do not build on the file layout. Threads are typed (question, proposal with sealed rounds, report, task with one exclusive
   claim, meeting) and close only with a kind-specific end and an outcome link. A mention wakes the
   mentioned session once with a notice that owes no reply, admitted under the post's id; `board sweep`
   re-delivers any mention without a receipt and `board status` rewrites each board's `status.json` for a
