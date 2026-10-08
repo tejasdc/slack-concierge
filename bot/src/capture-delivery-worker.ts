@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
-import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
+import { currentProcessIdentity, processIdentityPayload, type ProcessIdentity } from "./runtime-identity";
 import type { CaptureEventRow, CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
 import { clearRetryBreaker, recordRetryFailure } from "./retry-breaker";
@@ -75,10 +75,6 @@ export interface CaptureDeliveryWorkerOptions {
 
 function defaultWait(milliseconds: number) {
   return new Promise<void>((resolveWait) => setTimeout(resolveWait, milliseconds));
-}
-
-function ownerPayload(owner: ProcessIdentity) {
-  return { pid: owner.pid, boot_id: owner.bootId, start_ticks: owner.startTicks };
 }
 
 function queueCredentialPath(name: string): string {
@@ -348,7 +344,7 @@ export class CaptureDeliveryWorker {
   }
 
   private async claimNext(claimId: string): Promise<CaptureEventRow | null> {
-    const response = await this.queueRequest("/claim", { claim_id: claimId, owner: ownerPayload(this.owner) });
+    const response = await this.queueRequest("/claim", { claim_id: claimId, owner: processIdentityPayload(this.owner) });
     if (response.status === 204) return null;
     const result: any = await response.json().catch(() => null);
     if (!response.ok || !result?.event) throw new Error(`Capture queue claim failed: ${String(result?.error || response.status)}`);
@@ -370,7 +366,7 @@ export class CaptureDeliveryWorker {
   ) {
     const response = await this.queueRequest(
       `/events/${encodeURIComponent(event.event_id)}/${operation}`,
-      { claim_id: claimId, owner: ownerPayload(this.owner), ...fields },
+      { claim_id: claimId, owner: processIdentityPayload(this.owner), ...fields },
     );
     const result: any = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) {

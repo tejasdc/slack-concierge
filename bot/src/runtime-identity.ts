@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 export interface ProcessIdentity { pid: number; bootId: string; startTicks: string }
+/** Capture ingress has one process-identity wire shape for every claiming worker. */
+export function processIdentityPayload(owner:ProcessIdentity){
+  return {pid:owner.pid,boot_id:owner.bootId,start_ticks:owner.startTicks};
+}
 
 const darwin = process.platform === "darwin";
 let darwinBootId: string | null = null;
