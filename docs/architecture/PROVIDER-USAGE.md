@@ -295,7 +295,7 @@ says so ("could not be restarted"), naming an App Server started outside its man
 blaming the account's sign-in; from Oct 4 to Oct 7 an unmanaged listener made every Codex switch
 fail that way, repaired per the App Server runbook.
 
-`bot/src/provider-account-choice.ts` owns the pure rule. At dispatch, the owner joins its
+For Claude, `bot/src/provider-account-choice.ts` owns the pure rule. At dispatch, the owner joins its
 cached per-account usage with the default login and extra homes whose `projects` directory
 resolves to the shared Claude history. A machine with no such extra home keeps the previous
 launch path. Each new process gets the selected home's `CLAUDE_CONFIG_DIR`; no credential
@@ -334,7 +334,7 @@ under `tejas@chann.app`, and recalled the token planted in its first turn, with 
 credentials byte-identical afterwards and nothing signed in or out. Two accounts also
 answered concurrently, one per home.
 
-So the account is decided **fresh at every dispatch**:
+For Claude, the account is decided **fresh at every dispatch**:
 
 1. Only accounts this machine can actually launch as are candidates — one with its own home,
    or the default login. An account with neither is unreachable, because reaching it would
@@ -348,13 +348,16 @@ So the account is decided **fresh at every dispatch**:
 4. A new conversation goes to the candidate with the most room in its tightest window.
 5. Only a **banked release** is bound: it exists to spend one named account's allowance before
    it lapses, so landing elsewhere spends the wrong subscription and lapses the allowance
-   anyway. It waits instead. `provider-account-choice.ts` carries that as one bound-account
-   concept, agreed with the session that designed banking.
+   anyway. `provider-account-choice.ts` carries this rule.
 6. Nothing is ever swapped underneath a running process. The choice happens at dispatch.
 
+For Codex, every turn uses the shared App Server. A banked turn can select only its currently
+signed-in account; other Codex accounts still have usage readings and can be selected through
+Accounts, which moves the login after running turns finish. There is no per-turn Codex home.
+
 Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
-carrying its reset instant, returns to its own queue, and the next attempt re-runs the choice
-and lands on an account with room.
+carrying its reset instant and returns to its own queue. The next Claude attempt re-runs its
+account choice; a Codex attempt waits for the shared App Server's account or an Accounts switch.
 
 ## One account, one credential, one place
 
@@ -612,7 +615,7 @@ source; until then treating it as one would be guessing.
 | He selected another account and conversations moved onto it | nothing — he did it |
 | Its account ran out and it continued on another one | nothing — it kept working |
 | **Every account is out, so work is waiting** | the usage hold notice: what is waiting, and when the allowance returns |
-| **A banked turn's own account is out** | it waits, and says so, naming that account |
+| **A banked turn's selected account is out** | it waits, and says so, naming that account |
 
 The first five rows are the account rule doing its job. The last two are the only thing he asked
 to hear about, and both already existed before this: `noticeUsageHold` in

@@ -565,7 +565,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       environment: {
         ...input.providerEnvironment,
         ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
-        ...(input.providerId==='codex'&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
+        // Only an older private execution being adopted needs its original Codex home.
+        ...(input.providerId==='codex'&&input.adopted&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
         CONCIERGE_SESSION_ID: String(input.session.id),
         CONCIERGE_TURN_KIND: input.turnKind || "slack_user",

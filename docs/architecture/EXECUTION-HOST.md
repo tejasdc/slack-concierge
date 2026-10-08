@@ -1,7 +1,7 @@
 # Execution host
 
-**Status: built on Linux (server) for Claude runs, Codex runs and updates, and on the Mac (launchd)
-for Claude and per-account Codex runs and its updates, 2026-10-07** — the delivery of
+**Status: built on Linux (server) for Claude runs, shared Codex turns and updates, and on the Mac
+(launchd) for Claude runs and updates, 2026-10-07** — the delivery of
 [agent work and updates without waiting](../plans/2026-10-07-agent-work-and-updates-without-waiting.md)
 §9 steps 4, 5, 7 (Linux) and 6.
 
@@ -133,19 +133,16 @@ are command hooks in `--settings`, held by the unchanged process).
 
 ## Codex runs (design step 5)
 
-- **Shared-daemon turns** (the usual kind): the Codex App Server daemon already outlives Concierge.
+- **Every new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
   Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
   After a restart the next coordinator follows the turn by its exact thread (the session's bound
   provider id) and recorded provider turn id (`adoptTurn` in `runCodexTurnShared`): it resumes the
   thread, reads its history, settles a finished turn from it or keeps following notifications, and
   never calls `turn/start`. A turn the thread's history never shows is reported unconfirmed after a
   bounded search. Follow-ups that were being sent are decided by the history (`clientId`).
-- **Private turns** (a turn bound to one account home, on its own `codex app-server --stdio`): the
-  process lives in an execution host like Claude, reached through the same line transport
-  (`runCodexTurnStdio` with `transport`). Replay rebuilds thread, turn and progress from the
-  predecessor's requests and the server's answers; request ids continue above the predecessor's;
-  a server request the record shows unanswered is answered once after the replay; an unfinished
-  turn is reconciled with `thread/read`.
+- Earlier private Codex execution rows remain readable. If one is still open after an update,
+  its existing host is adopted and settled through its recorded transport; no new private
+  Codex process is launched. The account homes remain for usage readings and Accounts switching.
 - Concierge's Codex turns use `approvalPolicy: "never"`, so there are no approvals to reissue.
 - Not yet exercised on a live Codex turn: the server's Codex is signed out (2026-10-07).
 
@@ -155,13 +152,15 @@ A running turn holds an update only if it would end with the coordinator. One ru
 `bot/src/execution-survival.ts`, used by the update gate (`drain-status.ts inspect`), the queue
 (`claimNextQueuedTurn`) and the update line (`deploymentWait`):
 
-- **Proof.** A kind of run (provider and supervisor: `claude-code/systemd`, `codex/codex-daemon`,
-  `codex/systemd`) counts as surviving only after this machine has recorded one execution of that
+- **Proof.** A kind of new run (provider and supervisor: `claude-code/systemd`, `codex/codex-daemon`)
+  counts as surviving only after this machine has recorded one execution of that
   kind whose provider was **still running when a later coordinator took it over**
   (`executions.adopted_live`: a host attach that found no exit, or a Codex thread whose turn was still
   in progress) and that then settled and was released. A run settled from a finished record, a held
   run or a mere claim proves nothing. Until the proof exists the update waits for that kind exactly
   as before. The first proof is the acceptance restart with a marked test run (see below).
+  Old private Codex rows keep their own survival decision while they settle, but cannot authorize
+  new private runs.
 - A running turn whose execution is of a proven kind and on an adoptable host protocol is reported
   `continuing`, not `active`: the update does not wait for it.
 - While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new

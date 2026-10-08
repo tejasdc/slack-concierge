@@ -631,16 +631,15 @@ export class SessionExecutionHost {
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
         run:async prepared=>{
           let actual=prepared;
-          // A Claude run keeps the account (home) it launched from. A shared-daemon Codex run has no
-          // home of its own: binding one would move it onto a private Codex process.
-          const privateCodex=session.provider_id==='codex'&&(adoption?adoption.execution.supervisor!=='codex-daemon':!!prepared.environment?.CODEX_HOME);
+          // New Codex turns always use the shared daemon. Retain the old host path only
+          // to finish an execution recorded before this change.
+          const privateCodex=session.provider_id==='codex'&&!!adoption&&adoption.execution.supervisor!=='codex-daemon';
           const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||privateCodex)
             ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
           if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
-          } else if(privateCodex&&(adoption||executionHostsEnabled())) {
-            // A Codex turn on its own account's app-server process lives in a host, like Claude.
-            actual=adoption?this.adoptedRun(prepared,adoption,MANAGED_CODEX):this.hostedRun(prepared,claim,session,kept,MANAGED_CODEX);
+          } else if(privateCodex) {
+            actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
@@ -697,6 +696,7 @@ export class SessionExecutionHost {
   private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
+      ...(executable===MANAGED_CODEX?{legacyPrivateCodex:true}:{}),
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
       transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable)} as any;
   }

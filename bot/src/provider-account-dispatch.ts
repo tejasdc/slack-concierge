@@ -151,17 +151,6 @@ export function proveClaudeHomesAhead(accounts:readonly string[]):void{
 }
 function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
-/** An extra Codex process must see the same conversation files as the default daemon. */
-function sharedCodexHome(home:string):string|null {
-  if(!existsSync(join(home,'auth.json')))return null;
-  const sessions=join(homedir(),'.codex','sessions'),borrowed=join(home,'sessions');
-  try {
-    if(!existsSync(sessions))return null;
-    if(!existsSync(borrowed))symlinkSync(sessions,borrowed,'dir');
-    return realpathSync(borrowed)===realpathSync(sessions)?home:null;
-  } catch {return null;}
-}
-
 /** Homes with credentials that this owner can use without switching a live login. */
 function accountUsedPercent(provider:ProviderKey,account:AccountUsage):number|null {
   if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
@@ -200,6 +189,17 @@ function launchableClaudeHome(account:string,selected:string|null,prepare:boolea
 }
 
 export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
+  // Codex turns all use the shared daemon. Other homes are read for usage and kept for
+  // switching, but a banked turn cannot launch against one without changing that daemon.
+  if(provider==='codex'){
+    const active=currentAccount('codex')?.label;
+    const account=usage.accounts.find(item=>item.label===active);
+    if(!account)return [];
+    const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
+    return [{account:account.label,home:null,isDefault:true,
+      tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
+      problem:!fresh?'Usage reading is stale.':account.problem}];
+  }
   const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
   const defaultLabel=ownHomes?null:currentAccount(provider)?.label;
   const selected=provider==='claude-code'?selectedClaudeHome()?.label??null:null;
@@ -208,7 +208,7 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
     const isDefault=account.label===defaultLabel;
     const profile=profiles.find(item=>item.label===account.label);
     const home=isDefault?null:profile?accountHome(provider,profile.id):null;
-    const ready=home&&(provider==='claude-code'?launchableClaudeHome(account.label,selected,false,home)===home:sharedCodexHome(home)===home);
+    const ready=home&&launchableClaudeHome(account.label,selected,false,home)===home;
     const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
     return {account:account.label,home:ready?home:null,isDefault,
       tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,

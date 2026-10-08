@@ -61,18 +61,16 @@ and mandatory review requirements in this repository and linked historical mater
   the owner lists waiting items at `/saved-work` and controls them at
   `/saved-work/<turn-id>/<start|time|schedule|drop>`. `time` changes only a schedule;
   `schedule` explicitly converts a banked item.
-  Banked work is released
-  against fresh usage on any account this machine can launch for the provider, only while
-  its most-spent allowance window remains below the reserve. A live Claude refusal makes
+  Banked Claude work is released
+  against fresh usage on any account this machine can launch; banked Codex work uses only
+  the account currently signed in to the shared Codex App Server. Both release only while
+  the selected account's most-spent allowance window remains below the reserve. A live Claude refusal makes
   that account ineligible even when its reported percentages look available. At most one
   automatic banked run may be active across sessions. The account
   choice is bound to the saved window: if that account has no room at dispatch, the turn
-  waits rather than spending another account's allowance. A bound Codex turn runs in its
-  account home through a turn-owned process, including the default home, so it cannot inherit
-  a different login held by the shared daemon. An extra home's sessions path borrows the default Codex history so later
-  turns and history reads keep the conversation. An existing incompatible sessions path is
-  left untouched and that home is not selected. The shared Codex daemon keeps its existing
-  default-account work.
+  waits rather than spending another account's allowance. Every new Codex turn runs on the
+  shared App Server; Codex account homes remain the live credentials for usage readings and
+  Accounts switching, never turn execution.
   Claim checks for ordinary queued or running work again. The saved work settings, including
   the quiet-hours time zone, belong to the owner at `/saved-work/settings`. When no safe window
   is known, a banked item has no advertised start time and no three-minute wake. The usage watch
@@ -616,11 +614,11 @@ authorization or a change to the default rapid-iteration policy.
   back by identity at startup (`claimAdoptableExecutions`), before steering and turn recovery, and
   replays the host's record to rebuild its state. The host holds no policy and is never patched in
   place; never restart, kill or "clean up" `concierge-exec-*` units by hand: they are agents at work.
-  Shared-daemon Codex turns are followed by their exact ids after a restart, and a Codex turn on
-  its own account's process runs in a host too. An update waits only for runs that would end with
+  Every new Codex turn runs on the shared App Server and is followed by its exact ids after a restart.
+  An update waits only for runs that would end with
   Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
-  update line). On the Mac each run is its own launchd job started through the agent-host app. See
+  update line). On the Mac each Claude host is its own launchd job started through the agent-host app. See
   [execution host](docs/architecture/EXECUTION-HOST.md).
 - **An agent that must wait for a file, directory or command registers a watch and ends its turn**
   (`router-actions.sh sessions watch …`, `bot/src/watches.ts`): one polling worker per machine inside

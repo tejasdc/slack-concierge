@@ -37,10 +37,9 @@ export function provenRunKinds(database: Database): Set<string> {
 /** What may start while an update installs: only kinds proven to carry on through its restart. */
 export function survivableRunKinds(database: Database) {
   const proven = provenRunKinds(database);
-  // New runs survive only if they will start in a host of a proven kind on this machine.
+  // Claude needs a proven host; Codex uses the proven shared daemon directly.
   const hosted = executionHostsEnabled();
-  return { claude: hosted && proven.has(`claude-code/${HOST_SUPERVISOR}`), codexShared: proven.has("codex/codex-daemon"),
-    codexPrivate: hosted && proven.has(`codex/${HOST_SUPERVISOR}`) };
+  return { claude: hosted && proven.has(`claude-code/${HOST_SUPERVISOR}`), codexShared: proven.has("codex/codex-daemon") };
 }
 
 /** A running turn the next coordinator will take back: its execution is proven and adoptable. */

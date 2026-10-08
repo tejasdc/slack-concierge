@@ -8,16 +8,17 @@
  * that were safely waiting into seven terminal failures. Switching was worse than doing
  * nothing.
  *
- * So nothing switches. Each account keeps its own configuration home, a conversation is
- * launched against the home that has room, and no credential is ever written.
+ * Claude dispatch launches against the home that has room, without rewriting a live
+ * credential. Codex dispatch uses the account already signed in to the shared App Server;
+ * Accounts switching is a separate operation that waits for running Codex turns.
  *
  * Measurement briefly made that stricter: a conversation could not change accounts at all,
  * because its transcript lived only inside the home it started in and a resume elsewhere did
  * not lose context, it failed to start. Sharing one history directory between the homes lifted
  * that, proven on the Mac on 2026-09-23 — session 74077648 started under one account and
  * resumed under the other, recalling the token planted in its first turn, with both
- * credentials untouched. So the choice is made fresh at every dispatch again, and the only
- * thing that cannot move is work banked to spend one account's expiring allowance.
+ * credentials untouched. So Claude's choice is made fresh at every dispatch again, while
+ * Codex banked work is limited to the shared server's current account.
  *
  * This is the rule on its own — no ledger, no provider, no clock, no file system — so it can
  * be read and exercised against real readings without launching anything. The wiring that
@@ -39,12 +40,8 @@ export type AccountRoom = Readonly<{
 }>;
 
 /**
- * A turn that belongs to one particular account, and why. There are two ways a turn can be
- * bound, and they want identical treatment, so they share one concept rather than a branch
- * each: a conversation that has already run somewhere cannot move (its transcript lives in
- * that home), and a banked release exists to spend one named account's window before it
- * lapses. In both cases running anywhere else is not a lesser outcome, it is the opposite of
- * the point — so both must wait rather than fall through to whichever account is roomiest.
+ * A banked release belongs to one particular account's window. Running elsewhere would
+ * spend the wrong allowance, so it waits rather than falling through to another account.
  *
  * Which window a banked release is saving is the releaser's business, not this rule's; it
  * only needs to know which account was named.

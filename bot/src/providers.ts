@@ -39,6 +39,8 @@ export interface AgentProvider {
     systemPrompt?: string;
     clientUserMessageId?: string;
     environment?: Record<string, string>;
+    /** Only for adoption of a private Codex execution recorded before shared-only dispatch. */
+    legacyPrivateCodex?: boolean;
     accountLabel?: string;
     interactionPolicy?: ProviderInteractionPolicy;
     model?: string;
@@ -77,7 +79,7 @@ class CodexProvider implements AgentProvider {
     return runCodexTurn({
       ...input,
       applicationInstructions: input.systemPrompt,
-      ...(input.environment?.CODEX_HOME?{executable:MANAGED_CODEX}:{}),
+      ...(input.legacyPrivateCodex?{executable:MANAGED_CODEX}:{}),
     });
   }
 

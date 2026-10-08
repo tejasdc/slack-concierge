@@ -148,7 +148,7 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     // not held for the install, so only the rest is told it waits.
     const survivable=survivableRunKinds();
     const carriesOn=input.kind!=='fork'&&(session.provider_id==='claude-code'?survivable.claude
-      :session.provider_id==='codex'?survivable.codexShared&&(deliberate?.saved_kind!=='banked'||survivable.codexPrivate):false);
+      :session.provider_id==='codex'?survivable.codexShared:false);
     if(!carriesOn)return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   }
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};

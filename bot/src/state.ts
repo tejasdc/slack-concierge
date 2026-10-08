@@ -5034,11 +5034,11 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
     AND ((session.provider_id='claude-code' AND ?=1)
-      OR (session.provider_id='codex' AND ?=1 AND (turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR ?=1)))))`;
+      OR (session.provider_id='codex' AND ?=1))))`;
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   return [nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
-    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0,survivable?.codexPrivate ? 1 : 0] as const;
+    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {
