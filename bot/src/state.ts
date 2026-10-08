@@ -14,6 +14,7 @@ import {
 
 export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
+import { isProcessIdentityAlive } from "./runtime-identity";
 
 db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
@@ -5041,8 +5042,21 @@ function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly nu
     survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0,survivable?.codexPrivate ? 1 : 0] as const;
 }
 
+/**
+ * While an update is under way, only runs that carry on through its restart start. "Under way" is
+ * the update's own record, not only its gate: an update that found work running used to release the
+ * gate and wait, and every run started in that gap (a lab Codex turn every half hour) kept it waiting
+ * for hours on 2026-10-08. Holding back only runs that would end with the restart makes the set the
+ * update waits for shrink and never grow, so it finishes once the runs already going have ended.
+ */
 function currentClaimSurvivability() {
-  return db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get() ? survivableRunKinds() : null;
+  // Only an update whose runner is alive holds anything: a run left 'draining' by a dead runner must
+  // not hold work back forever.
+  const updating = db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()
+    || (db.query(`SELECT runner_pid, runner_boot_id, runner_start_ticks FROM deployment_runs
+        WHERE target='concierge' AND status IN ('prepared','draining')`).all() as { runner_pid: number | null; runner_boot_id: string | null; runner_start_ticks: string | null }[])
+      .some(run => !!run.runner_pid && isProcessIdentityAlive({ pid: run.runner_pid, bootId: run.runner_boot_id ?? "", startTicks: run.runner_start_ticks ?? "" }));
+  return updating ? survivableRunKinds() : null;
 }
 
 export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:string};
