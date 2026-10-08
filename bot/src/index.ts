@@ -296,7 +296,7 @@ import {
   wakeDeploymentRunnerWaitingForIdle,
   type DeploymentRunRow,
 } from "./deployment-state";
-import { acceptGitHubDeploymentPush } from "./deployment-push";
+import { acceptGitHubDeploymentPush, catchUpMissedPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
 import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
 import { admitGrafanaInvestigation } from "./grafana-turns";
@@ -4209,7 +4209,12 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             port: deploymentEventServer.port,
           });
           grafanaAlerts.recover();
-          if (runtime.ownership.deployment) scheduleDeploymentWork("startup");
+          if (runtime.ownership.deployment) {
+            void catchUpMissedPush(deploymentRepositoryRoot)
+              .then((caught) => log("info", "deployment_missed_push_checked", { desired_commit: caught.desired_commit, observation: caught.observation }))
+              .catch((error) => log("warn", "deployment_missed_push_check_failed", { error: error instanceof Error ? error.message : String(error) }))
+              .finally(() => scheduleDeploymentWork("startup"));
+          }
         }
         const channels = getSlackChannels();
         todoFileWatcher.start(channels);

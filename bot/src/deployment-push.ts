@@ -96,3 +96,20 @@ export async function acceptGitHubDeploymentPush(
     observation: observed.reason,
   };
 }
+
+/**
+ * A push GitHub announced while Concierge was down is never announced again: the webhook got a 502
+ * and nothing retries it. On 2026-10-08 two commits, one of them the fix for the restart limit that
+ * had just stopped Concierge, sat on main with no update coming. At startup the deployment source's
+ * main is read once and treated as one more push; a main already accepted changes nothing.
+ */
+export async function catchUpMissedPush(
+  repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
+  services = defaultServices(repositoryRoot),
+) {
+  if (services.ensureSource) services.ensureSource();
+  successful(services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");
+  const head = successful(services.git(["rev-parse", "origin/main"]), "git rev-parse origin/main");
+  return acceptGitHubDeploymentPush({ deliveryId: `startup-catch-up:${head}`, repository: "", ref: "refs/heads/main", after: head },
+    repositoryRoot, services);
+}
