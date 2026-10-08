@@ -1415,7 +1415,7 @@ export class SessionCommunicationCoordinator {
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
-                db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
+                db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=? AND (status IS NOT 'held' OR error IS NOT 'Requester is unavailable, paused or archived; the result is retained.')").run(event.event_id);
                 return;
             }
             const payload = declared.workDisposition==='completed' && request.outcome!=='answered'
@@ -1450,11 +1450,16 @@ export class SessionCommunicationCoordinator {
             const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
             const status = received?'received':unacknowledgedSteering?'uncertain':['failed','uncertain','canceled'].includes(observed.state)?observed.state:accepted.turn_id?'admitted':'held';
             const deliveryError=unacknowledgedSteering?'The provider did not acknowledge this specific return; its linked turn outcome does not prove receipt.':observed.steering?.error??null;
-            db.query('UPDATE session_communication_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:deliveryError,accepted.id);
-            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:deliveryError,event.event_id);
+            // Only rows whose state actually changes are written. This runs for every unread return on
+            // every coordinator pass, and passes follow every execution change; rewriting unchanged
+            // rows cost one synchronous commit each, ~55 a second, and held the owner's loop ~75% of
+            // the time with nothing in flight (2026-10-08).
+            const error=received?null:deliveryError;
+            db.query('UPDATE session_communication_events SET status=?,error=? WHERE accepted_input_id=? AND (status IS NOT ? OR error IS NOT ?)').run(status,error,accepted.id,status,error);
+            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=? AND (accepted_input_id IS NOT ? OR status IS NOT ? OR error IS NOT ?)').run(accepted.id,status,error,event.event_id,accepted.id,status,error);
             return;
         }
-        db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status<>'received'").run(event.event_id);
+        db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
     }
     /**
      * Finals to the same requester that carry the same answer: the same responding session, the
@@ -1486,7 +1491,7 @@ export class SessionCommunicationCoordinator {
         const observed = readInputExecution(input);
         const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
         const status = received ? 'received' : ['failed','uncertain','canceled'].includes(observed.state) ? observed.state : input.turn_id ? 'admitted' : 'held';
-        db.query('UPDATE session_communication_events SET status=? WHERE event_id=?').run(status, eventId);
+        db.query('UPDATE session_communication_events SET status=? WHERE event_id=? AND status IS NOT ?').run(status, eventId, status);
     }
     /**
      * The sender hears at once when the work it asked for is parked on the recipient's
