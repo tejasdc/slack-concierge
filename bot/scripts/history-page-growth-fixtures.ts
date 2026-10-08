@@ -56,6 +56,8 @@ try {
     source:{id:'source-1',version:'a'.repeat(64),branch:'main'}});
   let exactLoads=0,seenLimit=0;
   const owner=new SessionOwner({wake(){},steer(){return false;},async stop(){return false;},available(){return false;},
+    async history(){return {messages:[{id:'native-message',role:'assistant',content,tool:null,phase:null,turnId:'native-turn'}],nextCursor:null};},
+    async historyMessage(){return {id:'native-message',role:'assistant',content,tool:null,phase:null,turnId:'native-turn'};},
     sources:{async search(){return {};},async context(){return {};},async import(){return {};},
       async history(input:any){seenLimit=input.limit;return {messages:[{id:'source-message',role:'assistant',content,richContent,tool:null,phase:null,source}],nextCursor:null};},
       async historyMessage(){exactLoads++;return {id:'source-message',role:'assistant',content,richContent,tool:null,phase:null,source};}}},scratch);
@@ -77,5 +79,13 @@ try {
   assert.equal(exactLoads,1,'the actual selected-detail route must reuse the exact source read');
   const stale=await owner.handle(new Request(`http://owner/sessions/v1/sessions/${address}/history/messages/source-message/detail?digest=${'0'.repeat(64)}&part=0`));
   assert.equal(stale?.status,409,'a stale detail version must refuse instead of returning changed words');
+  const native=createNativeSession('codex',{origin:'native',title:'Long native answer'});
+  const nativeAddress=`concierge:${native.id}`;
+  const nativePage=await owner.handle(new Request(`http://owner/sessions/v1/sessions/${nativeAddress}/history?limit=20`));
+  assert.equal(nativePage?.status,200);
+  const nativeMessage=((await nativePage!.json()) as any).messages[0];
+  assert.ok(nativeMessage.contentDetail?.digest);
+  const nativePart=await owner.handle(new Request(`http://owner/sessions/v1/sessions/${nativeAddress}/history/messages/native-message/detail?digest=${nativeMessage.contentDetail.digest}&part=0&turnId=native-turn`));
+  assert.equal(nativePart?.status,200,'native provider history must retain an exact detail path');
 } finally {await rm(scratch,{recursive:true,force:true});}
 console.log('history-page-growth: passed');
