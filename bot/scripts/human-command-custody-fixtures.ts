@@ -16,6 +16,8 @@ const fetchQueue=(path:string,body?:unknown)=>handler(new Request('http://fixtur
 const command=(actionId:string,sessionId:string,sequence:number,path:string)=>({version:1,clientId:'fixture-browser',sessionId,
  sequence,actionId,door:'fixture',method:'POST',path,
  body:{clientActionId:actionId,action:actionId.includes('close')?{kind:'close',reason:'Fixture'}:{kind:'read',sequence:1}}});
+const compact=(item:ReturnType<typeof command>,preCustodyStatus:404|413)=>({...item,
+ path:'/sessions/v1/pre-custody-refusal',body:{clientActionId:item.actionId,originalPath:item.path},preCustodyStatus});
 const status=async(id:string)=>(await (await fetchQueue('/commands/'+id)).json()) as {status:string;ownerStatus:number|null;decisionStage:string|null};
 const wait=async(id:string,wanted:string)=>{const until=Date.now()+5000;while(Date.now()<until){
  const row=await status(id);if(row.status===wanted)return row;await Bun.sleep(20);
@@ -33,13 +35,18 @@ try{
  const oversized=command('oversized','topic:size',1,'/sessions/v1/inbox/topics/topic%3Asize/actions');
  const afterSize=command('after-size','topic:size',2,'/sessions/v1/inbox/topics/topic%3Asize/actions');
  const existing=command('already-retained','topic:retained',1,'/sessions/v1/inbox/topics/topic%3Aretained/actions');
- for(const item of [malformed,close,read,invalidPrepared,prepOutage,uncertain,attemptLimit,afterSize,existing])
+ const invalidRoute=command('invalid-route','topic:route',1,'/sessions/v1/no-such-route');
+ const afterInvalid=command('after-invalid','topic:route',2,'/sessions/v1/inbox/topics/topic%3Aroute/actions');
+ for(const item of [malformed,close,read,invalidPrepared,prepOutage,uncertain,attemptLimit,afterSize,existing,afterInvalid])
   assert.equal((await fetchQueue('/commands',item)).status,202);
- assert.equal((await fetchQueue('/commands/refuse-oversize',oversized)).status,202);
+ assert.equal((await fetchQueue('/commands/refuse-before-custody',compact(oversized,413))).status,202);
+ assert.equal((await fetchQueue('/commands/refuse-before-custody',compact(invalidRoute,404))).status,202);
  assert.equal((await wait('oversized','refused')).ownerStatus,413);
+ assert.equal((await wait('invalid-route','refused')).ownerStatus,404);
  // A late compact refusal cannot overwrite an action the owner may already have seen.
- assert.equal((await fetchQueue('/commands/refuse-oversize',existing)).status,202);
+ assert.equal((await fetchQueue('/commands/refuse-before-custody',compact(existing,413))).status,202);
  assert.equal((await status('already-retained')).status,'pending');
+ assert.equal((await fetchQueue('/commands/refuse-before-custody',compact({...existing,sessionId:'topic:wrong'},413))).status,409);
  // A healthy browser can rejoin its retained command without consuming another sequence.
  assert.equal((await fetchQueue('/commands',close)).status,202);
  captureDb.query("UPDATE human_commands SET created_at=datetime('now','-3 minutes') WHERE action_id IN ('lost-ack','prep-outage')").run();
@@ -64,6 +71,7 @@ try{
  assert.equal((await wait('close-action','delivered')).ownerStatus,200);
  assert.equal((await wait('read-action','delivered')).ownerStatus,200);
  assert.equal((await wait('after-size','delivered')).ownerStatus,200);
+ assert.equal((await wait('after-invalid','delivered')).ownerStatus,200);
  assert.equal((await wait('already-retained','delivered')).ownerStatus,200);
  assert.equal((await wait('lost-ack','unconfirmed')).ownerStatus,null);
  assert.equal((await wait('attempt-limit','unconfirmed')).ownerStatus,null);
@@ -77,5 +85,5 @@ try{
  assert.equal(effects.get('lost-ack'),1);
  console.log(JSON.stringify({check:'human-command-custody',status:'passed',encodedTopic:true,
   malformedPreparation:'terminal',independentStreams:'progressed',lostAck:'unconfirmed-then-same-action',
-  oversize:'terminal-before-owner',existingCustody:'wins',attemptBudget:'stopped',effects:effects.size}));
+  preCustody404And413:'terminal',existingCustody:'wins',attemptBudget:'stopped',effects:effects.size}));
 }finally{await worker?.stop();await rm(root,{recursive:true,force:true});}

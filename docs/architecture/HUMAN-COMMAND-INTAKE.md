@@ -27,7 +27,7 @@ after the delivery budget it stops automatic attempts, preserves the command and
 stream position, reports `unconfirmed`, and files one repair notice. Other streams keep moving.
 An explicit Retry reopens the same action ID and prepared bytes; the owner still deduplicates it.
 The browser also bounds status polling and retains its local command when the status budget ends.
-If the browser receives a confirmed HTTP 413 before ingress custody, its authenticated gateway
+If the browser receives a confirmed HTTP 404 or 413 before ingress custody, its authenticated gateway
 records a small terminal refusal under that same action and stream sequence. The full original
 body stays on the device for correction; no owner delivery is claimed. An existing ingress row
 always wins if a late compact refusal races with an earlier accepted action.

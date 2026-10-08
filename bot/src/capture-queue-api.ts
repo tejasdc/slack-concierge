@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, resumeExhaustedHumanCommand, retainHumanCommand, retainOversizedHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -130,10 +130,12 @@ export function createCaptureQueueRequestHandler(
         return jsonResponse(400,{error:"invalid_command_envelope"});
       }
     }
-    if(url.pathname==='/commands/refuse-oversize'&&request.method==='POST'){
+    if(url.pathname==='/commands/refuse-before-custody'&&request.method==='POST'){
       try{
-        const command=humanCommand(await requestBody(request));
-        return jsonResponse(202,commandReply(retainOversizedHumanCommand(command).action_id)!);
+        const body=await requestBody(request);
+        if(body.preCustodyStatus!==404&&body.preCustodyStatus!==413)throw new Error('Invalid pre-custody refusal.');
+        const command=humanCommand(body);
+        return jsonResponse(202,commandReply(retainPreCustodyRefusal(command,body.preCustodyStatus).action_id)!);
       }catch(error){
         if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:'command_identity_conflict'});
         return jsonResponse(400,{error:'invalid_command_envelope'});

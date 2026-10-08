@@ -150,23 +150,35 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
   }).immediate();
 }
 
-/** A transport-size refusal happens before the full browser body reaches ingress. Record a
+/** A route or size refusal happens before the full browser body reaches ingress. Record a
  * compact terminal slot under the same action and sequence; no owner effect is asserted. */
-export function retainOversizedHumanCommand(command:HumanCommand):HumanCommandRow {
+export function retainPreCustodyRefusal(command:HumanCommand,status:404|413):HumanCommandRow {
+ const originalPath=command.body.originalPath;
+ if(typeof originalPath!=='string'||!originalPath.startsWith('/sessions/v1/')||originalPath.length>2000)
+  throw new Error('Original command path is required for terminal custody.');
  const bodyJson=JSON.stringify(command.body);
  const digest=createHash('sha256').update(JSON.stringify([command.version,command.clientId,command.sessionId,
   command.sequence,command.actionId,command.door,command.method,command.path,bodyJson])).digest('hex');
  return captureDb.transaction(()=>{
-  const existing=row(command.actionId);if(existing)return existing;
+  const existing=row(command.actionId);if(existing){
+   const priorPath=existing.path==='/sessions/v1/pre-custody-refusal'
+    ?(JSON.parse(existing.body_json) as {originalPath?:string}).originalPath:existing.path;
+   if(existing.client_id!==command.clientId||existing.session_id!==command.sessionId
+    ||existing.sequence!==command.sequence||existing.method!==command.method||existing.door!==command.door
+    ||priorPath!==originalPath)throw new CommandIdentityConflict();
+   return existing;
+  }
   captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
   const occupied=captureDb.query('SELECT action_id FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
    .get(command.clientId,command.sessionId,command.sequence) as {action_id:string}|null;
   if(occupied)throw new CommandIdentityConflict();
   captureDb.query(`INSERT INTO human_commands
    (action_id,door,client_id,session_id,sequence,method,path,body_json,digest,status,owner_status,decision_stage,owner_response_json)
-   VALUES (?,?,?,?,?,?,?,?,?,'refused',413,'preparation',?)`).run(command.actionId,command.door,command.clientId,
+   VALUES (?,?,?,?,?,?,?,?,?,'refused',?,'preparation',?)`).run(command.actionId,command.door,command.clientId,
     command.sessionId,command.sequence,command.method,command.path,bodyJson,digest,
-    JSON.stringify({error:{code:'COMMAND_TOO_LARGE',message:'This command was too large to send.'}}));
+    status,JSON.stringify({error:status===413
+     ?{code:'COMMAND_TOO_LARGE',message:'This command was too large to send.'}
+     :{code:'COMMAND_ROUTE_INVALID',message:'This command could not be sent from this page.'}}));
   advanceStream(command.clientId,command.sessionId);
   return row(command.actionId)!;
  }).immediate();
