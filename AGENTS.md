@@ -998,6 +998,12 @@ Update the relevant current-state document in the same commit when behavior or o
 changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
 The owner answers every read from one event loop. When `owner_event_loop_lag` says it is held,
+Ledger calls are observed at the shared database boundary (`storage-observation.ts`), with
+operation-local counts, duration, returned rows and value bytes; see
+[storage observation](docs/architecture/STORAGE-OBSERVATION.md). Keep the wrapper when adding
+readers so new pages retain query-cost evidence without logging SQL parameters or content.
+
+When `owner_event_loop_lag` says the owner is held,
 `kill -URG <MainPID>` writes a 20-second JavaScript CPU profile with stacks to
 `$CONCIERGE_STATE_DIR/diagnostics/` (`owner-cpu-profile.ts`), but only when the service runs with
 `CONCIERGE_OWNER_CPU_PROFILE=1`: on 2026-10-07 starting it froze the owner 20–40 s each time and
