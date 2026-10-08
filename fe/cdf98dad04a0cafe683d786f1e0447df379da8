@@ -1,0 +1,1 @@
+Updates now verify that every background worker and performance check is present before replacing the running service.
