@@ -40,7 +40,7 @@ turns. Of today's 34 interrupted turns, 33 have no admission intent, provider st
 execution record; one has provider admission and must not be replayed. The Inbox owner was
 given a source-preserving recovery request (`89536875-70b9-46d0-b62b-d896e383a4ce`) for its
 15 retained interrupted captures, to distinguish real requests from diagnostic probes and
-route only unhandled user work. This recovery is in progress, not yet a completion claim.
+route only unhandled user work. That request later completed; see the acceptance evidence below.
 
 ### Final acceptance and retained-request recovery
 
@@ -73,6 +73,30 @@ on `C0C03E75160`; that channel no longer exists in the channel registry. Startup
 owner's destination is `native:inbox`. Investigation now ignores receipts belonging to a
 different destination. Historical state remains intact; the existing `accept` path still
 retargets a fresh firing to the current destination. No retired Slack channel is recreated.
+
+### Later release gate and installed revision
+
+The first attempt to install the retained-alert fix (`8ca2c71`) failed during the scratch-only
+presentation release gate: its topic-projection child reached the existing 45-second kill with
+empty output. The deployment owner restored the healthy `040e824` runtime. That failed child's
+scratch state was removed, so its last phase and the projection worker's status cannot be recovered.
+
+A standalone topic lifecycle check and the full presentation gate both passed in a fresh isolated
+checkout with the original deadlines. The fixture had a confirmed reporting defect: cleanup
+registered a worker-exit listener after work had completed, so an already-exited worker could
+leave cleanup waiting forever and hide its original error until the outer kill. This could explain
+the empty-output timeout but is not proven to be the cause of that particular failure. The fixture
+now owns worker completion from spawn, reports the last phase and exit status, and distinguishes
+its deadline kill from another child failure; its deadlines are unchanged. The updated topic and
+native-owner lifecycle checks both passed after integration with the later main revision.
+
+The normal deployment owner then passed the presentation gate and activated `fd767c0` at
+approximately 19:42 UTC. The service startup and probe recorded PID 3986917 with that exact
+runtime revision, so the alert guard from `8ca2c71` was installed. The next release,
+`1c8ad5e`, also passed the presentation gate, including the new native-owner lifecycle check,
+and started at 19:44 UTC. No `grafana_alert_worker_failed` event appeared in the service journal
+from the `fd767c0` startup through 19:44 UTC. This confirms installation and the observed clean
+startup interval, not every future alert firing or the earlier release timeout's cause.
 
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not

@@ -15,8 +15,10 @@ export async function checkTopicProjectionLifecycle(mode='--child'){
   CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
   CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,'capture')},stdio:['ignore','pipe','pipe']});
  let output='',errors='';child.stdout.on('data',chunk=>{output=(output+chunk).slice(-8000);});child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-8000);});
- const timeout=setTimeout(()=>child.kill('SIGKILL'),45_000);
- try{const code=await new Promise(resolve=>child.once('exit',resolve));assert.equal(code,0,`Topic projection lifecycle failed: ${errors}\n${output}`);
+ let timedOut=false;
+ const timeout=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},45_000);
+ try{const [code,signal]=await new Promise<[number|null,NodeJS.Signals|null]>(resolve=>child.once('close',(code,signal)=>resolve([code,signal])));
+  assert.equal(code,0,`Topic projection lifecycle failed (timeout=${timedOut}, signal=${signal}): ${errors}\n${output}`);
   const result=output.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}}).find(row=>row.fixture===(mode==='--native-child'?'native-owner-projection-lifecycle':'topic-projection-lifecycle'));
   assert.ok(result,'Topic lifecycle did not publish its checkpoints');return result;
  }
@@ -26,6 +28,9 @@ export async function checkTopicProjectionLifecycle(mode='--child'){
 export const checkNativeOwnerProjectionLifecycle=()=>checkTopicProjectionLifecycle('--native-child');
 
 async function nativeOwnerLifecycle(root:string){
+ const started=Date.now();
+ const phase=(name:string)=>console.error(JSON.stringify({fixture:'native-owner-projection-lifecycle',phase:name,elapsedMs:Date.now()-started}));
+ phase('starting');
  assert.equal(process.env.CONCIERGE_TEST_MODE,'1');assert.equal(process.env.CONCIERGE_STATE_DIR,root);
  const {SessionOwner}=await import('../src/session-owner');
  const {createNativeSession}=await import('../src/session-inputs');
@@ -48,33 +53,45 @@ async function nativeOwnerLifecycle(root:string){
  };
  try{
   // This is the native runtime's real accepting API, with no Slack coordinator or surface.
-  server=await startRoutedRequestApi(root,null,null,undefined,owner);
-  const initial=await waitForCards(1);assert.equal(initial.cards[0].title,'Native worker first card');
+  phase('starting-owner-api');server=await startRoutedRequestApi(root,null,null,undefined,owner);phase('owner-api-started');
+  const initial=await waitForCards(1);assert.equal(initial.cards[0].title,'Native worker first card');phase('first-card-ready');
   const pids=workers();assert.equal(pids.length,1);
   await assert.rejects(startRoutedRequestApi(root,null,null,undefined,owner),/live listener/);
   assert.deepEqual(workers(),pids,'Refused duplicate owner must not spawn another worker');
   createNativeSession('claude-code',{title:'Native worker later card',cwd:root});
-  const updated=await waitForCards(2);assert.ok(updated.cards.some((row:any)=>row.title==='Native worker later card'));
-  await Promise.all([server.stop(true),server.stop(true)]);server=null;
+  const updated=await waitForCards(2);assert.ok(updated.cards.some((row:any)=>row.title==='Native worker later card'));phase('second-card-ready');
+  phase('stopping-owner-api');await Promise.all([server.stop(true),server.stop(true)]);server=null;phase('owner-api-stopped');
   assert.deepEqual(workers(),[],'Awaited owner shutdown must reap its worker');
   console.log(JSON.stringify({fixture:'native-owner-projection-lifecycle',initialCards:1,updatedCards:2,workers:pids.length,duplicateRefused:true,shutdownReaped:true}));
- }finally{await server?.stop(true);}
+ }finally{phase('cleanup-start');await server?.stop(true);phase('cleanup-finished');}
 }
 
 async function lifecycle(root:string){
+ const started=Date.now();
+ const phase=(name:string)=>console.error(JSON.stringify({fixture:'topic-projection-lifecycle',phase:name,elapsedMs:Date.now()-started}));
+ phase('starting');
  assert.equal(process.env.CONCIERGE_TEST_MODE,'1');assert.equal(process.env.CONCIERGE_STATE_DIR,root);
  await mkdir(join(root,'slack-inbox','.git'),{recursive:true});await writeFile(join(root,'slack-inbox','AGENTS.md'),'Synthetic fixture; no provider work.');
+ phase('loading-owner');
  const [{SessionOwner},{createNativeSession},{db}]=await Promise.all([import('../src/session-owner'),import('../src/session-inputs'),import('../src/state')]);
+ phase('owner-loaded');
  createNativeSession('claude-code',{title:'Projection fixture',cwd:root});
  const owner=new SessionOwner({available:()=>true,wake:()=>{},steer:()=>false,stop:async()=>false},root);
- let worker:ChildProcess|null=null,errors='',prepared:Database|null=null;
- const start=()=>{errors='';worker=spawn('setpriv',['--pdeathsig','KILL',process.execPath,join(import.meta.dir,'../src/presentation-message-worker.ts')],{env:process.env,stdio:['ignore','ignore','pipe']});worker.stderr!.on('data',chunk=>{errors=(errors+chunk).slice(-8000);});};
- const stop=async()=>{if(!worker)return;const prior=worker;worker=null;const exited=new Promise(resolve=>prior.once('exit',resolve));prior.kill('SIGKILL');await exited;};
+ let worker:ChildProcess|null=null,workerDone:Promise<void>|null=null,errors='',prepared:Database|null=null,workerExit='running';
+ const start=()=>{errors='';workerExit='running';worker=spawn('setpriv',['--pdeathsig','KILL',process.execPath,join(import.meta.dir,'../src/presentation-message-worker.ts')],{env:process.env,stdio:['ignore','ignore','pipe']});
+  const startedWorker=worker;
+  workerDone=new Promise<void>(resolve=>startedWorker.once('close',(code,signal)=>{workerExit=`code=${code} signal=${signal}`;resolve();}));
+  startedWorker.once('exit',(code,signal)=>{workerExit=`code=${code} signal=${signal}`;});
+  startedWorker.once('error',error=>{workerExit=`spawn-error ${error}`;errors=(errors+String(error)).slice(-8000);});
+  startedWorker.stderr!.on('data',chunk=>{errors=(errors+chunk).slice(-8000);});phase(`worker-started pid=${worker.pid}`);};
+ const stop=async()=>{if(!worker)return;const prior=worker,done=workerDone!;worker=null;workerDone=null;
+  if(prior.exitCode===null&&prior.signalCode===null)prior.kill('SIGKILL');await done;phase(`worker-exited ${workerExit}`);};
  const checkpoint=async()=>{
   const head=(db.query('SELECT COALESCE(MAX(sequence),0) AS head FROM presentation_change_log').get() as {head:number}).head;
   // A killed worker's existing lease expires after ten seconds; observe actual recovery.
   const deadline=Date.now()+20_000;
   while(Date.now()<deadline){
+   assert.equal(workerExit,'running',`Projection worker exited: ${workerExit}: ${errors}`);
    assert.ok(!errors.includes('presentation_message_worker_failed'),errors);
    if(!prepared&&existsSync(join(root,'presentation.db'))){prepared=new Database(join(root,'presentation.db'),{readonly:true});prepared.exec('PRAGMA busy_timeout=5000');}
    if(prepared?.query("SELECT 1 FROM sqlite_master WHERE name='presentation_message_meta'").get()){
@@ -83,7 +100,7 @@ async function lifecycle(root:string){
    }
    await Bun.sleep(20);
   }
-  throw new Error(`Projection did not reach canonical head ${head}: ${errors}`);
+  throw new Error(`Projection did not reach canonical head ${head}; worker=${workerExit}: ${errors}`);
  };
  const mutate=async(path:string,body:unknown)=>{const response=await owner.handle(new Request('http://fixture/sessions/v1'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));if(!response||response.status>=300)throw new Error(await response?.text()??'Missing owner response');return response.json() as Promise<any>;};
  const snapshot=(topicId:string,generation:number)=>{
@@ -97,18 +114,18 @@ async function lifecycle(root:string){
   return {summary:JSON.parse(row.summary_json),history:items.map(row=>JSON.parse(row.value_json)),hash:row.detail_hash};
  };
  try{
-  start();await checkpoint();
+  start();phase('initial-checkpoint');await checkpoint();phase('initial-ready');
   const capture=owner.acceptInboxCapture({source:{kind:'thinkering',id:'projection-root',recordedAt:'2026-10-08T00:00:00Z'},text:'Synthetic topic root',importOnly:true});
   const created=await mutate('/inbox/topics',{clientActionId:'projection-create',title:'Before rename',roots:[capture.operation.id]});
   const topicId=created.topic.topicId;assert.ok(topicId);
-  const initial=await checkpoint(),first=snapshot(topicId,initial.generation);assert.equal(first.summary.title,'Before rename');
+  phase('created-checkpoint');const initial=await checkpoint(),first=snapshot(topicId,initial.generation);assert.equal(first.summary.title,'Before rename');phase('created-ready');
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-rename',action:{kind:'rename',title:'After rename'}});
-  const updated=await checkpoint(),second=snapshot(topicId,updated.generation);assert.equal(second.summary.title,'After rename');assert.notEqual(second.hash,first.hash);assert.ok(second.history.length>first.history.length);
-  await stop();
+  phase('renamed-checkpoint');const updated=await checkpoint(),second=snapshot(topicId,updated.generation);assert.equal(second.summary.title,'After rename');assert.notEqual(second.hash,first.hash);assert.ok(second.history.length>first.history.length);phase('renamed-ready');
+  phase('stopping-worker');await stop();phase('worker-stopped');
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-closed',action:{kind:'close',reason:'Synthetic closure while worker stopped'}});
-  start();const resumed=await checkpoint(),third=snapshot(topicId,resumed.generation);assert.equal(third.summary.state,'closed');assert.notEqual(third.hash,second.hash);assert.ok(third.history.length>second.history.length);
+  start();phase('restarted-checkpoint');const resumed=await checkpoint(),third=snapshot(topicId,resumed.generation);assert.equal(third.summary.state,'closed');assert.notEqual(third.hash,second.hash);assert.ok(third.history.length>second.history.length);phase('restarted-ready');
   assert.ok(resumed.source_head>updated.source_head);console.log(JSON.stringify({fixture:'topic-projection-lifecycle',createdHead:initial.source_head,updatedHead:updated.source_head,restartedHead:resumed.source_head,historyRows:third.history.length}));
- }finally{await stop();prepared?.close();}
+ }finally{phase('cleanup-start');try{await stop();}finally{prepared?.close();phase('cleanup-finished');}}
 }
 if(import.meta.main){
  if(process.argv[2]==='--native-child')nativeOwnerLifecycle(process.argv[3]!).then(()=>process.exit(0),error=>{console.error(error);process.exit(1);});
