@@ -9,7 +9,8 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
-import {preparedTopicEventDisplays} from './presentation-topic-reader';
+import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
+  preparedTopicResolution,preparedQuestions,preparedTopicDetail} from './presentation-topic-reader';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -1297,14 +1298,25 @@ export function topicsCommand(actor:TopicActor,body:any) {
   };
   const guard=(topicId?:string)=>{
     if(inbox)return;
-    if(topicId&&['questions','read'].includes(verb)&&ownsLinkedDispatch(actor.sessionId,topicId))return;
+    if(topicId&&['questions','read','items','detail'].includes(verb)&&ownsLinkedDispatch(actor.sessionId,topicId))return;
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':guard();return listTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
-    case 'read':guard(String(body?.topic_id??''));return readTopic(text(body?.topic_id,'topic id',200),body?.limit);
-    case 'resolve':guard();return resolveTopicMessage(text(body?.message_id,'message id',500));
-    case 'questions-read':guard();return crossTopicQuestions(body?.state??null);
+    case 'list':guard();return preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'read':guard(String(body?.topic_id??''));return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
+    case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
+    case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
+    case 'items':{
+      const topicId=text(body?.topic_id,'topic id',200);guard(topicId);
+      if(!['questions','requests','history'].includes(body?.kind))throw new TopicError('Choose questions, requests or history.');
+      return preparedTopicItems({topicId,kind:body.kind,filter:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
+    }
+    case 'detail':{
+      const topicId=text(body?.topic_id,'topic id',200);guard(topicId);
+      const hash=text(body?.digest,'detail digest',64),part=body?.part??0;
+      if(!/^[a-f0-9]{64}$/.test(hash)||!Number.isSafeInteger(part)||part<0)throw new TopicError('Name an exact detail digest and nonnegative part.');
+      return preparedTopicDetail(hash,part,topicId);
+    }
     case 'create':{
       assertInbox(session);
       const roots=body?.roots===undefined?[]:placementRoots(session,body.roots);

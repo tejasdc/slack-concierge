@@ -2,6 +2,9 @@
  * The release harness runs these descriptors against retained-cardinality fixtures; adding
  * a route here without a fixture is a build failure, not a performance waiver. */
 export const PRESENTATION_READERS={
+  topicEvents:{route:'GET /sessions/v1/inbox/topics/:topic/entries',collection:'topic entries',
+    growth:'unrelated messages and large management declarations',maxRows:20,maxStorageRows:180,maxResponseBytes:524_288,
+    sourceTables:['presentation_messages','presentation_topic_events','presentation_topic_event_display'],fixture:'topic-events-growth'},
   topicWindow:{route:'GET /sessions/v1/presentation/topics',collection:'topics',
     growth:'unrelated topics and matching search postings',maxRows:20,maxStorageRows:240,maxResponseBytes:262_144,
     sourceTables:['presentation_topics'],fixture:'topics-window-growth'},

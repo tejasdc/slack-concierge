@@ -43,8 +43,11 @@ export function preparedTopicResolution(message:string){
  const reader=prepared();return reader?readPreparedTopicResolution(reader,message,presentationHead(db)):
   {topic:null,root:null,coverage:indexing()};
 }
-export function preparedTopicDetail(hash:string,part:number){
+export function preparedTopicDetail(hash:string,part:number,topicId?:string){
  const reader=prepared();if(!reader)return null;
+ if(topicId&&!reader.query(`SELECT 1 FROM presentation_topic_chunk_refs
+   WHERE generation=(SELECT generation FROM presentation_topics_meta WHERE singleton=1) AND owner=? AND hash=? LIMIT 1`)
+   .get(`topic:${topicId}`,hash))return null;
  const chunk=readPreparedTopicChunk(reader,hash,part);if(!chunk)return null;
  return {content:chunk.text,nextPart:part+1<chunk.count?part+1:null,digest:hash,complete:part+1===chunk.count};
 }

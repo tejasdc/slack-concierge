@@ -48,7 +48,7 @@ import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedT
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {inboxAttribution} from './inbox-attribution-read';
-import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -2368,6 +2368,13 @@ export class SessionOwner {
   async handle(request:Request):Promise<Response|null> {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
+    if(request.method==='GET'){
+      const legacy=url.pathname.match(/^\/sessions\/v1\/inbox\/(topics(?:\/[^/]+)?|questions)$/);
+      if(legacy){
+        url.pathname='/sessions/v1/presentation/'+legacy[1];
+        return this.handle(new Request(url,request));
+      }
+    }
     startOwnerLoopMonitor();
     const staticParts=new Set(['sessions','v1','inbox','topics','resolve','entries','questions','focus','attention','dismiss','reads','events','stream','history','messages','attachments','transcription','search','context','providers','profiles','switch','saved-work','settings','start','time','schedule','drop','presentation','view','changes','receipts','reactions','pins','projects','workspace','files','usage','transcripts','stop','title','reply','reply-targets','received','source','turns','input','state','opening','create','operations','actions']);
     const route=url.pathname.split('/').filter(Boolean).map(part=>staticParts.has(part)?part:':id').join('/');
@@ -2420,16 +2427,8 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)
-        result=listTopics({state:url.searchParams.get('state'),query:url.searchParams.get('query'),cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),200)});
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[2]==='resolve'&&parts.length===3)
-        result=resolveTopicMessage(url.searchParams.get('message')??'');
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===3)
-        result=readTopic(parts[2]!,boundedLimit(url.searchParams.get('limit'),200));
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
-        result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='questions'&&parts.length===2)
-        result=crossTopicQuestions(url.searchParams.get('state'));
+        result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20));
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='actions'&&parts.length===4)
         result=topicHumanAction(parts[2]!,body);

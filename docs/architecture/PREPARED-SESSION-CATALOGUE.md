@@ -72,6 +72,13 @@ digest-addressed parts. Missing prepared values report indexing rather than retu
 false empty result. Topic timelines combine prepared message and management displays,
 without parsing retained canonical event bodies on the request thread.
 
+Legacy topic GET entrances resolve to these same prepared reads, so an older caller cannot
+reactivate full-history reconstruction. Agent `topics read` returns a bounded overview;
+`topics items` and `questions-read` page with the returned cursor. `topics detail` retrieves
+one exact digest part retained by that topic. Existing linked-dispatch authorization still
+applies. Canonical reconstruction functions remain for mutation decisions and parity checks,
+not for interactive HTTP or agent reads.
+
 `topic-growth-fixtures.ts` exercises each registered topic reader at 100, 1,000 and
 10,000 topics under its storage budget. Canonical writes and action validation remain
 with the existing owner; a prepared preview never grants permission for an action.

@@ -54,8 +54,10 @@ A watch wakes this conversation once, with no model awake meanwhile: when the fi
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
-router-actions.sh sessions topics read <topicId> <source-flags> [--limit N]
-router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking]
+router-actions.sh sessions topics read <topicId> <source-flags> [--state open|reading|history|deferred|checking]
+router-actions.sh sessions topics items <topicId> <source-flags> --kind questions|requests|history [--state STATE] [--cursor C] [--limit N]
+router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
+router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
 router-actions.sh sessions topics create <source-flags> --action-id A --title T [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <inputId> [--root ...] [--reason R]
@@ -144,10 +146,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","resolve","questions-read","create","place","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file"];
+const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
-  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need"];
+  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -186,7 +188,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","read","resolve","questions-read"].includes(verb);
+  const mutating = !["list","read","items","detail","resolve","questions-read"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
@@ -197,6 +199,12 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
   copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
+  copy("--kind","kind");
+  copy("--digest","digest");
+  if(flags.has('--part')){
+    if(!/^\d+$/.test(flags.get('--part')!))invalid('--part requires a nonnegative integer.');
+    body.part=Number(flags.get('--part'));
+  }
   if (flags.has("--summary")) body.summary = flags.get("--summary");
   if (flags.has("--limit")) {
     if (!/^[1-9]\d*$/.test(flags.get("--limit")!)) invalid("--limit requires a positive integer.");
