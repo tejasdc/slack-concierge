@@ -306,6 +306,7 @@ export class CaptureDeliveryWorker {
 
   private async run() {
     while (!this.stopping) {
+      let delivered = false;
       try {
         const claimId = randomUUID();
         const event = await this.claimNext(claimId);
@@ -315,7 +316,7 @@ export class CaptureDeliveryWorker {
           log("info", this.queueObservedFailure ? "capture_delivery_queue_reconnected" : "capture_delivery_queue_connected",
             { queue_url: this.options.queueUrl });
         }
-        if (event) await this.deliver(claimId, event);
+        if (event) { await this.deliver(claimId, event); delivered = true; }
       } catch (error) {
         if (!(error instanceof CaptureQueueUnavailable)) throw error;
         this.queueObservedFailure = true;
@@ -325,7 +326,8 @@ export class CaptureDeliveryWorker {
           log("warn", "capture_delivery_queue_unavailable", { queue_url: this.options.queueUrl, error: this.queueError });
         }
       }
-      if (!this.stopping) await this.wait(this.pollIntervalMs);
+      // A burst of captures is delivered back to back; the pause is only for an empty or unreachable queue.
+      if (!this.stopping && !delivered) await this.wait(this.pollIntervalMs);
     }
   }
 
