@@ -7,6 +7,7 @@ import { accountsWithRoom, recordUsageReading, usageReadingIsUrgent, withAgentsA
 import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
+import { proveClaudeHomesAhead } from "./provider-account-dispatch";
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -397,6 +398,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);
       releaseIfAccountChanged(provider, usage);
+      if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
       const current=usage.accounts.find(account=>account.current);
       const activeHasRoom=!!current && !current.problem && current.windows.length>0
         && current.windows.every(window=>window.usedPercent<100);

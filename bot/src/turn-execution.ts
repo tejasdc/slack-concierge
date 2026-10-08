@@ -1036,7 +1036,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // destroyed nine of the Inbox's inputs in 43 seconds with nothing left to resume.
       let switchClaudeAccount=false;
       if(replaySafe&&!input.boundAccount&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
-        const spent=sessionMetadata(input.session).claudeAccount??null;
+        // The account this attempt actually ran on, not the session's last recorded one, which is
+        // written only once Claude reports the start and can name an earlier attempt's account.
+        const spent=runningClaudeAccount??sessionMetadata(input.session).claudeAccount??null;
         try {const next=chooseClaudeDispatch(spent);switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
         catch { /* every account is spent; keep the existing usage hold */ }
       }

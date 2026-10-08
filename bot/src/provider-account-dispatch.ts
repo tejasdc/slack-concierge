@@ -138,6 +138,17 @@ function provenOrProve(account:string,home:string):boolean{
   }
   return false;
 }
+/**
+ * Proves every complete account home that lacks proof, in the background, whenever usage is read,
+ * so the account with room is already eligible when the one in use runs out. Proving only at the
+ * moment of need held six turns at 2:54 AM on 2026-10-08 for the forty seconds the check took.
+ */
+export function proveClaudeHomesAhead(accounts:readonly string[]):void{
+  for(const account of accounts){
+    const home=sharedClaudeHome(account,undefined,false,false);
+    if(home)provenOrProve(account,home);
+  }
+}
 function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
 /** An extra Codex process must see the same conversation files as the default daemon. */
