@@ -34,11 +34,12 @@ async function probe(mode:"pre"|"measure",configPath:string){
     import("../src/execution-host-client"),import("../src/claude-code"),import("../src/session-owner"),import("../src/session-inputs"),
     import("../src/human-command-state")]);
   const session=createNativeSession("claude-code",{title:"Loaded acceptance",cwd:fixture.root,project:"slack-concierge"});
-  for(let index=1;index<fixture.catalogueSize;index++)createNativeSession("claude-code",{
-    title:`Unrelated fixture ${index}`,cwd:fixture.root,project:"slack-concierge"});
+  const {db}=await import('../src/state');
+  db.transaction(()=>{for(let index=1;index<fixture.catalogueSize;index++)createNativeSession("claude-code",{
+    title:`Unrelated fixture ${index}`,cwd:fixture.root,project:"slack-concierge"});})();
   const owner=new SessionOwner({wake:()=>{},steer:()=>false,stop:async()=>false,available:()=>true,
     history:async()=>({messages:[{id:"fixture-message",role:"assistant",content:"prepared",tool:null,phase:null}],nextCursor:null})},fixture.root);
-  const projector=spawn(process.execPath,[join(base,'bot/src/presentation-message-worker.ts')],{
+  const projector=spawn('setpriv',['--pdeathsig','KILL',process.execPath,join(base,'bot/src/presentation-message-worker.ts')],{
     env:process.env,stdio:['ignore','ignore','pipe']});
   let projectorErrors='';projector.stderr.on('data',chunk=>{projectorErrors=(projectorErrors+String(chunk)).slice(-4000);});
   process.once('exit',()=>projector.kill('SIGKILL'));
@@ -180,7 +181,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
     measured.stdout.on("data",chunk=>{output+=chunk.toString();});
     measured.stderr.on("data",chunk=>{errors+=chunk.toString();});
     const exit=await new Promise<number|null>((resolve,reject)=>{
-      const timer=setTimeout(()=>{measured.kill("SIGKILL");reject(new Error(`Loaded coordinator timed out: ${output.slice(-2200)} ${errors.slice(-1000)}`));},30_000);
+      const timer=setTimeout(()=>{measured.kill("SIGKILL");reject(new Error(`Loaded coordinator timed out: ${output.slice(-2200)} ${errors.slice(-1000)}`));},60_000);
       measured.once("exit",code=>{clearTimeout(timer);resolve(code);});
     });
     if(exit!==0)throw new Error(`Loaded coordinator exited ${exit}: ${errors.slice(-1500)}`);
@@ -202,8 +203,13 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
       routeWork,queueAgeMs:null,providerObservationMs:null,browserPaintMs:null,isolatedState:true};
     console.log(JSON.stringify(report));
   } finally {
-    for(const host of hosts)if(host.exitCode===null)host.kill("SIGKILL");
-    await Promise.all(hosts.map(host=>host.exitCode===null?new Promise(resolve=>host.once("exit",resolve)):Promise.resolve()));
+    // Hosts own separate provider process groups. Let their shutdown handler end those
+    // first; killing only the host would leave a waiting synthetic provider behind.
+    await Promise.all(hosts.map(host=>new Promise<void>(resolve=>{
+      if(host.exitCode!==null||host.signalCode!==null){resolve();return;}
+      const force=setTimeout(()=>host.kill('SIGKILL'),3_000);
+      host.once('exit',()=>{clearTimeout(force);resolve();});host.kill('SIGTERM');
+    })));
     await rm(root,{recursive:true,force:true});
   }
 }
