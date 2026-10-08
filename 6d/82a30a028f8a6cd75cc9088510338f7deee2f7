@@ -1,0 +1,1 @@
+Retained messages can transfer correctly after a restart, with lost acknowledgements rejoining the same input.
