@@ -13,6 +13,35 @@ function preparedDb():Database|null {
 }
 
 export type PreparedMessageKey={sequence:number;messageId:string};
+/** Page-ready values are bounded at projection time; a preview carries an exact detail reference. */
+export function preparedInboxDisplays(keys:readonly PreparedMessageKey[]):(unknown|null)[] {
+  const database=preparedDb();
+  if(!database)return keys.map(()=>null);
+  const generation=(database.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation;
+  if(generation===undefined)return keys.map(()=>null);
+  const read=database.query('SELECT display_json FROM presentation_message_display WHERE generation=? AND event_sequence=?');
+  return keys.map(key=>{
+    const row=read.get(generation,key.sequence) as {display_json:string}|null;
+    return row?JSON.parse(row.display_json):null;
+  });
+}
+export function preparedInboxDetailPart(sessionId:number,messageId:string,part:number):{
+  content:string;nextPart:number|null;complete:boolean;digest:string
+}|null {
+  if(!Number.isSafeInteger(part)||part<0)throw new Error('INVALID_PRESENTATION_PART');
+  const database=preparedDb();if(!database)return null;
+  const generation=(database.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation;
+  if(generation===undefined)return null;
+  const source=database.query(`SELECT event_sequence AS sequence FROM presentation_messages
+    WHERE generation=? AND session_id=? AND message_id=?`).get(generation,sessionId,messageId) as {sequence:number}|null;
+  if(!source)return null;
+  const rows=database.query(`SELECT part,content,digest FROM presentation_message_detail_chunks
+    WHERE generation=? AND event_sequence=? AND part>=? ORDER BY part LIMIT 2`)
+    .all(generation,source.sequence,part) as {part:number;content:string;digest:string}[];
+  if(!rows.length)return null;
+  if(rows[0]!.part!==part)throw new Error('PRESENTATION_DETAIL_GAP');
+  return {content:rows[0]!.content,nextPart:rows[1]?.part??null,complete:rows.length===1,digest:rows[0]!.digest};
+}
 /** Exact prepared lineage lookup; resolving a notification never walks the Inbox history. */
 export function preparedThreadRoot(sessionId:number,messageId:string):string|null {
   const database=preparedDb();if(!database)return null;

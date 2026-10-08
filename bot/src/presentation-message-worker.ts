@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
+import {preparedInboxDisplay} from './presentation-inbox-display';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -35,6 +36,15 @@ prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
     ON presentation_messages(generation,session_id,input_id,event_sequence);
   CREATE UNIQUE INDEX IF NOT EXISTS presentation_messages_exact
     ON presentation_messages(generation,session_id,message_id);
+  CREATE TABLE IF NOT EXISTS presentation_message_display(
+    generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,
+    PRIMARY KEY(generation,event_sequence)
+  );
+  CREATE TABLE IF NOT EXISTS presentation_message_detail_chunks(
+    generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,part INTEGER NOT NULL,content TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY(generation,event_sequence,part)
+  );
   CREATE TABLE IF NOT EXISTS presentation_topic_events(
     generation INTEGER NOT NULL,topic_id TEXT NOT NULL,event_sequence INTEGER NOT NULL,
     session_id INTEGER NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(generation,event_sequence)
@@ -85,6 +95,24 @@ const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM 
 const insert=prepared.query(`INSERT INTO presentation_messages(generation,session_id,root_input_id,topic_id,event_sequence,message_id,input_id,created_at)
   VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET
   root_input_id=excluded.root_input_id,topic_id=excluded.topic_id,message_id=excluded.message_id,input_id=excluded.input_id,created_at=excluded.created_at`);
+const insertDisplay=prepared.query(`INSERT INTO presentation_message_display(generation,event_sequence,display_json) VALUES(?,?,?)
+  ON CONFLICT(generation,event_sequence) DO UPDATE SET display_json=excluded.display_json`);
+const insertDetailChunk=prepared.query(`INSERT INTO presentation_message_detail_chunks(generation,event_sequence,part,content,digest)
+  VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence,part) DO UPDATE SET content=excluded.content,digest=excluded.digest`);
+function writeDisplay(generation:number,sequence:number,sessionId:number,messageId:string){
+  const result=preparedInboxDisplay(source,sessionId,sequence,messageId);
+  if(!result)return;
+  insertDisplay.run(generation,sequence,JSON.stringify(result.preview));
+  prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,sequence);
+  if(result.detailJson){const digest=hash(result.detailJson);
+    for(let index=0,part=0;index<result.detailJson.length;index+=4096,part++)
+      insertDetailChunk.run(generation,sequence,part,result.detailJson.slice(index,index+4096),digest);
+  }
+}
+function writeInboxMessage(generation:number,row:{sessionId:number;root:string;sequence:number;messageId:string;inputId:string;createdAt:string}) {
+  insert.run(generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt);
+  writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+}
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
 const insertOwnerVersion=prepared.query(`INSERT OR IGNORE INTO presentation_owner_message_versions
@@ -134,17 +162,20 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
   for(const {root} of roots){
     let after=0;
     while(true){
-      const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId
+      const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId,input_id AS inputId
         FROM presentation_messages WHERE generation=? AND root_input_id=? AND event_sequence>?
         ORDER BY event_sequence LIMIT 100`).all(generation,root,after) as
-          {sequence:number;sessionId:number;messageId:string}[];
+          {sequence:number;sessionId:number;messageId:string;inputId:string}[];
       if(!rows.length)break;
       prepared.transaction(()=>{
         keepLease();
         for(const row of rows){
           const nextRoot=resolveRoot(row.sessionId,row.messageId);
-          if(nextRoot&&nextRoot!==root)prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
-            WHERE generation=? AND event_sequence=?`).run(nextRoot,topicOf(nextRoot),generation,row.sequence);
+          if(nextRoot&&nextRoot!==root){
+            prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+              WHERE generation=? AND event_sequence=?`).run(nextRoot,topicOf(nextRoot),generation,row.sequence);
+          }
+          if(nextRoot!==root||row.inputId===inputId)writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
         }
       })();
       after=rows.at(-1)!.sequence;
@@ -181,6 +212,8 @@ async function rebuild() {
     prepared.transaction(()=>{
       keepLease();
       prepared.query('DELETE FROM presentation_messages WHERE generation=?').run(generation);
+      prepared.query('DELETE FROM presentation_message_display WHERE generation=?').run(generation);
+      prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_topic_events WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_owner_messages WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_owner_message_versions WHERE generation=?').run(generation);
@@ -192,7 +225,7 @@ async function rebuild() {
       after=page.nextSequence;more=page.hasMore;
       prepared.transaction(()=>{
         keepLease();
-        for(const row of page.messages)insert.run(generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt);
+        for(const row of page.messages)writeInboxMessage(generation,row);
         for(const row of page.topicEvents)insertTopicEvent.run(generation,row.topicId,row.sequence,row.sessionId,row.eventId);
         for(const row of page.ownerMessages)writeOwnerVersion(generation,row);
       })();
@@ -221,6 +254,8 @@ async function rebuild() {
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1 WHERE singleton=1')
         .run(generation,after,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
+      prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
+      prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_topic_events WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_owner_messages WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_owner_message_versions WHERE generation<?').run(generation);
@@ -237,13 +272,14 @@ async function catchUp() {
       {sequence:number;source_table:string;row_key:string}[];
   if(!changes.length)return;
   const resolveRoot=inboxRootResolver(source);
-  const linkedInputs=new Set<string>(),movedRoots=new Set<string>();
+  const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
   for(const change of changes){
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
     else if(change.source_table==='session_owner_events'){
-      const row=source.query('SELECT kind,input_id FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
-        {kind:string;input_id:string|null}|null;
+      const row=source.query('SELECT kind,input_id,turn_id FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
+        {kind:string;input_id:string|null;turn_id:number|null}|null;
       if(row?.kind==='thread_link'&&row.input_id)linkedInputs.add(row.input_id);
+      if(row?.turn_id&&['post','turn_outcome'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
   }
   for(const inputId of linkedInputs)await reassignLinkedInput(current.generation,inputId,resolveRoot);
@@ -264,9 +300,17 @@ async function catchUp() {
   eventAfter=eventHead;
   prepared.transaction(()=>{
     keepLease();
-    for(const row of newRows)insert.run(current.generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt);
+    for(const row of newRows)writeInboxMessage(current.generation,row);
     for(const row of newTopicEvents)insertTopicEvent.run(current.generation,row.topicId,row.sequence,row.sessionId,row.eventId);
     for(const row of newOwnerMessages)writeOwnerVersion(current.generation,row);
+    for(const turnId of turnsToRefresh){
+      const results=source.query(`SELECT sequence,session_id AS sessionId,event_id AS messageId FROM session_owner_events
+        WHERE turn_id=? AND kind='result'`).all(turnId) as {sequence:number;sessionId:number;messageId:string}[];
+      for(const row of results){
+        if(prepared.query('SELECT 1 FROM presentation_messages WHERE generation=? AND event_sequence=?').get(current.generation,row.sequence))
+          writeDisplay(current.generation,row.sequence,row.sessionId,row.messageId);
+      }
+    }
     for(const change of changes){
       if(change.source_table==='session_inputs')writeInput(change.row_key);
       else if(change.source_table==='sessions')writeSession(Number(change.row_key));
@@ -276,8 +320,20 @@ async function catchUp() {
   })();
 }
 
+let checkedDisplay=false;
 while(true){
-  try {if(claimLease())await catchUp();}
+  try {if(claimLease()){
+    if(!checkedDisplay){
+      const current=meta();
+      const missing=current.ready&&prepared.query(`SELECT 1 FROM presentation_messages message
+        LEFT JOIN presentation_message_display display ON display.generation=message.generation
+          AND display.event_sequence=message.event_sequence
+        WHERE message.generation=? AND display.event_sequence IS NULL LIMIT 1`).get(current.generation);
+      if(missing)prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
+      checkedDisplay=true;
+    }
+    await catchUp();
+  }}
   catch(error){console.error(JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.

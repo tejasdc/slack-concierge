@@ -40,7 +40,7 @@ import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} fro
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
-import {preparedMessages,preparedThreadRoot} from './presentation-message-reader';
+import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
@@ -2558,6 +2558,14 @@ export class SessionOwner {
         result=this.presentationReceiptChanges(parts[2]!,url.searchParams.get('after')??'',boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE));
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='receipts'&&parts.length===3)
         result=this.presentationReceiptWindow(parts[2]!,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE),url.searchParams.get('cursor'));
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='messages'&&parts[4]==='detail'&&parts.length===5){
+        const session=this.session(parts[2]!);
+        if(!sessionMetadata(session).inbox)throw new SessionOwnerError('This is not an Inbox conversation.');
+        const part=Number(url.searchParams.get('part')??'0');
+        const page=preparedInboxDetailPart(session.id,parts[3]!,part);
+        if(!page)throw new SessionOwnerError('That retained message part is unavailable.',404,'MESSAGE_PART_NOT_FOUND');
+        result=page;
+      }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='messages'&&parts.length===2){
         const session=this.session(url.searchParams.get('sessionId')??'');
         const target=url.searchParams.get('input')??url.searchParams.get('root')??'';
@@ -2565,8 +2573,10 @@ export class SessionOwner {
         const root=preparedThreadRoot(session.id,target);
         const sourceHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
         const page=preparedMessages(session.id,root??target,Math.min(20,boundedLimit(url.searchParams.get('limit'),20)??20),url.searchParams.get('cursor'),sourceHead);
-        result={root,messages:page.keys.map(key=>inboxMessageById(session.id,key.messageId)).filter(Boolean),
-          nextCursor:page.nextCursor,coverage:page.coverage};
+        const displays=preparedInboxDisplays(page.keys);
+        result=displays.some(value=>value===null)
+          ?{root,messages:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:page.coverage.appliedSequence}}
+          :{root,messages:displays,nextCursor:page.nextCursor,coverage:page.coverage};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)
         result={session:this.view(this.session(parts[1]!))};
