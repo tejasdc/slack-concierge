@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "build": "bun run scripts/retry-architecture-lint.ts && bun run scripts/storage-observation-check.ts && bun run scripts/presentation-release-check.ts && bun build src/index.ts src/capture-ingress.ts src/presentation-message-worker.ts src/presentation-search-read.ts src/speech-job-worker.ts src/provider-history-worker.ts src/provider-history-sync-worker.ts --target bun --outdir /tmp/concierge-build",
+    "build": "bun run scripts/retry-architecture-lint.ts && bun run scripts/storage-observation-check.ts && bun run scripts/presentation-release-check.ts && bun run scripts/history-delta-growth-fixtures.ts && bun build src/index.ts src/capture-ingress.ts src/presentation-message-worker.ts src/presentation-search-read.ts src/speech-job-worker.ts src/provider-history-worker.ts src/provider-history-sync-worker.ts --target bun --outdir /tmp/concierge-build",
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
     "test": "bun run scripts/testing-disabled.ts",

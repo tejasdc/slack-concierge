@@ -11,6 +11,7 @@ import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
+import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
   preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
@@ -281,9 +282,12 @@ const windowHash=(ids:readonly string[])=>createHash('sha256').update(ids.join('
 const encodePosition=(position:HistoryPosition)=>Buffer.from(JSON.stringify(position)).toString('base64url');
 function decodePosition(value:string):HistoryPosition|null {
   try {
+    if(value.length>1024||!/^[A-Za-z0-9_-]+$/.test(value))return null;
     const position=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
     return position?.v===1&&['inbox','provider','none'].includes(position.k)&&[position.s,position.g,position.n].every(Number.isSafeInteger)
-      &&(position.a===null||typeof position.a==='string')?position:null;
+      &&position.s>=0&&position.g>=1&&position.n>=0&&position.n<=HISTORY_CHANGE_LIMIT
+      &&(position.a===null||typeof position.a==='string'&&position.a.length<=512)
+      &&(position.h===null||typeof position.h==='string'&&/^[a-f0-9]{32}$/.test(position.h))?position:null;
   } catch {return null;}
 }
 function pagePosition(path:HistoryPath,head:number,generation:number,messages:readonly {id:string}[]):HistoryPosition {
@@ -300,17 +304,6 @@ function pagePosition(path:HistoryPath,head:number,generation:number,messages:re
  * needed: every finished native turn closes with a turn-level `run` event recorded after
  * all its messages (the latest 400 checked, none without one).
  */
-function changedMessageIds(sessionId:number,after:number) {
-  const rows=db.query(`SELECT json_extract(payload_json,'$.message.id') AS id FROM session_owner_events
-      WHERE session_id=? AND kind='message' AND sequence>?
-    UNION SELECT json_extract(message.payload_json,'$.message.id') FROM session_owner_events message
-      WHERE message.session_id=? AND message.kind='message' AND message.turn_id IN
-        (SELECT turn_id FROM session_owner_events WHERE session_id=? AND sequence>? AND turn_id IS NOT NULL AND kind<>'message')
-    UNION SELECT json_extract(payload_json,'$.action.messageId') FROM session_owner_events
-      WHERE session_id=? AND kind='message-action' AND sequence>?`)
-    .all(sessionId,after,sessionId,sessionId,after,sessionId,after) as {id:string|null}[];
-  return new Set(rows.flatMap(row=>row.id?[row.id]:[]));
-}
 export type EventFilter={kind?:string|null;limit?:number|null};
 /** A comma-separated query value is a set; an absent or empty value filters nothing. */
 const list=(value?:string|null)=>{const values=(value??'').split(',').map(item=>item.trim()).filter(Boolean);return values.length?values:null;};
@@ -710,26 +703,10 @@ export class SessionOwner {
   lab(requestCursor:string|null=null,sessionCursor:string|null=null) {
     const requestPage=preparedLabRequestIds(requestCursor,20);
     const sessionPage=preparedSessionWindow({space:'lab',cursor:sessionCursor,limit:20});
-    const sessions=sessionPage.cards.map(card=>this.session(card.id));
-    const parties=new Map<number,{id:string;title:string|null;lab:boolean}>();
-    const party=(id:number)=>{const prior=parties.get(id);if(prior)return prior;const row=getSessionById(id);
-      const value={id:`concierge:${id}`,title:row?sessionMetadata(row).title??null:null,lab:!!row&&sessionSpace(row)==='lab'};
-      parties.set(id,value);return value;};
-    const requests=requestPage.requestIds.map(id=>db.query(`SELECT request_id,source_session_id,target_session_id,status,outcome,payload_json,result_json,created_at_ms
-      FROM session_communication_requests WHERE request_id=?`).get(id) as
-      {request_id:string;source_session_id:number;target_session_id:number;status:string;outcome:string|null;payload_json:string;result_json:string|null;created_at_ms:number}|null).filter((row):row is NonNullable<typeof row>=>!!row).map(row=>{
-      const payload=JSON.parse(row.payload_json),result=row.result_json?JSON.parse(row.result_json):null;
-      const ended=db.query("SELECT created_at_ms AS at,payload_json FROM session_communication_events WHERE request_id=? AND kind='final' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {at:number;payload_json:string}|null;
-      const answered=ended?JSON.parse(ended.payload_json):null;
-      // One line first, the body behind it; a line the author did not write is the first line of the words, marked as such.
-      const line=(summary:unknown,text:string)=>typeof summary==='string'&&summary?{summary,summaryWritten:true}:{summary:text.trim().split('\n')[0]!.slice(0,200),summaryWritten:false};
-      return {requestId:row.request_id,from:party(row.source_session_id),to:party(row.target_session_id),
-        effect:payload.requestedEffect??'informational',...line(payload.summary,String(payload.text??'')),text:String(payload.text??'').slice(0,4000),
-        state:row.outcome?'ended':'open',outcome:row.outcome,disposition:result?.workDisposition??null,answer:result?.text?String(result.text).slice(0,4000):null,
-        answerSummary:result?.text?line(answered?.summary,String(result.text)):null,
-        askedAt:new Date(row.created_at_ms).toISOString(),endedAt:ended?new Date(ended.at).toISOString():null};
-    });
-    return {sessions:sessions.map(row=>{const meta=sessionMetadata(row);return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,project:meta.cwd??null,provider:row.provider_id,archived:row.status==='archived',outcome:meta.outcome??'open'};}),requests,
+    const requests=requestPage.requests;
+    return {sessions:sessionPage.cards.map(card=>({id:card.id,address:card.address,title:card.title,
+      project:card.project,projectName:card.projectName,projectTruncated:card.projectTruncated,
+      provider:card.provider,archived:card.archived,outcome:card.outcome})),requests,
       next:{sessions:sessionPage.nextCursor,requests:requestPage.nextCursor},
       coverage:{complete:sessionPage.coverage.complete&&requestPage.coverage.complete,
         code:sessionPage.coverage.complete?requestPage.coverage.code:sessionPage.coverage.code}};
@@ -1711,6 +1688,8 @@ export class SessionOwner {
     const position=decodePosition(after),session=this.session(id);
     if(!position||position.k==='none'||position.g!==(session.binding_generation??1))return reset;
     const head=ledgerHead();
+    if(position.s>head||position.k==='inbox'&&(position.n!==0||position.a!==null)||
+      position.k==='provider'&&!(position.a===null&&position.n===0||position.a!==null&&position.n>0&&position.h!==null))return reset;
     if(position.k==='inbox') {
       const messages=inboxHistoryAfter(session,position.s,HISTORY_WINDOW);
       return messages?{messages:messages.map(message=>this.projectInboxMessage(message)),asOf:encodePosition({...position,s:head})}:reset;
@@ -1736,7 +1715,9 @@ export class SessionOwner {
       if(fresh.length>HISTORY_WINDOW)return reset;
       held=new Set(ids.slice(start,anchor+1));
     }
-    const changed=changedMessageIds(session.id,position.s),freshIds=new Set(fresh.map(message=>message.id));
+    const changed=boundedChangedMessageIds(db,session.id,position.s,head,[...held]);
+    if(changed===null)return reset;
+    const freshIds=new Set(fresh.map(message=>message.id));
     const messages=page.messages.filter(message=>freshIds.has(message.id)||held.has(message.id)&&changed.has(message.id));
     return {messages:projectSessionHistory(session.id,{...page,messages}).messages,
       asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};

@@ -204,6 +204,12 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
         CREATE INDEX IF NOT EXISTS session_owner_events_message_delta ON session_owner_events(session_id,sequence) WHERE kind='message';
+        -- A history delta reads at most one page of non-message changes, then seeks the
+        -- held message IDs. Never union every message version of every changed turn.
+        CREATE INDEX IF NOT EXISTS session_owner_events_history_turn_delta
+          ON session_owner_events(session_id,sequence) WHERE kind<>'message' AND turn_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_owner_events_history_action_delta
+          ON session_owner_events(session_id,sequence) WHERE kind='message-action';
         -- A history page's input and metadata projections look each message up by session and
         -- message id; without this they parsed the JSON of every message event of the session
         -- per requested message (43 messages × 3,680 events: 2.3 s a page, 14 s for a delta

@@ -5,7 +5,7 @@ import {db} from './state';
 import {observedDatabase} from './storage-observation';
 import {readPreparedSessionChanges,readPreparedSessionWindow,type SessionWindow} from './prepared-session-cards';
 import {readPreparedInboxAttention} from './prepared-topics';
-import {readPreparedLabRequests} from './prepared-lab-requests';
+import {labRequestPageViews,readPreparedLabRequests} from './prepared-lab-requests';
 import type {SessionSpace} from './session-space';
 
 let connection:Database|null=null;
@@ -43,6 +43,7 @@ export function preparedInboxAttention(sessionId:number,cursor:string|null=null,
 }
 export function preparedLabRequestIds(cursor:string|null=null,limit=20){
  const reader=prepared();
- return reader?readPreparedLabRequests(reader,cursor,canonicalHead(),limit):
-  {requestIds:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',appliedSequence:0}};
+ if(!reader)return {requestIds:[],requests:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',appliedSequence:0}};
+ const page=readPreparedLabRequests(reader,cursor,canonicalHead(),limit);
+ return {...page,requests:labRequestPageViews(reader,page.generation,page.displays)};
 }
