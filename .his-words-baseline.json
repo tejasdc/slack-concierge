@@ -1,0 +1,15 @@
+[
+ "bot/src/retry.ts::the operation is explicitly retried after the failure is resolved",
+ "bot/src/session-owner.ts::An earlier input is parked and must be reconciled before this queued input can run.",
+ "bot/src/session-owner.ts::Provider admission is paused for a deployment. This input remains queued.",
+ "bot/src/session-owner.ts::Provider usage exhausted this input. Reported reset: …. This input will not be retried automatically.",
+ "bot/src/session-owner.ts::Provider usage exhausted this input. The reset time was not retained; this input will not be retried automatically.",
+ "bot/src/session-owner.ts::The linked provider turn …, but this specific message was not acknowledged. We cannot confirm whether the agent received or used it; it will not be sent again automatically.",
+ "bot/src/session-owner.ts::The owner attempted to send this message to the active provider turn, but acknowledgement is still unconfirmed. Its status will update when that turn ends.",
+ "bot/src/session-owner.ts::The owner attempted to send this message, but acknowledgement and the linked turn outcome remain unconfirmed. Reconciliation is required before another send.",
+ "bot/src/session-owner.ts::The provider outcome is unconfirmed. This input needs reconciliation before any retry.",
+ "bot/src/session-owner.ts::This accepted input has not been submitted to a provider.",
+ "bot/src/session-owner.ts::This input failed without a retained provider explanation.",
+ "bot/src/session-owner.ts::This input is waiting for an earlier required outcome.",
+ "bot/src/session-owner.ts::This session is paused or archived. This input remains queued."
+]

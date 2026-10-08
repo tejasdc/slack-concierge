@@ -5,6 +5,16 @@
 for guard in "$(dirname "$0")/../scripts/git-hooks/refuse-unrecorded-decision" \
   /usr/local/share/concierge-git-hooks/refuse-unrecorded-decision \
   "$HOME/.local/share/concierge-git-hooks/refuse-unrecorded-decision"; do
-  [ -x "$guard" ] && exec "$guard" "$@"
+  if [ -x "$guard" ]; then "$guard" "$@" || exit 1; break; fi
 done
+
+# Every sentence this commit adds that Tejas reads (the paths .his-words.json declares) is checked
+# by thnkr.ing's one checker and rule book: pattern rules, then a model reading each new sentence
+# against his interface decisions. A machine without the thinkering checkout says so and commits.
+check="$HOME/workspace/thinkering/scripts/check-user-words.mjs"
+if [ -f "$check" ]; then
+  node "$check" --staged --repo "$(git rev-parse --show-toplevel)" || exit 1
+else
+  echo "check-user-words: $check is missing on this machine; sentences Tejas reads were not checked." >&2
+fi
 exit 0

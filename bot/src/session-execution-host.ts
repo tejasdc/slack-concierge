@@ -132,8 +132,6 @@ export class SessionExecutionHost {
       ?profiles.find(profile=>profile.current)??null
       :provider==='claude-code'&&selection&&selection.profileId!=='default'
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
-    const terminalLogin=ownHomes&&defaultAccount&&defaultAccount.label!==account?.label
-      ?` The sign-in typed in a terminal here (${defaultAccount.label}) is that terminal's own; agents never run on it.`:'';
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
     const usage=providerAccountUsage(provider);
@@ -147,7 +145,7 @@ export class SessionExecutionHost {
     const checked=listed.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
     if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,
       lastSignIn:this.lastSignIn.get(provider)??null,
-      message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:`This machine runs Codex on ${account.label}.`,
+      message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:'',
       signedIn:!(brokenInUse||refused.has(account.label)),account,profiles:checked,usage};
     return {provider,mode:provider==='codex'?'device':'interactive',
       pending:provider==='codex'?this.codexLogin.hasPending():this.claudeLogin.hasPending(),
@@ -159,26 +157,27 @@ export class SessionExecutionHost {
       pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
-      message:(account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):`This machine runs Codex on ${account.label}.`)
+      message:account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):'')
         :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
-        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`)+terminalLogin,
+        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles:checked,usage};
   }
   /**
-   * Which Claude account is in use and why, in one sentence: his choice, and, when that account is
-   * at its limit, where new work runs until it resets. Without the reason he could not tell a
-   * switch that went wrong from the automatic move to an account with room (2026-10-07).
+   * Nothing while the account he chose is the one in use: the row's "in use" tag already says so, and
+   * his own choice read back to him is not news (Tejas, 2026-10-08). When it is at its limit, where new
+   * work runs until it resets, because without that he could not tell a switch that went wrong from
+   * the automatic move to an account with room (2026-10-07).
    */
   private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
     const reading=usage?.accounts.find(item=>item.label===chosen);
     const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
-    if(!full.length)return `New Claude work uses ${chosen}, the account you chose.`;
+    if(!full.length)return '';
     const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
     const other=usage?.accounts.find(item=>item.label!==chosen&&!item.problem&&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
     const when=noticeTime(db,until);
     return other
-      ?`You chose ${chosen}, but it is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
-      :`You chose ${chosen}. It is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
+      ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
+      :`${chosen} is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
   }
 /**
    * The account list, answered from what this machine last knew, with the checks run behind it.

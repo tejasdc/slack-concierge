@@ -309,7 +309,10 @@ that was there with no copy kept. At 19:31 UTC on 2026-10-07 a hand sign-in as t
 replaced his personal account that way, and agents silently lost it. Now every account runs from
 its own home, the selected one without waiting for a background proof (it was proven when chosen),
 and when none can run the turn is held for a sign-in rather than falling back to the main folder.
-Accounts no longer lists the main folder's login as an account; it names it as the terminal's.
+Accounts no longer lists the main folder's login as an account and says nothing about it: a terminal
+sign-in is not his work, and the line naming it was removed on 2026-10-08 as news about nothing.
+The account line above the list is empty while the chosen account is in use; it speaks only when
+that account is at its limit, signed out, or none is selected.
 The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
 fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
 reads with its own copies of each login, so its failure says nothing about the login in the
