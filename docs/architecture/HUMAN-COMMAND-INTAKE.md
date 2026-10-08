@@ -20,6 +20,14 @@ validation happens after custody, so an invalid command occupies its terminal st
 instead of leaving a missing predecessor. Browser cards
 distinguish device custody, server custody, and owner acceptance.
 
+The worker uses named attempt and age limits for delivery and for reaching the custody queue.
+A malformed route or invalid prepared body settles as a preparation refusal before any owner
+exchange. A lost owner answer, timeout or owner 5xx does not establish whether the effect happened:
+after the delivery budget it stops automatic attempts, preserves the command and its ordered
+stream position, reports `unconfirmed`, and files one repair notice. Other streams keep moving.
+An explicit Retry reopens the same action ID and prepared bytes; the owner still deduplicates it.
+The browser also bounds status polling and retains its local command when the status budget ends.
+
 A terminal preparation refusal names that stage and is not presented as an owner refusal. A
 creation still pending in ingress can be withdrawn by exact action ID; this cancels transport
 custody only and creates no owner receipt. Once claimed for delivery, withdrawal refuses and the

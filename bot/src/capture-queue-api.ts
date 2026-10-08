@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, claimHumanCommand, commandStatus, prepareHumanCommand, retainHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, resumeExhaustedHumanCommand, retainHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -67,8 +67,6 @@ async function requestBody(request: Request): Promise<Record<string, unknown>> {
   return parsed as Record<string, unknown>;
 }
 
-const commandPath = /^\/sessions\/v1\/(?:sessions(?:\/[a-z][a-z0-9-]*%3A[1-9][0-9]*\/(?:inputs|notification-replies|actions|actions\/[A-Za-z0-9_-]+\/cancel|message-actions|stop|outage-choice|reconcile|bind|forks|comparisons|captures|tasks))?|operations\/[A-Za-z0-9:_-]+\/cancel|inbox\/topics(?:\/[A-Za-z0-9:_-]+\/actions)?|consultations|resurrections|saved-work(?:\/settings|\/[0-9]+\/(?:start|time|schedule|drop)))$/i;
-
 function humanCommand(body:Record<string,unknown>):HumanCommand {
   const command=body as Record<string,unknown>;
   const clientId=requiredString(command.clientId,"clientId",128);
@@ -79,23 +77,23 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
   const path=requiredString(command.path,"path",500);
   const sequence=requiredNonnegativeInteger(command.sequence,"sequence");
   const payload=command.body;
-  if(command.version!==1||sequence<1||method!=="POST"||!commandPath.test(path)||!payload||typeof payload!=="object"||Array.isArray(payload)
+  if(command.version!==1||sequence<1||method!=="POST"||!path.startsWith('/')||/[\r\n]/.test(path)||!payload||typeof payload!=="object"||Array.isArray(payload)
     ||(payload as Record<string,unknown>).clientActionId!==actionId||!/^[-a-z0-9:]{8,128}$/i.test(clientId)
-    ||!(/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(sessionId)||sessionId==="workspace")) {
+    ||!(/^[a-z][a-z0-9-]*:[A-Za-z0-9:_-]{1,190}$/.test(sessionId)||sessionId==="workspace")) {
     throw new Error("Invalid human command envelope.");
   }
-  const targetSession=path.match(/^\/sessions\/v1\/sessions\/([^/]+)\//);
-  if(targetSession?.[1]&&decodeURIComponent(targetSession[1])!==sessionId)throw new Error("Command stream does not name its target session.");
-  // This is transport validation only. The owner still checks the command's scope, target,
-  // authority and effect; ingress neither rewrites nor interprets its original body.
+  // Once identity is valid, keep its ordered slot even if the path is malformed. The
+  // capability host refuses an unsupported or mismatched target as a terminal prepared
+  // response; refusing it here would strand every later slot from this browser.
   return {version:1,clientId,sessionId,actionId,door,method,path,sequence,body:payload as Record<string,unknown>};
 }
 
 function commandReply(actionId:string) {
   const row=commandStatus(actionId);
   if(!row)return null;
-  return {custody:"server",actionId:row.action_id,status:row.status,
-    decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null};
+  return {custody:"server",actionId:row.action_id,status:row.exhausted_at_ms!==null?'unconfirmed':row.status,
+    decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null,
+    ...(row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{})};
 }
 
 function claimProof(eventId: string, body: Record<string, unknown>): CaptureClaimProof {
@@ -140,14 +138,14 @@ export function createCaptureQueueRequestHandler(
         return claimed?jsonResponse(200,{command:{version:1,clientId:claimed.client_id,sessionId:claimed.session_id,door:claimed.door,
           sequence:claimed.sequence,actionId:claimed.action_id,method:claimed.method,path:claimed.path,
           body:JSON.parse(claimed.body_json)},prepared:claimed.prepared_json?JSON.parse(claimed.prepared_json):null,
-          claimId,attempts:claimed.attempts}):
+          claimId,attempts:claimed.attempts,createdAt:claimed.created_at,retryWindowStartedMs:claimed.retry_window_started_ms}):
           new Response(null,{status:204,headers:{"cache-control":"no-store"}});
       } catch(error) {
         log("warn","human_command_claim_refused",errorFields(error));
         return jsonResponse(400,{error:"invalid_command_claim"});
       }
     }
-    const settleMatch=url.pathname.match(/^\/commands\/([^/]+)\/(prepare|settle|retry)$/);
+    const settleMatch=url.pathname.match(/^\/commands\/([^/]+)\/(prepare|settle|retry|exhaust)$/);
     if(settleMatch&&request.method==="POST") {
       try {
         const actionId=decodeURIComponent(settleMatch[1]);
@@ -161,6 +159,10 @@ export function createCaptureQueueRequestHandler(
         if(settleMatch[2]==="retry") {
           const nextAttemptMs=requiredNonnegativeInteger(body.nextAttemptMs,"nextAttemptMs");
           return retryHumanCommand(actionId,claimId,nextAttemptMs)?jsonResponse(200,{ok:true}):jsonResponse(409,{error:"claim_conflict"});
+        }
+        if(settleMatch[2]==='exhaust'){
+          exhaustHumanCommand(actionId,claimId,requiredString(body.reason,'reason',1000));
+          return jsonResponse(200,{ok:true,status:'unconfirmed'});
         }
         const ownerStatus=requiredNonnegativeInteger(body.ownerStatus,"ownerStatus");
         const decisionStage=body.decisionStage;
@@ -177,6 +179,11 @@ export function createCaptureQueueRequestHandler(
       const actionId=decodeURIComponent(commandMatch[1]);
       const reply=commandReply(actionId);
       return reply?jsonResponse(200,reply):jsonResponse(404,{error:"command_not_found"});
+    }
+    const resumeMatch=url.pathname.match(/^\/commands\/([^/]+)\/resume$/);
+    if(resumeMatch&&request.method==='POST'){
+      const resumed=resumeExhaustedHumanCommand(decodeURIComponent(resumeMatch[1]));
+      return resumed?jsonResponse(200,commandReply(resumed.action_id)!):jsonResponse(409,{error:'command_not_stopped'});
     }
     const withdrawMatch=url.pathname.match(/^\/commands\/([^/]+)\/withdraw$/);
     if(withdrawMatch&&request.method==="POST"){

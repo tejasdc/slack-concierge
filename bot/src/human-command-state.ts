@@ -35,6 +35,9 @@ export type HumanCommandRow = Readonly<{
   claim_owner_json: string | null;
   claim_worker_id: string | null;
   next_attempt_ms: number | null;
+  exhausted_at_ms: number | null;
+  exhausted_reason: string | null;
+  retry_window_started_ms: number | null;
   created_at: string;
   updated_at: string;
 }>;
@@ -61,6 +64,9 @@ CREATE TABLE IF NOT EXISTS human_commands (
   claim_owner_json TEXT,
   claim_worker_id TEXT,
   next_attempt_ms INTEGER,
+  exhausted_at_ms INTEGER,
+  exhausted_reason TEXT,
+  retry_window_started_ms INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(client_id,session_id,sequence)
@@ -77,6 +83,9 @@ CREATE TABLE IF NOT EXISTS human_command_streams(
 const commandColumns=captureDb.query("PRAGMA table_info(human_commands)").all() as {name:string}[];
 if(!commandColumns.some(column=>column.name==='decision_stage'))captureDb.exec("ALTER TABLE human_commands ADD COLUMN decision_stage TEXT CHECK(decision_stage IN ('preparation','owner'))");
 for(const column of ['claim_owner_json','claim_worker_id'])if(!commandColumns.some(value=>value.name===column))captureDb.exec(`ALTER TABLE human_commands ADD COLUMN ${column} TEXT`);
+if(!commandColumns.some(value=>value.name==='exhausted_at_ms'))captureDb.exec('ALTER TABLE human_commands ADD COLUMN exhausted_at_ms INTEGER');
+if(!commandColumns.some(value=>value.name==='exhausted_reason'))captureDb.exec('ALTER TABLE human_commands ADD COLUMN exhausted_reason TEXT');
+if(!commandColumns.some(value=>value.name==='retry_window_started_ms'))captureDb.exec('ALTER TABLE human_commands ADD COLUMN retry_window_started_ms INTEGER');
 
 function advanceStream(clientId:string,sessionId:string){
  const stream=captureDb.query('SELECT next_sequence FROM human_command_streams WHERE client_id=? AND session_id=?').get(clientId,sessionId) as {next_sequence:number};
@@ -159,7 +168,7 @@ export function claimHumanCommand(claimId:string,owner:ProcessIdentity,workerId:
     // One worker holds only one active claim; another live worker's claim stays fenced.
     recoverHumanCommands(workerId);
     const candidate = captureDb.query(`SELECT * FROM human_commands AS command
-      WHERE command.status='pending' AND (command.next_attempt_ms IS NULL OR command.next_attempt_ms<=?)
+      WHERE command.status='pending' AND command.exhausted_at_ms IS NULL AND (command.next_attempt_ms IS NULL OR command.next_attempt_ms<=?)
       AND (command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' OR command.sequence=(
         SELECT next_sequence FROM human_command_streams stream WHERE stream.client_id=command.client_id AND stream.session_id=command.session_id))
       ORDER BY CASE WHEN command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' THEN 0 ELSE 1 END,
@@ -198,6 +207,32 @@ export function prepareHumanCommand(actionId:string,claimId:string,prepared:unkn
 export function retryHumanCommand(actionId:string,claimId:string,nextAttemptMs:number):boolean {
   return captureDb.query("UPDATE human_commands SET status='pending',claim_id=NULL,next_attempt_ms=?,updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='delivering' AND claim_id=?")
     .run(nextAttemptMs,actionId,claimId).changes===1;
+}
+
+/** Stop automatic attempts without claiming the owner refused or accepted the effect.
+ * The command and its exact action stay retained; later streams remain independently claimable.
+ * Its own stream remains ordered until repair can establish the outcome. */
+export function exhaustHumanCommand(actionId:string,claimId:string,reason:string):HumanCommandRow {
+  return captureDb.transaction(()=>{
+    const current=row(actionId);
+    if(!current||current.status!=='delivering'||current.claim_id!==claimId)throw new Error('Command is not held by this delivery worker.');
+    captureDb.query(`UPDATE human_commands SET status='pending',claim_id=NULL,claim_owner_json=NULL,claim_worker_id=NULL,
+      next_attempt_ms=NULL,exhausted_at_ms=?,exhausted_reason=?,updated_at=CURRENT_TIMESTAMP
+      WHERE action_id=? AND claim_id=?`).run(Date.now(),reason.slice(0,1000),actionId,claimId);
+    return row(actionId)!;
+  }).immediate();
+}
+
+/** A person's explicit Retry reuses the original action and bytes after an uncertain effect.
+ * The owner remains the only authority that can deduplicate an earlier acceptance. */
+export function resumeExhaustedHumanCommand(actionId:string):HumanCommandRow|null {
+  return captureDb.transaction(()=>{
+    const current=row(actionId);if(!current||current.status!=='pending'||current.exhausted_at_ms===null)return null;
+    captureDb.query(`UPDATE human_commands SET exhausted_at_ms=NULL,exhausted_reason=NULL,retry_window_started_ms=?,
+      attempts=0,next_attempt_ms=NULL,updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending' AND exhausted_at_ms IS NOT NULL`)
+      .run(Date.now(),actionId);
+    return row(actionId);
+  }).immediate();
 }
 
 /** A pending action is canceled locally, before the canonical owner has ever seen it. */

@@ -27,7 +27,7 @@ import {
 } from "./channel";
 import { errorFields, log } from "./log";
 import { startStuckWorkWatch } from "./stuck-work-watch";
-import { startRepairNoticeDelivery } from "./repair-notices";
+import { recordRepairNotice, startRepairNoticeDelivery } from "./repair-notices";
 import { installOwnerCpuProfileSignal } from "./owner-cpu-profile";
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
@@ -4111,6 +4111,15 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             text:`Your notification reply was refused. [Open the conversation](https://thnkr.ing${path}) to retry with the words kept below.\n\n${String(command.body.text??'')}`,
             payload:{actionId:command.actionId,sessionId:command.sessionId,inputId:command.body.inputId??null}});
           fileServiceNotices();
+        },
+        stopped:(command,reason,stage)=>{
+          recordRepairNotice(db,{key:`human-command:${command.actionId}`,kind:'retry_stopped',
+            text:stage==='preparation'
+              ?`A retained human command could not be prepared; no owner delivery was attempted. Action ${command.actionId}; stream ${command.sessionId}; ${reason} The preparation path needs repair. Other sessions continue.`
+              :`A retained human command stopped retrying without a confirmed owner answer. Action ${command.actionId}; stream ${command.sessionId}; ${reason} Check its exact owner effect before resuming it. Other sessions continue.`});
+        },
+        queueStopped:reason=>{
+          recordRepairNotice(db,{key:`human-command-queue:${Date.now()}`,kind:'retry_stopped',text:reason});
         },
       });
       humanCommandWorker.start();

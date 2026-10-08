@@ -28,6 +28,8 @@ export const RETRY_POLICIES = Object.freeze({
   externalHttp: policy({ name: "external-http", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   deployHealthProbe: policy({ name: "deploy-health-probe", maxAttempts: 3, baseDelayMs: 60_000, capDelayMs: 60 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
   captureDelivery: policy({ name: "capture-delivery", maxAttempts: 5, baseDelayMs: 1_000, capDelayMs: 30_000, jitterFraction: 0.25, maxAgeMs: 15 * 60_000 }),
+  humanCommandDelivery: policy({ name: 'human-command-delivery', maxAttempts: 6, baseDelayMs: 1_000, capDelayMs: 30_000, jitterFraction: 0.25, maxAgeMs: 2 * 60_000 }),
+  humanCommandQueue: policy({ name: 'human-command-queue', maxAttempts: 8, baseDelayMs: 500, capDelayMs: 30_000, jitterFraction: 0.25, maxAgeMs: 2 * 60_000 }),
   noticeDelivery: policy({ name: "notice-delivery", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   // Handing a finished watch's one service input to its session; a restart starts the budget again.
   watchDelivery: policy({ name: "watch-delivery", maxAttempts: 10, baseDelayMs: 5_000, capDelayMs: 5 * 60_000, jitterFraction: 0.25, maxAgeMs: 60 * 60_000 }),
