@@ -13,5 +13,6 @@
   <key>CFBundleVersion</key><string>1</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSUIElement</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Concierge controls Google Chrome only when you ask it to approve a Claude sign-in using an account already signed in on this Mac.</string>
 </dict>
 </plist>

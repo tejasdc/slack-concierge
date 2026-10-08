@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The URL and expected account arrive as JSON on stdin, never as command arguments.
+set -euo pipefail
+STATE=${CONCIERGE_MAC_STATE_DIR:-"$HOME/Library/Application Support/concierge"}
+exec "$STATE/bun/bin/bun" "$STATE/signin/approve-claude-signin.ts" "$@"

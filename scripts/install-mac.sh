@@ -142,6 +142,12 @@ else
 fi
 install -m 0755 "$REPO/scripts/mac-screenshot" "$HOME/.local/bin/mac-screenshot"
 
+# Claude paste-code approval uses the agent host's Chrome Automation purpose string.
+# Install without evaluating it; Chrome is touched only when asked to approve a link.
+mkdir -p "$STATE/signin"
+install -m 0600 "$REPO/bot/scripts/approve-claude-signin.ts" "$STATE/signin/approve-claude-signin.ts"
+install -m 0755 "$REPO/scripts/approve-claude-signin" "$HOME/.local/bin/approve-claude-signin"
+
 # Safari refuses an https page's requests to plain http on this Mac (checked in WebKit 26,
 # September 21, 2026), so the browser's live dictation also gets https on 127.0.0.1. The
 # certificate names only this Mac's loopback address and cannot sign anything else. It is
