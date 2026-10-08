@@ -72,6 +72,8 @@ await context.route('**/api/session-owner/**/history**',async route=>{
 });
 const errors=[];let page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
 try{
+ const ingressBoundary=await fetch(`http://127.0.0.1:${ownerPort}/fixture/ingress-boundary`).then(response=>response.json());
+ assert.deepEqual(ingressBoundary,{publicClaim:404,unauthenticatedResume:401,privateWithPublicToken:401});
  await fetch(`http://127.0.0.1:${ownerPort}/fixture/start-load`,{method:'POST'});
  const coldStarted=Date.now();await page.goto(url);
  const composer=()=>page.getByRole('textbox',{name:'Message agent',exact:true});
@@ -139,6 +141,23 @@ try{
  assert.ok(afterSizeReceipt);
  const afterSizeAccepted=await page.evaluate(id=>fetch('/fixture/accepted?actionId='+id).then(r=>r.json()),afterSizeId);
  assert.equal(afterSizeAccepted.accepted,1);
+ // A route that this older page cannot send still consumes its original ordered slot.
+ // The next valid command to that same conversation must not wait behind it.
+ const invalidId='browser-invalid-route-fixture',afterInvalidId='browser-after-invalid-fixture';
+ await page.evaluate(async({id,session})=>{
+  await window.fixture.retainBrowserCommand('/sessions/concierge%3A'+session+'/fixture-invalid',
+   {clientActionId:id,text:'A command from an outdated page.'});
+  window.dispatchEvent(new Event('focus'));
+ },{id:invalidId,session});
+ await expect.poll(()=>page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()),invalidId),{timeout:10000})
+  .toMatchObject({status:'refused',ownerStatus:404,decisionStage:'preparation'});
+ const invalidStatus=await page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()),invalidId);
+ const afterInvalidReceipt=await page.evaluate(async({id,session})=>window.fixture.sessionClient.submit({
+  id,sessionId:'concierge:'+session,text:'After the invalid route, this one arrived.',selection:undefined,intent:undefined,delivery:'queue'}),
+  {id:afterInvalidId,session});
+ assert.ok(afterInvalidReceipt);
+ const afterInvalidAccepted=await page.evaluate(id=>fetch('/fixture/accepted?actionId='+id).then(r=>r.json()),afterInvalidId);
+ assert.equal(afterInvalidAccepted.accepted,1);
  // The owner accepts this input, but a fixture drops its acknowledgement. After the
  // browser reloads, Retry must rejoin its original action and the owner keeps one input.
  const lostId='browser-lost-ack-fixture';

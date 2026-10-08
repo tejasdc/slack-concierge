@@ -29,9 +29,14 @@ CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 THINKERING_ACCEPTANCE_RE
 
 This launches Chromium against the shipping App, WorkspaceRouter, conversation controller,
 history/cache, composer and command outbox. The shipping Fastify `registerSessionOwnerRoutes`
-and `SessionOwnerClient` connect it to the actual capture queue handler, HumanCommandWorker
-and a separately running SessionOwner. Authentication supplies a synthetic approved-device
-identity; it does not use or test production cookies. Workspace replication is disabled in
+and `SessionOwnerClient` send browser commands through the actual public capture listener,
+which forwards the named custody, pre-custody refusal, status, resume and withdraw paths to
+the private queue handler. The HumanCommandWorker and a separately running SessionOwner
+complete delivery. Distinct synthetic public and private tokens prove that a public caller
+cannot claim private work; the browser uses a synthetic approved-device identity, not
+production cookies. The fixture also verifies that a 413 or malformed command settles its
+ordered slot, a later command reaches the owner, and Retry after lost acknowledgement
+rejoins the original action. Workspace replication is disabled in
 this fresh synthetic browser profile. The PWA update registration is stubbed, not notification
 navigation, conversation storage or message custody.
 

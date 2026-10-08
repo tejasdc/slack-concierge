@@ -758,7 +758,9 @@ export function createCaptureRequestHandler(
     // The same server-held Thinkering credential that admits captures admits command custody.
     // Worker claim and settlement remain confined to the private queue listener and its token.
     if(humanCommandIntake && ((path==="/commands"&&request.method==="POST")
+      ||(path==="/commands/refuse-before-custody"&&request.method==="POST")
       ||(request.method==="GET"&&/^\/commands\/[^/]+$/.test(path))
+      ||(request.method==="POST"&&/^\/commands\/[^/]+\/resume$/.test(path))
       ||(request.method==="POST"&&/^\/commands\/[^/]+\/withdraw$/.test(path))))return humanCommandIntake(request);
     if (path === GRAFANA_ALERT_PATH) return grafanaHandler(request);
     if (path === GITHUB_DEPLOYMENT_WEBHOOK_PATH) {

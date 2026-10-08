@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {join} from 'node:path';
 import {createCaptureQueueRequestHandler} from '../src/capture-queue-api';
+import {createCaptureRequestHandler,type CaptureIngressConfig} from '../src/capture-ingress';
 import {HumanCommandWorker} from '../src/human-command-worker';
 import {commandStatus} from '../src/human-command-state';
 import {captureDb} from '../src/capture-state';
@@ -14,7 +15,12 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
  startLoad:()=>Promise<void>;restartOwner:()=>Promise<unknown>;
 },topicId?:string){
  if(process.env.CONCIERGE_TEST_AUTHORIZATION!=='responsive-system-b1eed622'||process.env.CONCIERGE_TEST_MODE!=='1')throw new Error('Isolated acceptance only');
- const token=crypto.randomUUID(),queue=createCaptureQueueRequestHandler({host:'127.0.0.1',port:0,token});
+ const publicToken=crypto.randomUUID(),privateToken=crypto.randomUUID();
+ const queue=createCaptureQueueRequestHandler({host:'127.0.0.1',port:0,token:privateToken});
+ const ingressConfig:CaptureIngressConfig={server:{host:'127.0.0.1',port:0,healthPath:'/health',maxRequestBodyBytes:32*1024*1024},
+  queue:{host:'127.0.0.1',port:0,token:privateToken},routes:[{id:'thinkering',path:'/thinkering',label:'Thinkering',adapter:'thinkering',
+   maxBodyBytes:32*1024*1024,auth:{header:'Authorization',scheme:'Bearer',token:publicToken},destination:{type:'session'}}]};
+ const publicIngress=createCaptureRequestHandler(ingressConfig,{accept:async()=>{throw new Error('Capture intake is outside this fixture.');}});
  let actionId:string|null=null,readyResolve!:()=>void;
  let providerObservation:unknown=null,providerFailure:string|null=null,providerRun:Promise<void>|null=null;
  let mutationGateway:string|null=null;
@@ -25,7 +31,7 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
   return {status:response.status,value:await response.json()};
  };
  const ready=new Promise<void>(resolve=>{readyResolve=resolve;});
- const worker=new HumanCommandWorker({queueUrl:'http://fixture',queueToken:token,
+ const worker=new HumanCommandWorker({queueUrl:'http://fixture',queueToken:privateToken,
   fetch:((input:any,init:any)=>queue(new Request(input,init))) as typeof fetch,
   prepare:command=>mutation('prepare',command),
   deliver:async(command,prepared)=>{const response=await mutation('deliver',{command,prepared});
@@ -55,10 +61,16 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
    const accepted=db.query("SELECT COUNT(*) AS count FROM session_inputs WHERE action_id=?").get(actionId) as {count:number};
    return Response.json({actionId,accepted:accepted.count,status:commandStatus(actionId)?.status??null});
   }
+  if(url.pathname==='/fixture/ingress-boundary'){
+   const claim=await publicIngress(new Request('http://fixture/commands/claim',{method:'POST',headers:{authorization:`Bearer ${publicToken}`,'content-type':'application/json'},body:'{}'}));
+   const unauthenticatedResume=await publicIngress(new Request('http://fixture/commands/missing/resume',{method:'POST'}));
+   const privateWithPublicToken=await queue(new Request('http://fixture/commands/claim',{method:'POST',headers:{authorization:`Bearer ${publicToken}`,'content-type':'application/json'},body:'{}'}));
+   return Response.json({publicClaim:claim.status,unauthenticatedResume:unauthenticatedResume.status,privateWithPublicToken:privateWithPublicToken.status});
+  }
   if(url.pathname.startsWith('/commands')){
    const command=request.method==='POST'&&url.pathname==='/commands'?await request.clone().json() as any:null;
    if(command)actionId=command.actionId;
-   const response=await queue(request);
+   const response=await publicIngress(request);
    if(command?.body?.text==='Browser lost acknowledgement fixture.'&&response.status===202)
     captureDb.query("UPDATE human_commands SET created_at=datetime('now','-3 minutes') WHERE action_id=?").run(command.actionId);
    return response;
@@ -66,7 +78,7 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
   if(url.pathname.startsWith('/sessions/v1/'))return await owner.handle(request)??new Response('Not found',{status:404});
   return new Response('Not found',{status:404});
  }});
- const child=spawn('setpriv',['--pdeathsig','KILL','node',join(import.meta.dir,'responsive-browser-boundary.mjs'),thinkering,String(server.port),String(sessionId),token,topicId??''],{env:process.env,stdio:['ignore','pipe','pipe']});
+ const child=spawn('setpriv',['--pdeathsig','KILL','node',join(import.meta.dir,'responsive-browser-boundary.mjs'),thinkering,String(server.port),String(sessionId),publicToken,topicId??''],{env:process.env,stdio:['ignore','pipe','pipe']});
  let output='',errors='';child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-6000);});
  const finished=new Promise<any>((resolve,reject)=>{
   const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(new Error(`Browser fixture timed out: ${errors}`));},60_000);
