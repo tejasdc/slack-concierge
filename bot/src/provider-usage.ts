@@ -4,6 +4,7 @@ import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
 import { accountScope, currentAccount } from "./provider-accounts";
+import { recordSessionEvent } from "./session-inputs";
 
 export type UsageProvider = "codex" | "claude-code";
 type UsageLimit = { resetAt: number | null; observedAt: number; revision: number };
@@ -145,6 +146,7 @@ export function clearProviderUsage(provider: UsageProvider) {
     return { generation: state.generation, released: releaseScheduledProviderRetries(provider) };
   }).immediate();
   log("info", "provider_usage_cleared", { provider, generation: cleared.generation, released: cleared.released });
+  if (cleared.released > 0) announceUsageHoldEnded(provider, "usage_cleared", cleared.released);
   return { provider, generation: cleared.generation, cleared: true, resumed_work: cleared.released > 0 };
 }
 
@@ -155,8 +157,36 @@ export function clearProviderUsage(provider: UsageProvider) {
  */
 export function releaseUsageHeldWork(provider: UsageProvider): number {
   const released = releaseScheduledProviderRetries(provider);
-  if (released > 0) log("info", "provider_usage_hold_released", { provider, released });
+  if (released > 0) {
+    log("info", "provider_usage_hold_released", { provider, released });
+    announceUsageHoldEnded(provider, "account_switch", released);
+  }
   return released;
+}
+
+/**
+ * Held work is moving again, so every notice that said it was waiting on this provider's
+ * allowance gets a resolution event, which Thinkering turns into taking that notice back from
+ * his phone. Nothing said so before: on 2026-10-07 the switch to his other account released six
+ * held inputs at 5:59 PM, and two "Claude has no usage left" notices stayed on his Lock Screen
+ * past 8 PM. The sign-in hold already announces its end the same way (provider-activation.ts).
+ */
+function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, released: number) {
+  try {
+    const notices = db.query(`SELECT event_id, session_id, input_id, turn_id FROM session_owner_events e
+      WHERE kind='provider_outage' AND created_at > datetime('now','-2 days')
+        AND (event_id LIKE ? OR event_id LIKE ? OR event_id LIKE ?)
+        AND NOT EXISTS (SELECT 1 FROM session_owner_events r WHERE r.event_id = e.event_id || ':resolved')`)
+      .all(`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`, `provider-usage-forecast:${provider}:%`) as
+      { event_id: string; session_id: number; input_id: string | null; turn_id: number | null }[];
+    for (const notice of notices)
+      recordSessionEvent({ eventId: `${notice.event_id}:resolved`, sessionId: notice.session_id, inputId: notice.input_id,
+        turnId: notice.turn_id, kind: "provider_outage_resolved",
+        payload: { provider, usage: { released_by: releasedBy, released_inputs: released } } });
+  } catch (error) {
+    log("error", "provider_usage_hold_resolution_failed", { provider, released_by: releasedBy,
+      error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export function providerUsageStatus() {
