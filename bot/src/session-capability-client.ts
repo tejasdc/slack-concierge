@@ -263,8 +263,11 @@ function verifyHistory(value: { messages: CapabilityMessage[]; nextCursor: strin
           &&evidence.ordinal>=0&&nonempty(evidence.locator)&&isHash(evidence.textHash)
           &&evidence.text===undefined,"Source preview changed its pinned identity or carried duplicate text.");
       } else {
-        verifyEvidence(message.source, pin);
-        verify(message.source.eventId === message.id && message.source.role === message.role && message.source.text === message.content,
+        const evidence=message.source;
+        verify(isRecord(evidence)&&evidence.sourceId===pin.sourceId&&evidence.sourceVersion===pin.sourceVersion
+          &&evidence.eventId===message.id&&evidence.role===message.role&&Number.isSafeInteger(evidence.ordinal)
+          &&evidence.ordinal>=0&&nonempty(evidence.locator)&&isHash(evidence.textHash)
+          &&evidence.text===undefined&&digest(message.content)===evidence.textHash,
           "Source history does not match its pinned evidence.");
       }
     }
