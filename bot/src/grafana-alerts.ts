@@ -1,7 +1,7 @@
 import { operationalResponseInstructions } from "./operational-response";
 import type { Database } from "bun:sqlite";
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
-import { GRAFANA_CONDITIONS, GRAFANA_ORIGIN, type GrafanaAlert } from "./grafana-webhook";
+import { GRAFANA_EXTERNAL_CONDITIONS, GRAFANA_CONDITIONS, GRAFANA_ORIGIN, type GrafanaAlert } from "./grafana-webhook";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 
 export type GrafanaAlertRow = {
@@ -98,6 +98,7 @@ export class GrafanaAlerts {
       investigation_episode TEXT, investigation_turn_id INTEGER,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
+    options.db.exec("CREATE INDEX IF NOT EXISTS grafana_condition_state ON grafana_alerts(condition,status,starts_at)");
     this.runner = createCoalescingEventRunner({ run: () => this.deliver(), shouldStop: () => this.stopping });
   }
   private observe(event: string, fields: Record<string, unknown>) {
@@ -163,7 +164,7 @@ export class GrafanaAlerts {
       const current = this.row(row.fingerprint)!;
       if (current.status !== "firing" || current.investigation_episode === current.starts_at) return;
       let turnId: number | null = null;
-      if (!["TestAlert", "ConciergeWebhookAcceptance", "ConciergeDegraded"].includes(current.condition)) {
+      if (!["TestAlert", "ConciergeWebhookAcceptance"].includes(current.condition) && !GRAFANA_EXTERNAL_CONDITIONS.has(current.condition)) {
         const active = this.options.db.query(`SELECT turn.id FROM turns turn JOIN grafana_alerts alert
           ON alert.investigation_turn_id=turn.id WHERE alert.condition=? AND turn.turn_kind IN ('machine_alert','native')
           AND turn.status IN ('queued','running','delivering','parked') LIMIT 1`).get(current.condition) as { id: number } | null;

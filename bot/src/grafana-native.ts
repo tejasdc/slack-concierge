@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { db } from "./state";
-import { GRAFANA_CONDITIONS, GRAFANA_ORIGIN } from "./grafana-webhook";
+import { GRAFANA_CONDITIONS, GRAFANA_ORIGIN, GRAFANA_EXTERNAL_CONDITIONS } from "./grafana-webhook";
 import type { GrafanaAlertRow } from "./grafana-alerts";
 import { publishProviderFreeNotice, noticeTime } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
@@ -18,7 +18,7 @@ export async function publishNativeGrafanaAlert(row: GrafanaAlertRow): Promise<s
     const sentence = GRAFANA_CONDITIONS[row.condition] ?? "A monitored condition needs investigation.";
     const investigation = ["TestAlert", "ConciergeWebhookAcceptance"].includes(row.condition)
       ? "This is a notification test; no repair agent starts."
-      : row.condition === "ConciergeDegraded"
+      : GRAFANA_EXTERNAL_CONDITIONS.has(row.condition)
         ? "The independent server monitor owns the investigation."
         : "An operational investigator is being started.";
     publishProviderFreeNotice(db, { key, kind: "grafana_alert", text:

@@ -3,6 +3,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export const GRAFANA_ALERT_PATH = "/alerts/grafana";
 export const GRAFANA_ORIGIN = "https://gracefulfennel1915.grafana.net";
 export const GRAFANA_BODY_LIMIT = 262_144;
+/** These retained conditions are read by the independent host incident owner. */
+export const GRAFANA_EXTERNAL_CONDITIONS: ReadonlySet<string> = new Set(["ConciergeDegraded", "AX41ResourcePressure"]);
 export const GRAFANA_CONDITIONS: Readonly<Record<string, string>> = {
   ThinkeringExternalUnavailable: "Thinkering HTTPS is unavailable or its external observations stopped.",
   ThinkeringBackupStale: "Thinkering backup success is stale or its evidence is unreadable.",

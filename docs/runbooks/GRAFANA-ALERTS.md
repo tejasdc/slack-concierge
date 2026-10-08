@@ -3,8 +3,9 @@
 Concierge accepts only authenticated, allowlisted Grafana alerts. Firing creates a
 provider-free native Inbox notice; recovery posts to and closes that same notice.
 One native service-authored investigation turn is queued per firing episode, with
-unfinished turns for the same condition coalesced. `ConciergeDegraded` is investigated
-by the outside work-flow supervisor instead, so two repair agents do not race. Neither
+unfinished turns for the same condition coalesced. `ConciergeDegraded` and
+`AX41ResourcePressure` are investigated by the outside work-flow supervisor instead,
+so overlapping host, owner and speech pressure cannot start two repair agents. Neither
 path sends email or a Slack message. Older Slack alert receipts remain in the ledger
 for provenance; new firing episodes move to native delivery.
 
@@ -55,6 +56,16 @@ with any existing incident and cannot launch an independent repair loop or send
 email. The outside supervisor owns responsive-owner memory and latency incidents,
 including a retained evidence file, a bounded investigator and recovery notice.
 Its monitoring runs even when the Concierge process cannot answer.
+
+The host supervisor reads retained firing `AX41ResourcePressure` rows through
+`grafana_condition_state` and merges their episode identity/revision into its existing
+degradation occurrence. This retains disk, inode and host CPU coverage even without
+an owner/speech finding. Arrival order cannot select a different investigator. Recovery
+removes only the host signal; unknown ledger or local evidence never proves the whole
+incident resolved. A later stale firing is refused by the existing episode fence.
+Late signals remain in the supervisor's current observation and in its terminal handoff
+to the standing repair agent. Deploy the matching remote-box supervisor before activating
+this receiver; do not suppress host admission with the old supervisor still installed.
 
 Do not treat a response from this webhook, a sent notification, source commit or
 healthy service status as proof of repair. Verify the queued investigator's

@@ -49,7 +49,7 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Grafana operational alerts now file provider-free native Inbox notices and queue
   service-authored investigation turns; the external work-flow supervisor owns
-  responsive-owner memory and latency repair. Webhook acceptance alone does not
+  host resource pressure plus responsive-owner/speech memory and latency repair. Webhook acceptance alone does not
   prove notice delivery or agent admission. See [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
 
 - Scheduled and banked work use the existing queued turn and wake timer. A saved item starts
