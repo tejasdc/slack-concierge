@@ -195,11 +195,9 @@ mv "$PLIST.tmp" "$PLIST"
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" "$REPO/launchd/$UPDATE_LABEL.plist" > "$UPDATE_PLIST.tmp"
 plutil -lint "$UPDATE_PLIST.tmp" >/dev/null
 mv "$UPDATE_PLIST.tmp" "$UPDATE_PLIST"
-if [ "${XPC_SERVICE_NAME:-}" != "$UPDATE_LABEL" ]; then
-  launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
-  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1 || break; sleep 1; done
-  launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
-fi
+# Neither updater is ever unloaded by its installer. Shell environment identity is not
+# proof that a job is unrelated: bootout may kill this installer and its invoking update.
+launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
 
 # The automatic update runs this installer itself, and booting out a job ends every process it
 # started: on 2026-09-29 its first real run unloaded itself here and never restarted Concierge.

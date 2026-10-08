@@ -61,6 +61,26 @@ case, and refuses when the job is not installed yet. The first install after thi
 must be run once from a terminal. This is the Mac's counterpart of remote-box's deployment
 worker.
 
+The installer writes both updater plists but only bootstraps a job when it is absent; it
+never unloads either updater. `XPC_SERVICE_NAME` is not a safe test of whether the installer
+belongs to that job. The Oct 8 manual update disappeared after checkout/dependency installation
+and before coordinator restart. That conditional could unload the invoking update job,
+consistent with the observed interruption; its actual environment value was not captured. A changed updater definition must be reloaded from outside both update jobs.
+
+Checkout HEAD is not proof that installation completed. If an update stopped after pulling but
+before restarting the services, retry through the **manual** launchd job, which does not take
+the automatic path's HEAD-equals-origin shortcut. On the Mac, from outside the coordinator's
+process tree, restore the existing rendered manual job only if it is missing, then start it:
+
+```sh
+launchctl print "gui/$(id -u)/com.tejasdc.concierge-update" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tejasdc.concierge-update.plist"
+launchctl kickstart "gui/$(id -u)/com.tejasdc.concierge-update"
+```
+
+This uses the normal updater's drain and host-compatibility checks, not a direct service-child
+installer or restart. Verify the new coordinator's actual process/revision and the separate
+speech job after it completes; changed Git HEAD or installed dependencies alone are insufficient.
+
 **Automatic updates.** `com.tejasdc.concierge-autoupdate` runs `scripts/update-mac.sh --when-due`
 every fifteen minutes, and launchd runs a missed interval when the Mac wakes. It does nothing
 unless `origin/main` has moved. Then it looks at the Mac's running work without holding anything
