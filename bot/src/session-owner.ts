@@ -42,6 +42,7 @@ import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-o
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
+import {inboxAttribution} from './inbox-attribution-read';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -1869,26 +1870,7 @@ export class SessionOwner {
       asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};
   }
   private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
-    const {sourceSessionId,...display}=message;
-    const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
-    if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
-    // Keep what the row already knows about its author, such as a deliberate post, or that the
-    // service wrote it; only an agent's message is named by the session it came from.
-    const kind=display.author?.kind??(display.role==='user'?'unknown':'agent');
-    // A post from the agent he replied to carries that agent's identity; it is named, not the router.
-    const {fromSession,...author}=(display.author??{}) as Record<string,any>;
-    const named=typeof fromSession==='string'?sessionAuthor(fromSession):undefined;
-    return {...display,author:{...author,kind,...(kind==='agent'?{session:named??authorSession(sourceSessionId)}:{})}};
-  }
-  /**
-   * A thread's entries are the Inbox's own messages, so they carry the same attribution its
-   * history page gives them. Without this the app could not tell his captures from the
-   * router's working prose and dropped every unattributed row — his whole side of the
-   * thread (capture `2f168292`, 2026-09-22). Management events are the topic's own record,
-   * not an Inbox message, and pass through untouched.
-   */
-  private attributeTopicEntries<Page extends {messages:any[]}>(page:Page):Page {
-    return {...page,messages:page.messages.map(entry=>entry.role==='system'?entry:this.projectInboxMessage(entry))};
+    return inboxAttribution(db)(message);
   }
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
@@ -2516,9 +2498,9 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[2]==='resolve'&&parts.length===3)
         result=resolveTopicMessage(url.searchParams.get('message')??'');
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===3)
-        {const read=readTopic(parts[2]!,boundedLimit(url.searchParams.get('limit'),200));result={...read,entries:this.attributeTopicEntries(read.entries)};}
+        result=readTopic(parts[2]!,boundedLimit(url.searchParams.get('limit'),200));
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
-        result=this.attributeTopicEntries(topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200)));
+        result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='questions'&&parts.length===2)
         result=crossTopicQuestions(url.searchParams.get('state'));
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);

@@ -1,8 +1,8 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
+import {inboxAttribution} from './inbox-attribution-read';
 
 const CONTENT_BYTES=8192;
-const ATTACHMENT_COUNT=20;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
   const bytes=Buffer.byteLength(value);
   if(bytes<=max)return {text:value,bytes,complete:true};
@@ -27,10 +27,9 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const event=JSON.parse(row.payload_json);
   const result=row.kind==='result',post=row.kind==='post',agent=result||post;
   const content=post?event.text??'':result?event.text??row.agent_text??'':payload.text??'';
-  const text=bounded(typeof content==='string'?content:String(content));
   const attachmentIds=agent?event.attachments:payload.attachments;
   const ids=Array.isArray(attachmentIds)?attachmentIds.filter((id:unknown):id is string=>typeof id==='string'):[];
-  const attachments=ids.slice(0,ATTACHMENT_COUNT).map(id=>database.query(
+  const attachments=ids.map(id=>database.query(
     'SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   let link:{thread:string;routedBy:unknown;attached:boolean}|null=null;
@@ -56,29 +55,39 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const quiet=result&&row.turn_id!==null?(database.query(`SELECT json_extract(payload_json,'$.quiet') AS quiet
     FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='turn_outcome'
       AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,row.turn_id) as {quiet:string}|null)?.quiet?.trim():null;
-  const value={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
+  const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
-    content:text.text,tool:null,phase:null,...(row.input_id?{inputId:row.input_id}:{}),
+    content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:row.input_id}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(post?{replyToMessage:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
       ...(typeof event.postedBySession==='string'?{fromSession:event.postedBySession}:{})},...(event.relayed?{relayed:true}:{})}:{}),
     ...(link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:link.thread},routedBy:link.routedBy}:{}),
     ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),
     createdAt:stamp(row.created_at),timestampSource:agent?'received':'submitted',
-    ...(!text.complete||ids.length>ATTACHMENT_COUNT?{contentCoverage:{complete:false,code:'message_preview',bytes:text.bytes,
-      attachments:ids.length},detailRef:{sessionId:`concierge:${sessionId}`,messageId}}:{}),
   };
+  const full=inboxAttribution(database)(raw as typeof raw&{id:string});
+  const text=bounded(full.content);
   // A caption, filename or routing note can itself be large. Bound the entire prepared row,
   // not only its principal text; the exact retained item remains available by detailRef.
-  if(Buffer.byteLength(JSON.stringify(value))<=16_384&&text.complete&&ids.length<=ATTACHMENT_COUNT)
-    return {preview:value,detailJson:null};
-  const preview={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
-    content:bounded(text.text,1024).text,tool:null,phase:null,...(row.input_id?{inputId:row.input_id}:{}),
-    createdAt:stamp(row.created_at),timestampSource:agent?'received':'submitted',
+  if(Buffer.byteLength(JSON.stringify(full))<=8192&&text.complete)
+    return {preview:full,detailJson:null};
+  const author=full.author as Record<string,any>|undefined;
+  const preview={id:full.id,sourceSessionId:sessionId,role:full.role,
+    content:bounded(full.content,1024).text,tool:null,phase:null,...(full.inputId?{inputId:full.inputId}:{}),
+    ...(full.mixedThreads?{mixedThreads:true}:{}),...(full.answeredByPost?{answeredByPost:true}:{}),
+    ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
+    ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.relayed?{relayed:true}:{}),
+    ...(full.quiet?{quiet:bounded(String(full.quiet),160).text}:{}),
+    ...(author?{author:{kind:author.kind,...(author.communication?{communication:author.communication}:{}),
+      ...(author.requestId?{requestId:author.requestId}:{}),
+      ...(author.session?{session:{id:author.session.id,title:bounded(String(author.session.title??''),160).text,
+        provider:author.session.provider}}:{}),
+      ...(author.outsideAgent?{outsideAgent:{name:bounded(String(author.outsideAgent.name??''),100).text,
+        label:bounded(String(author.outsideAgent.label??''),140).text}}:{}),
+      ...(author.via?{via:bounded(String(author.via),100).text}:{})}}:{}),
+    ...(full.submissionId?{submissionId:full.submissionId}:{}),
+    createdAt:full.createdAt,timestampSource:full.timestampSource,
     contentCoverage:{complete:false,code:'message_preview',bytes:text.bytes,attachments:ids.length},
     detailRef:{sessionId:`concierge:${sessionId}`,messageId}};
-  const allAttachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-  const full={...value,content:typeof content==='string'?content:String(content),attachments:allAttachments,
-    contentCoverage:undefined,detailRef:undefined};
   return {preview,detailJson:JSON.stringify(full)};
 }

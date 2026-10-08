@@ -6,6 +6,7 @@ import {inboxRootResolver,sourceMessagePage} from './presentation-message-source
 import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
+import {PreparedSessionCards} from './prepared-session-cards';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -66,6 +67,8 @@ prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
   CREATE INDEX IF NOT EXISTS presentation_owner_versions_delta
     ON presentation_owner_message_versions(generation,session_id,event_sequence);`);
 const search=new PreparedSearchIndex(prepared);
+const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
+  {...row,native_metadata_json:row.native_metadata_json??'{}'}));
 const leaseToken=randomUUID();
 const leaseTimeoutMs=10_000;
 function claimLease():boolean {
@@ -217,6 +220,7 @@ async function rebuild() {
       prepared.query('DELETE FROM presentation_topic_events WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_owner_messages WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_owner_message_versions WHERE generation=?').run(generation);
+      cards.beginRebuild(generation);
     })();
     let after=0,more=true;
     const resolveRoot=inboxRootResolver(source);
@@ -245,7 +249,8 @@ async function rebuild() {
     while(true){
       const rows=source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT 50').all(sessionAfter) as {id:number}[];
       if(!rows.length)break;
-      prepared.transaction(()=>{keepLease();for(const row of rows)writeSession(row.id);})();
+      prepared.transaction(()=>{keepLease();for(const row of rows)writeSession(row.id);
+        cards.rebuildPage(generation,sessionAfter,50);})();
       sessionAfter=rows.at(-1)!.id;
       await Bun.sleep(5);
     }
@@ -253,6 +258,7 @@ async function rebuild() {
       keepLease();
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1 WHERE singleton=1')
         .run(generation,after,startHead);
+      cards.activate(generation,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation<?').run(generation);
@@ -267,9 +273,9 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready){await rebuild();return;}
-  const changes=source.query(`SELECT sequence,source_table,row_key FROM presentation_change_log
+  const changes=source.query(`SELECT sequence,source_table,row_key,session_id,target_session_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
-      {sequence:number;source_table:string;row_key:string}[];
+      {sequence:number;source_table:string;row_key:string;session_id:number|null;target_session_id:number|null}[];
   if(!changes.length)return;
   const resolveRoot=inboxRootResolver(source);
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
@@ -315,6 +321,8 @@ async function catchUp() {
       if(change.source_table==='session_inputs')writeInput(change.row_key);
       else if(change.source_table==='sessions')writeSession(Number(change.row_key));
     }
+    cards.apply(current.generation,changes);
+    cards.checkpoint(current.generation,changes.at(-1)!.sequence);
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);
   })();

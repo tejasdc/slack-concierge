@@ -17,6 +17,9 @@ export type PreparedMessageKey={sequence:number;messageId:string};
 export function preparedInboxDisplays(keys:readonly PreparedMessageKey[]):(unknown|null)[] {
   const database=preparedDb();
   if(!database)return keys.map(()=>null);
+  return readPreparedInboxDisplays(database,keys);
+}
+export function readPreparedInboxDisplays(database:Database,keys:readonly PreparedMessageKey[]):(unknown|null)[] {
   const generation=(database.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation;
   if(generation===undefined)return keys.map(()=>null);
   const read=database.query('SELECT display_json FROM presentation_message_display WHERE generation=? AND event_sequence=?');
@@ -30,6 +33,13 @@ export function preparedInboxDetailPart(sessionId:number,messageId:string,part:n
 }|null {
   if(!Number.isSafeInteger(part)||part<0)throw new Error('INVALID_PRESENTATION_PART');
   const database=preparedDb();if(!database)return null;
+  return readPreparedInboxDetailPart(database,sessionId,messageId,part);
+}
+/** Pure prepared reader used by the route and its isolated growth fixture. */
+export function readPreparedInboxDetailPart(database:Database,sessionId:number,messageId:string,part:number):{
+  content:string;nextPart:number|null;complete:boolean;digest:string
+}|null {
+  if(!Number.isSafeInteger(part)||part<0)throw new Error('INVALID_PRESENTATION_PART');
   const generation=(database.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation;
   if(generation===undefined)return null;
   const source=database.query(`SELECT event_sequence AS sequence FROM presentation_messages
@@ -57,6 +67,10 @@ export type PreparedMessagePage={keys:PreparedMessageKey[];nextCursor:string|nul
 export function preparedMessages(sessionId:number,root:string,limit:number,cursor:string|null,sourceHead=0):PreparedMessagePage {
   const database=preparedDb();
   if(!database)return {keys:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:0}};
+  return readPreparedMessages(database,sessionId,root,limit,cursor,sourceHead);
+}
+/** The route and growth fixture exercise the same indexed range reader. */
+export function readPreparedMessages(database:Database,sessionId:number,root:string,limit:number,cursor:string|null,sourceHead=0):PreparedMessagePage {
   const meta=database.query('SELECT generation,event_watermark,ready FROM presentation_message_meta WHERE singleton=1')
     .get() as {generation:number;event_watermark:number;ready:number}|null;
   if(!meta?.ready)return {keys:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:0}};
