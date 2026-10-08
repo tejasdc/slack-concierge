@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -36,11 +36,14 @@ export async function startCodexDaemonInOwnScope(): Promise<{ code: number | nul
  */
 export function controlSocketListeners(socketPath: string): number[] {
   if (process.platform !== "linux") return [];
+  // The control path is a link into the daemon's runtime folder; the kernel records only the target.
+  const paths = new Set([socketPath]);
+  try { paths.add(realpathSync(socketPath)); } catch { /* no link to follow */ }
   const inodes = new Set<string>();
   try {
     for (const line of readFileSync("/proc/net/unix", "utf8").split("\n").slice(1)) {
       const fields = line.trim().split(/\s+/);
-      if (fields.length >= 8 && fields[7] === socketPath) inodes.add(fields[6]!);
+      if (fields.length >= 8 && paths.has(fields[7]!)) inodes.add(fields[6]!);
     }
   } catch { return []; }
   if (!inodes.size) return [];

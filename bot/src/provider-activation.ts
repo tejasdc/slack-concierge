@@ -193,6 +193,9 @@ async function replaceUnmanagedServer(): Promise<{ code: number | null; output: 
     const deadline = Date.now() + 70_000;
     while (servers.some(alive) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
     for (const pid of [...servers, ...helpers]) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    // A killed listener can still accept for a moment; probe only once it is gone.
+    const gone = Date.now() + 5_000;
+    while (servers.some(alive) && Date.now() < gone) await new Promise(resolve => setTimeout(resolve, 100));
     if (await socketAnswers(CONTROL_SOCKET)) return { code: 0, output: "Another start already brought a server up." };
     if (existsSync(CONTROL_SOCKET)) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     return await startCodexDaemonInOwnScope();
@@ -210,7 +213,7 @@ async function codexServerUnmanaged(): Promise<boolean> {
 function externallyRunningCodexTurns(): number {
   try {
     return (db.query(`SELECT COUNT(*) AS count FROM sessions WHERE provider_id='codex'
-      AND json_extract(native_metadata_json,'$.codexLifecycle.state')='running'`).get() as { count: number }).count;
+      AND json_extract(native_metadata_json,'$.codexLifecycle.state') IN ('running','uncertain')`).get() as { count: number }).count;
   } catch { return -1; }
 }
 
@@ -234,7 +237,9 @@ function repairUnmanagedCodexServer(): Promise<void> {
       const healthy = !(await codexServerUnmanaged()) && result.code === 0;
       log(healthy ? "warn" : "error", healthy ? "codex_unmanaged_server_replaced" : "codex_unmanaged_server_repair_failed",
         { code: result.code, output: result.output.slice(0, 300) });
-      if (healthy) pendingCodexRepair = false;
+      // A failed replacement is not retried by itself: each attempt stops a server. The next start of
+      // Concierge, or an account switch (which replaces it too), tries again.
+      pendingCodexRepair = false;
     } finally {
       holdCodexAdmission(false);
     }
