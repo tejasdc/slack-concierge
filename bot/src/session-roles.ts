@@ -18,6 +18,28 @@ export function isWritingSession(session: SessionRow): boolean {
   return !!cwd && WRITING_PROJECTS.includes(basename(cwd));
 }
 
+/**
+ * The agent science lab: its coordinator, its expertise projects and its board. A session is lab
+ * work because of the project it was created in, never because an agent tagged it, so an
+ * experiment run started in any of these folders is lab work from its first moment. Lab sessions
+ * stay out of his everyday session list, Inbox and notifications; he opens the lab deliberately
+ * (Tejas, 2026-10-08: "identify the experimentation related sessions … so it doesn't clutter all
+ * of our sessions") [decision: lab-runs-inside-concierge-in-its-own-space].
+ */
+export const LAB_PROJECTS: readonly string[] = ['agent-ecology', 'lab-commons'];
+export const LAB_PROJECT_PREFIX = 'expertise-';
+
+export function isLabProject(cwd: string | null | undefined): boolean {
+  if (!cwd) return false;
+  const name = basename(cwd);
+  return LAB_PROJECTS.includes(name) || name.startsWith(LAB_PROJECT_PREFIX);
+}
+
+export type SessionSpace = 'lab' | 'everyday';
+export function sessionSpace(session: SessionRow): SessionSpace {
+  return isLabProject(sessionMetadata(session).cwd) ? 'lab' : 'everyday';
+}
+
 /** The Inbox router takes every capture; intake is its job, not a pile-up. */
 export const ROUTING_PROJECTS: readonly string[] = ['slack-inbox'];
 

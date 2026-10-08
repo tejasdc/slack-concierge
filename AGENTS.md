@@ -626,6 +626,12 @@ authorization or a change to the default rapid-iteration policy.
   re-delivers any mention without a receipt and `board status` rewrites each board's `status.json` for a
   supervisor. Each change is committed to that repository and pushed. He reads each board's generated
   `BOARD.md` and `THREAD.md` in thnkr.ing. See [the Commons board](docs/plans/2026-10-08-commons-board.md).
+- **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
+  created in agent-ecology, lab-commons or any `expertise-*` folder is lab work (`sessionSpace` in session-roles.ts),
+  every session view carries `space`, `GET /sessions?space=` filters, and `GET /lab` lists the lab's sessions and
+  every request touching it with how it ended. thnkr.ing keeps lab sessions out of his everyday list, Inbox and
+  notifications and shows them in its Lab view. An experiment that changes Concierge itself runs on a separate
+  instance. See [the lab space](docs/plans/2026-10-08-lab-space.md).
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex

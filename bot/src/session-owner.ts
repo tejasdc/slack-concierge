@@ -38,6 +38,7 @@ import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,inval
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
+import {sessionSpace,type SessionSpace} from './session-roles';
 import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
@@ -346,6 +347,11 @@ function changedMessageIds(sessionId:number,after:number) {
 export type EventFilter={kind?:string|null;limit?:number|null};
 /** A comma-separated query value is a set; an absent or empty value filters nothing. */
 const list=(value?:string|null)=>{const values=(value??'').split(',').map(item=>item.trim()).filter(Boolean);return values.length?values:null;};
+function sessionSpaceParam(value:string|null):SessionSpace|undefined {
+  if(value===null||value==='')return undefined;
+  if(value!=='lab'&&value!=='everyday')throw new SessionOwnerError('space is lab or everyday.');
+  return value;
+}
 function boundedLimit(value:string|null,max:number) {
   if(value===null||value==='')return null;
   const limit=Number(value);
@@ -698,7 +704,7 @@ export class SessionOwner {
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
       account:session.provider_id==='claude-code'?meta.claudeAccount??null:null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
-      archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,
+      archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,space:sessionSpace(session),
       // What is still open, from the owner's own record. A client that rebuilt this from
       // attention events showed every question the session ever asked, because a later
       // declaration settles earlier ones without erasing their events (Tejas, 2026-09-20).
@@ -718,7 +724,29 @@ export class SessionOwner {
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
       capabilities:{send:this.canSend(session),resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
-  list(){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).map(row=>this.view(row));}
+  list(space?:SessionSpace){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).filter(row=>!space||sessionSpace(row)===space).map(row=>this.view(row));}
+  /**
+   * The lab as he supervises it: its sessions and every request that crossed into, out of or
+   * within it, newest first, with who asked whom and how each ended. Read straight from the
+   * request table so no receipt or session view is built per row.
+   */
+  lab(limit:number) {
+    const sessions=(db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).filter(row=>sessionSpace(row)==='lab');
+    const ids=new Set(sessions.map(row=>row.id));
+    const title=(id:number)=>{const row=getSessionById(id);return row?sessionMetadata(row).title??null:null;};
+    const rows=db.query('SELECT request_id,source_session_id,target_session_id,status,outcome,payload_json,result_json,created_at_ms FROM session_communication_requests ORDER BY created_at_ms DESC LIMIT 2000').all() as
+      {request_id:string;source_session_id:number;target_session_id:number;status:string;outcome:string|null;payload_json:string;result_json:string|null;created_at_ms:number}[];
+    const requests=rows.filter(row=>ids.has(row.source_session_id)||ids.has(row.target_session_id)).slice(0,limit).map(row=>{
+      const payload=JSON.parse(row.payload_json),result=row.result_json?JSON.parse(row.result_json):null;
+      const ended=db.query("SELECT max(created_at_ms) AS at FROM session_communication_events WHERE request_id=? AND kind='final'").get(row.request_id) as {at:number|null};
+      return {requestId:row.request_id,from:{id:`concierge:${row.source_session_id}`,title:title(row.source_session_id),lab:ids.has(row.source_session_id)},
+        to:{id:`concierge:${row.target_session_id}`,title:title(row.target_session_id),lab:ids.has(row.target_session_id)},
+        effect:payload.requestedEffect??'informational',text:String(payload.text??'').slice(0,4000),
+        state:row.outcome?'ended':'open',outcome:row.outcome,disposition:result?.workDisposition??null,answer:result?.text?String(result.text).slice(0,4000):null,
+        askedAt:new Date(row.created_at_ms).toISOString(),endedAt:ended?.at?new Date(ended.at).toISOString():null};
+    });
+    return {sessions:sessions.map(row=>{const meta=sessionMetadata(row);return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,project:meta.cwd??null,provider:row.provider_id,archived:row.status==='archived',outcome:meta.outcome??'open'};}),requests};
+  }
   /**
    * A receipt that has settled for good cannot change (the same rule `changedAfter` relies
    * on), so it is computed once. Building every Inbox receipt took about 2 ms each, and a
@@ -2245,7 +2273,8 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='actions'&&parts.length===4)
         result=topicHumanAction(parts[2]!,body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list(sessionSpaceParam(url.searchParams.get('space')))};
+      else if(request.method==='GET'&&parts[0]==='lab'&&parts.length===1) result=this.lab(boundedLimit(url.searchParams.get('limit'),500)??200);
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
