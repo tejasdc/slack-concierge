@@ -17,8 +17,17 @@ const page={messages:[{id:'latest-event',content:'latest'}],nextCursor:'older-pa
 assert.equal(retainedArchiveSearchSource(source,pin,page),source,'meaning search keeps indexed compact metadata');
 assert.equal(indexedArchiveSource({...source,provider:'claude'})?.provider,'claude-code',
  'the indexed native spelling maps to the existing wire spelling');
-assert.equal(retainedArchiveSearchSource({...source,messages:[{eventId:pin.eventId}]},pin,page)?.title,source.title,
+assert.equal(indexedArchiveSource({...source,consultation:undefined})?.consultation,null,
+ 'the index has an optional consultation while the capability wire uses null');
+assert.equal(retainedArchiveSearchSource({...source,messages:[{sourceId:id,sourceVersion:source.version,
+ eventId:pin.eventId,ordinal:0,role:'user',locator:'jsonl:1',text:'archived phrase',textHash:digest('archived phrase')}]},pin,page)?.title,source.title,
  'lexical search keeps the adapter candidate metadata');
+for(const invalid of [{provider:['codex']},{nativeId:null},{scope:5},{synthetic:'false'},{createdAt:null},{project:5},
+ {consultation:{}},{consultation:{sourceId:id,sourceVersion:source.version,boundary:null,packetVersion:'dialogue-v1'}},
+ {omissions:[42]},{messages:[{eventId:pin.eventId}]}]){
+ assert.equal(indexedArchiveSource({...source,...invalid}),null,'index metadata must satisfy the source contract');
+ assert.equal(retainedArchiveSearchSource({...source,...invalid},pin,page),null,'retention proof cannot repair invalid metadata');
+}
 assert.equal(retainedArchiveSearchSource(source,{...pin,branch:'another-branch'},page),null);
 assert.equal(retainedArchiveSearchSource(source,pin,{messages:page.messages,nextCursor:page.nextCursor}),null,
  'a generic page does not prove the matched event');

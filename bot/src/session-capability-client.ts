@@ -237,14 +237,21 @@ function verifyEvidence(evidence: SourceEvidence, pin?: { sourceId: string; sour
   if (pin) verify(evidence.sourceId === pin.sourceId && evidence.sourceVersion === pin.sourceVersion, "Source evidence changed its pinned source/version.");
 }
 
-function verifySource(source: CapabilitySource, pin?: SourceRef) {
+export function verifySource(source: unknown, pin?: SourceRef): asserts source is CapabilitySource {
   verify(isRecord(source) && nonempty(source.id) && isHash(source.version) && nonempty(source.branch)
-    && Array.isArray(source.messages) && Array.isArray(source.omissions), "Invalid retained source.");
+    && typeof source.provider === "string" && ["codex", "claude-code", "chatgpt"].includes(source.provider)
+    && nonempty(source.scope) && nonempty(source.nativeId) && typeof source.synthetic === "boolean"
+    && typeof source.title === "string" && nonempty(source.createdAt)
+    && (source.project === null || typeof source.project === "string")
+    && Array.isArray(source.messages) && Array.isArray(source.omissions)
+    && source.omissions.every(item => typeof item === "string"), "Invalid retained source.");
   if (pin) verify(source.id === pin.sourceId && source.version === pin.sourceVersion && source.branch === pin.branch,
     "The capability substituted the pinned source/version/branch.");
   for (const evidence of source.messages) verifyEvidence(evidence, { sourceId: source.id, sourceVersion: source.version });
-  if (source.consultation) verify(source.consultation.sourceId === source.id && source.consultation.sourceVersion === source.version
-    && source.consultation.packetVersion === "dialogue-v1", "Consultation source pins changed.");
+  verify(source.consultation === null || (isRecord(source.consultation)
+    && source.consultation.sourceId === source.id && source.consultation.sourceVersion === source.version
+    && nonempty(source.consultation.boundary) && source.consultation.packetVersion === "dialogue-v1"),
+    "Consultation source pins changed.");
 }
 
 function verifyHistory(value: { messages: CapabilityMessage[]; nextCursor: string | null }, pin?: SourceRef) {
