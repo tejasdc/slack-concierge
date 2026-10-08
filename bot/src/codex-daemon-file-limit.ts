@@ -1,9 +1,38 @@
 import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "./log";
 
 const run = promisify(execFile);
+
+export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
+  || (process.platform==='darwin'?join(homedir(),'.local','bin','codex'):'/root/.codex/packages/standalone/current/codex');
+
+let daemonStart: Promise<void> | null = null;
+let lastDaemonStartAt = 0;
+
+/**
+ * When nothing answers on the control socket, start the daemon through its manager, the same
+ * command concierge-bot.service runs before it starts. On 2026-10-08 at 3:53 PM Codex updated
+ * itself; its replacement server quit because the old one still held the socket, nothing managed
+ * came back, and the next SSH connection from the Mac's Codex app started an unmanaged server of
+ * its own, which account switching and the updater cannot manage. The host now tells that app not
+ * to start one (install-codex-stop-hook.sh), so this is the one path that brings the server back.
+ * `daemon start` answers alreadyRunning when one is up. It inherits this service's open-file limit
+ * (a scope takes no LimitNOFILE), and raiseCodexDaemonFileLimit lifts the soft limit on connect.
+ * At most one start runs, and not more often than every 30 seconds while the socket refuses.
+ */
+export function startCodexDaemonWhenAbsent(reason: string) {
+  if (process.platform !== "linux" || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
+  lastDaemonStartAt = Date.now();
+  daemonStart = run("systemd-run", ["--scope", "--collect", "--quiet", "--description=Shared Codex App Server",
+    MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 })
+    .then(({ stdout }) => log("warn", "codex_daemon_started_when_absent", { reason, answer: stdout.trim().slice(0, 300) }))
+    .catch((error: unknown) => log("error", "codex_daemon_start_failed", { reason, error: error instanceof Error ? error.message : String(error) }))
+    .finally(() => { daemonStart = null; });
+}
 
 /**
  * The shared Codex daemon keeps files open for every conversation Concierge follows, and it

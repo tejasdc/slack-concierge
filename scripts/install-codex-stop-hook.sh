@@ -148,5 +148,27 @@ printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"
 echo "Installed Claude Code managed history guard: $managed -> $guard"
 
+# The Codex desktop app's SSH payload starts its own unmanaged App Server whenever none answers,
+# unless CODEX_SSH_SKIP_APP_SERVER_BOOT=true. On 2026-10-08 it won the ten seconds a Codex
+# self-update left without a server, and account switching and the updater could no longer manage
+# what ran. On the box only the managed daemon may start it (concierge-bot.service, and Concierge
+# when nothing answers: startCodexDaemonWhenAbsent), so every SSH session carries the opt-out.
+# The drop-in is checked with sshd -t before a reload; a reload keeps open connections.
+if [ "$(uname -s)" = Linux ] && [ -d /etc/ssh/sshd_config.d ] && command -v sshd >/dev/null; then
+  dropin=/etc/ssh/sshd_config.d/50-codex-managed-app-server.conf
+  wanted='SetEnv CODEX_SSH_SKIP_APP_SERVER_BOOT=true'
+  if [ "$(cat "$dropin" 2>/dev/null)" != "$wanted" ]; then
+    printf '%s\n' "$wanted" > "$dropin.new"
+    mv "$dropin.new" "$dropin"
+    if sshd -t; then
+      systemctl reload ssh 2>/dev/null || systemctl reload sshd
+      echo "Installed SSH opt-out of Codex desktop server boot: $dropin"
+    else
+      rm -f "$dropin"
+      echo "sshd rejected $dropin; removed it, the Codex desktop app may still start its own server." >&2
+    fi
+  fi
+fi
+
 # git itself refuses the push too, for every checkout and worktree, whatever runs it.
 "$(dirname "$0")/install-git-history-guard.sh" --system
