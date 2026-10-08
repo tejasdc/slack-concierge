@@ -1,3 +1,4 @@
+import {questionDisplay} from './topic-display-rules';
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -109,17 +110,7 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
  const reading=context.source.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at')
   .all(question.topicId,question.id) as any[];
- const exposed=reading.filter(item=>item.kind==='exposed'&&item.revision===question.revision).at(-1);
- const acknowledged=reading.filter(item=>item.kind==='acknowledged').at(-1);
- const reply=open(question.state)?replies.find(item=>item.at>question.updatedAt
-  &&(item.reviews.includes(question.id)||!!item.replyTo&&question.sources.includes(item.replyTo))):undefined;
- const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
- const reads=readsFor(context,question,new Set(roots));
- const base={...question,readiness:questionReadiness(question),missing:missingFor(question),pendingReply:pending,reads};
- const view={...base,waiting:awaitingHim(base)||toReadByHim(base),
-  exposed:exposed?{revision:exposed.revision,at:exposed.at}:null,
-  acknowledged:acknowledged?{at:acknowledged.at,by:parse(acknowledged.by_json)}:null};
- return view;
+ return questionDisplay({...question,questionId:question.id},replies,reading,readsFor(context,question,new Set(roots)));
 }
 
 export function preparedTopicValue(context:TopicContext,topicId:string){
@@ -157,7 +148,6 @@ export function preparedTopicValue(context:TopicContext,topicId:string){
   questions:{open:needItems.length,checking:questions.filter(preparingForHim).length,deferred:questions.filter(question=>question.state==='deferred').length},
   requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},work};
  const replyTargets=replyTargetsValue(context,topic,roots,requests,questions);
- for(const question of questions)delete (question as any).legacyNeedEventId;
  const detail={topic:{...summary,closure:topic.closure,history:topicHistory(context,topicId)},
   requests:requests.map(request=>requestView(context,request)),questions,
   focus:context.focus?.topicId===topicId?context.focus:null,work,replyTargets};
@@ -167,25 +157,18 @@ export function preparedTopicValue(context:TopicContext,topicId:string){
 }
 
 function latestReturnAndPost(context:TopicContext,roots:string[]){
- const {source,prepared,generation}=context;
+ const {prepared,generation}=context;
  let found:{sequence:number;at:string;inputId:string}|null=null;
  for(const root of roots){
-  let final:{sequence:number;at:string;inputId:string}|null=null,postSequence=-1;
-  const rows=prepared.query(`SELECT event_sequence AS sequence,message_id AS messageId,created_at AS at
-    FROM presentation_messages WHERE generation=? AND root_input_id=? ORDER BY event_sequence DESC`)
-    .all(generation,root) as {sequence:number;messageId:string;at:string}[];
-  for(const row of rows){
-   const event=source.query('SELECT kind,input_id FROM session_owner_events WHERE sequence=?').get(row.sequence) as {kind:string;input_id:string|null}|null;
-   if(event?.kind==='post'){postSequence=Math.max(postSequence,row.sequence);continue;}
-   if(event?.kind!=='accepted'||!event.input_id?.startsWith('return:'))continue;
-   const input=source.query('SELECT origin FROM session_inputs WHERE id=?').get(event.input_id) as {origin:string}|null;
-   if(input?.origin!=='service')continue;
-   const eventId=event.input_id.slice(7);
-   const kind=(source.query('SELECT kind FROM session_communication_events WHERE event_id=?').get(eventId)
-    ??source.query('SELECT kind FROM session_peer_events WHERE event_id=?').get(eventId)) as {kind:string}|null;
-   if(kind?.kind==='final'&&(!final||row.sequence>final.sequence))final={sequence:row.sequence,at:iso(row.at)!,inputId:row.messageId};
-  }
-  if(final&&final.at>=relaySince&&postSequence<=final.sequence&&(!found||final.sequence>found.sequence))found=final;
+  const final=prepared.query(`SELECT event_sequence AS sequence,created_at AS at,message_id AS inputId
+   FROM presentation_messages WHERE generation=? AND root_input_id=? AND entry_kind='final'
+   ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string;inputId:string}|null;
+  if(!final||iso(final.at)!<relaySince)continue;
+  const post=prepared.query(`SELECT event_sequence AS sequence FROM presentation_messages
+   WHERE generation=? AND root_input_id=? AND entry_kind='post' ORDER BY event_sequence DESC LIMIT 1`)
+   .get(generation,root) as {sequence:number}|null;
+  if((post?.sequence??-1)>final.sequence)continue;
+  if(!found||final.sequence>found.sequence)found={...final,at:iso(final.at)!};
  }
  return found;
 }

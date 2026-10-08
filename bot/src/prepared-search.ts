@@ -10,8 +10,8 @@ export type PreparedSearchHit=Omit<PreparedSearchDocument,'key'|'text'>&{
  text:string;snippet:string;truncated:boolean;
 };
 const quote=(term:string)=>'"'+term.replaceAll('"','""')+'"';
-const gram=(chars:string[])=>'g'+chars.map(char=>char.codePointAt(0)!.toString(16)).join('z');
-function shortTokens(text:string){
+export const gram=(chars:string[])=>'g'+chars.map(char=>char.codePointAt(0)!.toString(16)).join('z');
+export function shortTokens(text:string){
  const tokens=new Set<string>();let previous:string|undefined;
  for(const char of text){tokens.add(gram([char]));if(previous!==undefined)tokens.add(gram([previous,char]));previous=char;}
  return [...tokens].join(' ');

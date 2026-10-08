@@ -8,10 +8,10 @@ async function windowGrowth(){
   const source=new Database(':memory:'),raw=new Database(':memory:');
   new PreparedTopics(source,raw);
   raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1').run();
-  const insert=raw.query('INSERT INTO presentation_topics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insert=raw.query('INSERT INTO presentation_topics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   raw.transaction(()=>{for(let i=0;i<count;i++){
    const id=String(i).padStart(8,'0'),key=`0:0000000000000:${id}`;
-   insert.run(1,id,1,'open',0,0,'2026-10-08T00:00:00Z','2026-10-08T00:00:00Z',JSON.stringify({id,title:'Topic',needsYou:{count:0}}),'a'.repeat(64),'topic',key,key);
+   insert.run(1,id,1,'open',0,0,'2026-10-08T00:00:00Z','2026-10-08T00:00:00Z',JSON.stringify({id,title:'Topic',needsYou:{count:0}}),'a'.repeat(64),'topic',key,key,'{}','{}');
   }})();
   const db=observedDatabase(raw);
   const first=readPreparedTopics(db,{canonicalHead:7,limit:20});
