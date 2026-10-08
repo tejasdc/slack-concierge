@@ -237,48 +237,27 @@ export function tightestCurrentWindow(provider: ProviderKey): UsageForecast | nu
 }
 
 /**
- * How far ahead Tejas is warned, longer than the hour agents are briefed on.
+ * The only thing that warns Tejas about running low: an account at 90% or more of a window.
  *
- * Agent work burns about 50% of a five-hour window an hour, in bursts up to 90%. On 2026-10-07
- * the one-hour forecast fired 96 minutes before tejas@chann.app ran out, but only 25 minutes
- * before tejastej.dc@gmail.com did (81% → 97% in eleven minutes). Ninety minutes at the
- * observed pace is roughly 45% used, which still leaves him room to act during a burst.
+ * No pace, no forecast. On 2026-10-08 a pace projection told him at 3:10 AM that an account 21%
+ * through its five-hour window would run out by 3:52, and he said: "I do not want to be notified
+ * when it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually,
+ * 90% of above" [decision: usage-notice-only-at-90-percent]. Forecasts still exist for agents'
+ * own briefs; nothing here reads them.
  */
-export const NOTICE_LEAD_MS = 90 * 60_000;
+export const NOTICE_AT_PERCENT = 90;
 
-/**
- * Every account of one provider expected to run out within `leadMs`, each with its tightest
- * window. Not only the selected account: Claude turns move between accounts for room, so the
- * account being spent is often not the one selected (both ran out on 2026-10-07). An account
- * nobody is using has no rate and so no forecast.
- */
-export function accountsRunningOut(provider: ProviderKey, leadMs: number): UsageForecast[] {
-  const tightest = new Map<string, UsageForecast>();
+/** Every account of one provider with a window at 90% or more but not yet spent, its fullest window each. */
+export function accountsNearlySpent(provider: ProviderKey): UsageForecast[] {
+  const fullest = new Map<string, UsageForecast>();
   for (const forecast of usageForecasts(provider)) {
     // A spent window is the usage hold's to report, with what is waiting on it.
-    if (forecast.usedPercent >= 100) continue;
-    if (!projectedOut(forecast, leadMs) && !highAndClimbing(forecast, leadMs)) continue;
-    const held = tightest.get(forecast.account);
-    if (!held || (forecast.minutesLeft ?? Infinity) < (held.minutesLeft ?? Infinity)) tightest.set(forecast.account, forecast);
+    if (forecast.usedPercent < NOTICE_AT_PERCENT || forecast.usedPercent >= 100) continue;
+    const held = fullest.get(forecast.account);
+    if (!held || forecast.usedPercent > held.usedPercent) fullest.set(forecast.account, forecast);
   }
-  return [...tightest.values()];
+  return [...fullest.values()];
 }
-
-const projectedOut = (forecast: UsageForecast, leadMs: number) => forecast.runsOutBeforeReset
-  && forecast.minutesLeft !== null && forecast.minutesLeft * 60_000 <= leadMs;
-
-/**
- * Past this share of a window, still climbing and far from refilling, he is told even when the
- * last hour's pace looks gentle. Replaying 2026-10-07: tejastej.dc@gmail.com sat near 50% for half
- * an hour, so the pace line projected two hours, then burst 60% -> 100% in 45 minutes; the
- * projection alone warned 27 minutes ahead, this level warns about 45 minutes ahead.
- */
-export const LEVEL_WARN_PERCENT = 60;
-const highAndClimbing = (forecast: UsageForecast, leadMs: number) => {
-  const resetsAtMs = at(forecast.resetsAt);
-  return forecast.usedPercent >= LEVEL_WARN_PERCENT && (forecast.ratePerHour ?? 0) > 0
-    && resetsAtMs !== null && resetsAtMs - Date.now() > leadMs;
-};
 
 /** Accounts other than `account` whose windows all still have room, at the last reading. */
 export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {

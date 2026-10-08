@@ -449,20 +449,18 @@ them back, because they were built for a screen. Now:
   reset instant, and mixing the two would flatten the line. Every forecast carries its
   source, sample count, span and rate so nobody has to trust it blindly, and no surface ever
   states a countdown — a rate cannot promise a time and agent work arrives in bursts.
-- **Tejas is told** before it happens: once per account per window per allowance period, for
-  any account projected to run out within 90 minutes (`NOTICE_LEAD_MS`; agents are briefed at
-  one hour), or already at 60% (`LEVEL_WARN_PERCENT`) and still climbing with more than 90
-  minutes until it refills: on 2026-10-07 one account plateaued near 50% and then burst to 100%
-  in 45 minutes, so the pace line alone warned 25 minutes ahead and the level warns about 45. It is a provider-free Inbox notice (`publishProviderFreeNotice`, kind
-  `provider_usage_warning`): its own thread, a reading item, and the push thnkr.ing sends for
-  every reading item. It says the account, how much is used, when it is expected to run out and
-  when it refills, and what happens next (Claude turns move to an account with room by
+- **Tejas is told** only when an account reaches 90% of a window (`NOTICE_AT_PERCENT`), once
+  per account per window per allowance period, for every account. No pace and no forecast: on
+  2026-10-08 a pace projection warned him at 21% and he said "I do not want to be notified when
+  it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually, 90% of
+  above" [decision: usage-notice-only-at-90-percent]. It is a provider-free Inbox notice
+  (`publishProviderFreeNotice`, kind `provider_usage_warning`): its own thread, a reading item and
+  the push thnkr.ing sends for every reading item. It says the account, the percentage used, when
+  it refills, and what happens when it runs out (Claude turns move to an account with room by
   themselves; Codex waits unless he switches). When the window refills the thread says so and
-  closes. Until 2026-10-07 it was a bare `provider_outage` event with no message behind it, and
-  thnkr.ing sends an outage only when it holds one of his messages, so every forecast was
-  dropped: both Claude accounts were forecast that evening and he heard only when each ran out.
-  It watches every account, not only the selected one, because turns move between accounts for
-  room. The banked-reset expiry notice had the same silent drop and uses the same carrier now.
+  closes; pace warnings sent before the change were withdrawn on the next reading. Until
+  2026-10-07 it was a bare `provider_outage` event, which thnkr.ing never shows. Forecasts remain
+  for agents' own briefs only. The banked-reset expiry notice uses the same carrier.
 - **`router-actions.sh sessions usage`** answers the same question for any caller: the
   account in use, the closest wall with its basis, the accounts with room, every window's
   forecast. A read; it recommends nothing and changes nothing. The Inbox router uses it to

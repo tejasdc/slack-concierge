@@ -846,9 +846,10 @@ authorization or a change to the default rapid-iteration policy.
   cannot promise a time. Readings tighten to five-minute cadence near a wall because two
   samples cannot draw a line, and both runtime compositions start the watch.
 - Work that is about to stop is told before it stops, not after: Tejas once per account per
-  allowance period, about 90 minutes ahead, as a provider-free Inbox notice with its own thread
-  and push (a bare outage event never reached him: thnkr.ing sends those only for held messages,
-  so tonight's forecasts on 2026-10-07 were silently dropped), any caller through
+  allowance period, only when the account reaches 90% of a window and never from a pace or
+  forecast [decision: usage-notice-only-at-90-percent], as a provider-free Inbox notice with its own
+  thread and push (a bare outage event never reached him: thnkr.ing sends those only for held
+  messages), any caller through
   `router-actions.sh sessions usage`, and sessions through their own context. A turn that
   starts while the account is low reads it in its per-turn instructions; a turn already
   running is told inside that run, pinned to that exact live run so a notice about spending

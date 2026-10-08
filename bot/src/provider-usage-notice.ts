@@ -4,7 +4,7 @@ import { currentAccount } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
-import { NOTICE_LEAD_MS, WARN_LEAD_MS, accountsRunningOut, accountsWithRoom, accountsWithRoomBesides,
+import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
   tightestCurrentWindow, usagePressureBrief, type UsageForecast } from "./provider-usage-forecast";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
@@ -313,53 +313,40 @@ function windowLabel(name: string): string {
 }
 
 /**
- * Says it before it happens, in his Inbox and on his phone.
+ * Tells him, in his Inbox and on his phone, when an account reaches 90% of a window.
  *
- * He asked for this in his own words after the 2026-09-22 outage: "the system should be
- * notified 30 minutes before, like 50 minutes before one hour before, it should know that
- * like, oh, we're running out of credit". The numbers were always there; nothing read them.
- *
- * It used to be recorded only as an outage event with no message behind it, and thnkr.ing's
- * notifier sends an outage only when it holds one of his messages, so every forecast was
- * dropped: on 2026-10-07 both Claude accounts were forecast (18:57 and 20:16 UTC) and he heard
- * only when each ran out ("I'm only getting fucking notified after the fucking usage is used
- * up"). Now it is a provider-free Inbox notice: its own thread, a reading item, and the push
- * every reading item gets.
- *
- * One notice per account per window per allowance period, keyed by the reset instant, so a
- * window cannot nag. It fires for any account expected to run out within `NOTICE_LEAD_MS`,
- * because turns move between accounts for room. It changes nothing by itself; when the window
- * refills, its thread says so and closes (`settleRefilledUsageWarnings`).
+ * Only the level counts: no pace, no forecast, no "will run out around" (Tejas, 2026-10-08,
+ * after a pace projection warned him at 21% [decision: usage-notice-only-at-90-percent]). It is a
+ * provider-free Inbox notice, because a bare outage event is never shown (2026-10-07). One per
+ * account per window per allowance period; it watches every account, since turns move between
+ * accounts for room. When the window refills its thread says so and closes.
  */
 export function publishUsageForecastNotices(_record?: RecordEvent): void {
   let published = false;
   for (const provider of ["claude-code", "codex"] as const) {
-    let running: UsageForecast[];
-    try { running = accountsRunningOut(provider, NOTICE_LEAD_MS); } catch { continue; }
-    for (const forecast of running) {
-      if (!forecast.resetsAt) continue;
-      const key = `usage-warning:${provider}:${forecast.account}:${forecast.window}:${allowancePeriod(forecast.resetsAt)}`;
+    let nearlySpent: UsageForecast[];
+    try { nearlySpent = accountsNearlySpent(provider); } catch { continue; }
+    for (const reading of nearlySpent) {
+      if (!reading.resetsAt) continue;
+      // A fresh key: a pace notice already sent this period must not suppress the 90% one.
+      const key = `usage-at-${NOTICE_AT_PERCENT}:${provider}:${reading.account}:${reading.window}:${allowancePeriod(reading.resetsAt)}`;
       if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`service-notice:${key}`)) continue;
       try {
-        const spare = accountsWithRoomBesides(provider, forecast.account);
-        const resetCredit = availableResetCredit(provider);
+        const spare = accountsWithRoomBesides(provider, reading.account);
         const recorded = publishProviderFreeNotice(db, {
           key, kind: "provider_usage_warning",
-          text: usageWarningText(provider, forecast, spare, resetCredit),
+          text: usageWarningText(provider, reading, spare),
           payload: {
-            provider, account: forecast.account, window: forecast.window, windowLabel: windowLabel(forecast.window),
-            usedPercent: forecast.usedPercent, exhaustsAt: forecast.exhaustsAt, resetsAt: forecast.resetsAt,
-            minutesLeft: forecast.minutesLeft, source: forecast.source, ratePerHour: forecast.ratePerHour,
-            samples: forecast.samples, spanMinutes: forecast.spanMinutes, accountsWithRoom: spare,
-            movesAutomatically: movesAutomatically(provider), resetCredit,
+            provider, account: reading.account, window: reading.window, windowLabel: windowLabel(reading.window),
+            usedPercent: reading.usedPercent, resetsAt: reading.resetsAt, accountsWithRoom: spare,
+            movesAutomatically: movesAutomatically(provider), thresholdPercent: NOTICE_AT_PERCENT,
           },
         });
         published ||= recorded;
-        log("warn", "provider_usage_forecast_notified", { provider, account: forecast.account, window: forecast.window,
-          used_percent: forecast.usedPercent, minutes_left: forecast.minutesLeft, source: forecast.source,
-          samples: forecast.samples, span_minutes: forecast.spanMinutes, accounts_with_room: spare.length, recorded });
+        log("warn", "provider_usage_level_notified", { provider, account: reading.account, window: reading.window,
+          used_percent: reading.usedPercent, accounts_with_room: spare.length, recorded });
       } catch (error) {
-        log("error", "provider_usage_forecast_notice_failed", { provider,
+        log("error", "provider_usage_level_notice_failed", { provider,
           error: error instanceof Error ? error.message : String(error) });
       }
     }
@@ -372,24 +359,17 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
 /** Claude turns pick, each time, an account that still has room; a Codex login is switched by hand. */
 const movesAutomatically = (provider: UsageProvider) => provider === "claude-code" && claudeRunsFromOwnHomes();
 
-function usageWarningText(provider: UsageProvider, forecast: UsageForecast, spare: string[],
-  resetCredit: ResetCreditNotice | null): string {
+function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
   const name = provider === "codex" ? "Codex" : "Claude";
-  const refill = noticeTime(db, Date.parse(forecast.resetsAt!));
-  const pace = forecast.source === "provider" ? `by ${name}'s own projection`
-    : `at the pace of the last hour (about ${Math.round(forecast.ratePerHour ?? 0)}% an hour)`;
-  const used = `${name} account ${forecast.account} is ${Math.round(forecast.usedPercent)}% through its ${windowLabel(forecast.window)}`;
-  const head = forecast.runsOutBeforeReset && forecast.exhaustsAt
-    ? `${used} and, ${pace}, will run out around ${noticeTime(db, Date.parse(forecast.exhaustsAt))}. It refills at ${refill}.`
-    : `${used} and still climbing (about ${Math.round(forecast.ratePerHour ?? 0)}% an hour); it refills at ${refill}. `
-      + "Agent work comes in bursts, so it can run out before then.";
+  const refill = noticeTime(db, Date.parse(reading.resetsAt!));
+  const head = `${name} account ${reading.account} has used ${Math.round(reading.usedPercent)}% of its `
+    + `${windowLabel(reading.window)}. It refills at ${refill}.`;
   const next = spare.length
     ? movesAutomatically(provider)
       ? ` When it runs out, new ${name} work moves to ${spare.join(" or ")} by itself; nothing to do.`
       : ` When it runs out, ${name} work stops until it refills unless you switch to ${spare.join(" or ")} on the Accounts page.`
-    : ` No other ${name} account has room, so ${name} work will wait until ${refill}`
-      + (resetCredit ? `, unless a banked reset on ${resetCredit.account} is spent (it is spent automatically if work stops).` : ".");
-  return head + next + " This is a forecast from the pace so far, not a countdown.";
+    : ` No other ${name} account has room, so when it runs out ${name} work waits until it refills.`;
+  return head + next;
 }
 
 /**
@@ -403,7 +383,13 @@ function settleRefilledUsageWarnings(): void {
     .all(SERVICE_NOTICE_SCOPE) as { id: string; payload_json: string }[];
   for (const row of rows) {
     try {
-      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string };
+      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string; thresholdPercent?: number };
+      // Pace warnings sent before 2026-10-08 are withdrawn rather than left waiting to be read.
+      if (payload.thresholdPercent === undefined) {
+        settleServiceNotice({ inputId: row.id,
+          text: `Withdrawn: running-low notices now come only when an account reaches ${NOTICE_AT_PERCENT}%.` });
+        continue;
+      }
       const resetsAtMs = Date.parse(payload.resetsAt ?? "");
       if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
