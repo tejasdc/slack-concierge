@@ -889,6 +889,7 @@ authorization or a change to the default rapid-iteration policy.
   restarting to update itself, or the no-activity limit after a Mac's lid closed mid-run (mac:69,
   2026-10-01). A continuation that is itself cut off is not continued again. Startup
   catches only recent, evidenced worked-on provider refusals. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+- Both runtime compositions sweep running turns stranded by their own coordinator while excluding active queue and provider work. Only a turn proven never admitted and without Stop or possible effects returns to its original FIFO; uncertain effects stay interrupted for reconciliation. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
 - Work that stops must say so on a path that does not depend on what broke. A usage hold
   publishes one `provider_outage` event per episode (`provider-usage-notice.ts`) naming
   the reset, how much is waiting and which other accounts have room; Thinkering pushes it

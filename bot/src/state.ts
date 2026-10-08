@@ -1487,7 +1487,7 @@ export function isTurnArtifactStagingCleanupComplete(turnId: number) {
 }
 
 /**
- * Turns the current coordinator holds in 'running' with no matching executions row and started
+ * Turns the current coordinator holds in 'running' with no matching executions row and created
  * more than `maxAgeMs` ago. These are ghosts: dispatch was accepted (status became running, owner
  * set), but no execution host record was ever written, so neither `claimAdoptableExecutions`
  * (which reads through the executions JOIN) nor the dead-owner pass in `reconcileRecoverableTurns`
@@ -3878,7 +3878,12 @@ export function requeueOrphanedPreAdmissionTurn(
       SELECT session_id, projection_mode, progress_stream_state, progress_stream_ts FROM turns
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND turn_kind IN ('slack_user', 'comparison', 'machine_alert', 'native')
+        AND stop_requested_at IS NULL
         AND provider_admission_intended_at IS NULL
+        AND provider_started_at IS NULL AND provider_turn_id IS NULL
+        AND provider_input_acknowledged_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages
+          WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
         AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
         AND NOT EXISTS (
           SELECT 1 FROM turn_artifact_batches
@@ -3905,7 +3910,7 @@ export function requeueOrphanedPreAdmissionTurn(
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
-        AND provider_admission_intended_at IS NULL
+        AND stop_requested_at IS NULL AND provider_admission_intended_at IS NULL
     `).run(Date.now()+3*60_000, RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
     if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {

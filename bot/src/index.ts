@@ -3741,7 +3741,7 @@ async function reconcilePriorInstanceTurns() {
   const recoveryOutcome = await reconcileRecoverableTurns({
     client: app.client,
     instanceId,
-    activeTurnIds: activeTurnDispatch.activeTurns,
+    activeTurnIds: [...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? [])],
     isOwnerAlive: isProcessIdentityAlive,
     services: {
       deliverNativeResult:result=>sessionExecutionHost.deliverResult(result),
@@ -3938,14 +3938,14 @@ void refreshClaudeAccount();
 setInterval(() => { if (!draining) void refreshClaudeAccount(); }, USAGE_REFRESH_MS);
 
 // Watchdog for ghost running turns: a turn this coordinator holds in 'running' with no
-// executions row written for over two minutes is a dispatch that stalled silently; neither
+// executions row, outside its active queue and dispatch registries, is stalled; neither
 // `claimAdoptableExecutions` (needs an executions row) nor the dead-owner reconciliation
 // (needs a dead owner) will catch it. Introduced after the 2026-10-08 ghost-turn incident
 // (docs/incidents/2026-10-08-ghost-turns-and-near-codex-restart.md).
 setInterval(() => {
   if (draining) return;
   try {
-    const swept = sweepGhostRunningTurns(instanceId, activeTurnDispatch.activeTurns);
+    const swept = sweepGhostRunningTurns(instanceId, [...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? [])]);
     if (swept > 0) {
       log("warn", "ghost_running_turns_swept", { count: swept, scope: "watchdog", max_age_ms: GHOST_TURN_INTERRUPT_AGE_MS });
       sessionTurnQueue?.wake();

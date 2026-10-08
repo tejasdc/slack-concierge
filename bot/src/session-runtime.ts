@@ -12,7 +12,7 @@ import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity'
 import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {ProjectSetup} from './project-setup';
-import {reconcileRecoverableTurns} from './turn-recovery';
+import {GHOST_TURN_INTERRUPT_AGE_MS,reconcileRecoverableTurns,sweepGhostRunningTurns} from './turn-recovery';
 import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
@@ -124,7 +124,8 @@ export async function startSessionRuntime() {
     interrupt:(turnId,reason)=>{interruptOrphanedTurn(turnId,instanceId,reason);queue.wake();}});
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
-  await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:registry.activeTurns,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
+  const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
+  await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
@@ -141,12 +142,20 @@ export async function startSessionRuntime() {
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();queue.wake();});
+  const ghostSweep=setInterval(()=>{
+    if(draining)return;
+    try {
+      const swept=sweepGhostRunningTurns(instanceId,activeTurnIds());
+      if(swept>0){log('warn','ghost_running_turns_swept',{count:swept,scope:'watchdog',max_age_ms:GHOST_TURN_INTERRUPT_AGE_MS});queue.wake();}
+    } catch(error){log('error','ghost_running_turn_sweep_failed',errorFields(error));}
+  },60_000);
+  ghostSweep.unref?.();
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearInterval(ghostSweep);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){
