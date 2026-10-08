@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
-import { observedDatabase, observeStorageOperation, storageObservationFailures, type StorageWork } from '../src/storage-observation';
+import { observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
 import { ledgerRows } from '../src/ledger-rows';
 
 // No application state import: the fixture owns its database and has no production path.
@@ -20,6 +20,12 @@ try {
   assert.equal(snapshot!.db_rows, 3);
   assert.equal(snapshot!.db_result_bytes, 26);
   assert.match(snapshot!.db_slowest_fingerprint!, /^[a-f0-9]{16}$/);
+  const budget={maxCalls:3,maxRows:3,maxResultBytes:100};
+  const bounded=(read:()=>unknown)=>observeStorageOperation('bounded',()=>withStorageReadBudget(budget,read),()=>{});
+  assert.throws(()=>bounded(()=>db.query('SELECT * FROM facts').all()),StorageReadBudgetError);
+  assert.throws(()=>bounded(()=>db.query('DELETE FROM facts').run()),StorageReadBudgetError);
+  assert.throws(()=>bounded(()=>{for(let i=0;i<4;i++)db.query('SELECT id FROM facts WHERE id=1').get();}),StorageReadBudgetError);
+  assert.equal((bounded(()=>db.query('SELECT * FROM facts ORDER BY id LIMIT ?').all(2)) as any[]).length,2);
 
   // An early exit still goes through the canonical finalizing iterator.
   observeStorageOperation('iteration', () => {

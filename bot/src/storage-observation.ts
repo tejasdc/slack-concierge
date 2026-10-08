@@ -15,6 +15,29 @@ export type StorageWork = {
 };
 type Scope = { work: StorageWork; closed: boolean };
 const scopes = new AsyncLocalStorage<Scope>();
+export type StorageReadBudget={maxCalls:number;maxRows:number;maxResultBytes:number};
+const readBudgets=new AsyncLocalStorage<StorageReadBudget>();
+export class StorageReadBudgetError extends Error {
+  readonly code='READ_BUDGET_EXCEEDED';
+  constructor(readonly reason:'unbounded_collection'|'write_in_reader'|'calls'|'rows'|'bytes'){
+    super(`Interactive read refused: ${reason}.`);
+  }
+}
+export function withStorageReadBudget<T>(budget:StorageReadBudget,read:()=>T):T {
+  return readBudgets.run(budget,read);
+}
+function admitRead(sql:string,method:string,work:StorageWork){
+  const budget=readBudgets.getStore();if(!budget)return;
+  if(!/^\s*(SELECT|WITH)\b/i.test(sql)||method==='run'||method==='exec')throw new StorageReadBudgetError('write_in_reader');
+  if(method==='iterate'||(['all','values'].includes(method)&&!/\bLIMIT\s+(?:\?|\$[\w]+|[0-9]+)(?:\s+OFFSET\s+(?:\?|[0-9]+))?\s*;?\s*$/i.test(sql)))
+    throw new StorageReadBudgetError('unbounded_collection');
+  if(work.db_calls>=budget.maxCalls)throw new StorageReadBudgetError('calls');
+}
+function checkRead(work:StorageWork){
+  const budget=readBudgets.getStore();if(!budget)return;
+  if(work.db_rows>budget.maxRows)throw new StorageReadBudgetError('rows');
+  if(work.db_result_bytes>budget.maxResultBytes)throw new StorageReadBudgetError('bytes');
+}
 let observationFailures = 0;
 export const storageObservationFailures = () => observationFailures;
 const empty = (): StorageWork => ({ db_calls: 0, db_duration_ms: 0, db_rows: 0,
@@ -86,8 +109,9 @@ export function observedDatabase(database: Database): Database {
       if (typeof value !== 'function') return value;
       if (property === 'as') return (...args: any[]) => statement(Reflect.apply(value, target, args), sql);
       if (property === 'iterate') return (...args: any[]) => {
-        const iterator = Reflect.apply(value, target, args);
         const scope = scopes.getStore();
+        if(scope&&!scope.closed)admitRead(sql,'iterate',scope.work);
+        const iterator = Reflect.apply(value, target, args);
         if (!scope || scope.closed) return iterator;
         let first = true;
         return new Proxy(iterator, { get(iter, key) {
@@ -110,12 +134,15 @@ export function observedDatabase(database: Database): Database {
       return (...args: any[]) => {
         const scope = scopes.getStore();
         if (!scope || scope.closed) return Reflect.apply(value, target, args);
+        admitRead(sql,String(property),scope.work);
         const started = performance.now();
+        let result:any;
         try {
-          const result = Reflect.apply(value, target, args);
-          record(scope, started, result, String(property), false);
-          return result;
+          result = Reflect.apply(value, target, args);
         } catch (error) { record(scope, started, null, String(property), true); throw error; }
+        record(scope,started,result,String(property),false);
+        checkRead(scope.work);
+        return result;
       };
     }});
     statements.set(raw, proxy);
@@ -128,6 +155,7 @@ export function observedDatabase(database: Database): Database {
     if (property === 'exec' || property === 'run') return (...args: any[]) => {
       const scope = scopes.getStore();
       if (!scope || scope.closed) return Reflect.apply(value, target, args);
+      admitRead(String(args[0]),String(property),scope.work);
       const started = performance.now();
       scope.work.db_calls++;
       try { return Reflect.apply(value, target, args); }

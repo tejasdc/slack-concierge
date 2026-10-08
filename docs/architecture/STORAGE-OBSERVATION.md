@@ -31,3 +31,17 @@ performance gate by itself: readers and releases must enforce their separate cos
 Routine owner memory readings also export the observation-loss counter, with RSS, heap,
 external and array-buffer sizes. They do not walk the heap when it is already large. The
 external host observer owns process/swap/pressure evidence during a blocked event loop.
+# Interactive read refusal
+
+Presentation GET routes must match `presentation-reader-contracts.ts`; an unregistered route
+returns `READER_CONTRACT_REQUIRED` before invoking its handler. Its database scope refuses
+collection reads without a final SQL limit, iterators, writes, excess calls, returned rows or
+returned value bytes. The encoded response has a separate byte budget. Refusal is a visible
+503, never a silent truncation or full-history fallback. These guards bound materialization and
+expose misuse; they do not prove rows visited by SQLite, so release growth fixtures and query
+plans remain required. The registry's limits belong to the owner and are shared by consumers.
+
+Each request now records a normalized start and completion under one random request identity,
+including actual encoded JSON response bytes. A blocked or crashed request therefore leaves a
+start even when no completion can be logged. Concurrent calls to the same route retain separate
+in-flight identities. Streams retain separate lifetime/transport observations.

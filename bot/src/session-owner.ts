@@ -6,7 +6,8 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
-import {observeStorageOperation,storageObservationFailures,type StorageWork} from './storage-observation';
+import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
+import {presentationContractFor} from './presentation-reader-contracts';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
@@ -294,7 +295,13 @@ const SETTLED_REQUEST_OUTCOMES=new Set(['answered','failed','canceled','dependen
 const OPEN_STATUS_CODES=new Set(['STEERING_DELIVERY_UNCONFIRMED','STEERING_ACK_PENDING','OUTCOME_UNCONFIRMED']);
 /** Settled for good: nothing a receipt shows can change again. Anything uncertain is open. */
 const SLOW_OWNER_REQUEST_MS=250;
-const ownerRequestsInFlight=new Set<string>();
+function ownerJson(value:unknown,init:ResponseInit={}) {
+  const body=JSON.stringify(value),headers=new Headers(init.headers);
+  headers.set('content-type','application/json');
+  headers.set('content-length',String(Buffer.byteLength(body)));
+  return new Response(body,{...init,headers});
+}
+const ownerRequestsInFlight=new Map<string,string>();
 let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
 /**
  * Event-loop lag: how late a 250 ms tick fired. A late tick means synchronous work held the
@@ -307,7 +314,7 @@ function startOwnerLoopMonitor() {
   ownerLoopMonitor=setInterval(()=>{
     const now=performance.now(),lag=Math.round(now-expected);
     expected=now+250;
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight]});noteOwnerStall(lag);}
+    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
   },250);
   ownerLoopMonitor.unref?.();
 }
@@ -2457,16 +2464,28 @@ export class SessionOwner {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
     startOwnerLoopMonitor();
-    const staticParts=new Set(['sessions','v1','inbox','topics','resolve','entries','questions','focus','attention','dismiss','reads','events','stream','history','messages','attachments','transcription','search','context','providers','profiles','switch','saved-work','settings','start','time','schedule','drop','receipts','reactions','pins','projects','workspace','files','usage','transcripts','stop','title','reply','reply-targets','received','source','turns','input','state','opening','create','operations','actions']);
+    const staticParts=new Set(['sessions','v1','inbox','topics','resolve','entries','questions','focus','attention','dismiss','reads','events','stream','history','messages','attachments','transcription','search','context','providers','profiles','switch','saved-work','settings','start','time','schedule','drop','presentation','view','changes','receipts','reactions','pins','projects','workspace','files','usage','transcripts','stop','title','reply','reply-targets','received','source','turns','input','state','opening','create','operations','actions']);
     const route=url.pathname.split('/').filter(Boolean).map(part=>staticParts.has(part)?part:':id').join('/');
     const label=`${request.method} /${route}`;
     const started=performance.now();
-    ownerRequestsInFlight.add(label);
+    const requestId=randomUUID();
+    ownerRequestsInFlight.set(requestId,label);
+    log('info','owner_request_started',{request_id:requestId,route:label});
     let status:number|null=null;
     let bytes:number|null=null;
     let work:StorageWork|null=null;
     try {
-      const response=await observeStorageOperation(label,()=>this.handleRequest(request),measured=>{work=measured;});
+      const contract=presentationContractFor(request.method,url.pathname);
+      const run=()=>{
+        if(request.method==='GET'&&url.pathname.startsWith('/sessions/v1/presentation/')&&!contract)
+          return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This presentation reader has no declared cost contract.'}},{status:503});
+        return contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request);
+      };
+      let response=await observeStorageOperation(label,run,measured=>{work=measured;});
+      if(contract&&Number(response?.headers.get('content-length'))>contract.maxResponseBytes){
+        log('error','owner_read_budget_refused',{reader:contract.name,reason:'response_bytes'});
+        response=ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
+      }
       status=response?.status??null;
       bytes=Number(response?.headers.get('content-length'))||null;
       const ms=Math.round(performance.now()-started);
@@ -2474,9 +2493,9 @@ export class SessionOwner {
       if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status,bytes});
       return response;
     } finally {
-      log('info','owner_request_completed',{route:label,duration_ms:Math.round(performance.now()-started),status,bytes,
+      log('info','owner_request_completed',{request_id:requestId,route:label,duration_ms:Math.round(performance.now()-started),status,bytes,
         ...(work??{}),observation_failures:storageObservationFailures()});
-      ownerRequestsInFlight.delete(label);
+      ownerRequestsInFlight.delete(requestId);
     }
   }
   private async handleRequest(request:Request):Promise<Response|null> {
@@ -2664,12 +2683,13 @@ export class SessionOwner {
         }
       }
       else throw new SessionOwnerError('Unknown session owner route.',404);
-      if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return Response.json({error:(result as any).operation.error},{status:409});
+      if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return ownerJson({error:(result as any).operation.error},{status:409});
       const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
-      return Response.json(result,{status:request.method==='POST'&&!readOnly&&!prior?202:200});
+      return ownerJson(result,{status:request.method==='POST'&&!readOnly&&!prior?202:200});
     } catch(error) {
-      if(error instanceof TopicError)return Response.json({error:{code:error.code,message:error.message}},{status:error.status});
-      return Response.json({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
+      if(error instanceof StorageReadBudgetError)return ownerJson({error:{code:error.code,message:error.message}},{status:503});
+      if(error instanceof TopicError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
+      return ownerJson({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
   }
 }
