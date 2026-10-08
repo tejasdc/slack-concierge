@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ledgerWriteResults } from "../src/ledger-write-results";
 
 const stateDirectory = process.env.CONCIERGE_STATE_DIR;
 if (!stateDirectory) throw new Error("CONCIERGE_STATE_DIR is required.");
@@ -44,7 +45,7 @@ function checks(database: Database) {
   }
 }
 
-const source = new Database(statePath);
+const source = ledgerWriteResults(new Database(statePath));
 source.exec("PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(FULL)");
 checks(source);
 source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);

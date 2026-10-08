@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KEY_FILES, keyFingerprints, type KeyFile } from '../src/key-files';
+import { ledgerWriteResults } from '../src/ledger-write-results';
 import { publishProviderFreeNotice } from '../src/provider-free-notice';
 
 const stateDir = process.env.CONCIERGE_STATE_DIR;
@@ -25,7 +26,7 @@ const baselines = join(stateDir, 'key-change-notice');
 mkdirSync(baselines, { recursive: true, mode: 0o700 });
 // Only its own few rows, written directly: loading Concierge's state module would run its schema
 // setup against the live ledger from outside the running release.
-const db = new Database(join(stateDir, 'state.db'));
+const db = ledgerWriteResults(new Database(join(stateDir, 'state.db')));
 db.exec('PRAGMA busy_timeout=15000');
 const read = (path: string) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
 const log = (fields: object) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...fields }));

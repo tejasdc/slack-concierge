@@ -42,11 +42,11 @@ function hasRetryWithoutNamedPolicy(source: string, name: string): boolean {
   }
   return false;
 }
-function walk(dir: string) {
+function walk(dir: string, into = files) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) walk(path);
-    else if (entry.name.endsWith('.ts')) files.push(path);
+    if (entry.isDirectory()) walk(path, into);
+    else if (entry.name.endsWith('.ts')) into.push(path);
   }
 }
 walk(join(root, 'src'));
@@ -88,6 +88,26 @@ for (const [name, policy] of Object.entries(RETRY_POLICIES)) {
     || !Number.isFinite(policy.capDelayMs) || policy.capDelayMs < policy.baseDelayMs
     || !Number.isFinite(policy.jitterFraction) || policy.jitterFraction < 0 || policy.jitterFraction > 1)
     errors.push(`retry-policies.ts: ${name} must have finite attempt, age, delay, and jitter bounds`);
+}
+
+// Standalone writers do not import state-database (it initializes the live schema). Their
+// canonical ledger handles must still normalize trigger-inflated Bun write counts.
+const ledgerFiles = [...files];
+walk(join(root, 'scripts'), ledgerFiles);
+for (const path of ledgerFiles) {
+  const name = relative(root, path);
+  if (/fixture|growth|check-presentation-worker|release-application-compatibility/.test(name)
+    || name === 'src/capture-state.ts' || name === 'scripts/capture-drain-status.ts') continue;
+  const source = readFileSync(path, 'utf8');
+  const publishesNotice = /\bpublishProviderFreeNotice\s*\(/.test(source);
+  for (const match of source.matchAll(/\bnew\s+Database\s*\(/g)) {
+    const end = source.indexOf(';', match.index);
+    const opening = source.slice(match.index, end < 0 ? match.index + 300 : end);
+    if (!publishesNotice && !/(?:state\.db|\bstateDbPath\b|\bstatePath\b|\bledgerPath\b)/.test(opening)) continue;
+    if (/\breadonly\s*:\s*true\b/.test(opening)) continue;
+    if (!/ledgerWriteResults\(\s*$/.test(source.slice(0, match.index)))
+      errors.push(`${name}: writable canonical ledger connection must use ledgerWriteResults`);
+  }
 }
 if (errors.length) {
   for (const error of errors) console.error(`retry-architecture: ${error}`);

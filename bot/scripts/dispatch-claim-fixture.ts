@@ -38,7 +38,7 @@ async function childFixture(){
  assert.ok(queued.turn_id);
  assert.ok(db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='presentation_change_turns_update'").get());
 
- // On this Bun version .run().changes counts the presentation trigger's two journal writes.
+ // Record Bun's raw count for diagnosis without requiring a particular runtime bug.
  // Roll back the control write; the actual claim below must still find this queued turn.
  const raw=new Database(join(process.env.CONCIERGE_STATE_DIR!,'state.db'));
  let rawChanges:number,directChanges:number;
@@ -49,7 +49,6 @@ async function childFixture(){
   raw.exec('ROLLBACK TO raw_change_control; RELEASE raw_change_control');
  }finally{raw.close();}
  assert.equal(directChanges,1);
- assert.ok(rawChanges>directChanges,`Expected trigger-inflated raw Bun changes, got ${rawChanges}`);
 
  const delivered:number[]=[];
  let finish!:()=>void;
