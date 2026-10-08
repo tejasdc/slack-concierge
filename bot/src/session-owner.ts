@@ -1679,7 +1679,10 @@ export class SessionOwner {
     const session=this.session(id);
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)){
       try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
-      catch(error){const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
+      catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
+        return {messages:[],nextCursor:null,coverage:{complete:false,code:'history_indexing',retryAfterMs:1000,
+          omissions:['Conversation history is still being prepared.']}};
+        const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
         throw new SessionOwnerError(error instanceof Error?error.message:'History preparation failed.',status,
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
     }
@@ -1700,7 +1703,8 @@ export class SessionOwner {
     const delegated=this.session(id);
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)){
       try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
-      catch(error){const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
+      catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')return {reset:true};
+        const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
         throw new SessionOwnerError(error instanceof Error?error.message:'History changes unavailable.',status,
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
     }

@@ -114,6 +114,14 @@ try {
   assert.ok(nativeMessage.contentDetail?.digest);
   const nativePart=await owner.handle(new Request(`http://owner/sessions/v1/sessions/${nativeAddress}/history/messages/native-message/detail?digest=${nativeMessage.contentDetail.digest}&part=0&turnId=native-turn`));
   assert.equal(nativePart?.status,200,'native provider history must retain an exact detail path');
+  const preparing=new SessionOwner({wake(){},steer(){return false;},async stop(){return false;},available(){return false;},
+    async projectedHistory(){throw new Error('HISTORY_PAGE_STILL_PREPARING');}},scratch);
+  const preparingResponse=await preparing.handle(new Request(`http://owner/sessions/v1/sessions/${nativeAddress}/history?limit=20`));
+  assert.equal(preparingResponse?.status,200,'a cold background preparation is coverage, not an owner failure');
+  const preparingPage=await preparingResponse!.json() as any;
+  assert.equal(preparingPage.coverage?.code,'history_indexing');
+  assert.equal(preparingPage.coverage?.complete,false);
+  assert.ok(preparingPage.coverage?.retryAfterMs>0,'the browser must get its automatic refresh instruction');
   // A provider page with an 8 MiB retained body must not occupy the accepting loop.
   const offloaded=createNativeSession('claude-code',{origin:'native',title:'Off-loop retained history'});
   db.query("INSERT INTO turns(session_id,slack_user_msg_ts,user_text,agent_text,status) VALUES(?,?,?,?,?)")
