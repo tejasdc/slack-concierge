@@ -347,15 +347,11 @@ import {installSessionProjection} from './session-projection';
 import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,wakeDeferredQuestions} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
-import {warmSpeechEngine} from './speech-engine';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
-// Load the speech model now, in the background, so the first dictation after a restart is
-// already warm rather than paying the model load while someone waits.
 // On a Mac the independent speech job keeps the local engine ready across Concierge updates.
 // The coordinator can still start its own engine on demand for retained-file fallback.
-if (process.platform === 'darwin') warmSpeechEngine();
-else void ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!).catch(()=>{});
+if (process.platform !== 'darwin') void ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!).catch(()=>{});
 
 // Session search by meaning: indexing runs in the background from startup, in both compositions.
 {
