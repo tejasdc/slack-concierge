@@ -53,7 +53,7 @@ import {containingProject,sessionProject,sessionProjects} from './session-projec
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
-import {preparedSessionWindow,preparedSessionChanges} from './presentation-session-reader';
+import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
 import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
@@ -654,7 +654,8 @@ export class SessionOwner {
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
-    const attentionOpen=openAttention(session);
+    const preparedAttention=meta.inbox?preparedInboxAttention(session.id):null;
+    const attentionOpen=meta.inbox?preparedAttention!.needs:openNeeds(meta);
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
@@ -669,8 +670,9 @@ export class SessionOwner {
       // attention events showed every question the session ever asked, because a later
       // declaration settles earlier ones without erasing their events (Tejas, 2026-09-20).
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0,
-        open:attentionOpen},
-      needsAttention:meta.inbox?attentionOpen.length>0:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
+        open:attentionOpen,...(preparedAttention?{total:preparedAttention.total,maxGeneration:preparedAttention.maxGeneration,
+          nextCursor:preparedAttention.nextCursor,coverage:preparedAttention.coverage}:{} )},
+      needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
@@ -2542,6 +2544,11 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)
         result={session:this.view(this.session(parts[1]!))};
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[3]==='attention'&&parts.length===4){
+        const session=this.session(parts[2]!);
+        if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
+        result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
+      }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');

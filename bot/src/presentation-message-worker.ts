@@ -254,7 +254,7 @@ async function rebuild() {
       prepared.transaction(()=>{
         keepLease();
         for(const row of page.messages)writeInboxMessage(generation,row);
-        for(const row of page.topicEvents)insertTopicEvent.run(generation,row.topicId,row.sequence,row.sessionId,row.eventId);
+        for(const row of page.topicEvents){insertTopicEvent.run(generation,row.topicId,row.sequence,row.sessionId,row.eventId);topics.writeEvent(generation,row.sequence);}
         for(const row of page.ownerMessages)writeOwnerVersion(generation,row);
       })();
       await Bun.sleep(0);
@@ -319,14 +319,15 @@ async function rebuild() {
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)){await rebuild();return;}
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
         turn_id:number|null;request_id:string|null;topic_id:string|null;target_session_id:number|null;
         target_input_id:string|null}[];
   if(!changes.length){
-    prepared.transaction(()=>{keepLease();receipts.refreshDue(current.generation);})();
+    prepared.transaction(()=>{keepLease();receipts.refreshDue(current.generation);
+      if(Date.now()-lastTopicCollection>60_000){topics.collectPage();lastTopicCollection=Date.now();}})();
     return;
   }
   const resolveRoot=inboxRootResolver(source);
@@ -374,7 +375,7 @@ async function catchUp() {
       prepared.query(`UPDATE presentation_messages SET entry_kind=? WHERE generation=? AND input_id=?`)
         .run(event?.kind==='final'?'final':'other',current.generation,inputId);
     }
-    for(const row of newTopicEvents)insertTopicEvent.run(current.generation,row.topicId,row.sequence,row.sessionId,row.eventId);
+    for(const row of newTopicEvents){insertTopicEvent.run(current.generation,row.topicId,row.sequence,row.sessionId,row.eventId);topics.writeEvent(current.generation,row.sequence);}
     for(const row of newOwnerMessages)writeOwnerVersion(current.generation,row);
     for(const turnId of turnsToRefresh){
       const results=source.query(`SELECT sequence,session_id AS sessionId,event_id AS messageId FROM session_owner_events
@@ -427,7 +428,7 @@ async function catchUp() {
   })();
 }
 
-let checkedDisplay=false;
+let checkedDisplay=false,lastTopicCollection=0;
 while(true){
   try {if(claimLease()){
     if(!checkedDisplay){
