@@ -53,6 +53,11 @@ His own messages show the door they came through ("You · iPhone Action Button",
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
 the capture's recorded source or the door thnkr.ing names for its own screens.
 
+An outside CLI agent uses `router-actions.sh external <name> capture` at the owner
+socket. That capture is recorded as `Outside agent · <name>` and enters the normal
+Inbox router turn. It is separate from `test-capture`, which cites an existing run
+and deliberately starts no Inbox turn.
+
 ## Durable receipt
 
 New durable intake returns 202; an identical duplicate returns 200:

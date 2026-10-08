@@ -27,7 +27,7 @@ function socketPath() {
 /** Whether the owner applies this request at most once however often it is sent. */
 export function resendIsSafe(path: string, body?: unknown) {
   if (body === undefined) return true;
-  return path.startsWith('/session-communication/');
+  return path.startsWith('/session-communication/') || path.startsWith('/external/');
 }
 
 function failureKind(error: unknown): "never-reached" | "maybe-reached" {

@@ -145,6 +145,10 @@ export function doorOf(input:AcceptedSessionInput):string|null {
 }
 
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
+  const external=db.query('SELECT agent_name,text,request_id FROM session_external_requests WHERE target_input_id=?').get(input.id) as {agent_name:string;text:string;request_id:string}|null;
+  if(external)return {author:{kind:'agent',outsideAgent:{name:external.agent_name,label:`Outside agent · ${external.agent_name}`},requestId:external.request_id,communication:'request'},text:external.text};
+  const capture=JSON.parse(input.payload_json).capture?.source?.metadata?.outsideAgent;
+  if(typeof capture==='string')return {author:{kind:'agent',outsideAgent:{name:capture,label:`Outside agent · ${capture}`}}};
   const corrected=input.origin==='human'?authorCorrection(input.id):null;
   if(corrected){
     const session=corrected.authorSessionId===null?undefined:authorSession(corrected.authorSessionId);

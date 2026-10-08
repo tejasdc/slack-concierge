@@ -5,6 +5,7 @@ import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type Routed
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
 import {usageBreakdown} from './usage-breakdown';
+import {log} from './log';
 
 // macOS has no /proc: the only proof that nothing listens on a leftover socket entry is
 // a refused connection to it. A connection that opens proves a live listener.
@@ -45,10 +46,36 @@ async function removeUnboundSocket(path: string) {
 }
 
 /** One handler for the owner API and the agent CLI surface; the socket and any peer listener share it. */
-export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+const startedAt=new Date().toISOString();
+const release=(()=>{
+  const supplied=process.env.CONCIERGE_RUNTIME_GIT_SHA;
+  if(/^[0-9a-f]{40}$/.test(supplied??''))return supplied!;
+  try {const commit=JSON.parse(readFileSync(process.env.CONCIERGE_RELEASE_MANIFEST??'', 'utf8')).git_commit;
+    return /^[0-9a-f]{40}$/.test(commit)?commit:null;} catch{return null;}
+})();
+export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[]) {
   return async function fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if(request.method==='GET'&&url.pathname==='/supervisor/ping')
+        return Response.json({ok:true,pid:process.pid,startedAt,release});
+      if(request.method==='POST'&&url.pathname==='/supervisor/wake') {
+        const woken=wake?.()??[];
+        log('info','supervisor_wake',{woken});
+        return Response.json({woken});
+      }
+      if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
+        const input=await request.json() as any;
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
+        return Response.json(owner.acceptInboxCapture({source:{kind:'monologue',id:input.id,recordedAt:input.recordedAt,
+          title:`Outside agent · ${input.name}`,metadata:{outsideAgent:input.name}},text:input.text,files:input.files}),{status:202});
+      }
+      if(request.method==='POST'&&url.pathname==='/external/ask'&&sessions)
+        return Response.json(sessions.externalAsk(await request.json()),{status:202});
+      if(request.method==='POST'&&url.pathname==='/external/get'&&sessions){
+        const input=await request.json() as {name:string;request_id:string};
+        return Response.json(sessions.externalGet(input.name,input.request_id));
+      }
       const native=await owner?.handle(request);
       if(native)return native;
       if (request.method === 'POST' && url.pathname.startsWith('/session-communication/') && sessions) {
@@ -98,14 +125,14 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
   };
 }
 
-export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[]) {
   const path = join(stateDir, "requests.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
   await removeUnboundSocket(path);
   const server = Bun.serve({
     unix: path,
     idleTimeout: 0,
-    fetch: requestApiHandler(coordinator, workspaceUrl, sessions, owner),
+    fetch: requestApiHandler(coordinator, workspaceUrl, sessions, owner,wake),
   });
   chmodSync(path, 0o600);
   return server;

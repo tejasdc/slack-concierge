@@ -8,6 +8,7 @@ import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurn
 
 export type MessageAuthor = {
   kind: 'human'|'agent'|'service'|'unknown';
+  outsideAgent?: {name:string;label:string};
   session?: {id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};
   inputId?:string; runId?:string; requestId?:string;
   /** `notice`: the service wrote it itself with no agent behind it (a retry that gave up, a failed update). */

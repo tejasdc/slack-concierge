@@ -222,6 +222,90 @@ export class SessionCommunicationCoordinator {
         if (!this.dependencies.peers) throw new Error('No peer Concierge instance is configured on this runtime.');
         return this.dependencies.peers;
     }
+    externalAsk(input:{name:string;address:string;action_id:string;text:string;requestedEffect?:'work'|'informational'}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input.name))throw new Error('Invalid outside agent name.');
+        action(input.action_id);text(input.text);
+        const effect=input.requestedEffect??'informational';
+        if(effect!=='work'&&effect!=='informational')throw new Error('Invalid requested effect.');
+        const target=this.address(input.address,true),session=getSessionById(target.session)!;
+        if(session.provider_id==='chatgpt'||sessionMetadata(session).interactionPolicy==='consultation-only'&&effect==='work')
+            throw new Error('This recipient cannot take an outside work request.');
+        const digest=hash(JSON.stringify([input.address,input.text,effect]));
+        const prior=()=>db.query('SELECT * FROM session_external_requests WHERE agent_name=? AND action_id=?').get(input.name,input.action_id) as any;
+        const existing=prior();
+        if(existing){if(existing.payload_hash!==digest)throw new Error('Idempotency conflict.');this.dependencies.owner.dispatch(getAcceptedSessionInput(existing.target_input_id)!);return this.externalGet(input.name,existing.request_id);}
+        const id=randomUUID(),targetInputId=`request:${id}`;
+        db.transaction(()=>{
+            const raced=prior();
+            if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict.');return;}
+            const firstInput={text:`Session request ${id} from outside agent ${input.name}. This is agent-authored input, not a human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,requestedEffect:effect,delivery:'queue'};
+            retainSessionInput({id:targetInputId,sessionId:session.id,scope:`external:${input.name}`,actionId:input.action_id,kind:'input',origin:'agent',payload:firstInput,requestId:id});
+            db.query(`INSERT INTO session_external_requests(request_id,agent_name,action_id,target_session_id,target_input_id,requested_effect,text,payload_hash,created_at_ms)
+                VALUES(?,?,?,?,?,?,?,?,?)`).run(id,input.name,input.action_id,session.id,targetInputId,effect,input.text,digest,this.now());
+        })();
+        this.dependencies.owner.dispatch(getAcceptedSessionInput(targetInputId)!);
+        this.wake();
+        return this.externalGet(input.name,(prior() as any).request_id);
+    }
+    externalGet(name:string,id:string) {
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(name))throw new Error('Invalid outside agent name.');
+        const row=db.query('SELECT * FROM session_external_requests WHERE request_id=? AND agent_name=?').get(id,name) as any;
+        if(!row)throw new Error('Unknown outside request.');
+        const accepted=getAcceptedSessionInput(row.target_input_id);
+        const observed=accepted?readInputExecution(accepted):null;
+        const terminal=observed&&['completed','failed','canceled','uncertain'].includes(observed.state);
+        return {request_id:id,from:`Outside agent · ${name}`,status:!row.outcome&&terminal?'awaiting-explicit-reply':row.status,outcome:row.outcome,
+            target_session_id:`concierge:${row.target_session_id}`,target_input_id:row.target_input_id,
+            execution:observed?{state:observed.state,acknowledged_at:observed.acknowledgedAt}:null,
+            result:row.result_json?JSON.parse(row.result_json):null,
+            events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
+                .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
+    }
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+        const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
+        if(!request)return null;
+        const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
+            :input.source.channel_id?JSON.stringify([input.source.channel_id,input.source.message_ts,input.action_id]):null;
+        const committed=priorKey?db.query('SELECT * FROM session_external_replies WHERE action_key=?').get(priorKey) as any:null;
+        if(committed){
+            const saved=JSON.parse(committed.payload_json);
+            if(committed.request_id!==input.request_id||saved.text!==input.text||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
+                throw new Error('Idempotency conflict: outside reply changed.');
+            return this.externalGet(request.agent_name,request.request_id);
+        }
+        const actor=this.actor(input.source);
+        if(actor.session!==request.target_session_id)throw new Error('Only the recipient session can reply.');
+        if(!getAcceptedSessionInput(request.target_input_id)?.turn_id)throw new Error('This request has not been delivered to the recipient yet.');
+        action(input.action_id);message(input.text,!!(input.attachments?.length||files(input.files).length));
+        if(typeof input.final!=='boolean')throw new Error('Specify whether this is a final answer.');
+        if(input.final&&request.requested_effect==='work'&&!input.workDisposition)throw new Error('A final work reply needs a disposition.');
+        if(input.workDisposition&&(!input.final||request.requested_effect!=='work'))throw new Error('A work disposition requires a final work reply.');
+        const key=actor.inputId?JSON.stringify(['input',actor.inputId,input.action_id])
+            :JSON.stringify([actor.source.channel_id,actor.source.message_ts,input.action_id]);
+        const prior=db.query('SELECT * FROM session_external_replies WHERE action_key=?').get(key) as any;
+        if(prior)return this.externalGet(request.agent_name,request.request_id);
+        if(request.outcome)throw new Error('This outside request already has a final reply.');
+        const sourceInputId=actor.inputId??this.peerActor(actor).inputId;
+        const attachments=this.retainAttachments(sourceInputId,input.action_id,'reply-file',input);
+        const payload={text:input.text,final:input.final,responding_session_id:`concierge:${actor.session}`,
+            ...(input.workDisposition?{workDisposition:input.workDisposition}:{}),...(attachments.length?{attachments}:{}),
+            ...(input.evidence?{evidence:input.evidence}:{})};
+        const eventId=randomUUID();
+        db.transaction(()=>{
+            db.query('INSERT INTO session_external_replies(event_id,request_id,action_key,payload_json,final,created_at_ms) VALUES(?,?,?,?,?,?)')
+                .run(eventId,request.request_id,key,JSON.stringify(payload),input.final?1:0,this.now());
+            if(input.final){
+                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':'answered';
+                db.query("UPDATE session_external_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?")
+                    .run(outcome,JSON.stringify({...payload,event_id:eventId}),request.request_id);
+            }
+            const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
+                payload:{...payload,sourceInputId,sourceRunId:nativeRunId(actor.turn)},sourceInputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
+            db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId}),operation.id);
+        })();
+        return this.externalGet(request.agent_name,request.request_id);
+    }
     /**
      * Custody for the files a reply or post carries, retained before the action is
      * acknowledged. Own bytes are uploaded under an action identity derived from the
@@ -371,6 +455,12 @@ export class SessionCommunicationCoordinator {
             owed.push({request_id:request.request_id,requester:`concierge:${request.source_session_id}`,requested_effect:effect,command:replyCommand(request.request_id,effect)});
         }
         owed.push(...(this.dependencies.peers?.owedDeliveries(running.session_id,runId,{offer:input.offer??[],remind:!!input.remind})??[]));
+        for(const request of db.query(`SELECT request_id,agent_name,requested_effect,target_input_id FROM session_external_requests
+            WHERE target_session_id=? AND outcome IS NULL ORDER BY created_at_ms`).all(running.session_id) as any[]) {
+            if(!getAcceptedSessionInput(request.target_input_id)?.turn_id)continue;
+            owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
+                requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
+        }
         return {owed,waiting:false,source};
     }
     /**
@@ -1052,10 +1142,13 @@ export class SessionCommunicationCoordinator {
             const viaPeer=!!(this.dependencies.peers&&!this.local(input.request_id)&&this.dependencies.peers.hasDelivery(input.request_id));
             input={...input,text:handBackText(input.hand_back,input.text,session,viaPeer?null:sessionAddress(session))};
         }
-        if(input.workDisposition==='needs_decision')
+        const outsideRequest=!!db.query('SELECT 1 FROM session_external_requests WHERE request_id=?').get(input.request_id);
+        if(input.workDisposition==='needs_decision'&&!outsideRequest)
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can})};
         else if(input.workDisposition==='completed')
             input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
+        if(outsideRequest)
+            return this.externalReply(input)!;
         const attached = !!(input.attachments?.length || files(input.files).length);
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
             // A retry after the run ended returns the committed reply, as for a local request.

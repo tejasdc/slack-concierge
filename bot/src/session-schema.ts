@@ -213,6 +213,20 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS session_peer_deliveries_open ON session_peer_deliveries(peer) WHERE closed_at_ms IS NULL;
+        -- A requester outside Concierge has no session or return inbox. Its answer stays here.
+        CREATE TABLE IF NOT EXISTS session_external_requests (
+          request_id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, action_id TEXT NOT NULL,
+          target_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          target_input_id TEXT NOT NULL UNIQUE, requested_effect TEXT NOT NULL,
+          text TEXT NOT NULL, payload_hash TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'recorded', outcome TEXT, result_json TEXT,
+          created_at_ms INTEGER NOT NULL, UNIQUE(agent_name,action_id)
+        );
+        CREATE TABLE IF NOT EXISTS session_external_replies (
+          event_id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES session_external_requests(request_id),
+          action_key TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL, final INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS session_peer_replies (
           event_id TEXT PRIMARY KEY,
           request_id TEXT NOT NULL REFERENCES session_peer_deliveries(request_id) ON DELETE CASCADE,

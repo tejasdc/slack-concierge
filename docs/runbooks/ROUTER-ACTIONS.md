@@ -1,5 +1,29 @@
 # Router action helper
 
+## Outside agents
+
+An agent launched outside Concierge has no accepted Concierge input/run pair. On the
+server, it may use the installed helper without impersonating Tejas or creating a
+requester session:
+
+```bash
+router-actions.sh external work-flow-supervisor capture -- "A message for the Inbox router"
+router-actions.sh external work-flow-supervisor capture --file /path/to/evidence.txt -- "Please route this"
+router-actions.sh external work-flow-supervisor ask '<exact-discovered-session-address>' --action-id incident-42 --requested-effect work -- "Check this incident"
+router-actions.sh external work-flow-supervisor get '<request-id>'
+```
+
+Names match `^[a-z][a-z0-9-]{2,40}$`. `ask` also accepts `--text-file` in place of
+text after `--`; its action ID is stable across retries. Capture enters the normal
+Inbox intake and starts its router turn. Direct asks use the normal recipient queue
+and reply command. The outside caller polls `get`; no return input is delivered to
+an imaginary session. The owner socket is root only. The old `test-capture` command
+remains a path check by an agent already inside Concierge and starts no Inbox turn.
+
+The same root-only owner socket answers `GET /supervisor/ping` with process identity,
+start time and installed release, and `POST /supervisor/wake` with the owner paths it
+woke. Wake schedules existing work without replaying any input.
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when

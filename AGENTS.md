@@ -111,6 +111,9 @@ authorization or a change to the default rapid-iteration policy.
 - Capture ingress owns only its capture database. Its executable may import the storage-neutral
   retry and database-retry primitives, but never the application notice worker, retry adapter or
   Concierge ledger; the service user is deliberately not given that production state path.
+- An outside CLI agent uses `router-actions.sh external` for Inbox capture or an addressed request;
+  its named authorship and pollable reply live in the owner ledger, with no invented requester session.
+  The [router helper](docs/runbooks/ROUTER-ACTIONS.md) and [wire contract](docs/contracts/session-owner-v1.md) own this entrance.
 - Retained audio attachments keep their original bytes and an optional transcript
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch

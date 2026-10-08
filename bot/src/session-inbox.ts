@@ -77,6 +77,7 @@ export function inboxMessage(row:any) {
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',agent=result||post;
   const eventPayload=JSON.parse(row.payload_json);
+  const outsideAgent=payload.capture?.source?.metadata?.outsideAgent;
   // An agent message carries its own files: a post names them, and a result names them when
   // the retained result payload does. A human capture or a returned answer carries the
   // attachments of its accepted input.
@@ -95,6 +96,7 @@ export function inboxMessage(row:any) {
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
+    ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent' as const,outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
       // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
       ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),

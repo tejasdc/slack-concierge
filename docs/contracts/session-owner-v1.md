@@ -1,5 +1,28 @@
 # Unified session owner wire contract v1
 
+## Outside-agent owner socket entrance
+
+The root-only `requests.sock` also accepts `GET /supervisor/ping` and
+`POST /supervisor/wake`. Ping reads no ledger; it returns `{ok,pid,startedAt,release}`.
+Wake requests the existing queue, communication, peer, project and watch paths to
+run, and returns `{woken:[...]}` without replaying input.
+
+`POST /external/capture` accepts `{name,id,recordedAt,text,files?}` and calls the
+normal Inbox capture intake with `source.kind:"monologue"` and retained
+`source.metadata.outsideAgent`. It queues the ordinary router turn. `POST
+/external/ask` accepts `{name,address,action_id,text,requestedEffect?}`; the exact
+local session address is resolved by the owner. A repeated `(name,action_id)` with
+the same content returns the same request; changed content is refused. The owner
+retains `request:<id>` on the recipient's queue. Its normal `sessions reply` closes
+the request, while `POST /external/get` with `{name,request_id}` reads the retained
+state, execution and replies. The outside caller has no Concierge session, so no
+return input or requester notice is created. A recipient that ends without an
+explicit final leaves a pollable `awaiting-explicit-reply` state.
+
+An outside name matches `^[a-z][a-z0-9-]{2,40}$`. Accepted input authorship carries
+`author.kind:"agent"` and `author.outsideAgent:{name,label}`; the label is
+`Outside agent · <name>`. It never claims a human or Concierge session identity.
+
 Implementation contract for the approved [joint convergence](../plans/2026-09-15-unified-session-convergence.md), not a second design. Concierge is the sole catalogue, accepted-input, execution FIFO, request/reply and recovery owner. Thinkering implements authenticated surface and application/provider capability adapters.
 
 ## Transport and authentication

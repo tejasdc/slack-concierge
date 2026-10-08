@@ -1153,6 +1153,8 @@ export class SessionOwner {
     if(!['pebble','thinkering','monologue'].includes(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
     if(source.title!==undefined&&typeof source.title!=='string')throw new SessionOwnerError('Capture title must be text.');
     if(source.metadata!==undefined)object(source.metadata);
+    const outsideAgent=(source.metadata as Record<string,unknown>|undefined)?.outsideAgent;
+    if(outsideAgent!==undefined&&(!/^[a-z][a-z0-9-]{2,40}$/.test(String(outsideAgent))||source.kind!=='monologue'))throw new SessionOwnerError('Invalid outside agent capture source.');
     if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
     if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
     // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
@@ -1177,11 +1179,11 @@ export class SessionOwner {
         return id;
       });
       const importOnly=input.importOnly===true||!!agent;
-      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent?'agent':'human',
+      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent||outsideAgent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),
         payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,originalTextAttachmentId:presentation.report?attachments[0]:null},delivery:'queue'}}).input;
       if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
-      if(!agent)recordSessionInputAttention(retained.id);
+      if(!agent&&!outsideAgent)recordSessionInputAttention(retained.id);
       recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
       // Queue inside this transaction, so receipt recovery never depends on a
       // second, unrecorded admission after the capture has been acknowledged.
