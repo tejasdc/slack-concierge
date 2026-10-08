@@ -50,7 +50,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
  * `detail` is one sentence for him about what actually happened, present only when
  * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
@@ -153,7 +153,7 @@ export class SessionExecutionHost {
       ?[{id:'in-use',label:account.label,detail:account.detail,current:true,signedIn:true},...profiles.filter(profile=>profile.label!==account.label)]
       :profiles;
     const checked=listed.map(profile=>({...profile,signedIn:profile.signedIn!==false&&!refused.has(profile.label)&&!(brokenInUse&&profile.current)}));
-    if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,
+    if(provider==='codex'&&account)return {provider,mode:'device',pending:this.codexLogin.hasPending(),signInKeepsCurrent:true,pendingFor:null,pendingUrl:null,
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:brokenInUse||refused.has(account.label)?`Codex on this machine is signed out: the sign-in for ${account.label} stopped working. Sign in again to run Codex work here.`:'',
       signedIn:!(brokenInUse||refused.has(account.label)),account,profiles:checked,usage};
@@ -165,6 +165,10 @@ export class SessionExecutionHost {
       // Which account's row a waiting sign-in belongs to, so a reloaded page puts the code
       // box back under the account he pressed rather than under "another account".
       pendingFor:provider==='claude-code'?this.claudeLogin.pendingFor():null,
+      // The page that sign-in is waiting on, so a page that lost the answer to its press (a reload,
+      // or a read that raced the start) can still open it; the Mac's browser agent was left with a
+      // code box and no link on 2026-10-08. It goes only to the authenticated Accounts read.
+      pendingUrl:provider==='claude-code'?this.claudeLogin.pendingUrl():null,
       // A Codex sign-in finishes in the browser, so its refusal can only reach him here.
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):'')

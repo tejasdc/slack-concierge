@@ -47,6 +47,8 @@ interface PendingLogin {
   exited: Promise<number | null>;
   state: PendingLoginState;
   expiry: ReturnType<typeof setTimeout> | null;
+  /** The sign-in page this login is waiting on, so a page that reloads, or lost its answer, can offer it again. */
+  url: string | null;
 }
 
 function stripTerminalEscapes(text: string): string {
@@ -134,6 +136,12 @@ export class ProviderLoginManager {
     return this.pending.has(provider);
   }
 
+  /** The page a pasted-code sign-in is waiting on, while it waits for its code. */
+  pendingLoginUrl(provider: string): string | null {
+    const login = this.pending.get(provider);
+    return login?.state === "awaiting_code" ? login.url : null;
+  }
+
   async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code",
     env: Record<string, string> = {}): Promise<AuthLoginStartResult> {
     // Reserve the provider slot before any await so a second concurrent start
@@ -153,6 +161,7 @@ export class ProviderLoginManager {
       output: "",
       state: "starting",
       expiry: null,
+      url: null,
       exited: new Promise((resolve) => {
         child.on("error", () => resolve(null));
         child.on("close", (code) => resolve(code));
@@ -201,6 +210,7 @@ export class ProviderLoginManager {
       return this.record(provider, flow, { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "no_url_before_timeout" });
     }
     login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
+    login.url = url;
     const ttlMs = this.options.pendingTtlMs ?? 10 * 60_000;
     login.expiry = setTimeout(() => { void this.abandon(provider); }, ttlMs);
     // Announced before the result is returned, so the sign-in is already holding updates

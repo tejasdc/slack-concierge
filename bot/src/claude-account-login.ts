@@ -53,6 +53,7 @@ export class ClaudeAccountLogin {
   constructor(private readonly manager: ProviderLoginManager) {}
 
   hasPending(): boolean { return this.manager.hasPendingLogin("claude-code"); }
+  pendingUrl(): string | null { return this.manager.pendingLoginUrl("claude-code"); }
 
   /** The account a waiting sign-in is for, when it was started from that account's row. */
   pendingFor(): string | null { return this.hasPending() ? this.staging?.expected ?? null : null; }
