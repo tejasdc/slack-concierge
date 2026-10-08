@@ -155,10 +155,10 @@ authorization or a change to the default rapid-iteration policy.
   captures as that app; a page in a browser is screenshotted by the browser instead, which
   asks him for nothing. Prefer one window to a whole display, and treat a capture and a window
   title as his private material. See [peer instances](docs/runbooks/PEER-INSTANCES.md#screenshots).
-- Claude sign-in approval in Tejas's Chrome on the Mac uses the installed
-  `~/.local/bin/approve-claude-signin` helper with a link and expected account on stdin.
-  It verifies the account shown by Claude before Authorize and returns a paste code only
-  from its own new tab. See [Claude sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md).
+- Claude sign-in renewal uses the addressed Mac Codex browser worker and the existing
+  Thinkering Accounts flow. Chrome computer use proved approval, code transfer and
+  switching between both saved accounts; the Apple Events helper remains unproven.
+  See [Claude sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md).
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history. A native turn parked with an unconfirmed outcome is never
