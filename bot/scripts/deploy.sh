@@ -78,6 +78,20 @@ LAST_FAILURE_LINE=0
 DEPLOY_FAILURE_REASON="The deployment runner stopped before the current operation reported a result."
 INTERRUPTED_RECOVERY_HANDLED=0
 
+# A start this runner asks for is not a crash. The units' StartLimitBurst (5 in 10 minutes)
+# exists to stop a crash loop, but systemd counts every start; six pushes deployed within ten
+# minutes on 2026-10-08 and the sixth deliberate restart was refused, leaving Concierge and
+# capture ingress stopped. Clearing the counter first keeps the limit for crashes only.
+restart_unit() {
+  systemctl reset-failed "$1" 2>/dev/null || true
+  systemctl restart "$1"
+}
+
+start_unit() {
+  systemctl reset-failed "$1" 2>/dev/null || true
+  systemctl start "$1"
+}
+
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
   if git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
@@ -471,7 +485,7 @@ handoff_failed_deployment_to_repair() {
   if probe_capture_ingress && probe_service; then
     restored_health=1
   else
-    systemctl restart "$SERVICE" || true
+    restart_unit "$SERVICE" || true
     if probe_capture_ingress && probe_service; then restored_health=1; fi
   fi
   if [ "$restored_health" = "1" ]; then
@@ -726,7 +740,7 @@ restore_last_known_good_and_start_repair() {
   local restored_commit
   restored_commit=$(printf '%s\n' "$restore_output" | jq -er '.git_commit')
   DEPLOYED_COMMIT="$restored_commit"
-  systemctl restart "$SERVICE"
+  restart_unit "$SERVICE"
   probe_capture_ingress
   probe_service
   record_deployment_phase releasing "$(jq -cn \
@@ -963,12 +977,12 @@ deploy() {
     DEPLOY_FAILURE_REASON="The prior capture ingress process could not be stopped."
     systemctl stop "$CAPTURE_SERVICE"
     DEPLOY_FAILURE_REASON="The replacement capture ingress process could not be started."
-    systemctl start "$CAPTURE_SERVICE"
+    start_unit "$CAPTURE_SERVICE"
     DEPLOY_FAILURE_REASON="Capture admission could not be restored after replacing capture ingress."
     unblock_capture_admission
   else
     DEPLOY_FAILURE_REASON="The capture ingress service could not be restarted."
-    systemctl restart "$CAPTURE_SERVICE"
+    restart_unit "$CAPTURE_SERVICE"
   fi
   DEPLOY_FAILURE_REASON="Capture ingress did not pass its authenticated functional health check."
   probe_capture_ingress
@@ -983,7 +997,7 @@ deploy() {
   DEPLOY_FAILURE_REASON="The durable verification checkpoint could not be recorded."
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   local candidate_failure="" candidate_failure_class=""
-  if ! systemctl restart "$SERVICE"; then
+  if ! restart_unit "$SERVICE"; then
     candidate_failure="Candidate systemd restart failed for commit $DEPLOYED_COMMIT."
     candidate_failure_class=systemd-restart
   elif ! probe_service; then
@@ -1036,7 +1050,7 @@ control_recovery_failed() {
   set +e
   recovery_error="Controller recovery stopped at $CURRENT_DEPLOY_STAGE (exit $code)."
   if [ "$CONTROL_RECOVERY_ACTIVATED" = 1 ]; then
-    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && systemctl restart "$SERVICE" && probe_capture_ingress && probe_service; then
+    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && restart_unit "$SERVICE" && probe_capture_ingress && probe_service; then
       release_deployment_gate
     else
       recovery_error="$recovery_error Healthy release restoration requires explicit recovery."
@@ -1076,7 +1090,7 @@ recover_control() {
   if [ -n "$prior_activation" ]; then
     CONTROL_RECOVERY_ACTIVATED=1
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg
-    systemctl restart "$SERVICE"
+    restart_unit "$SERVICE"
     probe_capture_ingress
     probe_service
   fi
@@ -1086,7 +1100,7 @@ recover_control() {
   CONTROL_RECOVERY_ACTIVATED=1
   "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
   record_deployment_phase restarting
-  systemctl restart "$SERVICE"
+  restart_unit "$SERVICE"
   record_deployment_phase verifying
   CURRENT_DEPLOY_STAGE=control-recovery-health
   probe_capture_ingress

@@ -71,7 +71,7 @@ restore_legacy_unit() {
   [ -n "$BOT_UNIT_BACKUP" ] || return 0
   cp -a "$BOT_UNIT_BACKUP" "$SYSTEMD_DIR/concierge-bot.service"
   systemctl daemon-reload
-  systemctl restart "$SERVICE"
+  restart_unit "$SERVICE"
 }
 
 cutover_failed() {
@@ -191,7 +191,7 @@ main() {
   systemctl daemon-reload
 
   record_deployment_phase restarting "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\"}"
-  systemctl restart "$SERVICE"
+  restart_unit "$SERVICE"
   record_deployment_phase verifying "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\"}"
   probe_capture_ingress
   probe_service
