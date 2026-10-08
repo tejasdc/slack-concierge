@@ -28,6 +28,25 @@ id with a different condition is refused.
 | `sessions watch` route (`SessionCommunicationCoordinator.watch`) | the owner socket only | validating the registering run exactly as other `sessions` commands do; never forwarded to a peer, never on a public route |
 | Execution host (command kind) | `concierge-exec-<id>` on Linux, a launchd job on the Mac | running the command and journaling its exit (`x` frame) |
 
+## Writing a condition that can actually pass
+
+The watch reports what its command says; it cannot tell a condition that is false from one that
+could never be true. So the condition is the agent's responsibility, and two mistakes are easy.
+
+**A condition asserting something is *gone* needs a string only that thing could produce.** On
+2026-10-08 a watch waited for a release that had removed an agent-callable command, with the
+success test "the words `reset-credit` are absent from the installed bundle". Those words also
+name the module `codex-reset-credit.ts`, which the same change deliberately kept — so the test
+could not pass even after a perfect install. It ran its full three hours and reported
+`not-installed-yet`, which would have been read as a stuck deployment that was not stuck.
+
+**Pair it with a positive marker.** Something only the *new* code can emit settles it where an
+absence cannot: here `weekly-allowance-not-spent`, a reason string the replacement rule
+introduced. The install was in fact live, and the positive marker is what proved it.
+
+And when the question is whether a route or command is gone, **call it** — the running service
+refusing it is the fact; a string in a bundle is a proxy for it.
+
 ## Lifecycle
 
 `accepted → observing → fired | expired | failed | cancelled`; delivery `pending → accepted`.
