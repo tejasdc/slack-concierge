@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const stateDirectory = process.env.CONCIERGE_STATE_DIR;
@@ -11,6 +11,23 @@ if (!existsSync(statePath)) throw new Error(`Concierge state database does not e
 const backupPath = process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP
   || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
+
+/**
+ * Every deployment writes a full copy of the ledger (1.4 GB on 2026-10-07) and nothing removed
+ * them: 278 copies, 151 GB, filled the disk that evening and Concierge and the capture service
+ * could not start. After a migration that succeeded, only the newest copies are kept. Hand-made
+ * backups in the same folder have other names and are never touched.
+ */
+const AUTOMATIC_COPIES_KEPT = 20;
+function pruneAutomaticCopies(): number {
+  if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
+  const folder = dirname(backupPath);
+  const copies = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
+    .sort((a, b) => Number(b.split(".")[2]) - Number(a.split(".")[2]));
+  for (const name of copies.slice(AUTOMATIC_COPIES_KEPT))
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(join(folder, name + suffix), { force: true });
+  return Math.max(0, copies.length - AUTOMATIC_COPIES_KEPT);
+}
 
 function quotedSqlPath(path: string) {
   return `'${path.replaceAll("'", "''")}'`;
@@ -44,7 +61,7 @@ try {
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
   checks(migrationDatabase);
   migrationDatabase.exec("COMMIT");
-  console.log(JSON.stringify({ status: "migrated", backup_path: backupPath }));
+  console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));
 } catch (error) {
   try { migrationDatabase.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
