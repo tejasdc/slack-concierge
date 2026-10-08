@@ -878,10 +878,9 @@ authorization or a change to the default rapid-iteration policy.
   so old ones clear; the app's banner, component and field are gone. See
   [interface-decisions D20](https://github.com/tejasdc/skills) and
   [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
-- **Claude conversations compact at 250k tokens, not ~967k** (`CLAUDE_AUTO_COMPACT_WINDOW` in
-  claude-code.ts, sent in every run's `--settings`): every model call and tool step re-sends the
-  whole conversation, and on 2026-10-08 that was 3.9 billion cached tokens a day at 324k per call
-  and drained his allowance. Measurements, alternatives and the measuring script are in
+- **Concierge never forces a conversation to summarise early**: Claude keeps its own default
+  compaction point [decision: agent-conversations-are-not-condensed]. Token measurements and the
+  measuring script are in
   [how long a conversation may grow](docs/architecture/PROVIDER-USAGE.md#how-long-a-conversation-may-grow).
 - A conversation that has filled up is not a failure to show him. Claude's `Prompt is too long`
   is recovered in place: `/compact` into the same live process, then the turn's accepted inputs

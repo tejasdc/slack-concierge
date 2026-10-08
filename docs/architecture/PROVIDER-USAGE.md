@@ -676,12 +676,9 @@ almost no uncached input; 29 sessions that passed 500k carried 77% of the cache 
 turn averaged 12.6 calls. Codex made 4,138 calls with 527 million cached input (its window
 compacts near 240k already).
 
-Every Concierge Claude run therefore carries `autoCompactWindow: 250000` in its `--settings`
-(`CLAUDE_AUTO_COMPACT_WINDOW` in `claude-code.ts`), applied at the next turn of every session,
-resumed ones included. Capping each call at the ~160k a 250k sawtooth averages would have cut
-that day's re-read volume by about 56%. Alternatives weighed: a smaller window (100–200k)
-compacts mid-task more often and loses working detail; fresh sessions seeded from a summary are
-what compaction already does; keeping the cache warm is already the one-hour default and a
-keepalive call costs a full re-read itself; withholding wakes is done where it was safe (partial
-replies wake nobody) and answers are never held [decision: answers-delivered-when-they-arrive].
+Concierge does not shorten conversations itself: an earlier change that made every Claude run
+summarise at 250k was removed the same day [decision: agent-conversations-are-not-condensed].
+Anthropic's own explanation of why a long session costs more, and its remedies (a fresh session
+for unrelated work; compaction only for continuity, and it is itself a large request), is in
+"Why usage climbs in a long session" at https://code.claude.com/docs/en/costs.
 Measure again with `python3 -I scripts/token-burn.py <hours>`.
