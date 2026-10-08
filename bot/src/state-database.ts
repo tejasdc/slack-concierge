@@ -3,6 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
+import { ledgerWriteResults } from './ledger-write-results';
 
 // Opening the ledger is separate from initializing application schema so the
 // deployment migrator can reserve SQLite's writer before either schema owner runs.
@@ -45,7 +46,7 @@ if (testInvocation) {
   }
 }
 
-export const db = observedDatabase(new Database(`${canonicalDir}/state.db`, { create: true }));
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, { create: true })));
 // Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
 // update restart, the retiring coordinator can still hold that lock for a moment; configuring
 // the timeout afterwards made the recovery preflight fail immediately instead of waiting.

@@ -1046,6 +1046,8 @@ Ledger calls are observed at the shared database boundary (`storage-observation.
 operation-local counts, duration, returned rows and value bytes; see
 [storage observation](docs/architecture/STORAGE-OBSERVATION.md). Keep the wrapper when adding
 readers so new pages retain query-cost evidence without logging SQL parameters or content.
+Ledger mutation results pass through `ledger-write-results.ts` so exact-one claims count only
+direct rows, never presentation-trigger writes; the same storage document owns this contract.
 
 When `owner_event_loop_lag` says the owner is held,
 `kill -URG <MainPID>` writes a 20-second JavaScript CPU profile with stacks to

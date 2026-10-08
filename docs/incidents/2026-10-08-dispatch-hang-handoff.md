@@ -1,5 +1,25 @@
 # 2026-10-08 — Dispatch is silently broken. Handoff report.
 
+## Receiving investigation: confirmed cause (19:20 UTC)
+
+The claim did not reach dispatch because it returned null after committing its update.
+The production `presentation_change_turns_update` trigger inserts two journal records.
+Bun 1.4.2 includes those in `.run().changes`, yielding 3 for one changed turn. At
+`claimNextQueuedTurn`, `claimed.changes !== 1` therefore returns null inside the transaction;
+the transaction commits, and the queue breaks before any dispatch trace. No exception occurs.
+An isolated in-memory reproduction with the installed Bun confirmed the inflated count;
+production schema inspection confirmed the trigger. This explains the entire missing-log
+sequence without a second claimant, stale bundle, or Codex daemon involvement.
+
+The repair adds a shared ledger write-result adapter using SQLite `changes()`, which excludes
+trigger and foreign-key side effects. The presentation journal is preserved. Both ordinary
+ledger callers and the standalone project-mapping writer use the adapter. Live installation
+and recovery evidence will be recorded below when observed. Earlier hypotheses below remain
+as the original handoff, not current conclusions.
+
+References: https://www.sqlite.org/c3ref/changes.html and
+https://bun.com/reference/bun/sqlite/Changes.
+
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not
 identify the root cause after extensive investigation and is unwilling to make

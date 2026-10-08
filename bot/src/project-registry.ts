@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
+import { ledgerWriteResults } from './ledger-write-results';
 
 export interface ManagedProjectRow {
   slack_channel_id: string | null;
@@ -24,7 +25,7 @@ export function replaceManagedProjectMapping(input: {
   replacement: ProjectMapping;
 }) {
   if (!existsSync(input.stateDbPath)) throw new Error(`Concierge registry does not exist: ${input.stateDbPath}`);
-  const database = new Database(input.stateDbPath, { strict: true });
+  const database = ledgerWriteResults(new Database(input.stateDbPath, { strict: true }));
   try {
     const before = input.expected;
     const after = input.replacement;

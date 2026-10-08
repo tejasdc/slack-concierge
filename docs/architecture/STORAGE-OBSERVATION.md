@@ -1,5 +1,13 @@
 # Storage work attribution
 
+Ledger writes pass through `ledgerWriteResults` before observation. Its mutation result counts
+only directly changed rows, using SQLite `changes()` synchronously on the same connection.
+Bun's raw `.run().changes` also counts trigger writes: presentation journaling made one claimed
+turn report three changes, so the queue committed it as running but returned no claim. The
+adapter preserves journal triggers, transaction ownership and insert identity while making
+existing exact-one lease checks valid. The standalone project-registry writer uses it too.
+Telemetry stays separate from this write-result contract. See the October 8 dispatch incident.
+
 The shared ledger connection is wrapped by `observedDatabase` in `state-database.ts`.
 `observeStorageOperation` scopes synchronous database work through async request execution;
 overlapping requests have separate counters. It does not create another connection, writer,
