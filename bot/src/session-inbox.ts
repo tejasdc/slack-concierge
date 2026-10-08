@@ -268,7 +268,7 @@ export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessio
 }
 /** What the agent reads with his forwarded thread reply, on this server or on his Mac alike. */
 export function forwardedReplyFraming(requestId:string,text:string) {
-  return `Session request ${requestId}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${requestId} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
+  return `Session request ${requestId}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${requestId} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision --summary "<one line>"), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
 }
 /**
  * An agent's answer, posted into the thread it was asked from as that agent's words the moment it

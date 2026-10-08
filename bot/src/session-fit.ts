@@ -184,10 +184,10 @@ export function handBackText(kind: unknown, text: string, session: SessionRow, a
   // Not its subject means the work belongs elsewhere, so only a too-loaded hand-back names its own project.
   const project = kind === 'too-loaded' ? basename(sessionMetadata(session).cwd ?? '') || '<project>' : '<the project this work belongs to>';
   if (!address) return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context; it runs on another machine, so use its peer address from sessions search with --consult.\n\n${text}`;
-  return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context: sessions ask --provider cc-opus --project ${project} --session-name "<this topic>" --consult ${address} <source-flags> --action-id <new id> --requested-effect work [--thread <message-id>] -- <text>\n\n${text}`;
+  return `Handed back (${HAND_BACK_KINDS[kind as HandBack]}).\nStart a fresh session that can ask this one for context: sessions ask --provider cc-opus --project ${project} --session-name "<this topic>" --summary "<one line>" --consult ${address} <source-flags> --action-id <new id> --requested-effect work [--thread <message-id>] -- <text>\n\n${text}`;
 }
 
 /** The pointer a fresh session starts with, so consulting the old one is as easy as reusing it. */
 export function consultPointer(address: string): string {
-  return `Earlier related work lives in session ${address}. Read it with sessions context ${address}, and ask it for context with sessions ask ${address} --requested-effect informational -- <question>. It is a consultant: do not send it work.`;
+  return `Earlier related work lives in session ${address}. Read it with sessions context ${address}, and ask it for context with sessions ask ${address} --requested-effect informational --summary "<one line>" -- <question>. It is a consultant: do not send it work.`;
 }

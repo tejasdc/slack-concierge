@@ -42,7 +42,7 @@ try {
   const source: { input_id: string; run_id: string } | null = response.ok ? response.result?.source ?? null : null;
   if (owed.length && source) {
     const tool = join(homedir(), '.local', 'bin', 'router-actions.sh');
-    const lines = owed.map(request => `- request ${request.request_id} from ${request.requester}: ${tool} sessions reply ${request.request_id} --source-input '${source.input_id}' --source-run '${source.run_id}' --action-id 'final-${request.request_id.slice(0, 8)}'${request.requested_effect === 'work' ? ' --work-disposition completed|failed|needs_decision' : ''} -- '<your result>'`);
+    const lines = owed.map(request => `- request ${request.request_id} from ${request.requester}: ${tool} sessions reply ${request.request_id} --source-input '${source.input_id}' --source-run '${source.run_id}' --action-id 'final-${request.request_id.slice(0, 8)}'${request.requested_effect === 'work' ? ' --work-disposition completed|failed|needs_decision' : ''} --summary '<one line saying what your answer is>' -- '<your result>'`);
     await Bun.write(Bun.stdout, JSON.stringify({ decision: 'block', reason: [
       `You are ending your turn while you still owe a final reply to ${owed.length === 1 ? 'this request' : 'these requests'}. Your turn's text is never read as a reply. Send it now:`,
       ...lines,

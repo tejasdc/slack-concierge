@@ -563,7 +563,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // A one-line summary goes first on every request and final reply: what the reader sees before the body.
   const summary=flags.get('--summary')?.trim();
   if(summary!==undefined&&(summary.length>200||summary.includes('\n')))invalid('--summary is one line of at most 200 characters.');
-  if(operation==='ask'&&provider!=='chatgpt'&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
+  if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
   if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
