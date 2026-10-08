@@ -114,7 +114,7 @@ export class GrafanaAlerts {
       const oldEpisode = previous && (alert.startsAt < previous.starts_at
         || (alert.startsAt === previous.starts_at && previous.status === "resolved" && alert.status === "firing"));
       if (previous && !oldEpisode && previous.channel !== this.options.destinationChannel && alert.status === "firing") {
-        // A retained Slack receipt cannot be the root of a native Inbox notice.
+        // A retained Slack receipt cannot be the root of a native repair receipt.
         this.options.db.query(`UPDATE grafana_alerts SET channel=?,root_ts=NULL,delivered_revision=0,
           delivery_status='pending',owner_id=NULL,error=NULL,investigation_episode=NULL
           WHERE fingerprint=?`).run(this.options.destinationChannel, alert.fingerprint);
@@ -164,7 +164,7 @@ export class GrafanaAlerts {
       const current = this.row(row.fingerprint)!;
       if (current.status !== "firing" || current.investigation_episode === current.starts_at) return;
       let turnId: number | null = null;
-      if (!["TestAlert", "ConciergeWebhookAcceptance"].includes(current.condition) && !GRAFANA_EXTERNAL_CONDITIONS.has(current.condition)) {
+      if (current.channel !== "native:inbox" && !["TestAlert", "ConciergeWebhookAcceptance"].includes(current.condition) && !GRAFANA_EXTERNAL_CONDITIONS.has(current.condition)) {
         const active = this.options.db.query(`SELECT turn.id FROM turns turn JOIN grafana_alerts alert
           ON alert.investigation_turn_id=turn.id WHERE alert.condition=? AND turn.turn_kind IN ('machine_alert','native')
           AND turn.status IN ('queued','running','delivering','parked') LIMIT 1`).get(current.condition) as { id: number } | null;

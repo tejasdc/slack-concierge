@@ -20,6 +20,6 @@ test('host and owner pressure retain native notices without admitting a second i
   expect(alerts.row(pressure.fingerprint)?.status).toBe('resolved');
   expect(db.query("SELECT fingerprint FROM grafana_alerts INDEXED BY grafana_condition_state WHERE condition='AX41ResourcePressure' AND status='firing' ORDER BY starts_at DESC LIMIT 1").get()).toBeNull();
   alerts.accept([{...pressure,fingerprint:'c'.repeat(16),condition:'ThinkeringBackupStale'}]);await alerts.settled();
-  expect(admitted).toBe(1);
+  expect(admitted).toBe(0); // Native health work goes through the standing repair queue.
  }finally{await alerts.stop();db.close();}
 });

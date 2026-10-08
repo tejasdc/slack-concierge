@@ -1,3 +1,4 @@
+import {ownerRequestLabel} from './owner-request-label';
 import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
 import {basename,dirname,join,relative,sep} from 'node:path';
@@ -2432,9 +2433,7 @@ export class SessionOwner {
       }
     }
     startOwnerLoopMonitor();
-    const staticParts=new Set(['sessions','v1','inbox','topics','resolve','entries','questions','focus','attention','dismiss','reads','events','stream','history','messages','attachments','transcription','search','context','providers','profiles','switch','saved-work','settings','start','time','schedule','drop','presentation','view','changes','receipts','reactions','pins','projects','workspace','files','usage','transcripts','stop','title','reply','reply-targets','received','source','turns','input','state','opening','create','operations','actions']);
-    const route=url.pathname.split('/').filter(Boolean).map(part=>staticParts.has(part)?part:':id').join('/');
-    const label=`${request.method} /${route}`;
+    const label=ownerRequestLabel(request.method,url.pathname);
     const started=performance.now();
     const requestId=randomUUID();
     ownerRequestsInFlight.set(requestId,label);

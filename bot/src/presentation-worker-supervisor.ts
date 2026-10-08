@@ -8,7 +8,7 @@ export function startPresentationWorker() {
   let restart:ReturnType<typeof setTimeout>|null=null;
   const launch=()=>{
     if(stopped)return;
-    child=Bun.spawn([process.execPath,workerPath],{env:process.env,stdin:'ignore',stdout:'ignore',stderr:'inherit'});
+    child=Bun.spawn([process.execPath,workerPath],{env:process.env,stdin:'ignore',stdout:'inherit',stderr:'inherit'});
     const running=child;
     void running.exited.then(code=>{
       if(child===running)child=null;

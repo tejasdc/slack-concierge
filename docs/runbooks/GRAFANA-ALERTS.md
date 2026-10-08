@@ -1,80 +1,67 @@
 # Grafana operational alerts
 
-Concierge accepts only authenticated, allowlisted Grafana alerts. Firing creates a
-provider-free native Inbox notice; recovery posts to and closes that same notice.
-One native service-authored investigation turn is queued per firing episode, with
-unfinished turns for the same condition coalesced. `ConciergeDegraded` and
-`AX41ResourcePressure` are investigated by the outside work-flow supervisor instead,
-so overlapping host, owner and speech pressure cannot start two repair agents. Neither
-path sends email or a Slack message. Older Slack alert receipts remain in the ledger
-for provenance; new firing episodes move to native delivery.
+Authenticated allowlisted alerts are retained in the existing Grafana ledger. Health
+work goes to the standing repair agent, never to a health thread in Tejas’s Inbox
+[decision: repair-agent-before-tejas]. No email or Slack message is sent for a new native
+alert. The old Slack design is historical reference only.
 
-The source of rule definitions, thresholds and resource dashboards is
-`remote-box/observability/alerts.json`, `remote-box/observability/dashboard.json`,
-and [its observability runbook](https://github.com/tejasdc/remote-box/blob/main/docs/observability.md).
-This project owns the webhook parser, native receipt, Inbox notice and native
-investigation admission. The retired Slack design remains in
-[the historical plan](../plans/2026-09-15-grafana-machine-alerts.md), not the
-current delivery contract.
+## One investigation owner
 
-## Contact and acceptance
+- Ordinary firing episodes create one `grafana_alert` repair notice. The existing
+  repair-notice delivery batches it into the standing Repair agent session; Grafana
+  never creates its own second native investigation session.
+- Recovery before admission marks the retained notice resolved and excludes it from
+  pending delivery. Recovery after admission adds one idempotent recovery fact to the
+  same standing repair session. A repeated resolution creates no further input.
+- `ConciergeDegraded` and `AX41ResourcePressure` remain exclusively with remote-box’s
+  external work-flow supervisor. Their Grafana receipt is retained, but firing/recovery
+  do not write a human notice or a competing repair notice. The external occurrence
+  owns investigation, terminal handoff and the existing unsolved escalation path.
+- Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
+  thread, repair notice, or investigator starts.
 
-- Grafana contact: `personal-observability-concierge`, UI-editable webhook POST to
-  `https://95-217-119-40.sslip.io/alerts/grafana`, with native Grafana JSON and
-  resolved messages enabled.
-- Authorization: bearer value from `/etc/concierge/grafana-alerts.token`, never in
-  the URL or logs. `bun bot/scripts/grafana-credential.ts` verifies or creates it
-  from the existing private ingress credential. The receiver permits at most 64
-  alerts and 256 KiB per request.
-- `GRAFANA_CONDITIONS` in `bot/src/grafana-webhook.ts` is the exact condition
-  allowlist. Adding or renaming a remote-box rule requires updating this allowlist
-  in the same delivery. Unknown-only batches return 422; mixed batches report
-  omitted unknowns. `AX41JournalNotRecording` and `YouTubeReadwiseStale` were
-  previously omitted and silently failed at this boundary.
-- A 202 means the alert was retained by the owner. It does **not** prove the
-  notice was filed or an investigation started. Check `grafana_alert_delivered`,
-  `grafana_alert_investigation`, the native Inbox item, and an actual queued or
-  running investigation turn. When the owner is down, Grafana retains delivery
-  failure; the independent box supervisor owns owner recovery.
+The external supervisor reads retained host pressure through `grafana_condition_state`
+and merges its episode/revision into the existing degradation occurrence. Disk, inode
+and host CPU pressure are covered even without owner/speech pressure. Unknown ledger
+or local evidence cannot resolve an occurrence; resolved host pressure removes that
+signal only. Late signals reach its terminal standing-repair handoff. Install the matching
+remote-box supervisor before activating this receiver.
 
-Grafana's fingerprint and start timestamp define one episode. The owner rejects
-stale firing after recovery, deduplicates deliveries, and keeps its receipt and
-investigation link in the existing state backup. Native Inbox publication is
-idempotent by episode key, so a process exit between publication and receipt
-commit can retry safely. Resolved alerts settle the matching Inbox notice.
-Other native shape fields are discarded: no labels, annotations, request bodies,
-SQL text, logs or credentials enter the notice. The notice is information for
-Tejas, not an instruction to the investigator.
+## Receipt and delivery contract
 
-## Diagnosis and repair
+The contact `personal-observability-concierge` posts native Grafana JSON to
+`https://95-217-119-40.sslip.io/alerts/grafana`, with resolved messages enabled. The bearer
+comes from `/etc/concierge/grafana-alerts.token`; never expose it in argv, URLs or logs.
+`bun bot/scripts/grafana-credential.ts` verifies the existing derived credential.
+Ingress allows at most 64 alerts and 256 KiB. `GRAFANA_CONDITIONS` is the condition
+allowlist and must agree with remote-box’s rules; unknown-only batches return 422.
 
-The service-authored investigation is a named Concierge session in the
-`slack-concierge` project. It receives the allowlisted condition, opaque episode
-identity and source, then reads retained evidence itself. It follows this
-project's ordinary review, source and deployment ownership. It must coordinate
-with any existing incident and cannot launch an independent repair loop or send
-email. The outside supervisor owns responsive-owner memory and latency incidents,
-including a retained evidence file, a bounded investigator and recovery notice.
-Its monitoring runs even when the Concierge process cannot answer.
+Fingerprint plus start timestamp defines an episode. Duplicate delivery and stale firing
+after recovery are fenced by the retained ledger. Repair publication is idempotent by
+that same episode and status. `repair_notices.resolved_at_ms` is the cancellation/recovery
+fact, not fabricated delivery; the Grafana ledger retains the condition history. New
+native `root_ts` values are opaque receipt keys, not Slack timestamps or human messages.
+A 202 proves retention only, not agent admission, execution, recovery or hosted delivery.
 
-The host supervisor reads retained firing `AX41ResourcePressure` rows through
-`grafana_condition_state` and merges their episode identity/revision into its existing
-degradation occurrence. This retains disk, inode and host CPU coverage even without
-an owner/speech finding. Arrival order cannot select a different investigator. Recovery
-removes only the host signal; unknown ledger or local evidence never proves the whole
-incident resolved. A later stale firing is refused by the existing episode fence.
-Late signals remain in the supervisor's current observation and in its terminal handoff
-to the standing repair agent. Deploy the matching remote-box supervisor before activating
-this receiver; do not suppress host admission with the old supervisor still installed.
+## Safe acceptance and diagnosis
 
-Do not treat a response from this webhook, a sent notification, source commit or
-healthy service status as proof of repair. Verify the queued investigator's
-execution and the actual condition's recovery, then report any remaining live
-acceptance separately. A test alert uses `TestAlert` or
-`ConciergeWebhookAcceptance`; those names create notice receipts but no agent.
+Read the configured contact and rule-group using the existing remote-box provisioning
+commands. Send the reserved acceptance condition through the authenticated entrance,
+then recover that exact episode. Verify its native destination, delivered revisions and
+zero repair/human side effects. This proves receipt transport only. Grafana’s own contact
+notification history establishes the hosted leg separately.
 
-The safe owner journal events are `grafana_webhook_completed`,
-`grafana_alert_delivered`, `grafana_alert_investigation`, `grafana_alert_retry`,
-`grafana_alert_parked`, and `grafana_alert_worker_failed`. Inspect the retained
-fingerprint/status/revision/notice root/investigation turn and Grafana's exact
-notification history; do not dump the bearer or private monitoring evidence.
+A real ordinary condition must have its `repair_notices.delivered_input_id` linked to an
+actual accepted input in the standing repair session. Verify that session’s execution
+and the real condition’s recovery. A safe explicitly marked informational request to
+that discovered session can verify addressed delivery without falsifying a health event.
+Do not manufacture an outage or modify production observations to provoke repair.
+
+Isolated coverage is in `grafana-repair-first.test.ts` and
+`grafana-native-ownership.test.ts`: pending versus admitted recovery, repeated episodes,
+no human thread, no competing native investigator, and all allowlisted conditions.
+Inspect `grafana_webhook_completed`, `grafana_alert_delivered`,
+`grafana_alert_investigation`, `repair_notices_delivered`, and retained owner/external
+incident evidence. Event labels alone never prove repair succeeded.
+
+Remote-box owns [rule definitions, collection and alert operations](https://github.com/tejasdc/remote-box/blob/main/docs/observability.md).
