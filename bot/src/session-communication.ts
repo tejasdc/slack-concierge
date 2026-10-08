@@ -12,6 +12,9 @@ import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
+import { providerAccountUsage } from './provider-account-usage';
+import { decideLapsePreventingReset } from './provider-reset-policy';
+import { useCodexResetCredit } from './codex-reset-credit';
 import { log } from './log';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
@@ -353,6 +356,47 @@ export class SessionCommunicationCoordinator {
     usage(input:{source:CommunicationSource}) {
         this.actor(input.source);
         return {providers:(['claude-code','codex'] as const).map(provider=>usageSignal(provider))};
+    }
+    /**
+     * A capacity planner asks for a grant to be spent; this decides whether to.
+     *
+     * The planner never reaches the provider. It says which provider, optionally which
+     * account, and why; the policy in `provider-reset-policy.ts` decides from this machine's
+     * own readings, and only a decision to use reaches the spender. That keeps one place
+     * deciding, which is the same reason the automatic hold path and his own Accounts button
+     * both go through that function rather than carrying their own rules.
+     *
+     * Idempotent by action id: a retry returns the first decision instead of spending twice,
+     * on top of the provider being the cross-machine lock (`alreadyRedeemed`).
+     */
+    async resetCredit(input:{source:CommunicationSource;action_id:string;provider:string;account?:string;reason:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        if(!input.reason?.trim())throw new Error('A reason is required: say what the spend is for.');
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInputId}`,actionId:input.action_id,
+            kind:'action',origin:'agent',payload:{kind:'reset-credit',provider:input.provider,account:input.account??null,reason:input.reason},
+            sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+        if(saved.duplicate)return JSON.parse(saved.input.receipt_json??'{}');
+        const usage=providerAccountUsage(input.provider==='codex'?'codex':'claude-code');
+        const accounts=(usage?.accounts??[])
+            .filter(entry=>!input.account||entry.label===input.account)
+            .map(entry=>({account:entry.label,
+                tightestUsedPercent:entry.problem||entry.signedOut||!entry.windows.length?null
+                    :Math.max(...entry.windows.map(window=>window.usedPercent)),
+                grants:entry.resetCredits&&entry.resetCredits.available>0
+                    ?[{account:entry.label,available:entry.resetCredits.available,expiresAt:entry.resetCredits.expiresAt}]:[]}));
+        const decided=decideLapsePreventingReset({provider:input.provider,nowMs:Date.now(),accounts,alreadyDecided:false});
+        const result=decided.use
+            ?{decided,spent:await useCodexResetCredit(decided.account)}
+            :{decided,spent:null};
+        log('info','reset_credit_considered',{provider:input.provider,requested_account:input.account??null,
+            because:decided.because,used:decided.use===true,spent_status:result.spent?.status??null,
+            windows_reset:result.spent?.windowsReset??null,reason_chars:input.reason.length});
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+            .run(JSON.stringify(result),saved.input.id);
+        return result;
     }
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a

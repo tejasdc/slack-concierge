@@ -29,6 +29,17 @@ export type ResetCreditOutcome = Readonly<{
   status: "used" | "none" | "failed";
   /** Said to him in his own words by the surface; never a protocol token. */
   detail: string;
+  /**
+   * What the grant turned out to clear, recorded because it cannot be chosen.
+   *
+   * The consume call takes a credit id and nothing else — no window, no limit — and the
+   * grant carries its own `reset_type`, fixed when it was issued. The one place the truth
+   * appears is the response's `windows_reset`, after the fact. So we keep both: the type the
+   * grant declared, and the windows the provider says it actually reset. Until a grant has
+   * been spent, what "Full reset" covers on these accounts is not established.
+   */
+  resetType?: string | null;
+  windowsReset?: readonly string[] | null;
 }>;
 
 /** Every Codex home on this machine, with the account each one holds. */
@@ -87,14 +98,25 @@ export async function useCodexResetCredit(account: string): Promise<ResetCreditO
     const credit = (limits?.rateLimitResetCredits?.credits ?? [])
       .find((entry: any) => String(entry?.status ?? "") === "available");
     if (!credit?.id) return { status: "none", detail: "There is no reset waiting on this account." };
+    const resetType = credit?.resetType ?? credit?.reset_type ?? null;
     const result = await callAppServer(home, "account/rateLimitResetCredit/consume", { creditId: credit.id });
     const outcome = String(result?.outcome ?? "");
     // The protocol's own words for "there was nothing to spend", which is not a failure:
     // the grant is already gone, and his screen should simply stop offering it.
     if (outcome === "alreadyRedeemed" || outcome === "nothingToReset")
-      return { status: "none", detail: "That reset had already been used." };
-    log("warn", "codex_reset_credit_used", { account_known: true, outcome: outcome || "ok" });
-    return { status: "used", detail: "This account's limits have been reset." };
+      return { status: "none", detail: "That reset had already been used.", resetType };
+    const raw = result?.windowsReset ?? result?.windows_reset ?? null;
+    const windowsReset = Array.isArray(raw)
+      ? raw.map((entry: any) => String(entry?.limitName ?? entry?.limit_name ?? entry?.window ?? entry)).filter(Boolean)
+      : null;
+    // The only place it is ever stated which limits a grant cleared. Recorded every time,
+    // because the grant could not be aimed and the title alone ("Full reset") is a claim.
+    log("warn", "codex_reset_credit_used", {
+      account_known: true, outcome: outcome || "ok",
+      reset_type: resetType ? String(resetType) : null,
+      windows_reset: windowsReset,
+    });
+    return { status: "used", detail: "This account's limits have been reset.", resetType, windowsReset };
   } catch (error) {
     log("error", "codex_reset_credit_failed", { error: error instanceof Error ? error.message : String(error) });
     return { status: "failed", detail: "OpenAI would not apply the reset just now. Nothing was spent." };

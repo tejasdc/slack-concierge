@@ -478,6 +478,54 @@ Account choice at the next dispatch does not change the login of a running proce
 earlier credential-switching proposal in
 [the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md) is historical.
 
+## A grant cannot be aimed at a window, so timing is the whole optimisation
+
+Tejas asked, 2026-10-08, to "take advantage of like which one gives us the most tokens …
+each of the free sets can either reset a weekly limit or … a 5 hour limit". **There is no
+such lever.** Read out of the Codex app server's own protocol rather than inferred:
+
+- `RateLimitResetCreditDetails` carries **`reset_type`**, `granted_at`, `expires_at`,
+  `credits`. What a grant clears is a property of the grant, fixed when it was issued.
+- `ConsumeAccountRateLimitResetCreditParams` validates exactly one thing —
+  `creditId must not be empty`. There is no window, limit or target parameter.
+- `ConsumeRateLimitResetCreditResponse` carries **`windows_reset`**, plural: the provider
+  reports which windows it reset *after* the fact.
+- Both accounts' live grants are titled **"Full reset"**.
+
+So the design records rather than chooses: `codex-reset-credit.ts` keeps the grant's declared
+`reset_type` and the response's `windows_reset` on the outcome and in the log, every time.
+Until a grant has actually been spent, what "Full reset" covers on these accounts is not
+established — the first deliberate spend is also the measurement.
+
+What remains is timing, and timing is the optimisation. A full reset is worth exactly the
+consumption it gives back, so spending at 40% used throws away more than half of it and
+spending at 95% recovers nearly all. `decideLapsePreventingReset` in
+`provider-reset-policy.ts` therefore waits as long as is safe and spends at the deepest
+consumption: a grant is **at risk** inside 72 hours of its expiry, worth spending at or above
+60% used, spent regardless of depth inside the last 8 hours because there is no later chance,
+and never spent below 10% used because a full reset would return almost nothing. Among
+eligible accounts it picks the deepest one. Exercised against the real grants on 2026-10-08:
+fourteen days out it spends nothing; at 48 hours and 88% it spends; at 48 hours and 44% it
+waits; at 4 hours and 31% it spends anyway; at 4 hours and 3% it declines as pointless.
+
+**A capacity planner asks; this decides.** `router-actions.sh sessions reset-credit
+--provider codex [--account <address>] --reason <why>` with the usual source flags and a
+stable `--action-id` reaches `SessionCommunicationCoordinator.resetCredit`, which reads this
+machine's own account readings, runs the rule, and spends only on a decision to use. The
+caller never touches a provider call and cannot name a window, because there is none to name.
+It is idempotent by action id — a retry returns the first decision instead of spending twice —
+on top of the provider being the cross-machine lock (`alreadyRedeemed`). The trigger is the
+planner's own schedule; nothing inside Concierge spends on a timer, so if the planner stops
+running, grants will lapse again.
+
+**Claude grants do not exist to include.** The Claude usage source exposes 37 fields and not
+one is a credit, grant, bonus or extra reset; its only reset-shaped values are
+`fiveHour.resetsAt`, `sevenDay.resetsAt` and the scoped equivalents, which are when those
+windows refill by themselves. Stored readings show `resetCredits: null` on both Claude
+accounts, correctly. His "even Claude Code has at least like one reset" (2026-10-08) is best
+explained as the window rolling over, which is real and not spendable. The rule and the router
+command both refuse any provider but Codex rather than pretending otherwise.
+
 ## Banked resets, so none of them lapses unused
 
 OpenAI occasionally grants a Codex account a **rate limit reset** it can bank and spend when

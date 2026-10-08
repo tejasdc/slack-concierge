@@ -751,6 +751,20 @@ authorization or a change to the default rapid-iteration policy.
   Codex grants these; Anthropic publishes no per-account list to spend. The Accounts button
   stays for when he wants to spend one himself. See
   [banked resets](docs/architecture/PROVIDER-USAGE.md#banked-resets-so-none-of-them-lapses-unused).
+  **A grant cannot be aimed at a window, so it is recorded rather than chosen.** The grant
+  carries its own `reset_type`, the consume call validates only that a credit id is present,
+  and the response reports `windows_reset` afterwards; both accounts' grants are titled "Full
+  reset". So `codex-reset-credit.ts` keeps the declared type and the reported windows on every
+  spend, and nothing offers a window choice. What is left is timing, and a full reset is worth
+  the consumption it returns, so `decideLapsePreventingReset` waits as long as is safe and
+  spends at the deepest consumption: at risk inside 72 hours of expiry, worth spending at 60%
+  used, spent regardless inside the last 8 hours, never below 10%. A capacity planner asks
+  through `sessions reset-credit --provider codex [--account <address>] --reason <why>` and
+  that rule decides; the caller never reaches a provider call, and the planner's schedule is
+  the only trigger, so nothing spends on a timer inside Concierge. Claude grants do not exist
+  to include: its usage source publishes no credit of any kind, and his "even Claude Code has
+  at least like one reset" (2026-10-08) is the window refilling by itself. Source: Tejas,
+  2026-10-08, "take advantage of like which one gives us the most tokens".
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.

@@ -62,6 +62,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json(input.by_session
             ? await usageBreakdown(input.period==='week'?'week':'today') : current);
         }
+        if (operation === 'reset-credit') return Response.json(await sessions.resetCredit(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));
