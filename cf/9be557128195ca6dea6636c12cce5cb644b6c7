@@ -1,0 +1,1 @@
+Recovery checks now reopen the actual conversation after a busy server is killed.
