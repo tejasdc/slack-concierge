@@ -6,6 +6,7 @@ import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
 import {usageBreakdown} from './usage-breakdown';
 import {log} from './log';
+import {startPresentationWorker} from './presentation-worker-supervisor';
 
 // macOS has no /proc: the only proof that nothing listens on a leftover socket entry is
 // a refused connection to it. A connection that opens proves a live listener.
@@ -141,6 +142,19 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     idleTimeout: 0,
     fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner),
   });
-  chmodSync(path, 0o600);
-  return server;
+  let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
+  try {
+    chmodSync(path, 0o600);
+    // Every accepting canonical owner serves prepared reads, regardless of its adapters.
+    // Start only after the exclusive socket bind, so a refused second owner spawns nothing.
+    if(owner)stopPresentation=startPresentationWorker();
+  } catch(error) {
+    await server.stop(true);
+    throw error;
+  }
+  let stopping:Promise<void>|null=null;
+  return {stop:(closeActiveConnections=false)=>stopping??=(async()=>{
+    try {await server.stop(closeActiveConnections);}
+    finally {await stopPresentation?.();}
+  })()};
 }

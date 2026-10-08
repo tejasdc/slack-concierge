@@ -29,7 +29,6 @@ import { errorFields, log } from "./log";
 import { startStuckWorkWatch } from "./stuck-work-watch";
 import { recordRepairNotice, startRepairNoticeDelivery } from "./repair-notices";
 import { installOwnerCpuProfileSignal } from "./owner-cpu-profile";
-import {startPresentationWorker} from './presentation-worker-supervisor';
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
   normalizeProviderAliasKey,
@@ -425,7 +424,6 @@ function detectedRuntimeGitSha() {
 
 const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
-const stopPresentationWorker=startPresentationWorker();
 let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
@@ -4023,7 +4021,6 @@ async function drainAndStop(signal: string) {
     });
   }
   stopBackgroundJobWatch();
-  await stopPresentationWorker();
   stopUpdateWaitWatch();
   stopWatchWorker();
   serviceOnline = false;

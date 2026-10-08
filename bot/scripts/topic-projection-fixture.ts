@@ -1,7 +1,7 @@
 import {strict as assert} from 'node:assert';
 import {spawn,type ChildProcess} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
-import {existsSync} from 'node:fs';
+import {existsSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -9,18 +9,56 @@ import {Database} from 'bun:sqlite';
 
 /** Actual canonical mutations and a separate production projection worker, all under /tmp.
  * Called by the existing presentation release gate as well as directly for diagnosis. */
-export async function checkTopicProjectionLifecycle(){
+export async function checkTopicProjectionLifecycle(mode='--child'){
  const root=await mkdtemp(join(tmpdir(),'concierge-topic-projection-'));
- const child=spawn(process.execPath,[import.meta.path,'--child',root],{env:{...process.env,
+ const child=spawn(process.execPath,[import.meta.path,mode,root],{env:{...process.env,
   CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
   CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,'capture')},stdio:['ignore','pipe','pipe']});
  let output='',errors='';child.stdout.on('data',chunk=>{output=(output+chunk).slice(-8000);});child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-8000);});
  const timeout=setTimeout(()=>child.kill('SIGKILL'),45_000);
  try{const code=await new Promise(resolve=>child.once('exit',resolve));assert.equal(code,0,`Topic projection lifecycle failed: ${errors}\n${output}`);
-  const result=output.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}}).find(row=>row.fixture==='topic-projection-lifecycle');
+  const result=output.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}}).find(row=>row.fixture===(mode==='--native-child'?'native-owner-projection-lifecycle':'topic-projection-lifecycle'));
   assert.ok(result,'Topic lifecycle did not publish its checkpoints');return result;
  }
  finally{clearTimeout(timeout);await rm(root,{recursive:true,force:true});}
+}
+
+export const checkNativeOwnerProjectionLifecycle=()=>checkTopicProjectionLifecycle('--native-child');
+
+async function nativeOwnerLifecycle(root:string){
+ assert.equal(process.env.CONCIERGE_TEST_MODE,'1');assert.equal(process.env.CONCIERGE_STATE_DIR,root);
+ const {SessionOwner}=await import('../src/session-owner');
+ const {createNativeSession}=await import('../src/session-inputs');
+ const {startRoutedRequestApi}=await import('../src/routed-request-api');
+ const owner=new SessionOwner({available:()=>true,wake:()=>{},steer:()=>false,stop:async()=>false},root);
+ createNativeSession('claude-code',{title:'Native worker first card',cwd:root});
+ // Inspect only this isolated process's own children, never a machine-wide process search.
+ const workers=()=>readFileSync(`/proc/${process.pid}/task/${process.pid}/children`,'utf8').trim().split(/\s+/).filter(Boolean).map(Number)
+  .filter(pid=>{try{return readFileSync(`/proc/${pid}/cmdline`,'utf8').includes('presentation-message-worker');}catch{return false;}});
+ assert.deepEqual(workers(),[]);
+ let server:Awaited<ReturnType<typeof startRoutedRequestApi>>|null=null;
+ const read=async()=>{
+  const response=await fetch('http://fixture/sessions/v1/presentation/sessions/window?space=everyday',{unix:join(root,'requests.sock')});
+  assert.equal(response.status,200);return response.json() as Promise<any>;
+ };
+ const waitForCards=async(count:number)=>{
+  const deadline=Date.now()+20_000;let last:any;
+  while(Date.now()<deadline){last=await read();if(last.coverage?.complete&&last.cards?.length===count)return last;await Bun.sleep(20);}
+  throw new Error(`Native owner never prepared ${count} cards: ${JSON.stringify(last)}`);
+ };
+ try{
+  // This is the native runtime's real accepting API, with no Slack coordinator or surface.
+  server=await startRoutedRequestApi(root,null,null,undefined,owner);
+  const initial=await waitForCards(1);assert.equal(initial.cards[0].title,'Native worker first card');
+  const pids=workers();assert.equal(pids.length,1);
+  await assert.rejects(startRoutedRequestApi(root,null,null,undefined,owner),/live listener/);
+  assert.deepEqual(workers(),pids,'Refused duplicate owner must not spawn another worker');
+  createNativeSession('claude-code',{title:'Native worker later card',cwd:root});
+  const updated=await waitForCards(2);assert.ok(updated.cards.some((row:any)=>row.title==='Native worker later card'));
+  await Promise.all([server.stop(true),server.stop(true)]);server=null;
+  assert.deepEqual(workers(),[],'Awaited owner shutdown must reap its worker');
+  console.log(JSON.stringify({fixture:'native-owner-projection-lifecycle',initialCards:1,updatedCards:2,workers:pids.length,duplicateRefused:true,shutdownReaped:true}));
+ }finally{await server?.stop(true);}
 }
 
 async function lifecycle(root:string){
@@ -73,6 +111,8 @@ async function lifecycle(root:string){
  }finally{await stop();prepared?.close();}
 }
 if(import.meta.main){
- if(process.argv[2]==='--child')lifecycle(process.argv[3]!).then(()=>process.exit(0),error=>{console.error(error);process.exit(1);});
+ if(process.argv[2]==='--native-child')nativeOwnerLifecycle(process.argv[3]!).then(()=>process.exit(0),error=>{console.error(error);process.exit(1);});
+ else if(process.argv[2]==='--native')console.log(JSON.stringify(await checkNativeOwnerProjectionLifecycle()));
+ else if(process.argv[2]==='--child')lifecycle(process.argv[3]!).then(()=>process.exit(0),error=>{console.error(error);process.exit(1);});
  else console.log(JSON.stringify(await checkTopicProjectionLifecycle()));
 }

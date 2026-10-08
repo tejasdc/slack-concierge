@@ -6,6 +6,15 @@ Interactive catalogue reads use that database; they do not construct full sessio
 enumerate turn and receipt history. The exact selected session remains available through its
 existing detail route.
 
+The accepting Unix request API starts the existing presentation worker supervisor after its
+exclusive socket bind, and its awaited, idempotent stop closes the API and reaps the worker.
+Both runtime compositions use this boundary; adapter-specific startup must not separately
+launch a worker. A handler alone is not an accepting owner and owns no worker. This prevents
+the native/Mac branch from serving prepared routes without preparing their data. The release
+gate starts the actual native API against isolated state, observes initial and later catalogue
+rows, refuses a duplicate listener without a second worker, and checks worker exit on stop.
+This Linux composition check does not substitute for installed Mac acceptance.
+
 The worker builds a new generation in finite pages from a read-only canonical connection.
 It replays the canonical change journal, then flips the visible generation and checkpoint in
 one presentation transaction. While that work is incomplete, readers keep the prior generation
