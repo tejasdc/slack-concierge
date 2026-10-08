@@ -749,6 +749,10 @@ if (!columns("turns").has("saved_fire_at_ms")) {
   addColumn("turns", "saved_fire_at_ms", "saved_fire_at_ms INTEGER");
   db.exec("UPDATE turns SET saved_fire_at_ms=dispatch_next_attempt_ms WHERE saved_kind='scheduled' AND status='queued' AND dispatch_next_attempt_ms>0");
 }
+// Why a waiting retry waits, decided where the hold is decided: 'usage' when every account was out of
+// allowance. The status under his message read it from the error's wording, and when the wording
+// changed it told him "the last attempt failed" during a usage hold (2026-10-08, 6:06 AM).
+addColumn("turns", "dispatch_hold", "dispatch_hold TEXT");
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
@@ -3769,6 +3773,8 @@ export function retryRunningTurnAfterProviderFailure(input: {
   error: string;
   nextAttemptMs: number;
   authWait?: boolean;
+  /** Held because no account has allowance left, until nextAttemptMs. */
+  usageHold?: boolean;
 }): boolean {
   return db.transaction(() => {
     const boundary = getRunningTurnDispatchBoundary(
@@ -3796,6 +3802,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
           -- move a time he chose.
           dispatch_failure_class=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
           dispatch_next_attempt_ms=CASE WHEN saved_kind='banked' THEN ? ELSE ? END,
+          dispatch_hold=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
           saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
@@ -3812,6 +3819,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
       // does not drop to a three-minute poll against an account that is still out.
       Math.max(Date.now()+3*60_000,input.nextAttemptMs),
       input.authWait ? null : input.nextAttemptMs,
+      input.usageHold && !input.authWait ? 'usage' : null,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,
       input.ownerInstanceId,

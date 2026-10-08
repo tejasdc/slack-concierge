@@ -1081,6 +1081,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             dispatchAttempt,
             error: message,
             authWait,
+            usageHold: heldUntilMs !== null,
             nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })

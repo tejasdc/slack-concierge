@@ -118,9 +118,11 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   // A backoff failure keeps its reason on the turn until the next attempt starts; it is
   // shown until then, including the moment between the scheduled time and pickup.
   const deliberate=savedTurn(turn.id);
+  // A scheduled item without a known start time has nothing true to say, so it says nothing.
+  if(deliberate&&turn.status==='queued'&&deliberate.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='backoff'&&!savedStartAt(deliberate))return null;
   if(deliberate&&turn.status==='queued'&&(deliberate.saved_kind==='banked'||turn.dispatch_failure_class!=='backoff'))return {
     code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
-    message:deliberate.saved_kind==='scheduled'?'This work is scheduled for the time below.':'This work is waiting for a safe allowance window; no start time has been chosen.',
+    message:deliberate.saved_kind==='scheduled'?`This work is scheduled for ${noticeTime(db,Date.parse(savedStartAt(deliberate)!))}.`:'This work is waiting for a safe allowance window; no start time has been chosen.',
     clearsAt:savedStartAt(deliberate),automaticRetry:true};
   if(turn.dispatch_failure_class==='backoff'&&turn.dispatch_next_attempt_ms!==null) {
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
@@ -129,21 +131,32 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     // An account with no allowance left did not fail an attempt — it refused to make one,
     // so saying "the last attempt failed" would send him looking for a fault that is not
     // there. It waits for the allowance, and switching account starts it sooner.
-    if(/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))
-      return {code:'PROVIDER_USAGE_HELD',message:`This account has no Claude usage left${next?' until the time below':''}. Your message is kept and starts again then, or straight away if you switch to another account in Provider accounts.`,
+    // The app shows no time of its own, so the sentence carries it, in his time zone.
+    const when=next?noticeTime(db,turn.dispatch_next_attempt_ms):null;
+    // The hold is read from what the turn recorded when it was held, never from the error's wording:
+    // "Every available Claude account is out of room." matched no pattern here and he was told "the
+    // last attempt failed" while a notification said the same message waited for 6:20 (2026-10-08).
+    const product=getSessionById(input.session_id)?.provider_id==='codex'?'Codex':'Claude';
+    if(turn.dispatch_hold==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason)) {
+      return {code:'PROVIDER_USAGE_HELD',message:when
+        ?`Every ${product} account is out of usage until ${when}. Your message is kept and starts then by itself, or straight away if you add or switch to an account with room in Accounts.`
+        :`Every ${product} account is out of usage. Your message is kept and starts by itself as soon as one has room, or straight away if you add or switch to an account with room in Accounts.`,
         clearsAt:next,automaticRetry:true};
-    return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status,outageOfferForTurn(turn.id)):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
+    }
+    const again=when?`at ${when}`:'now';
+    return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,outageOfferForTurn(turn.id))} Your message is kept and goes again ${again}; nothing is needed from you.`
+      :`${product} is not answering right now. Your message is kept and goes again ${again}; nothing is needed from you.`,
       clearsAt:next,automaticRetry:true};
   }
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',
     message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',
     clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',
-    message:'The provider stopped earlier work at a usage limit. This continuation is waiting for an account with room; completed work stays in its earlier turn.',
+    message:'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',
     clearsAt:null,automaticRetry:true};
-  if(turn.dispatch_failure_class==='chosen_time')return {code:'CHOSEN_TIME_HELD',
-    message:'This continuation is waiting until its chosen time.',
-    clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='chosen_time')return turn.dispatch_next_attempt_ms?{code:'CHOSEN_TIME_HELD',
+    message:`The agent picks this work up again at ${noticeTime(db,turn.dispatch_next_attempt_ms)}.`,
+    clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true}:null;
   const session=getSessionById(input.session_id)!;
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get()) {
     // Same rule as the queue (survivableRunKinds): a run proven to carry on through the restart is
