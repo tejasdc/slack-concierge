@@ -319,9 +319,28 @@ async function catchUp() {
     }
     for(const change of changes){
       if(change.source_table==='session_inputs')writeInput(change.row_key);
-      else if(change.source_table==='sessions')writeSession(Number(change.row_key));
+      else if(change.source_table==='sessions'||change.source_table==='slack_agent_session_title_projections'
+        ||change.source_table==='slack_agent_session_status_projections'){
+        if(change.session_id)writeSession(change.session_id);
+      }
     }
-    cards.apply(current.generation,changes);
+    cards.apply(current.generation,changes.map(change=>
+      change.session_id&&(change.source_table==='slack_agent_session_title_projections'||change.source_table==='slack_agent_session_status_projections')
+        ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
+    // A legacy channel name/path is a fallback label for every session in that channel.
+    // Process only affected sessions, in fixed pages; the worker remains off the owner loop.
+    for(const channel of new Set(changes.filter(change=>change.source_table==='channels').map(change=>change.row_key))){
+      let after=0;
+      while(true){
+        const rows=source.query(`SELECT id FROM sessions WHERE slack_channel_id=? AND id>?
+          ORDER BY id LIMIT 100`).all(channel,after) as {id:number}[];
+        if(!rows.length)break;
+        for(const row of rows)writeSession(row.id);
+        cards.apply(current.generation,rows.map(row=>({source_table:'sessions',row_key:String(row.id),
+          session_id:row.id,sequence:changes.at(-1)!.sequence})));
+        after=rows.at(-1)!.id;
+      }
+    }
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);

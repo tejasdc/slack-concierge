@@ -8,6 +8,11 @@ import type {Database} from 'bun:sqlite';
  */
 export const PRESENTATION_CHANGE_TABLES={
   sessions:{key:'{row}.id',session:'{row}.id'},
+  channels:{key:'{row}.slack_channel_id'},
+  slack_agent_session_title_projections:{key:"{row}.slack_channel_id || ':' || {row}.slack_thread_ts",
+    session:'(SELECT id FROM sessions WHERE slack_channel_id={row}.slack_channel_id AND slack_thread_ts={row}.slack_thread_ts LIMIT 1)'},
+  slack_agent_session_status_projections:{key:"{row}.slack_channel_id || ':' || {row}.slack_thread_ts",
+    session:'(SELECT id FROM sessions WHERE slack_channel_id={row}.slack_channel_id AND slack_thread_ts={row}.slack_thread_ts LIMIT 1)'},
   turns:{key:'{row}.id',session:'{row}.session_id',turn:'{row}.id'},
   turn_steering_messages:{key:'{row}.id',session:'(SELECT session_id FROM turns WHERE id={row}.turn_id)',turn:'{row}.turn_id',input:'{row}.accepted_input_id'},
   turn_dependencies:{key:"{row}.turn_id || ':' || {row}.prerequisite_turn_id",session:'(SELECT session_id FROM turns WHERE id={row}.turn_id)',turn:'{row}.turn_id'},
@@ -69,6 +74,7 @@ export function initializePresentationChanges(db:Database) {
   CREATE INDEX IF NOT EXISTS presentation_changes_session ON presentation_change_log(session_id,sequence);
   CREATE INDEX IF NOT EXISTS presentation_changes_topic ON presentation_change_log(topic_id,sequence);
   CREATE INDEX IF NOT EXISTS presentation_changes_target_session ON presentation_change_log(target_session_id,sequence);
+  CREATE INDEX IF NOT EXISTS presentation_sessions_channel ON sessions(slack_channel_id,id) WHERE slack_channel_id IS NOT NULL;
   CREATE TABLE IF NOT EXISTS presentation_change_epoch(
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
     epoch INTEGER NOT NULL,
