@@ -1,13 +1,29 @@
-import { executionChanged } from "./state";
+import {randomUUID} from 'node:crypto';
+import {db, executionChanged} from './state';
 import type { ClaudeProviderRetry } from "./claude-code";
 
 // Claude retrying its own API call is live process state, like a background wait: it
 // cannot outlive the provider process that is doing the retrying.
 const retries = new Map<number, ClaudeProviderRetry>();
+const incarnation=randomUUID();
+db.transaction(()=>{
+  db.query('INSERT INTO provider_retry_incarnation(singleton,incarnation) VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET incarnation=excluded.incarnation').run(incarnation);
+  db.query('DELETE FROM provider_retry_observations').run();
+})();
 
 export function recordTurnProviderRetry(turnId: number, retry: ClaudeProviderRetry | null) {
-  if (retry) retries.set(turnId, retry);
-  else if (!retries.delete(turnId)) return;
+  if(retry){
+    db.query(`INSERT INTO provider_retry_observations(turn_id,incarnation,since_ms,attempt,max_retries,status,retry_at_ms)
+      VALUES(?,?,?,?,?,?,?) ON CONFLICT(turn_id) DO UPDATE SET
+      incarnation=excluded.incarnation,since_ms=excluded.since_ms,attempt=excluded.attempt,
+      max_retries=excluded.max_retries,status=excluded.status,retry_at_ms=excluded.retry_at_ms`)
+      .run(turnId,incarnation,retry.since,retry.attempt,retry.maxRetries,retry.status,retry.retryAt);
+    retries.set(turnId,retry);
+  }else{
+    const had=retries.delete(turnId);
+    const removed=db.query('DELETE FROM provider_retry_observations WHERE turn_id=?').run(turnId).changes;
+    if(!had&&!removed)return;
+  }
   executionChanged();
 }
 

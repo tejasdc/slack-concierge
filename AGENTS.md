@@ -113,6 +113,9 @@ authorization or a change to the default rapid-iteration policy.
 - The interactive session catalogue is a prepared, bounded read over the owner's ledger;
   new card fields need canonical change-journal coverage and a growth fixture. The worker,
   cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).
+- Prepared receipt lists use one shared status policy for the owner and the presentation
+  worker; live retry observations expire with the owner incarnation. See
+  [prepared receipts](docs/architecture/PREPARED-RECEIPTS.md).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
   private `tejasdc` repository before retaining a peer setup order; `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never

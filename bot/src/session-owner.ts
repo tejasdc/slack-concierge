@@ -51,6 +51,8 @@ import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges} from './presentation-session-reader';
+import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
+import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
@@ -78,114 +80,34 @@ function whereItStopped(error:string|null) {
   const sentence=first.replace(/^.*?\bfailed:\s*/i,'').trim();
   return sentence?sentence.slice(0,200):null;
 }
-type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
-function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof readInputExecution>,saved:any):InputStatusDetail|null {
-  const {turn,steering,state}=observed;
-  if(steering?.status==='ambiguous'&&!steering.provider_sent_at) {
-    const outcome=turn?.status==='done'?'completed':turn?.status==='error'?'failed':turn?.status==='cancelled'?'was canceled':null;
-    return {code:outcome?'STEERING_DELIVERY_UNCONFIRMED':'STEERING_ACK_PENDING',
-      message:outcome?`The linked provider turn ${outcome}, but this specific message was not acknowledged. We cannot confirm whether the agent received or used it; it will not be sent again automatically.`
-        :turn?.status==='running'||turn?.status==='delivering'?'The owner attempted to send this message to the active provider turn, but acknowledgement is still unconfirmed. Its status will update when that turn ends.'
-        :'The owner attempted to send this message, but acknowledgement and the linked turn outcome remain unconfirmed. Reconciliation is required before another send.',
-      clearsAt:null,automaticRetry:false};
-  }
-  if(saved.state==='failed'||state==='failed'||state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted') {
-    const raw=saved.error?.message??saved.error??steering?.error??turn?.agent_text;
-    const message=typeof raw==='string'?raw.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''):null;
-    const reset=message?.match(/\b(?:until|resets? at)\s+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\b/i)?.[1]??null;
-    const clearsAt=reset&&!Number.isNaN(Date.parse(reset))?new Date(reset).toISOString():null;
-    if(state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted')return {code:'OUTCOME_UNCONFIRMED',message:message??'The provider outcome is unconfirmed. This input needs reconciliation before any retry.',clearsAt:null,automaticRetry:false};
-    if(message&&/usage (?:is |was )?(?:cached as )?exhausted|you(?:'|’)ve hit your (?:session |usage )?limit|usage limit/i.test(message))return {code:'PROVIDER_USAGE_EXHAUSTED',message:clearsAt?`Provider usage exhausted this input. Reported reset: ${clearsAt}. This input will not be retried automatically.`:'Provider usage exhausted this input. The reset time was not retained; this input will not be retried automatically.',clearsAt,automaticRetry:false};
-    const code=message&&/timed? out|timeout|deadline exceeded/i.test(message)?'TIMEOUT':message&&/process exited|process crashed|signal (?:SIG|\d)/i.test(message)?'PROVIDER_PROCESS_EXIT':message&&/reject|blocked by|forbidden|unauthorized|not permitted/i.test(message)?'PROVIDER_REJECTED':saved.error?.code??'EXECUTION_FAILED';
-    return {code,message:message??'This input failed without a retained provider explanation.',clearsAt:null,automaticRetry:false};
-  }
-  // A live run whose provider keeps failing looks like ordinary work from outside, so the
-  // provider's own retry is the one running state that carries an explanation.
-  if(state==='running'&&turn&&!steering) {
-    const retry=turnProviderRetry(turn.id);
-    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status,outageOfferForTurn(turn.id))} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. Your message is kept; nothing to do.`,
-      clearsAt:retry.retryAt?new Date(retry.retryAt).toISOString():null,automaticRetry:true};
-  }
-  if(state!=='queued'&&state!=='waiting')return null;
-  // A follow-up handed to a live run waits in that run's own queue for the agent's next
-  // step. Nothing is held and nobody needs to act, so it carries no explanation.
-  if(steering&&['queued','sending'].includes(steering.status))return null;
-  // A reply forwarded to the agent working its thread has no turn here: it waits on that agent's
-  // answer, which the thread shows. It carries an explanation only while that agent's machine is
-  // asleep and the peer path holds it (set by forwardReply, cleared when the Mac takes it).
-  if(saved.forwardedTo)return saved.statusDetail??null;
-  if(!turn) {
-    const request=input.request_id?db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(input.request_id,input.id) as {payload_json:string;outcome:string|null}|null:null;
+const ownerStatusContext={
+  retry:turnProviderRetry,
+  outage:outageOfferForTurn,
+  requestWait:(requestId:string,inputId:string)=>{
+    const request=db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(requestId,inputId) as {payload_json:string;outcome:string|null}|null;
     const after:string[]=request&&!request.outcome?JSON.parse(request.payload_json).after??[]:[];
-    // A prerequisite that settled without confirmed success would already have released
-    // this request had its requester asked after seeing that outcome.
     const held=after.length?db.query(`SELECT request_id,outcome FROM session_communication_requests WHERE request_id IN (${after.map(()=>'?').join(',')})
       AND outcome IN (${HOLDING_OUTCOMES.map(()=>'?').join(',')}) LIMIT 1`).get(...after,...HOLDING_OUTCOMES) as {request_id:string;outcome:string}|null:null;
-    if(held)return {code:'WAITING_FOR_REQUESTER_DECISION',message:`This request is held for its requester's decision: the earlier request ${held.request_id} it waits on ended ${held.outcome.replace('_',' ')}. The requester can cancel it or ask again.`,clearsAt:null,automaticRetry:false};
-    if(after.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
-    return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
-  }
-  // A backoff failure keeps its reason on the turn until the next attempt starts; it is
-  // shown until then, including the moment between the scheduled time and pickup.
-  const deliberate=savedTurn(turn.id);
-  // A scheduled item without a known start time has nothing true to say, so it says nothing.
-  if(deliberate&&turn.status==='queued'&&deliberate.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='backoff'&&!savedStartAt(deliberate))return null;
-  if(deliberate&&turn.status==='queued'&&(deliberate.saved_kind==='banked'||turn.dispatch_failure_class!=='backoff'))return {
-    code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
-    message:deliberate.saved_kind==='scheduled'?`This work is scheduled for ${noticeTime(db,Date.parse(savedStartAt(deliberate)!))}.`:'This work is waiting for a safe allowance window; no start time has been chosen.',
-    clearsAt:savedStartAt(deliberate),automaticRetry:true};
-  if(turn.dispatch_failure_class==='backoff'&&turn.dispatch_next_attempt_ms!==null) {
-    const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
-    const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
-    const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
-    // An account with no allowance left did not fail an attempt — it refused to make one,
-    // so saying "the last attempt failed" would send him looking for a fault that is not
-    // there. It waits for the allowance, and switching account starts it sooner.
-    // The app shows no time of its own, so the sentence carries it, in his time zone.
-    const when=next?noticeTime(db,turn.dispatch_next_attempt_ms):null;
-    // The hold is read from what the turn recorded when it was held, never from the error's wording:
-    // "Every available Claude account is out of room." matched no pattern here and he was told "the
-    // last attempt failed" while a notification said the same message waited for 6:20 (2026-10-08).
-    const product=getSessionById(input.session_id)?.provider_id==='codex'?'Codex':'Claude';
-    if(turn.dispatch_hold==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason)) {
-      return {code:'PROVIDER_USAGE_HELD',message:when
-        ?`Every ${product} account is out of usage until ${when}. Your message is kept and starts then by itself, or straight away if you add or switch to an account with room in Accounts.`
-        :`Every ${product} account is out of usage. Your message is kept and starts by itself as soon as one has room, or straight away if you add or switch to an account with room in Accounts.`,
-        clearsAt:next,automaticRetry:true};
-    }
-    const again=when?`at ${when}`:'now';
-    return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,outageOfferForTurn(turn.id))} Your message is kept and goes again ${again}; nothing is needed from you.`
-      :`${product} is not answering right now. Your message is kept and goes again ${again}; nothing is needed from you.`,
-      clearsAt:next,automaticRetry:true};
-  }
-  if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',
-    message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',
-    clearsAt:null,automaticRetry:true};
-  if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',
-    message:'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',
-    clearsAt:null,automaticRetry:true};
-  if(turn.dispatch_failure_class==='chosen_time')return turn.dispatch_next_attempt_ms?{code:'CHOSEN_TIME_HELD',
-    message:`The agent picks this work up again at ${noticeTime(db,turn.dispatch_next_attempt_ms)}.`,
-    clearsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true}:null;
-  const session=getSessionById(input.session_id)!;
-  if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get()) {
-    // Same rule as the queue (survivableRunKinds): a run proven to carry on through the restart is
-    // not held for the install, so only the rest is told it waits.
+    return {after:after.length>0,held:held?{requestId:held.request_id,outcome:held.outcome}:null};
+  },
+  savedTurn,
+  session:(sessionId:number)=>{
+    const session=getSessionById(sessionId)!;
+    return {status:session.status,providerId:session.provider_id,suspended:!!sessionMetadata(session).suspended};
+  },
+  deploymentHold:(providerId:string,inputKind:string)=>{
+    if(!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
     const survivable=survivableRunKinds();
-    const carriesOn=input.kind!=='fork'&&(session.provider_id==='claude-code'?survivable.claude
-      :session.provider_id==='codex'?survivable.codexShared:false);
-    if(!carriesOn)return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
-  }
-  if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
-  const older=db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`).get(input.session_id,turn.id) as {status:string}|null;
-  if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
-  if(db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
-  // Waiting behind earlier or active work in the same session, or for the dispatcher to
-  // pick it up, is the owner's ordinary progress and resolves without anyone acting.
-  // Explanations are reserved for holds a person must know about or act on.
-  return null;
+    return !(inputKind!=='fork'&&(providerId==='claude-code'?survivable.claude:providerId==='codex'?survivable.codexShared:false));
+  },
+  olderBlockingStatus:(sessionId:number,turnId:number)=>(db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`)
+    .get(sessionId,turnId) as {status:string}|null)?.status??null,
+  dependencyPending:(turnId:number)=>!!db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turnId),
+  now:()=>Date.now(),formatTime:(ms:number)=>noticeTime(db,ms)
+};
+function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof readInputExecution>,saved:any):InputStatusDetail|null {
+  return receiptStatusFromFacts(input,observed,saved,ownerStatusContext);
 }
-
 /**
  * Why a queued input is not starting, when its sender has to know: a sign-in or usage hold,
  * or anything that will not clear by itself. The sender hears it at once, on this machine
@@ -205,14 +127,6 @@ export function heldRequestNotice(requestId:string,worker:string,hold:InputStatu
     :hold.code==='PROVIDER_USAGE_HELD'?`${worker} cannot start it: its provider on that machine has no usage left until an account has room`
     :`${worker} has not started it: ${hold.message}`;
   return `Request ${requestId} is held. ${waits}. ${hold.automaticRetry?'It stays queued and starts by itself when that clears.':'Nothing will start it by itself.'} If it cannot wait, cancel it (sessions cancel ${requestId}) and send it to another session.`;
-}
-/** A provider's own trouble in his words: an overloaded or failing service is not our fault. */
-function providerTroubleText(status:number|null,offer:OutageOffer|null=null) {
-  if(offer?.incident)return `Claude is having an outage: “${offer.incident.name}” (status.claude.com).`;
-  if(status===529)return 'Claude’s servers are overloaded right now (status.claude.com).';
-  if(status!==null&&status>=500)return `Claude’s servers are returning errors (${status}; status.claude.com).`;
-  if(status===429)return 'Claude is rate-limiting requests right now.';
-  return 'Claude’s API call failed.';
 }
 /**
  * The outage offer as the receipt shows it: open while the message is still waiting and he
@@ -527,11 +441,7 @@ export function agentTestSource(value:unknown):{inputId:string;runId:string;sess
 export function readInputExecution(input:AcceptedSessionInput) {
   const turn=input.turn_id?db.query('SELECT * FROM turns WHERE id=?').get(input.turn_id) as any:null;
   const steering=input.steering_id?db.query('SELECT * FROM turn_steering_messages WHERE id=?').get(input.steering_id) as any:null;
-  const acknowledgedAt=steering?.provider_sent_at??(!steering?turn?.provider_input_acknowledged_at:null)??null;
-  const turnState=({done:'completed',error:'failed',cancelled:'canceled',interrupted:'uncertain',delivery_parked:'uncertain',parked:'uncertain',delivering:'running'} as any)[turn?.status]??turn?.status??'waiting';
-  const terminalSteeringTurn=steering?.status==='ambiguous'&&['done','error','cancelled'].includes(turn?.status);
-  const state=steering?steering.status==='sent'||terminalSteeringTurn?turnState:steering.status==='ambiguous'?'uncertain':steering.status==='failed'?'failed':'queued':turnState;
-  return {turn,steering,acknowledgedAt,state};
+  return {turn,steering,...inputExecutionFacts(turn,steering)};
 }
 
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
@@ -724,6 +634,7 @@ export class SessionOwner {
     // External provider work has no owner input/run. Project its evidence without manufacturing one.
     const matchingExternal=observed?.turnId?db.query('SELECT 1 FROM turns WHERE session_id=? AND provider_turn_id=? LIMIT 1').get(session.id,observed.turnId):null;
     const external=observed&&observed.state!=='idle'&&!active&&!matchingExternal
+
       && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
     const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
     return {latest,active,queued,external,execution};
@@ -830,11 +741,13 @@ export class SessionOwner {
     const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
     const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
-    const stopState=input.kind==='stop'?(stopTurn?.status==='cancelled'?'completed':saved.state==='uncertain'||!stopTurn||!['running','delivering'].includes(stopTurn.status)?'uncertain':'running'):null;
+    const stopState=input.kind==='stop'?receiptOperationState({kind:'stop',savedState:saved.state,
+      executionState:observed.state,requestKnown:false,stopTurnStatus:stopTurn?.status}):null;
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     // A request no table knows leaves the receipt without a conversation; it never refuses the read.
     const conversation=input.request_id&&this.communication?this.communication.find(input.request_id):null;
-    const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
+    const requestState=input.kind==='request'&&conversation?receiptOperationState({kind:'request',
+      savedState:saved.state,executionState:observed.state,requestKnown:true,requestOutcome:conversation.outcome}):null;
     const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);

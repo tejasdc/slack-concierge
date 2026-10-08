@@ -132,6 +132,32 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- two-second poll cost 2.5 s of the owner's single thread (2026-10-07). Partial, so it only
         -- serves lookups that name kind='request'.
         CREATE INDEX IF NOT EXISTS session_inputs_request ON session_inputs(request_id) WHERE kind='request';
+        -- Retry observation is a projection of the live provider process. The in-memory
+        -- retry map remains the scheduler authority; a new owner incarnation invalidates
+        -- every previous observation before prepared receipts can read it.
+        CREATE TABLE IF NOT EXISTS provider_retry_incarnation (
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+          incarnation TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS provider_retry_observations (
+          turn_id INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+          incarnation TEXT NOT NULL,
+          since_ms INTEGER NOT NULL,
+          attempt INTEGER NOT NULL,
+          max_retries INTEGER,
+          status INTEGER,
+          retry_at_ms INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS provider_outage_offers (
+          turn_id INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+          input_id TEXT NOT NULL,
+          session_id INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          choice TEXT,
+          chosen_at TEXT,
+          rerun_session_id TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS session_attachments (
           id TEXT PRIMARY KEY, action_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
