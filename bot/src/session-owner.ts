@@ -238,11 +238,13 @@ let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
 function startOwnerLoopMonitor() {
   if(ownerLoopMonitor)return;
   startOwnerResponsivenessWatch();
-  let expected=performance.now()+250;
+  let expected=performance.now()+250,cpu=process.cpuUsage();
   ownerLoopMonitor=setInterval(()=>{
-    const now=performance.now(),lag=Math.round(now-expected);
-    expected=now+250;
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
+    const now=performance.now(),lag=Math.round(now-expected),used=process.cpuUsage(cpu);
+    expected=now+250;cpu=process.cpuUsage();
+    // Processor time spent while the loop was held tells waiting (a lock, synchronous I/O: near
+    // zero) from computing (close to the lag or above it) without a profiler, which may not run here.
+    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
   },250);
   ownerLoopMonitor.unref?.();
 }
