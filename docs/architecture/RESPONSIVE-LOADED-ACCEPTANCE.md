@@ -48,3 +48,11 @@ complete conversation/cache controller, provider pickup, late peer returns, a se
 process crash after browser custody, or Safari/iOS. Those require separate observations.
 The browser report explicitly retains those limits. A transport pause alone is never
 reported as browser closure.
+
+`responsive-restart-acceptance.ts` separately exercises a real owner-process death after
+canonical acceptance but before delivery acknowledgement. The capture process stays alive;
+a replacement owner recovers the dead claim, reuses the accepted input, and settles the
+retained command. The same fixture delivers an exact late peer answer twice and verifies
+one retained event and one terminal request result. It launches no external provider and
+does not claim provider-pickup timing. Its report records both process identities and the
+unchanged accepted input identity. Run with the same scoped authorization above.

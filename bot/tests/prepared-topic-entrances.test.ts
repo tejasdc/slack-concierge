@@ -22,3 +22,12 @@ test('agents can follow bounded topic pages and exact detail without creating an
  const detail=parseRouterSessionsArgs(['topics','detail','topic-one',...source,'--digest','a'.repeat(64),'--part','2']);
  expect(detail).toMatchObject({operation:'topics',body:{verb:'detail',topic_id:'topic-one',digest:'a'.repeat(64),part:2}});
 });
+
+test('whole-catalogue and whole-receipt entrances cannot run reconstruction',async()=>{
+ const owner=new SessionOwner({available:()=>false,wake:()=>{},steer:()=>false,stop:async()=>false},'/tmp');
+ for(const path of ['sessions','sessions/concierge%3A1']){
+  const response=await owner.handle(new Request(`http://fixture/sessions/v1/${path}`));
+  expect(response?.status).toBe(410);
+  expect((await response!.json() as any).error.code).toBe('PAGED_READER_REQUIRED');
+ }
+});

@@ -2451,7 +2451,8 @@ export class SessionOwner {
         if(!cursor)throw new SessionOwnerError('A catalogue revision is required.');
         result=preparedSessionChanges(cursor,space,boundedLimit(url.searchParams.get('limit'),40)??20);
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list(sessionSpaceParam(url.searchParams.get('space')))};
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1)
+        throw new SessionOwnerError('Read a prepared session window with a continuation cursor.',410,'PAGED_READER_REQUIRED');
       else if(request.method==='GET'&&parts[0]==='lab'&&parts.length===1) result=this.lab(boundedLimit(url.searchParams.get('limit'),500)??200);
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList();
@@ -2548,7 +2549,8 @@ export class SessionOwner {
         if(!sessionMetadata(session).inbox)throw new SessionOwnerError('Paged attention belongs to the Inbox.');
         result=preparedInboxAttention(session.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2)
+        throw new SessionOwnerError('Read the exact session view or a prepared receipt page.',410,'PAGED_READER_REQUIRED');
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');

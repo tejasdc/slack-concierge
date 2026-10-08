@@ -79,6 +79,12 @@ one exact digest part retained by that topic. Existing linked-dispatch authoriza
 applies. Canonical reconstruction functions remain for mutation decisions and parity checks,
 not for interactive HTTP or agent reads.
 
+The former `GET /sessions` and `GET /sessions/:id` whole-history entrances return
+`410 PAGED_READER_REQUIRED`. Catalogue callers use prepared windows and changes;
+metadata-only callers use `/sessions/:id/view`; receipts use their prepared pages.
+Deploy the matching browser and peer consumers with this reader migration. Do not
+restore the full-read fallback when an older consumer refuses: update that consumer.
+
 `topic-growth-fixtures.ts` exercises each registered topic reader at 100, 1,000 and
 10,000 topics under its storage budget. Canonical writes and action validation remain
 with the existing owner; a prepared preview never grants permission for an action.
