@@ -59,28 +59,33 @@ try {
   if (command === "activate") {
     const runId = required("--run-id");
     const artifact = required("--artifact");
-    const release = manager.verify(artifact);
-    const lastKnownGood = getLastKnownGoodRelease();
-    const intent = recordDeploymentReleaseActivationIntent(runId, release.artifact_digest, process.argv.includes("--allow-supersede"));
+    // Each step is timed: on 2026-10-08 at 19:17 something in this command held the ledger's writer
+    // lock for at least 10 s while the old owner was serving, and the owner's writes and heartbeat
+    // failed. The step that holds it is named in the log the next time it happens.
+    const steps: Record<string, number> = {};
+    const timed = <T>(name: string, work: () => T): T => { const start = performance.now(); try { return work(); } finally { steps[name] = Math.round(performance.now() - start); } };
+    const report = () => console.error(JSON.stringify({ event: "deployment_activate_steps", run_id: runId, steps_ms: steps }));
+    const release = timed("verify", () => manager.verify(artifact));
+    const lastKnownGood = timed("read_last_known_good", () => getLastKnownGoodRelease());
+    const intent = timed("record_intent", () => recordDeploymentReleaseActivationIntent(runId, release.artifact_digest, process.argv.includes("--allow-supersede")));
     if ("supersededCommit" in intent) {
+      report();
       finish(0, { status: "superseded", desired_commit: intent.supersededCommit });
     }
     if (lastKnownGood) {
       try {
-        registerDeploymentTurnReactionTargets(
-          runId,
-          deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit),
-          "deploying",
-        );
+        const targets = timed("scan_reaction_targets", () => deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
+        timed("register_reaction_targets", () => registerDeploymentTurnReactionTargets(runId, targets, "deploying"));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         recordDeploymentTurnReactionDiscoveryFailure(runId, message);
         console.error(JSON.stringify({ event: "deployment_turn_reaction_discovery_failed", run_id: runId, error: message }));
       }
     }
-    const manifest = manager.activate(artifact);
-    recordDeploymentReleaseActivated(runId, manifest.artifact_digest);
+    const manifest = timed("activate_files", () => manager.activate(artifact));
+    timed("record_activated", () => recordDeploymentReleaseActivated(runId, manifest.artifact_digest));
     notifyDeploymentWorker();
+    report();
     finish(0, { status: "activated", ...manifest });
   }
   if (command === "restore-lkg") {
