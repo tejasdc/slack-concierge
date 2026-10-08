@@ -6,6 +6,7 @@ import { ProviderLoginManager, type AuthLoginStartResult, type AuthLoginComplete
 import { CLAUDE_ACCOUNTS, accountHome, profileId } from "./provider-accounts";
 import { forgetClaudeHomeCheck, sharedClaudeHome } from "./provider-account-dispatch";
 import { log, errorFields } from "./log";
+import { claudeKeychainHasLogin, moveClaudeKeychainLogin } from "./claude-keychain";
 
 /**
  * Signing a Claude account in without touching any login already on this machine.
@@ -93,7 +94,9 @@ export class ClaudeAccountLogin {
     if (!staging) return { status: "failed", detail: "This sign-in is no longer waiting. Start it again." };
     try {
       const email = await claudeHomeEmail(staging.home);
-      if (!email || !existsSync(join(staging.home, ".credentials.json"))) {
+      // A Mac keeps the login in the Keychain under the staging folder's name instead of a file.
+      const inKeychain = !existsSync(join(staging.home, ".credentials.json")) && claudeKeychainHasLogin(staging.home);
+      if (!email || (!existsSync(join(staging.home, ".credentials.json")) && !inKeychain)) {
         log("warn", "claude_account_signin_unfiled", { reason: "no_login_written" });
         return { status: "failed", detail: "Claude did not finish signing in. Nothing changed." };
       }
@@ -105,6 +108,10 @@ export class ClaudeAccountLogin {
         if (!existsSync(from)) continue;
         if (existsSync(to)) renameSync(to, `${to}.superseded-${stamp}`);
         renameSync(from, to);
+      }
+      if (inKeychain && !moveClaudeKeychainLogin(staging.home, home)) {
+        log("warn", "claude_account_signin_unfiled", { reason: "keychain_move_failed" });
+        return { status: "failed", detail: "Signed in, but the login could not be moved to its account in the Keychain. Nothing changed." };
       }
       writeFileSync(join(home, ".account-email"), email, { mode: 0o600 });
       // Every Claude home reads the one shared conversation history, or a switch refuses it.

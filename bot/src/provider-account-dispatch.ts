@@ -1,6 +1,4 @@
 import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,renameSync,symlinkSync,unlinkSync} from 'node:fs';
-import {createHash} from 'node:crypto';
-import {spawnSync} from 'node:child_process';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
@@ -12,6 +10,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
 import {log} from './log';
+import {claudeKeychainHasLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 
@@ -55,10 +54,7 @@ const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','stats
  * §0.1). The Keychain is asked only whether that item exists; its secret is never read.
  */
 export function claudeHomeHasLogin(home:string):boolean {
-  if(existsSync(join(home,'.credentials.json')))return true;
-  if(process.platform!=='darwin')return false;
-  const service=`Claude Code-credentials-${createHash('sha256').update(home.replace(/\/+$/,'')).digest('hex').slice(0,8)}`;
-  return spawnSync('/usr/bin/security',['find-generic-password','-s',service],{stdio:'ignore',timeout:5_000}).status===0;
+  return existsSync(join(home,'.credentials.json'))||claudeKeychainHasLogin(home);
 }
 
 export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false,claim=prepare):string|null {
