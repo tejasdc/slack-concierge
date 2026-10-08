@@ -420,7 +420,15 @@ export function claudeCodeArgs(input: {
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
-export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
+/**
+ * Every model call re-sends the whole conversation, so a session's allowance cost grows with its
+ * length times its tool calls. Claude's default on a 1M model compacts only at ~967k tokens, and
+ * on 2026-10-08 the busiest sessions all sat near 970k, reading 3.9 billion cached tokens in a day.
+ * Compacting at 250k keeps a working task's context while cutting the average call several-fold.
+ * Measurements: docs/architecture/PROVIDER-USAGE.md#how-long-a-conversation-may-grow.
+ */
+export const CLAUDE_AUTO_COMPACT_WINDOW = 250_000;
+export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ autoCompactWindow: CLAUDE_AUTO_COMPACT_WINDOW, hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",

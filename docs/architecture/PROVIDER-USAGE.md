@@ -661,3 +661,27 @@ prices and sources used, weighted totals, raw token classes, and each consumer's
 Claude's shared transcript folder cannot reveal the account used by a terminal process;
 those conversations appear under an explicit unknown-account bucket. A Concierge turn
 without an account event is also unknown rather than assigned by guesswork.
+
+## How long a conversation may grow
+
+Every model call, including each tool step inside a turn, re-sends the whole conversation;
+prompt caching serves the unchanged part as cached input, which is cheaper but not free, and
+neither Anthropic nor OpenAI publishes how cached input counts toward a subscription's five-hour
+or weekly allowance (checked 2026-10-08: Claude Code prompt-caching, env-vars and model-config
+docs; OpenAI Codex pricing and prompt-caching docs). On a 1M model Claude Code compacts only at
+about 967k tokens, so long sessions lived near 1M. In the 24 hours to 2026-10-08 07:50 UTC the
+server's Claude transcripts made 12,370 model calls averaging 324k tokens of context each:
+3.92 billion cache-read, 88 million cache-write (72M of it one-hour), 7.3 million output, and
+almost no uncached input; 29 sessions that passed 500k carried 77% of the cache reads, and a
+turn averaged 12.6 calls. Codex made 4,138 calls with 527 million cached input (its window
+compacts near 240k already).
+
+Every Concierge Claude run therefore carries `autoCompactWindow: 250000` in its `--settings`
+(`CLAUDE_AUTO_COMPACT_WINDOW` in `claude-code.ts`), applied at the next turn of every session,
+resumed ones included. Capping each call at the ~160k a 250k sawtooth averages would have cut
+that day's re-read volume by about 56%. Alternatives weighed: a smaller window (100–200k)
+compacts mid-task more often and loses working detail; fresh sessions seeded from a summary are
+what compaction already does; keeping the cache warm is already the one-hour default and a
+keepalive call costs a full re-read itself; withholding wakes is done where it was safe (partial
+replies wake nobody) and answers are never held [decision: answers-delivered-when-they-arrive].
+Measure again with `python3 -I scripts/token-burn.py <hours>`.
