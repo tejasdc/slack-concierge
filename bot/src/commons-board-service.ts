@@ -49,14 +49,19 @@ function identityOf(value:string) {
   return `concierge:${resolveSessionAddress(name).id}`;
 }
 
-function mentionText(event:BoardEvent,state:ReturnType<typeof threadState>) {
+function mentionText(event:BoardEvent,state:ReturnType<typeof threadState>,peer:boolean) {
   // A sealed position stays hidden until the reveal, in the notice as on the board.
   const words=event.sealed?'(A sealed position: read the thread after the round is revealed.)':event.text.length>1500?`${event.text.slice(0,1500)}…`:event.text;
+  const where=`${commonsRoot()}/${event.board}/threads/${event.thread}/THREAD.md`;
   return [`Board mention from ${event.authorName} on board "${event.board}", in the ${state.kind} thread "${state.title}" (${event.thread}).`,
     '',words,'',
-    `Read the thread: router-actions.sh sessions board read ${event.board} --thread ${event.thread} <source-flags>`,
-    `Answer in it: router-actions.sh sessions board post ${event.board} --thread ${event.thread} <source-flags> --action-id <stable id> -- <your words>`,
-    'This is a notice: it owes no sessions reply. Read it when your current work reaches a stopping point.'].join('\n');
+    ...(peer
+      // The board's files live on the server; a Mac session reads them over ssh and answers this request.
+      ? [`Read the thread on the server: ssh remote-box cat ${where}`,
+        'Answer with sessions reply to this request; your words are not posted to the board automatically.']
+      : [`Read the thread: router-actions.sh sessions board read ${event.board} --thread ${event.thread} <source-flags>`,
+        `Answer in it: router-actions.sh sessions board post ${event.board} --thread ${event.thread} <source-flags> --action-id <stable id> -- <your words>`,
+        'This is a notice: it owes no sessions reply. Read it when your current work reaches a stopping point.'])].join('\n');
 }
 
 /** Delivers every mention of one event that has no receipt yet. Safe to repeat: admission and receipts are keyed by the event. */
@@ -67,7 +72,7 @@ export async function deliverMentions(event:BoardEvent,delivery:BoardDelivery) {
     if(existsSync(join(commonsRoot(),event.board,'receipts',`${event.id}--${index}.json`))){results.push({address,delivered:true});continue;}
     try {
       if(!event.sourceInput||!event.sourceRun)throw new BoardError('The post was written without a session identity, so Concierge cannot deliver its mentions; the mentioned session will see it on its next board read.');
-      const text=mentionText(event,state),inputId=`board:${event.id}:${index}`;
+      const text=mentionText(event,state,address.includes('/')),inputId=`board:${event.id}:${index}`;
       // A Mac session cannot take a local admission, so it gets an informational request from the
       // poster's live run, once, at post time; after that run ends a sweep cannot resend it, and
       // status.json says so. The Mac agent answers it with a short reply or by posting.
@@ -106,7 +111,7 @@ export function commitCommons(message:string) {
       await run(['-c','core.hooksPath=/dev/null','commit','-q','--allow-empty-message','-m',message],20_000).catch(error=>{if(!String(error).includes('nothing to commit')&&!String(error).includes('exited 1'))throw error;});
       // Writes only ever add files, so a push refused because the origin moved rebases cleanly once.
       await run(['push','-q'],30_000).catch(async()=>{
-        await run(['pull','-q','--rebase'],30_000);
+        await run(['pull','-q','--rebase','--autostash'],30_000);
         await run(['push','-q'],30_000);
       }).catch(error=>log('warn','board_push_failed',{detail:String(error)}));
     } catch(error) {log('warn','board_commit_failed',{detail:String(error)});}

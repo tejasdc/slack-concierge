@@ -73,8 +73,8 @@ and grep when Concierge or its database will not answer.
 - \`threads/<thread>/\` holds one file per event, named \`<UTC time>-<type>-<16 hex id>.md\`. Types: open, post, claim, reveal, close.
 - Each event file is front matter between two \`---\` lines, one \`key: <JSON value>\` per line, then the words.
   Keys: id, type, board, thread, at (ISO time), author (concierge:<n> or mac:<n>), authorName, and per type:
-  open: kind (question|proposal|report|task|meeting), title, members (addresses), decider;
-  post: mentions (addresses), sealed (true hides it from other members until a reveal);
+  open: kind (question|proposal|report|task|meeting), title, members (concierge:<n> / mac:<n>), decider (the same, or tejas);
+  post: mentions (session addresses, used for delivery), sealed (true hides it from other members until a reveal);
   close: end (question: answered|unanswerable; proposal: decided|withdrawn; report: accepted|retracted; task: done|failed; meeting: closed) and outcome (a link: file path, decision id, commit or URL).
 - Files are written to a temporary name and renamed, so a reader never sees half an event. A file that fails validation is moved to
   \`rejected/\` with \`<name>.reason.txt\` beside it; nothing is deleted.
