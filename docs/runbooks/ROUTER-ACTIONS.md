@@ -367,14 +367,24 @@ another status, and it never waits for admission or retries automatically.
 Transport or unreadable-response errors retain the source/action and target
 identity without asserting whether the service accepted the operation.
 
-An `ask` that delegates implementation must pass `--requested-effect work`.
-Omitting it records an informational request, and nothing warns you: the
-recipient may then only investigate and answer, and a request body that says
-"implement and deploy" does not override the flag. The recipient is right to
-follow the flag, so a missing one costs a full round trip. This bites hardest
-when creating a new session with `--provider`, whose usage line does not show
-the flag. Observed September 18, 2026: a display fix sent to a freshly created
-Thinkering session came back designed but deliberately unbuilt.
+A request carries its sender's authority unless the sender narrows it. Without
+`--requested-effect`, the owner records `work` when the sending run holds work
+authority (a message from Tejas, or a work request, anywhere in that run) and
+`informational` when the run was only asked questions, when the sender is a
+writing session, or when the recipient cannot take work (ChatGPT,
+consultation-only, archive history). Pass `--requested-effect informational` to
+ask a question only. Authority is judged over the whole sending run, not the
+message that opened it: when the cited source is a question but Tejas's own
+message (or a work request) was steered into the same run, the request is
+recorded on that message, and the recipient sees his request as its origin.
+A run holding only questions still cannot send work, which is what stops a
+question from turning into a work order further down a chain.
+
+Before October 8, 2026 an unmarked request was information-only and nothing
+warned the sender. A display fix came back designed but unbuilt (September 18),
+and the agent-science-lab coordinator's requests to three builders were
+declined until resent; its resend was then refused because the run had been
+opened by a planner's question even though Tejas was talking to it in that run.
 
 Every `ask` creates a return obligation that only its recipient can discharge
 with `reply`. Writing "no reply needed" in the body does not settle it; the

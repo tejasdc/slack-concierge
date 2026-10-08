@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import { forwardedReplyFraming } from './session-inbox';
@@ -121,6 +121,31 @@ export class SessionCommunicationCoordinator {
     private detach: (() => void) | null = null;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
+    /**
+     * Authority belongs to the run doing the work, not to whichever of its messages opened it.
+     * A question that opened the turn does not take away the work Tejas gave the same run: the
+     * request is carried on the run's earliest message that holds work authority (his own, or a
+     * work request). A run holding only questions stays information-only, which is what keeps a
+     * question from being turned into a work order further down the chain.
+     */
+    private authority(actor: Actor): {actor: Actor; scope: 'informational' | 'work'} {
+        if (!actor.inputId) return {actor, scope: 'work'};
+        const scope = (input: AcceptedSessionInput) => sessionInputProvenance(input)?.effectScope === 'informational' ? 'informational' : 'work';
+        if (scope(getAcceptedSessionInput(actor.inputId)!) === 'work') return {actor, scope: 'work'};
+        const holder = (db.query("SELECT * FROM session_inputs WHERE turn_id=? AND session_id=? AND origin IN ('human','agent') ORDER BY rowid").all(actor.turn, actor.session) as AcceptedSessionInput[])
+            .find(input => input.id !== actor.inputId && scope(input) === 'work');
+        return holder ? {actor: {...actor, inputId: holder.id, source: {...actor.source, input_id: holder.id}}, scope: 'work'} : {actor, scope: 'informational'};
+    }
+    /** Whether the addressed or new session can be given work at all (not ChatGPT, consultation-only or archive history). */
+    private receivesWork(input: {address?: string; provider?: string; peer?: string}) {
+        if (input.provider !== undefined) return input.provider !== 'chatgpt';
+        if (input.peer !== undefined || !input.address || this.dependencies.peers?.splitAddress(input.address)) return true;
+        const session = getSessionById(this.address(input.address).session);
+        if (!session) return true;
+        const metadata = sessionMetadata(session);
+        return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only'
+            && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session));
+    }
     private actor(source: CommunicationSource): Actor {
         if (source?.input_id || source?.run_id) {
             if (source.channel_id || source.message_ts || !source.input_id || !source.run_id)
@@ -735,10 +760,16 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
-        const actor = this.actor(input.source);
+        const sender = this.authority(this.actor(input.source));
+        const actor = sender.actor;
         action(input.action_id);
         text(input.text);
-        if(input.requestedEffect==='work'&&isWritingSession(getSessionById(actor.session)!))throw new Error(WRITING_SESSION_REFUSAL);
+        const writing=isWritingSession(getSessionById(actor.session)!);
+        if(input.requestedEffect==='work'&&writing)throw new Error(WRITING_SESSION_REFUSAL);
+        // A request carries its sender's authority unless the sender narrows it to a question:
+        // unmarked requests from the lab coordinator arrived information-only and three agents
+        // declined to build what Tejas had asked for (2026-10-08).
+        if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
         if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
         if(input.consult!==undefined) {
             if(!input.provider||input.provider==='chatgpt')throw new Error('--consult points a new coding session at earlier work; it needs --provider.');
