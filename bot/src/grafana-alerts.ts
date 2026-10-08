@@ -159,6 +159,9 @@ export class GrafanaAlerts {
   async settled() { await this.runner.active(); }
   async stop() { this.stopping = true; await this.settled(); }
   private investigate(row: GrafanaAlertRow) {
+    // Historical delivery proves only its old destination. A fresh firing is retargeted by
+    // accept(); startup must not launch work from a retired channel's retained receipt.
+    if (row.channel !== this.options.destinationChannel) return;
     if (row.status !== "firing" || !row.root_ts || row.delivered_revision !== row.revision || row.investigation_episode === row.starts_at) return;
     this.options.db.transaction(() => {
       const current = this.row(row.fingerprint)!;

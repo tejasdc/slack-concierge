@@ -64,8 +64,15 @@ owners as informational supplements under the existing topics. No new tasks were
 
 The report's hot Codex process is a separate unresolved resource observation: it still uses
 approximately one CPU core, but completed a post-repair native turn without a daemon restart.
-No evidence links that load to the dispatch failure. The isolated Grafana worker error at
-19:19:19 did not repeat in the checked interval; all nine alert delivery rows were delivered.
+No evidence links that load to the dispatch failure. All nine alert delivery rows were delivered.
+
+The remaining Grafana worker error recurred at the next startup, 19:29:08 UTC. The only firing,
+delivered alert awaiting investigation was the historical `WorkspaceSkillsSyncStale` receipt
+on `C0C03E75160`; that channel no longer exists in the channel registry. Startup tried
+`admitOperationalTurn`, whose missing-channel guard necessarily throws. The current alert
+owner's destination is `native:inbox`. Investigation now ignores receipts belonging to a
+different destination. Historical state remains intact; the existing `accept` path still
+retargets a fresh firing to the current destination. No retired Slack channel is recreated.
 
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not
