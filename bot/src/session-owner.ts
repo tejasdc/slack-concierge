@@ -9,6 +9,7 @@ import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJ
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
+import {isTransientDatabaseError} from './database-retry';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
@@ -2749,6 +2750,8 @@ export class SessionOwner {
     } catch(error) {
       if(error instanceof StorageReadBudgetError)return ownerJson({error:{code:error.code,message:error.message}},{status:503});
       if(error instanceof TopicError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
+      // A busy ledger is a moment, not a refusal: a 4xx made the Mac drop a finished answer after one try (2026-10-04, 2026-10-08).
+      if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
       return ownerJson({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
   }
