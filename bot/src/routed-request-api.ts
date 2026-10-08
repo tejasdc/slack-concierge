@@ -45,7 +45,7 @@ async function removeUnboundSocket(path: string) {
   unlinkSync(path);
 }
 
-/** One handler for the owner API and the agent CLI surface; the socket and any peer listener share it. */
+/** Routes shared by the root-only owner socket and the authenticated peer listener. */
 const startedAt=new Date().toISOString();
 const release=(()=>{
   const supplied=process.env.CONCIERGE_RUNTIME_GIT_SHA;
@@ -53,29 +53,10 @@ const release=(()=>{
   try {const commit=JSON.parse(readFileSync(process.env.CONCIERGE_RELEASE_MANIFEST??'', 'utf8')).git_commit;
     return /^[0-9a-f]{40}$/.test(commit)?commit:null;} catch{return null;}
 })();
-export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[]) {
+export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
-      if(request.method==='GET'&&url.pathname==='/supervisor/ping')
-        return Response.json({ok:true,pid:process.pid,startedAt,release});
-      if(request.method==='POST'&&url.pathname==='/supervisor/wake') {
-        const woken=wake?.()??[];
-        log('info','supervisor_wake',{woken});
-        return Response.json({woken});
-      }
-      if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
-        const input=await request.json() as any;
-        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
-        return Response.json(owner.acceptInboxCapture({source:{kind:'monologue',id:input.id,recordedAt:input.recordedAt,
-          title:`Outside agent · ${input.name}`,metadata:{outsideAgent:input.name}},text:input.text,files:input.files}),{status:202});
-      }
-      if(request.method==='POST'&&url.pathname==='/external/ask'&&sessions)
-        return Response.json(sessions.externalAsk(await request.json()),{status:202});
-      if(request.method==='POST'&&url.pathname==='/external/get'&&sessions){
-        const input=await request.json() as {name:string;request_id:string};
-        return Response.json(sessions.externalGet(input.name,input.request_id));
-      }
       const native=await owner?.handle(request);
       if(native)return native;
       if (request.method === 'POST' && url.pathname.startsWith('/session-communication/') && sessions) {
@@ -125,6 +106,37 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
   };
 }
 
+/** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
+function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[]) {
+  return async function fetch(request:Request):Promise<Response> {
+    try {
+      const url=new URL(request.url);
+      if(request.method==='GET'&&url.pathname==='/supervisor/ping')
+        return Response.json({ok:true,pid:process.pid,startedAt,release});
+      if(request.method==='POST'&&url.pathname==='/supervisor/wake') {
+        const woken=wake?.()??[];
+        log('info','supervisor_wake',{woken});
+        return Response.json({woken});
+      }
+      if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
+        const input=await request.json() as any;
+        if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
+        return Response.json(owner.acceptInboxCapture({source:{kind:'outside-agent',id:input.id,recordedAt:input.recordedAt,
+          title:`Outside agent · ${input.name}`,metadata:{outsideAgent:input.name}},text:input.text,files:input.files}),{status:202});
+      }
+      if(request.method==='POST'&&url.pathname==='/external/ask'&&sessions)
+        return Response.json(sessions.externalAsk(await request.json()),{status:202});
+      if(request.method==='POST'&&url.pathname==='/external/get'&&sessions){
+        const input=await request.json() as {name:string;request_id:string};
+        return Response.json(sessions.externalGet(input.name,input.request_id));
+      }
+      return shared(request);
+    } catch(error) {
+      return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:400});
+    }
+  };
+}
+
 export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,wake?:()=>string[]) {
   const path = join(stateDir, "requests.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
@@ -132,7 +144,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
   const server = Bun.serve({
     unix: path,
     idleTimeout: 0,
-    fetch: requestApiHandler(coordinator, workspaceUrl, sessions, owner,wake),
+    fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner,wake),
   });
   chmodSync(path, 0o600);
   return server;

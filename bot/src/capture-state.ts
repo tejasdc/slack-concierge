@@ -177,7 +177,7 @@ export type CaptureEventStatus = "pending" | "sending" | "delivered" | "parked";
 export type CaptureDeliveryKind = "slack" | "journal" | "session";
 
 export interface CaptureSource {
-  kind: "pebble" | "thinkering" | "monologue";
+  kind: "pebble" | "thinkering" | "monologue" | "outside-agent";
   id: string;
   recordedAt: string;
   title?: string;

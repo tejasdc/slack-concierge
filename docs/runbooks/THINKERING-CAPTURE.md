@@ -54,8 +54,9 @@ quick capture", "You · Pebble", "You · web", "You · web (password)"), derived
 the capture's recorded source or the door thnkr.ing names for its own screens.
 
 An outside CLI agent uses `router-actions.sh external <name> capture` at the owner
-socket. That capture is recorded as `Outside agent · <name>` and enters the normal
-Inbox router turn. It is separate from `test-capture`, which cites an existing run
+socket. The owner records it with the distinct `outside-agent` source kind and required
+outside-agent name; Monologue cannot carry that name. It is shown as
+`Outside agent · <name>` and enters the normal Inbox router turn. It is separate from `test-capture`, which cites an existing run
 and deliberately starts no Inbox turn.
 
 ## Durable receipt

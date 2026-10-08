@@ -1150,13 +1150,16 @@ export class SessionOwner {
   acceptInboxCapture(body:unknown) {
     const input=object(body);only(input,['source','text','files','importOnly']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
-    if(!['pebble','thinkering','monologue'].includes(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
+    if(!['pebble','thinkering','monologue','outside-agent'].includes(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
     if(source.title!==undefined&&typeof source.title!=='string')throw new SessionOwnerError('Capture title must be text.');
     if(source.metadata!==undefined)object(source.metadata);
     const outsideAgent=(source.metadata as Record<string,unknown>|undefined)?.outsideAgent;
-    if(outsideAgent!==undefined&&(!/^[a-z][a-z0-9-]{2,40}$/.test(String(outsideAgent))||source.kind!=='monologue'))throw new SessionOwnerError('Invalid outside agent capture source.');
+    if(source.kind==='outside-agent'&&!/^[a-z][a-z0-9-]{2,40}$/.test(String(outsideAgent??'')))throw new SessionOwnerError('An outside-agent capture needs its valid outside agent name.');
+    if(source.kind!=='outside-agent'&&outsideAgent!==undefined)throw new SessionOwnerError('Only an outside-agent capture may name an outside agent.');
+    if(source.kind==='outside-agent'&&(source.metadata as Record<string,unknown>|undefined)?.agentSource!==undefined)throw new SessionOwnerError('An outside-agent capture cannot cite a Concierge run.');
     if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
     if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
+    if(source.kind==='outside-agent'&&input.importOnly===true)throw new SessionOwnerError('An outside-agent capture always enters the Inbox router.');
     // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
     // starting the Inbox's own turn.
     const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);

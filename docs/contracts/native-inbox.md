@@ -89,9 +89,12 @@ Trusted local producer `POST /sessions/v1/inbox` accepts:
 }
 ```
 
-Kinds are `pebble`, `thinkering`, `monologue`. Source IDs remain exact producer
+Kinds are `pebble`, `thinkering`, `monologue`, and `outside-agent`. Source IDs remain exact producer
 identities: the public capture worker uses its immutable event ID; Monologue uses
-note_id. The endpoint uses the existing private `requests.sock` and root filesystem
+note_id; an outside agent uses the ID minted by the installed helper. An `outside-agent`
+source requires `metadata.outsideAgent` matching the outside-agent name contract, and every
+other kind refuses that field, including `monologue`. An outside-agent source cannot cite a
+Concierge run or request `importOnly`; it always queues the Inbox router. The endpoint uses the existing private `requests.sock` and root filesystem
 authentication. It is not a browser/model author-selection route. Public capture
 keeps its existing credential and acceptance queue; no new credential or queue exists.
 
@@ -106,9 +109,9 @@ and timestamps belong to the snapshot and must remain stable on retry.
 First access or acceptance creates the active Inbox if absent, using Claude Code
 `opus[1m]` and the `slack-inbox` project cwd. This is the explicit router model
 exception; ordinary destination work still uses fresh Sol at medium effort unless
-Tejas chooses otherwise. Acceptance retains a human input and files and queues it
-atomically through the existing execution owner. Native human ingress is the
-provenance; no Slack message is manufactured. Stopped/archived session policy
+Tejas chooses otherwise. Acceptance retains an attributed input and files and queues it
+atomically through the existing execution owner. Native human ingress retains human
+provenance; outside-agent ingress retains its named agent provenance. No Slack message is manufactured. Stopped/archived session policy
 remains owned by normal session controls. Later human session controls remain
 available.
 

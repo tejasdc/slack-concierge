@@ -8,7 +8,7 @@ Wake requests the existing queue, communication, peer, project and watch paths t
 run, and returns `{woken:[...]}` without replaying input.
 
 `POST /external/capture` accepts `{name,id,recordedAt,text,files?}` and calls the
-normal Inbox capture intake with `source.kind:"monologue"` and retained
+normal Inbox capture intake with `source.kind:"outside-agent"` and retained
 `source.metadata.outsideAgent`. It queues the ordinary router turn. `POST
 /external/ask` accepts `{name,address,action_id,text,requestedEffect?}`; the exact
 local session address is resolved by the owner. A repeated `(name,action_id)` with
@@ -22,6 +22,9 @@ explicit final leaves a pollable `awaiting-explicit-reply` state.
 An outside name matches `^[a-z][a-z0-9-]{2,40}$`. Accepted input authorship carries
 `author.kind:"agent"` and `author.outsideAgent:{name,label}`; the label is
 `Outside agent · <name>`. It never claims a human or Concierge session identity.
+These supervisor and outside-agent routes are installed only by the root-private
+Unix socket listener. The authenticated peer-network listener uses the shared
+session-owner handler without these routes.
 
 Implementation contract for the approved [joint convergence](../plans/2026-09-15-unified-session-convergence.md), not a second design. Concierge is the sole catalogue, accepted-input, execution FIFO, request/reply and recovery owner. Thinkering implements authenticated surface and application/provider capability adapters.
 

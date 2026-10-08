@@ -126,7 +126,7 @@ export async function startSessionRuntime() {
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,wake);
-  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner,wake),onContact:()=>projectSetup.wake()}):null;
+  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
   // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
   const liveSpeech=startLiveSpeechListener();
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});

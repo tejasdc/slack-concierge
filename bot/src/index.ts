@@ -4140,7 +4140,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,wakeOwnerPaths));
             if (peering.listen) {
-              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner,wakeOwnerPaths),onContact:()=>projectSetup.wake()});
+              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner),onContact:()=>projectSetup.wake()});
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
             }
             sandboxSlackIdentity?.assertConnected();

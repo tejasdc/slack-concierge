@@ -131,6 +131,7 @@ export function doorOf(input:AcceptedSessionInput):string|null {
     return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(source.recordedAt))}, reached the server ${minutesText(wait)} later`;
   }
   if(source?.kind==='monologue')return 'Monologue';
+  if(source?.kind==='outside-agent'&&typeof source.metadata?.outsideAgent==='string')return `Outside agent · ${source.metadata.outsideAgent}`;
   if(source?.kind==='session-message')return 'saved from a conversation';
   if(source?.kind==='thinkering'){
     const metadata=source.metadata??{};
@@ -147,8 +148,9 @@ export function doorOf(input:AcceptedSessionInput):string|null {
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
   const external=db.query('SELECT agent_name,text,request_id FROM session_external_requests WHERE target_input_id=?').get(input.id) as {agent_name:string;text:string;request_id:string}|null;
   if(external)return {author:{kind:'agent',outsideAgent:{name:external.agent_name,label:`Outside agent · ${external.agent_name}`},requestId:external.request_id,communication:'request'},text:external.text};
-  const capture=JSON.parse(input.payload_json).capture?.source?.metadata?.outsideAgent;
-  if(typeof capture==='string')return {author:{kind:'agent',outsideAgent:{name:capture,label:`Outside agent · ${capture}`}}};
+  const captureSource=JSON.parse(input.payload_json).capture?.source;
+  const capture=captureSource?.metadata?.outsideAgent;
+  if(captureSource?.kind==='outside-agent'&&typeof capture==='string')return {author:{kind:'agent',outsideAgent:{name:capture,label:`Outside agent · ${capture}`}}};
   const corrected=input.origin==='human'?authorCorrection(input.id):null;
   if(corrected){
     const session=corrected.authorSessionId===null?undefined:authorSession(corrected.authorSessionId);

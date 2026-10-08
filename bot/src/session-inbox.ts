@@ -5,7 +5,7 @@ import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 
 export type InboxCapture = {
-  source:{kind:'pebble'|'thinkering'|'monologue';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
+  source:{kind:'pebble'|'thinkering'|'monologue'|'outside-agent';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
   text:string;
   // transcript: words the capturing phone already made for this audio; kept with it so nothing
   // transcribes it again.
@@ -77,7 +77,7 @@ export function inboxMessage(row:any) {
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',agent=result||post;
   const eventPayload=JSON.parse(row.payload_json);
-  const outsideAgent=payload.capture?.source?.metadata?.outsideAgent;
+  const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   // An agent message carries its own files: a post names them, and a result names them when
   // the retained result payload does. A human capture or a returned answer carries the
   // attachments of its accepted input.
