@@ -53,7 +53,13 @@ export function waitingOnLiveRequest(sessionId: number): boolean {
         LEFT JOIN turns saved_turn ON saved_turn.id=target.turn_id
         WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND ${live}
           AND NOT (saved_turn.saved_kind IS NOT NULL AND saved_turn.status='queued') LIMIT 1`).get(sessionId)
-        || !!db.query(`SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND ${live} LIMIT 1`).get(sessionId);
+        || !!db.query(`SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND ${live} LIMIT 1`).get(sessionId)
+        // A request that has just been answered still wakes this session until its answer is taken
+        // in: on 2026-10-08 three requests were reported stalled in the same second their worker's
+        // own sub-request settled, before the return that woke it had started a turn.
+        || !!db.query(`SELECT 1 FROM session_communication_requests request
+            JOIN session_communication_events answer ON answer.request_id=request.request_id AND answer.kind='final'
+            WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId);
 }
 
 /** Whether something already in the system will wake this worker again. */

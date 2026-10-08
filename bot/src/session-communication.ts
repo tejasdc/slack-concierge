@@ -821,6 +821,8 @@ export class SessionCommunicationCoordinator {
         captureId?:string;
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
+        /** Requests from one session that share a batch name return together, in one wake, once all are answered. */
+        batch?:string;
         peer?:string;
         /** What only the peer machine can do for this work; required to create a session there. */
         machine_need?:string;
@@ -891,6 +893,7 @@ export class SessionCommunicationCoordinator {
         }
         if(input.peer!==undefined) {
             if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
+            if(input.batch!==undefined)throw new Error('Batches are for sessions on this machine; ask a peer session on its own.');
             if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
@@ -913,9 +916,11 @@ export class SessionCommunicationCoordinator {
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
+        if(input.batch!==undefined&&(typeof input.batch!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(input.batch)))throw new Error('A batch name is letters, digits, dots, dashes and underscores.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
+            ...(input.batch?{batch:input.batch}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -1556,6 +1561,36 @@ export class SessionCommunicationCoordinator {
                 this.followReturn(current.event_id, current.accepted_input_id);
                 return;
             }
+            // Requests asked as one batch return together: each answer waits until the last of its
+            // batch is answered, then one return carries them all, so a fan-out to five sessions wakes
+            // the asker once instead of five times. Every wake re-reads the asker's whole conversation
+            // (about 518k tokens per return for the lab coordinator, 2026-10-08).
+            const batch = event.kind === 'final' && !current.accepted_input_id ? JSON.parse(request.payload_json).batch as string | undefined : undefined;
+            if (batch) {
+                const members = db.query(`SELECT * FROM session_communication_requests WHERE source_session_id=? AND json_extract(payload_json,'$.batch')=?`)
+                    .all(request.source_session_id, batch) as RequestRow[];
+                if (members.some(member => !member.outcome)) {
+                    db.query("UPDATE session_communication_events SET status='batched',error=NULL WHERE event_id=? AND status IS NOT 'batched'").run(event.event_id);
+                    return;
+                }
+                const answers = members.flatMap(member => db.query(`SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND accepted_input_id IS NULL
+                    AND superseded_by_event_id IS NULL ORDER BY rowid DESC LIMIT 1`).all(member.request_id) as EventRow[]);
+                recoverUnsentSteeredInput(`return:${event.event_id}`);
+                const existing = getAcceptedSessionInput(`return:${event.event_id}`);
+                const parts = answers.map(answer => {
+                    const words = JSON.parse(answer.payload_json);
+                    const asked = members.find(member => member.request_id === answer.request_id)!;
+                    return `## ${words.responding_session_id ?? `concierge:${asked.target_session_id}`} · request ${answer.request_id} · ${words.workDisposition ?? this.row(answer.request_id).outcome}\n\n${words.text}`;
+                });
+                const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
+                    sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
+                    text:`Batch "${batch}": all ${members.length} requests are answered (${answers.length} answers below). This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${parts.join('\n\n')}`,
+                    ...(()=>{const files=answers.flatMap(answer=>JSON.parse(answer.payload_json).attachments??[]);return files.length?{attachments:files as string[]}:{};})()});
+                for (const answer of answers)
+                    db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(accepted.id, answer.event_id);
+                for (const answer of answers) this.followReturn(answer.event_id, accepted.id);
+                return;
+            }
             const group = current.accepted_input_id ? { carriedBy: null, joining: [] as EventRow[] } : this.sameAnswerGroup(current, request.source_session_id);
             if (group.carriedBy) {
                 db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy, event.event_id);
@@ -1659,7 +1694,8 @@ export class SessionCommunicationCoordinator {
                 : turn?.status === 'done' && this.recipientStillWorking(request, ['running']);
             // A Concierge update holds new starts and yields running work for a few minutes. Work
             // waiting only for that is not stalled, so look again after the update instead.
-            if (healthy || updateDraining()) {
+            // A recipient waiting on its own request to another session is working through it, not stalled.
+            if (healthy || updateDraining() || waitingOnLiveRequest(request.target_session_id)) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 continue;

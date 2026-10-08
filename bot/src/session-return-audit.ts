@@ -16,7 +16,7 @@ const GRACE_MS = 10 * 60 * 1000;
 const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, e.created_at_ms, r.source_session_id
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
     WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1) AND e.accepted_input_id IS NULL
-      AND e.status NOT IN ('held','retained','received') AND e.created_at_ms<=? ${extra}`;
+      AND e.status NOT IN ('held','retained','received','batched') AND e.created_at_ms<=? ${extra}`;
 export type UndeliveredReturnRow={event_id:string;request_id:string;status:string;created_at_ms:number;source_session_id:number;peer:boolean};
 /** The audit and local supervisor read one definition; the supervisor supplies a hard bound. */
 export function undeliveredReturnRows(now=Date.now(),limit?:number):UndeliveredReturnRow[] {

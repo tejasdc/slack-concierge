@@ -388,6 +388,12 @@ authorization or a change to the default rapid-iteration policy.
   at startup. An
   unclassified work answer is `undetermined` and holds dependents. Never infer
   success from `requestedEffect`.
+- **Wakes are the cost, so exchanges are shaped to avoid them** ([exchange kinds](docs/plans/2026-10-08-exchange-kinds.md)):
+  each wake re-reads the asker's whole conversation (~518k tokens for the lab coordinator, against ~620 for an
+  answer). `sessions ask --batch <name>` holds each answer (event status `batched`) until every request of that
+  batch from the same session is answered, then one return carries them all. A worker waiting on its own live
+  request, or on a sub-request answered but not yet taken in, is not stalled (`waitingOnLiveRequest`); the 15-minute
+  overdue check uses the same rule.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
