@@ -4,6 +4,7 @@ import {realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
+import {sessionCatalogueLabels} from './session-labels';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -30,6 +31,8 @@ prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
     ON presentation_messages(generation,session_id,root_input_id,event_sequence DESC);
   CREATE INDEX IF NOT EXISTS presentation_messages_topic_page
     ON presentation_messages(generation,topic_id,event_sequence DESC);
+  CREATE INDEX IF NOT EXISTS presentation_messages_input
+    ON presentation_messages(generation,session_id,input_id,event_sequence);
   CREATE UNIQUE INDEX IF NOT EXISTS presentation_messages_exact
     ON presentation_messages(generation,session_id,message_id);
   CREATE TABLE IF NOT EXISTS presentation_topic_events(
@@ -113,16 +116,58 @@ function writeInput(inputId:string) {
     sourceId:`input:${row.id}`,sourceVersion:hash(written),textHash:hash(written),role:'user',text,at:row.created_at,ordinal:0});
 }
 function writeSession(sessionId:number) {
-  const row=source.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(sessionId) as {native_metadata_json:string}|null;
+  const row=source.query('SELECT native_metadata_json,slack_channel_id,slack_thread_ts FROM sessions WHERE id=?')
+    .get(sessionId) as {native_metadata_json:string;slack_channel_id:string|null;slack_thread_ts:string|null}|null;
   if(!row){search.remove(`session:${sessionId}`);return;}
-  const meta=JSON.parse(row.native_metadata_json||'{}');
-  const text=[meta.title,meta.summary,meta.cwd].filter(value=>typeof value==='string').join('\n');
+  const labels=sessionCatalogueLabels(source,row);
+  const text=[labels.title,labels.summary,labels.project].filter(value=>typeof value==='string').join('\n');
   if(!text){search.remove(`session:${sessionId}`);return;}
   search.upsert({key:`session:${sessionId}`,sessionId,kind:'session',eventId:String(sessionId),sourceId:`session:${sessionId}`,
     sourceVersion:hash(text),textHash:hash(text),role:'session',text,at:null,ordinal:0});
 }
 function topicOf(root:string):string|null {
   return (source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null)?.topic_id??null;
+}
+async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:ReturnType<typeof inboxRootResolver>) {
+  const roots=prepared.query(`SELECT DISTINCT root_input_id AS root FROM presentation_messages
+    WHERE generation=? AND input_id=?`).all(generation,inputId) as {root:string}[];
+  for(const {root} of roots){
+    let after=0;
+    while(true){
+      const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId
+        FROM presentation_messages WHERE generation=? AND root_input_id=? AND event_sequence>?
+        ORDER BY event_sequence LIMIT 100`).all(generation,root,after) as
+          {sequence:number;sessionId:number;messageId:string}[];
+      if(!rows.length)break;
+      prepared.transaction(()=>{
+        keepLease();
+        for(const row of rows){
+          const nextRoot=resolveRoot(row.sessionId,row.messageId);
+          if(nextRoot&&nextRoot!==root)prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+            WHERE generation=? AND event_sequence=?`).run(nextRoot,topicOf(nextRoot),generation,row.sequence);
+        }
+      })();
+      after=rows.at(-1)!.sequence;
+      await Bun.sleep(0);
+    }
+  }
+}
+async function relocateRoot(generation:number,root:string){
+  const topic=topicOf(root);
+  let after=0;
+  while(true){
+    const rows=prepared.query(`SELECT event_sequence AS sequence FROM presentation_messages
+      WHERE generation=? AND root_input_id=? AND event_sequence>? ORDER BY event_sequence LIMIT 100`)
+      .all(generation,root,after) as {sequence:number}[];
+    if(!rows.length)break;
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of rows)prepared.query('UPDATE presentation_messages SET topic_id=? WHERE generation=? AND event_sequence=?')
+        .run(topic,generation,row.sequence);
+    })();
+    after=rows.at(-1)!.sequence;
+    await Bun.sleep(0);
+  }
 }
 let rebuilding=false;
 
@@ -132,6 +177,7 @@ async function rebuild() {
   rebuilding=true;
   try {
     const previous=meta(),generation=previous.generation+1,startHead=head();
+    const eventHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
     prepared.transaction(()=>{
       keepLease();
       prepared.query('DELETE FROM presentation_messages WHERE generation=?').run(generation);
@@ -142,7 +188,7 @@ async function rebuild() {
     let after=0,more=true;
     const resolveRoot=inboxRootResolver(source);
     while(more) {
-      const page=sourceMessagePage(source,after,250,resolveRoot);
+      const page=sourceMessagePage(source,after,eventHead,250,resolveRoot);
       after=page.nextSequence;more=page.hasMore;
       prepared.transaction(()=>{
         keepLease();
@@ -152,6 +198,7 @@ async function rebuild() {
       })();
       await Bun.sleep(0);
     }
+    after=eventHead;
     let inputAfter=0;
     while(true){
       const rows=source.query('SELECT rowid,id FROM session_inputs WHERE rowid>? ORDER BY rowid LIMIT 20')
@@ -189,22 +236,32 @@ async function catchUp() {
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string}[];
   if(!changes.length)return;
-  const relink=changes.some(change=>change.source_table==='inbox_topic_roots'
-    ||change.source_table==='session_owner_events'
-    &&(source.query('SELECT kind FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as {kind:string}|null)?.kind==='thread_link');
-  if(relink){await rebuild();return;}
   const resolveRoot=inboxRootResolver(source);
+  const linkedInputs=new Set<string>(),movedRoots=new Set<string>();
+  for(const change of changes){
+    if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
+    else if(change.source_table==='session_owner_events'){
+      const row=source.query('SELECT kind,input_id FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
+        {kind:string;input_id:string|null}|null;
+      if(row?.kind==='thread_link'&&row.input_id)linkedInputs.add(row.input_id);
+    }
+  }
+  for(const inputId of linkedInputs)await reassignLinkedInput(current.generation,inputId,resolveRoot);
+  for(const root of movedRoots)await relocateRoot(current.generation,root);
   let eventAfter=current.event_watermark;
+  const eventHead=changes.reduce((latest,change)=>change.source_table==='session_owner_events'
+    ?Math.max(latest,Number(change.row_key)||0):latest,current.event_watermark);
   const newRows=[] as ReturnType<typeof sourceMessagePage>['messages'];
   const newTopicEvents=[] as ReturnType<typeof sourceMessagePage>['topicEvents'];
   const newOwnerMessages=[] as ReturnType<typeof sourceMessagePage>['ownerMessages'];
   // The source event sequence and change sequence are distinct; both advance together at commit.
-  while(true){
-    const page=sourceMessagePage(source,eventAfter,250,resolveRoot);
+  while(eventAfter<eventHead){
+    const page=sourceMessagePage(source,eventAfter,eventHead,250,resolveRoot);
     eventAfter=page.nextSequence;newRows.push(...page.messages);newTopicEvents.push(...page.topicEvents);newOwnerMessages.push(...page.ownerMessages);
     if(!page.hasMore)break;
     await Bun.sleep(0);
   }
+  eventAfter=eventHead;
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)insert.run(current.generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt);

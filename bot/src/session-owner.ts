@@ -41,6 +41,7 @@ import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {preparedMessages,preparedThreadRoot} from './presentation-message-reader';
+import {sessionCatalogueLabels} from './session-labels';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -686,13 +687,7 @@ export class SessionOwner {
   }
   /** Catalogue labels without the run history a full view reads, so search can match every session cheaply. */
   catalogueLabels(session:SessionRow) {
-    const meta=sessionMetadata(session);
-    const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
-    const retainedTitle=!meta.title&&session.slack_channel_id&&session.slack_thread_ts
-      ? db.query(`SELECT desired_title AS title FROM slack_agent_session_title_projections WHERE slack_channel_id=? AND slack_thread_ts=?
-          UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
-          .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
-    return {title:(meta.title??retainedTitle?.title??channel?.name??'Agent session') as string,summary:(meta.summary??'') as string,project:(meta.project??meta.cwd??channel?.code_path??null) as string|null};
+    return sessionCatalogueLabels(db,session);
   }
   /** Imported evidence without a native binding is read-only; everything else needs its provider. */
   private providerReachable(session:SessionRow,meta=sessionMetadata(session)) {

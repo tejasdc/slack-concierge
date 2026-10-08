@@ -60,11 +60,12 @@ export function inboxRootResolver(db:Database) {
   return resolve;
 }
 
-export function sourceMessagePage(db:Database,after:number,limit:number,resolveRoot:ReturnType<typeof inboxRootResolver>):{
+export function sourceMessagePage(db:Database,after:number,head:number,limit:number,resolveRoot:ReturnType<typeof inboxRootResolver>):{
   messages:PreparedInboxMessage[];topicEvents:{sequence:number;sessionId:number;eventId:string;topicId:string}[];
   ownerMessages:{sequence:number;sessionId:number;messageId:string;eventId:string}[];
   nextSequence:number;hasMore:boolean} {
-  const rows=db.query(`${inboxMessageSourceSql} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit) as SourceRow[];
+  const rows=db.query(`${inboxMessageSourceSql} AND event.sequence>? AND event.sequence<=? ORDER BY event.sequence LIMIT ?`)
+    .all(after,head,limit) as SourceRow[];
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox)return [];
     if(!(['result','inbox_capture','post'].includes(row.kind)

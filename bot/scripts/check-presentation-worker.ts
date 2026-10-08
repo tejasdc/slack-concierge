@@ -5,7 +5,10 @@ import {join} from 'node:path';
 
 const dir=mkdtempSync(join(tmpdir(),'concierge-presentation-check-'));
 const source=new Database(join(dir,'state.db'),{create:true});
-source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,native_metadata_json TEXT);
+source.exec(`CREATE TABLE channels(slack_channel_id TEXT PRIMARY KEY,name TEXT,code_path TEXT);
+  CREATE TABLE slack_agent_session_title_projections(slack_channel_id TEXT,slack_thread_ts TEXT,desired_title TEXT);
+  CREATE TABLE slack_agent_session_status_projections(slack_channel_id TEXT,slack_thread_ts TEXT,initial_title TEXT);
+  CREATE TABLE sessions(id INTEGER PRIMARY KEY,native_metadata_json TEXT,slack_channel_id TEXT,slack_thread_ts TEXT);
   CREATE TABLE turns(id INTEGER PRIMARY KEY,agent_text TEXT);
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,payload_json TEXT,created_at TEXT,request_id TEXT);
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,event_id TEXT,input_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT,turn_id INTEGER);
@@ -13,7 +16,7 @@ source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,native_metadata_json T
   CREATE TABLE session_communication_requests(request_id TEXT,source_session_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT);
   CREATE TABLE session_peer_requests(request_id TEXT,source_session_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT);
   CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY,source_table TEXT,row_key TEXT);
-  INSERT INTO sessions VALUES(1,'{"inbox":true,"title":"Inbox"}');
+  INSERT INTO sessions VALUES(1,'{"inbox":true,"title":"Inbox"}',NULL,NULL);
   INSERT INTO session_inputs VALUES('i1',1,'input','human','{"text":"A bounded hello"}','2026-10-08T00:00:00Z',NULL);
   INSERT INTO session_owner_events VALUES(1,1,'e1','i1','accepted','{}','2026-10-08T00:00:00Z',NULL);
   INSERT INTO session_owner_events VALUES(2,1,'m1','i1','message','{"message":{"id":"m1","role":"user","content":"A bounded hello"}}','2026-10-08T00:00:01Z',NULL);
@@ -67,8 +70,27 @@ try {
     await Bun.sleep(100);
   }
   const moved=result.query('SELECT topic_id FROM presentation_messages WHERE event_sequence=1 AND generation=(SELECT generation FROM presentation_message_meta)').get() as {topic_id:string}|null;
+  const generation=result.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number};
+  writer.exec(`INSERT INTO session_inputs VALUES('i2',1,'input','human','{"text":"Another thread"}','2026-10-08T00:00:03Z',NULL);
+    INSERT INTO session_owner_events VALUES(4,1,'e2','i2','accepted','{}','2026-10-08T00:00:03Z',NULL);
+    INSERT INTO session_owner_events VALUES(5,1,'link1','i1','thread_link','{"root":"i2","attached":true}','2026-10-08T00:00:04Z',NULL);
+    INSERT INTO inbox_topic_roots VALUES('i2','topic3');
+    INSERT INTO presentation_change_log VALUES(5,'session_inputs','i2');
+    INSERT INTO presentation_change_log VALUES(6,'session_owner_events','4');
+    INSERT INTO presentation_change_log VALUES(7,'session_owner_events','5');
+    INSERT INTO presentation_change_log VALUES(8,'inbox_topic_roots','i2');`);
+  for(let attempt=0;attempt<50;attempt++){
+    const row=result.query('SELECT root_input_id,topic_id FROM presentation_messages WHERE event_sequence=1 AND generation=1')
+      .get() as {root_input_id:string;topic_id:string}|null;
+    if(row?.root_input_id==='i2'&&row.topic_id==='topic3')break;
+    await Bun.sleep(100);
+  }
+  const linked=result.query('SELECT root_input_id,topic_id FROM presentation_messages WHERE event_sequence=1 AND generation=1')
+    .get() as {root_input_id:string;topic_id:string}|null;
   writer.close();
   if(moved?.topic_id!=='topic2')throw new Error('Re-rooting did not publish a new generation.');
+  if(generation.generation!==1)throw new Error('One topic move rebuilt unrelated history.');
+  if(linked?.root_input_id!=='i2'||linked.topic_id!=='topic3')throw new Error('Thread-link move was not isolated to the affected root.');
   console.log('presentation worker: cold and live messages, owner versions, search and re-root checked');
 } finally {
   result?.close();child.kill();await child.exited;
