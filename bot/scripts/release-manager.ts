@@ -64,6 +64,7 @@ try {
     // failed. The step that holds it is named in the log the next time it happens.
     const steps: Record<string, number> = {};
     const timed = <T>(name: string, work: () => T): T => { const start = performance.now(); try { return work(); } finally { steps[name] = Math.round(performance.now() - start); } };
+    const timedAsync = async <T>(name: string, work: () => Promise<T>): Promise<T> => { const start = performance.now(); try { return await work(); } finally { steps[name] = Math.round(performance.now() - start); } };
     const report = () => console.error(JSON.stringify({ event: "deployment_activate_steps", run_id: runId, steps_ms: steps }));
     const release = timed("verify", () => manager.verify(artifact));
     const lastKnownGood = timed("read_last_known_good", () => getLastKnownGoodRelease());
@@ -74,7 +75,7 @@ try {
     }
     if (lastKnownGood) {
       try {
-        const targets = timed("scan_reaction_targets", () => deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
+        const targets = await timedAsync("scan_reaction_targets", () => deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
         timed("register_reaction_targets", () => registerDeploymentTurnReactionTargets(runId, targets, "deploying"));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

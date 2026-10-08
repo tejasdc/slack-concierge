@@ -93,7 +93,7 @@ async function projectDeploymentReactionTarget(
   }
 }
 
-function registerReactionTargetsForCommitRange(input: {
+async function registerReactionTargetsForCommitRange(input: {
   runId: string;
   baseCommit: string;
   candidateCommit: string;
@@ -101,7 +101,7 @@ function registerReactionTargetsForCommitRange(input: {
   turnId?: number;
 }) {
   try {
-    const targets = deploymentReactionTargetsForCommitRange(
+    const targets = await deploymentReactionTargetsForCommitRange(
       process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source",
       input.baseCommit,
       input.candidateCommit,
@@ -122,7 +122,7 @@ function registerReactionTargetsForCommitRange(input: {
   }
 }
 
-export function refreshActiveDeploymentReactionTargets(turnId?: number) {
+export async function refreshActiveDeploymentReactionTargets(turnId?: number) {
   const activeRun = getActiveDeploymentRun();
   const lastKnownGood = getLastKnownGoodRelease();
   const attributableCommit = activeRun?.candidate_commit || activeRun?.desired_commit;
@@ -147,19 +147,22 @@ export interface DeploymentWorkerServices {
  * the next one — nine restarts in eleven minutes on 2026-09-23, with his update notice never
  * clearing. Main's head is adopted once, loudly, instead of chasing what no longer exists.
  */
-function installableDesiredCommit(): string | null {
-  const desired = getDeploymentDesiredState();
-  if (!desired) return null;
-  ensureDeploymentSource();
-  const main = commitMainHas(desired.desired_commit);
-  if (!main || !main.rewritten) return desired.desired_commit;
-  const adopted = adoptRewrittenDesiredCommit({ head: main.head, rewrittenFrom: desired.desired_commit });
-  log("warn", "deployment_desired_commit_rewritten", {
-    rewritten_from: desired.desired_commit,
-    adopted: adopted?.desired_commit ?? null,
-    github_delivery_id: desired.github_delivery_id,
-  });
-  return adopted?.desired_commit ?? null;
+async function installableDesiredCommit(): Promise<string | null> {
+  await ensureDeploymentSource();
+  for (;;) {
+    const desired = getDeploymentDesiredState();
+    if (!desired) return null;
+    const main = await commitMainHas(desired.desired_commit);
+    if (getDeploymentDesiredState()?.desired_commit !== desired.desired_commit) continue;
+    if (!main || !main.rewritten) return desired.desired_commit;
+    const adopted = adoptRewrittenDesiredCommit({ head: main.head, rewrittenFrom: desired.desired_commit });
+    log("warn", "deployment_desired_commit_rewritten", {
+      rewritten_from: desired.desired_commit,
+      adopted: adopted?.desired_commit ?? null,
+      github_delivery_id: desired.github_delivery_id,
+    });
+    return adopted?.desired_commit ?? null;
+  }
 }
 
 export async function reconcileDeploymentWork(input: {
@@ -184,7 +187,7 @@ export async function reconcileDeploymentWork(input: {
   let automaticDeploymentPrepared = false;
   if (!input.shouldStop()) {
     try {
-      const desired = installableDesiredCommit();
+      const desired = await installableDesiredCommit();
       if (desired) {
         const automatic = requestAutomaticDeployment(desired, "concierge");
         automaticDeploymentPrepared = automatic.reason === "prepared";
@@ -193,7 +196,7 @@ export async function reconcileDeploymentWork(input: {
       log("error", "automatic_deployment_request_failed", errorFields(error));
     }
   }
-  refreshActiveDeploymentReactionTargets();
+  await refreshActiveDeploymentReactionTargets();
   let launched = 0;
   for (const run of listPreparedDeploymentRuns()) {
     if (input.shouldStop()) break;
@@ -201,11 +204,17 @@ export async function reconcileDeploymentWork(input: {
       await input.services.launchRun(run);
       launched += 1;
     } catch (error) {
+      // A lost supervisor answer cannot prove the detached runner failed to start. Keep the
+      // prepared run for the next reconciliation, which checks the same unit name again.
+      if ((error as any)?.code === "launch-unconfirmed") {
+        log("warn", "deployment_run_launch_unconfirmed", { deployment_run_id: run.id, ...errorFields(error) });
+        continue;
+      }
       const launchError = String(error);
       const failure = `Transient deployment launch failed: ${launchError}`;
       const lastKnownGood = getLastKnownGoodRelease();
       if (run.desired_commit && lastKnownGood) {
-        registerReactionTargetsForCommitRange({
+        await registerReactionTargetsForCommitRange({
           runId: run.id,
           baseCommit: lastKnownGood.git_commit,
           candidateCommit: run.desired_commit,

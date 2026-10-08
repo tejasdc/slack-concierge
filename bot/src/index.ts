@@ -11,7 +11,8 @@ import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import { claimQueuedTurnWithSavedWork } from "./saved-work";
 import toml from "@iarna/toml";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
@@ -500,11 +501,9 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     const dashboardUser = getAgentSessionDashboardUserForTurn(turnId);
     if (dashboardUser) scheduleAgentSessionsHomeRefresh(dashboardUser);
     if (runtime.ownership.deployment) {
-      try {
-        refreshActiveDeploymentReactionTargets(turnId);
-      } catch (error) {
+      void refreshActiveDeploymentReactionTargets(turnId).catch((error) => {
         log("error", "deployment_turn_reaction_refresh_failed", errorFields(error));
-      }
+      });
       scheduleDeploymentWork("turn-settled");
       wakeDeploymentRunnerWaitingForIdle();
     }
@@ -3603,29 +3602,34 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "/usr/local/lib/slack-concierge-deployment/control",
     "deploy",
   ];
-  const launched = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
+  const launched = await runDeploymentControl(command);
   if (launched.exitCode === 0) return;
-  const loadState = Buffer.from(Bun.spawnSync({
-    cmd: ["systemctl", "show", `${run.unit_name}.service`, "--property=LoadState", "--value"],
-    stdout: "pipe",
-    stderr: "ignore",
-  }).stdout).toString("utf8").trim();
+  const observed = await runDeploymentControl(["systemctl", "show", `${run.unit_name}.service`, "--property=LoadState", "--value"]);
+  const loadState = observed.stdout.trim();
   if (loadState && loadState !== "not-found") return;
-  throw new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemd-run exited ${launched.exitCode}`);
+  if (observed.exitCode !== 0 || !loadState) {
+    throw Object.assign(new Error(`Deployment launch outcome is unconfirmed for ${run.unit_name}`), { code: "launch-unconfirmed" });
+  }
+  throw new Error(launched.stderr.trim() || `systemd-run exited ${launched.exitCode}`);
+}
+
+async function runDeploymentControl(command: string[]) {
+  try {
+    const result = await promisify(execFile)(command[0]!, command.slice(1), { maxBuffer: 1024 * 1024 });
+    return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };
+  } catch (error: any) {
+    return { exitCode: typeof error?.code === "number" ? error.code : -1,
+      stdout: String(error?.stdout || ""), stderr: String(error?.stderr || error) };
+  }
 }
 
 async function launchDeploymentRepair(incidentId: string) {
   const unit = `concierge-deployment-repair@${incidentId}.service`;
-  const launched = Bun.spawnSync({
-    cmd: ["systemctl", "start", unit],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const launched = await runDeploymentControl(["systemctl", "start", unit]);
   if (launched.exitCode !== 0) {
-    const result = Bun.spawnSync({ cmd: ["systemctl", "show", unit, "--property=Result", "--value"],
-      stdout: "pipe", stderr: "ignore" });
-    const error = new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemctl start ${unit} failed`);
-    if (result.exitCode === 0 && result.stdout.toString().trim() === "start-limit-hit") {
+    const result = await runDeploymentControl(["systemctl", "show", unit, "--property=Result", "--value"]);
+    const error = new Error(launched.stderr.trim() || `systemctl start ${unit} failed`);
+    if (result.exitCode === 0 && result.stdout.trim() === "start-limit-hit") {
       Object.assign(error, { code: "start-limit-hit" });
     }
     throw error;

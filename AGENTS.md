@@ -135,13 +135,16 @@ authorization or a change to the default rapid-iteration policy.
   Prepared routes require a registered read contract and executable growth fixture; the build
   and deployment seal refuse missing coverage. Unknown owner GET routes also refuse by default;
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
-  Loop-lag records also attribute synchronous background storage and transaction finish time;
+  Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
   an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.
   The same catalogue document owns the release gates.
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.
+- Project setup, release reads, deployment checks and execution supervision yield while external commands run;
+  operation sequencing and ambiguous launch custody remain with their existing owners.
+  See [accepting-owner external waits](docs/architecture/ACCEPTING-OWNER-EXTERNAL-WAITS.md).
 - Prepared receipt lists use one shared status policy for the owner and the presentation
   worker; live retry observations expire with the owner incarnation. See
   [prepared receipts](docs/architecture/PREPARED-RECEIPTS.md).

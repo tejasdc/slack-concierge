@@ -37,11 +37,13 @@ An observation sink failure increments `storageObservationFailures()` and never 
 successful command or its original failure. Callers expose this loss count in their telemetry.
 
 The accepting loop additionally enables `storage-interval.ts`. Each loop probe consumes one
-bounded interval of synchronous storage occupancy, including background calls, preparation,
+bounded interval of the ledger connection's synchronous storage occupancy, including background calls, preparation,
 iterator advancement/finalization and transaction commit/rollback. Nested statements are counted
 but their duration is not added twice to occupancy. Transaction duration includes its callback's
 synchronous work; it is not a measurement of SQLite CPU alone. Other processes do not enable
 this collector. There are no result-size walks outside the existing request scope.
+Other SQLite connections (including meaning, capture and project databases) are not covered;
+low recorded occupancy does not exclude a wait on one of those connections.
 
 `owner_event_loop_lag.storage` reports calls, transaction count, occupied milliseconds,
 observation failures and one slowest call of at least 25 ms. That call has a SQL fingerprint

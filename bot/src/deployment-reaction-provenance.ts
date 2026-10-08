@@ -1,40 +1,36 @@
 import { getDeliveredTurnMessageTarget, getTurnCommitProvenance } from "./state";
 import type { DeploymentTurnReactionTarget } from "./deployment-state";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 function assertCommit(commit: string) {
   if (!/^[0-9a-f]{40}$/i.test(commit)) throw new Error("Deployment reaction provenance requires full Git SHAs.");
 }
 
-function git(repositoryRoot: string, arguments_: string[]) {
-  const result = Bun.spawnSync({
-    cmd: ["git", ...arguments_],
-    cwd: repositoryRoot,
-    env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const stdout = Buffer.from(result.stdout).toString("utf8");
-  if (result.exitCode !== 0) {
-    const stderr = Buffer.from(result.stderr).toString("utf8").trim();
-    throw new Error(stderr || `git ${arguments_.join(" ")} exited ${result.exitCode}`);
+async function git(repositoryRoot: string, arguments_: string[]) {
+  try {
+    const result = await promisify(execFile)("git", arguments_, { cwd: repositoryRoot,
+      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024 });
+    return result.stdout;
+  } catch (error: any) {
+    throw new Error(String(error?.stderr || error).trim() || `git ${arguments_.join(" ")} failed`);
   }
-  return stdout;
 }
 
-export function deploymentReactionTargetsForCommitRange(
+export async function deploymentReactionTargetsForCommitRange(
   repositoryRoot: string,
   baseCommit: string,
   candidateCommit: string,
-): DeploymentTurnReactionTarget[] {
+): Promise<DeploymentTurnReactionTarget[]> {
   assertCommit(baseCommit);
   assertCommit(candidateCommit);
-  const commits = git(repositoryRoot, ["rev-list", "--reverse", `${baseCommit}..${candidateCommit}`])
+  const commits = (await git(repositoryRoot, ["rev-list", "--reverse", `${baseCommit}..${candidateCommit}`]))
     .split("\n")
     .map((commit) => commit.trim())
     .filter(Boolean);
   const targets = new Map<number, DeploymentTurnReactionTarget>();
   for (const commit of commits) {
-    const trailers = git(repositoryRoot, [
+    const trailers = await git(repositoryRoot, [
       "show",
       "-s",
       "--format=%(trailers:key=Concierge-Provenance,valueonly)",

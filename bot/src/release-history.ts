@@ -1,4 +1,6 @@
 import { db } from "./state";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 /**
  * Concierge's own releases, as proven live by the deployment pipeline, for surfaces that
@@ -22,27 +24,24 @@ function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/var/lib/slack-concierge-deployment/source";
 }
 
-function git(arguments_: string[]): string | null {
-  const result = Bun.spawnSync({
-    cmd: ["git", ...arguments_],
-    cwd: repositoryRoot(),
-    env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return result.exitCode === 0 ? Buffer.from(result.stdout).toString("utf8") : null;
+async function git(arguments_: string[]): Promise<string | null> {
+  try {
+    const result = await promisify(execFile)("git", arguments_, { cwd: repositoryRoot(),
+      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024 });
+    return result.stdout;
+  } catch { return null; }
 }
 
 // Commits are immutable, so a title or a range, once read, never needs reading again.
-function commitTitle(revision: string) {
-  if (!commitTitles.has(revision)) commitTitles.set(revision, git(["log", "-1", "--format=%s", revision])?.trim() || null);
+async function commitTitle(revision: string) {
+  if (!commitTitles.has(revision)) commitTitles.set(revision, (await git(["log", "-1", "--format=%s", revision]))?.trim() || null);
   return commitTitles.get(revision)!;
 }
 
-function changesBetween(previous: string | null, revision: string) {
+async function changesBetween(previous: string | null, revision: string) {
   const key = `${previous ?? ""}..${revision}`;
   if (!rangeChanges.has(key)) {
-    const output = previous ? git(["log", "--first-parent", "--reverse", "--format=%H%x09%s", `${previous}..${revision}`]) : null;
+    const output = previous ? await git(["log", "--first-parent", "--reverse", "--format=%H%x09%s", `${previous}..${revision}`]) : null;
     rangeChanges.set(key, (output ?? "").split("\n").filter(Boolean).map((line) => {
       const [hash, ...subject] = line.split("\t");
       return { revision: hash!, title: subject.join("\t") };
@@ -59,9 +58,9 @@ function changesBetween(previous: string | null, revision: string) {
  */
 // Never remembered: a note can be attached, or corrected, while its update waits, and the
 // notice is read again every minute, so the next read must see it.
-function updateNote(revision: string) {
-  const attached = git(["notes", "--ref=refs/notes/update", "show", revision])?.trim();
-  const written = attached || noteInMessage(git(["log", "-1", "--format=%B", revision]) ?? "");
+async function updateNote(revision: string) {
+  const attached = (await git(["notes", "--ref=refs/notes/update", "show", revision]))?.trim();
+  const written = attached || noteInMessage(await git(["log", "-1", "--format=%B", revision]) ?? "");
   return written ? written.replace(/\s+/g, " ").trim() : null;
 }
 
@@ -111,15 +110,15 @@ function refreshNotesSoon() {
   } catch { /* The next read tries again after the interval. */ }
 }
 
-export function pendingUpdateSummary(previous: string | null, revision: string): {
+export async function pendingUpdateSummary(previous: string | null, revision: string): Promise<{
   notes: string[];
   subjects: string[];
-} {
+}> {
   if (!previous || previous === revision) return { notes: [], subjects: [] };
   const notes: string[] = [];
   const subjects: string[] = [];
-  for (const change of changesBetween(previous, revision)) {
-    const note = updateNote(change.revision);
+  for (const change of await changesBetween(previous, revision)) {
+    const note = await updateNote(change.revision);
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
     if (!note || /^internal\.?$/i.test(note)) {
@@ -133,8 +132,8 @@ export function pendingUpdateSummary(previous: string | null, revision: string):
 }
 
 /** The notes for every change between the running release and a pending one, in order. */
-export function pendingUpdateNotes(previous: string | null, revision: string): string[] {
-  return pendingUpdateSummary(previous, revision).notes;
+export async function pendingUpdateNotes(previous: string | null, revision: string): Promise<string[]> {
+  return (await pendingUpdateSummary(previous, revision)).notes;
 }
 
 /**
@@ -145,28 +144,30 @@ export function pendingUpdateNotes(previous: string | null, revision: string): s
  * never cleared (capture d526a570). The fetch happens only in the case that already looks wrong,
  * because a commit can also be missing here simply because this checkout has not fetched it yet.
  */
-export function commitMainHas(commit: string): { head: string; rewritten: boolean } | null {
-  const head = () => git(["rev-parse", "origin/main"])?.trim() || null;
-  const contains = () => git(["merge-base", "--is-ancestor", commit, "origin/main"]) !== null;
-  const answer = (rewritten: boolean) => { const at = head(); return at ? { head: at, rewritten } : null; };
-  if (contains()) return answer(false);
-  git(["fetch", "origin", "--quiet"]);
-  return contains() ? answer(false) : answer(true);
+export async function commitMainHas(commit: string): Promise<{ head: string; rewritten: boolean } | null> {
+  const head = async () => (await git(["rev-parse", "origin/main"]))?.trim() || null;
+  const contains = async () => await git(["merge-base", "--is-ancestor", commit, "origin/main"]) !== null;
+  const answer = async (rewritten: boolean) => { const at = await head(); return at ? { head: at, rewritten } : null; };
+  if (await contains()) return answer(false);
+  await git(["fetch", "origin", "--quiet"]);
+  return await contains() ? answer(false) : answer(true);
 }
 
 const iso = (value: string | null) => value ? new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`).toISOString() : null;
 
-export function releaseHistory(): { releases: ReleaseView[] } {
+export async function releaseHistory(): Promise<{ releases: ReleaseView[] }> {
   const rows = db.query(`SELECT git_commit, state, activated_at FROM deployment_releases
     WHERE promoted_at IS NOT NULL ORDER BY promoted_at DESC, rowid DESC LIMIT ?`).all(LIMIT + 1) as
     { git_commit: string; state: string; activated_at: string | null }[];
-  return {
-    releases: rows.slice(0, LIMIT).map((row, index) => ({
+  const releases: ReleaseView[] = [];
+  for (const [index, row] of rows.slice(0, LIMIT).entries()) {
+    releases.push({
       revision: row.git_commit,
       activatedAt: iso(row.activated_at),
       current: row.state === "lkg",
-      title: commitTitle(row.git_commit),
-      changes: changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit),
-    })),
-  };
+      title: await commitTitle(row.git_commit),
+      changes: await changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit),
+    });
+  }
+  return { releases };
 }

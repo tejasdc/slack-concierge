@@ -365,7 +365,7 @@ async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) 
   update(row.watch_id, "host_execution_id=?, host_directory=?, host_unit=?, host_protocol=?, host_state='intended'",
     executionId, executionDirectory(deps.stateDir, executionId), executionUnit(executionId), HOST_PROTOCOL_VERSION);
   try {
-    const launch = startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), manifest: {
+    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), manifest: {
       executable: "/bin/sh", args: ["-c", 'exec "$@" </dev/null', "concierge-watch", ...condition.argv], cwd: condition.cwd,
       environment: commandEnvironment(), initialInput: "" } });
     update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);
@@ -390,7 +390,7 @@ async function commandState(row: WatchRow): Promise<{ state: "running" } | { sta
       return status.exit ? { state: "exited", code: status.exit.code, signal: status.exit.signal } : { state: "running" };
     } finally { connection.close(); }
   } catch { /* the host does not answer: the supervisor and the record decide */ }
-  const view = hostSupervisorView(executionId);
+  const view = await hostSupervisorView(executionId);
   if (view === "unknown") return { state: "unknown" };
   try {
     for await(const frame of streamJournal(directory))if(frame.k==="x")
@@ -403,7 +403,7 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
   if (!row.host_execution_id) { await launchCommand(row, deps, now); return; }
   if (row.host_state === "intended") {
     // A coordinator died between recording the intent and learning the result.
-    const view = hostSupervisorView(row.host_execution_id);
+    const view = await hostSupervisorView(row.host_execution_id);
     if (view === "alive") update(row.watch_id, "host_state='live'");
     else if (view === "gone" && !existsSync(join(row.host_directory!, "journal"))) {
       update(row.watch_id, "host_state='gone'");
@@ -449,7 +449,8 @@ async function cleanUpHost(row: WatchRow, now: number) {
     if (await releaseHost(row.host_directory!, row.host_execution_id)) {
       update(row.watch_id, "host_state='released'");
       // launchd keeps a finished job loaded; it is removed once it reports stopped.
-      setTimeout(() => retireHostJob(row.host_execution_id!), 10_000).unref?.();
+      setTimeout(() => { void retireHostJob(row.host_execution_id!).catch(error =>
+        log("warn", "watch_host_retire_failed", { watch_id: row.watch_id, error: String(error) })); }, 10_000).unref?.();
     }
   } else if (state.state === "lost") update(row.watch_id, "host_state='gone'");
 }

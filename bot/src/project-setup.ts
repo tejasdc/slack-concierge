@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {execFile,execFileSync} from 'node:child_process';
+import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {join,relative,dirname} from 'node:path';
@@ -23,9 +23,8 @@ type Order={orderId:string;kind:'project.setup';origin:Origin;project:string};
 type Outcome={state:'done'|'already_present'|'refused'|'failed'|'cancelled';reason?:string;failureClass?:'transient'|'permanent';commit?:string};
 type Outgoing={order_id:string;peer:string;project:string;body_json:string;state:string;result_json:string|null;created_at_ms:number;last_attempt_at_ms:number|null;notice_kind:string|null;notice_text:string|null;source_session_id:number|null;source_input_id:string|null;source_run_id:string|null;return_input_id:string|null};
 const gitEnv=()=>({...process.env,GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',GIT_LFS_SKIP_SMUDGE:'1',GIT_ALLOW_PROTOCOL:'https'});
-const run=(file:string,args:string[],cwd?:string)=>execFileSync(file,args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe'],env:gitEnv()}).trim();
-// A clone can take minutes; it must not hold the owner's event loop (speech, sessions, peers).
-const runAsync=async(file:string,args:string[],cwd?:string)=>(await promisify(execFile)(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024})).stdout.trim();
+// GitHub and Git may wait on the network. The operation owns the result; the event loop does not.
+const run=async(file:string,args:string[],cwd?:string)=>(await promisify(execFile)(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024})).stdout.trim();
 function git(cwd:string,...args:string[]){return run('git',args,cwd);}
 // A new project's name must say what it is (the naming rule); an existing project keeps the name
 // it already has, so share, status and the receiving side only check that it is a safe folder name.
@@ -46,11 +45,11 @@ function exactKeys(value:unknown,keys:string[]):Record<string,any> {
 // because the receiver keeps a permanent failure as that order's answer.
 function orderId(peer:string,project:string,attempt:number){return createHash('sha256').update(`project.setup:${peer}:${project}:${attempt}`).digest('hex').slice(0,32);}
 function pathExists(path:string){try{lstatSync(path);return true;}catch(error:any){if(error?.code==='ENOENT')return false;throw error;}}
-function originOf(path:string){try{return git(path,'remote','get-url','origin').replace(/\.git$/,'').replace(/^git@github\.com:/,'https://github.com/');}catch{return null;}}
+async function originOf(path:string){try{return (await git(path,'remote','get-url','origin')).replace(/\.git$/,'').replace(/^git@github\.com:/,'https://github.com/');}catch{return null;}}
 function expectedOrigin(project:string){return `https://github.com/tejasdc/${project}`;}
 function head(path:string){return git(path,'rev-parse','HEAD');}
 function projectPredicate(path:string){try{return lstatSync(join(path,'.git')).isDirectory()&&lstatSync(join(path,'AGENTS.md')).isFile();}catch{return false;}}
-function createScaffold(path:string,project:string,purpose:string,workspace:string){
+async function createScaffold(path:string,project:string,purpose:string,workspace:string){
   const intent=join(path,'tmp','project-setup-intent.json');
   mkdirSync(join(path,'tmp'),{recursive:true});
   if(pathExists(intent)){
@@ -66,8 +65,8 @@ function createScaffold(path:string,project:string,purpose:string,workspace:stri
   // it must never be committed, or the other machine clones a link that points nowhere.
   file('.gitignore','tmp/\nnotes\n');
   notesLink(workspace,project,path);
-  if(!pathExists(join(path,'.git')))git(path,'init');
-  try{head(path);}catch{git(path,'add','--all');git(path,'commit','-m',`Create ${project} project`);}
+  if(!pathExists(join(path,'.git')))await git(path,'init');
+  try{await head(path);}catch{await git(path,'add','--all');await git(path,'commit','-m',`Create ${project} project`);}
 }
 function vaultRoot(workspace:string){const candidates=[join(workspace,'vault'),join(workspace,'obsidian-vault','journalmaxx')];return candidates.find(path=>{try{return lstatSync(path).isDirectory()&&lstatSync(join(path,'.obsidian')).isDirectory();}catch{return false;}})??(existsSync(join(workspace,'vault','projects'))?join(workspace,'vault'):null);}
 function notesLink(workspace:string,project:string,destination:string,createNotes=true){
@@ -89,6 +88,7 @@ function message(error:unknown){return error instanceof Error?error.message:Stri
 
 export class ProjectSetup {
   private running=false;
+  private readonly localOperations=new Map<string,Promise<unknown>>();
   private readonly sending=new Set<string>();
   private readonly receiving=new Set<string>();
   constructor(private readonly workspace:string,private readonly self:string,private readonly clients:Map<string,PeerClient>,private readonly owner:()=>SessionOwner,private readonly onRecorded?:()=>void){}
@@ -115,8 +115,17 @@ export class ProjectSetup {
     log('info','project_setup_order_recorded',{order_id:id,peer,project});
     this.wake();this.onRecorded?.();return this.status(project,peer);
   }
-  new(input:unknown){
+  async new(input:unknown){
     const data=exactKeys(input,['name','purpose','hereOnly','source']);const project=newName(data.name);
+    return this.serialProject(project,()=>this.createLocal(data,project));
+  }
+  private async serialProject<T>(project:string,operation:()=>Promise<T>):Promise<T>{
+    const prior=this.localOperations.get(project);
+    const current=prior?prior.catch(()=>{}).then(operation):operation();
+    this.localOperations.set(project,current);
+    try{return await current;}finally{if(this.localOperations.get(project)===current)this.localOperations.delete(project);}
+  }
+  private async createLocal(data:Record<string,any>,project:string){
     if(typeof data.purpose!=='string'||!data.purpose.trim()||/[\r\n]/.test(data.purpose))throw new Error('A one-sentence --purpose is required.');
     if(/[.!?]\s+\S/.test(data.purpose.trim()))throw new Error('--purpose must be one sentence.');
     if(data.hereOnly!==undefined&&typeof data.hereOnly!=='boolean')throw new Error('hereOnly must be true or false.');
@@ -124,32 +133,32 @@ export class ProjectSetup {
     const source=this.source(data.source);const destination=join(this.workspace,project);
     const intent=join(destination,'tmp','project-setup-intent.json');
     if(pathExists(destination)&&!pathExists(intent))throw new Error('A local folder already uses this name; use projects share for an existing project.');
-    if(pathExists(intent)&&originOf(destination)&&originOf(destination)!==expectedOrigin(project))throw new Error('The unfinished project has a different GitHub origin.');
+    if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project))throw new Error('The unfinished project has a different GitHub origin.');
     if(!pathExists(destination))mkdirSync(destination);
-    if(pathExists(intent))createScaffold(destination,project,data.purpose.trim(),this.workspace);
-    else if(!projectPredicate(destination))createScaffold(destination,project,data.purpose.trim(),this.workspace);
-    const current=git(destination,'status','--porcelain');if(current)throw new Error('The existing project has unpushed or uncommitted files; finish and push it first.');
-    if(originOf(destination)!==expectedOrigin(project)){
-      if(originOf(destination))throw new Error('This folder has a different GitHub origin.');
-      try{run('gh',['repo','create',`tejasdc/${project}`,'--private','--description',data.purpose.trim(),'--source',destination,'--push']);}
+    if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace);
+    else if(!projectPredicate(destination))await createScaffold(destination,project,data.purpose.trim(),this.workspace);
+    const current=await git(destination,'status','--porcelain');if(current)throw new Error('The existing project has unpushed or uncommitted files; finish and push it first.');
+    if(await originOf(destination)!==expectedOrigin(project)){
+      if(await originOf(destination))throw new Error('This folder has a different GitHub origin.');
+      try{await run('gh',['repo','create',`tejasdc/${project}`,'--private','--description',data.purpose.trim(),'--source',destination,'--push']);}
       catch(error){
-        const repository=JSON.parse(run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
+        const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
         if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project))throw error;
-        const remoteHead=run('git',['ls-remote',`${expectedOrigin(project)}.git`,'HEAD']).split(/\s+/)[0];
-        if(remoteHead&&remoteHead!==head(destination))throw new Error('A GitHub repository with this name already exists; choose another descriptive name.');
-        if(!originOf(destination))git(destination,'remote','add','origin',`${expectedOrigin(project)}.git`);
+        const remoteHead=(await run('git',['ls-remote',`${expectedOrigin(project)}.git`,'HEAD'])).split(/\s+/)[0];
+        if(remoteHead&&remoteHead!==await head(destination))throw new Error('A GitHub repository with this name already exists; choose another descriptive name.');
+        if(!await originOf(destination))await git(destination,'remote','add','origin',`${expectedOrigin(project)}.git`);
       }
     }
-    const repository=JSON.parse(run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
+    const repository=JSON.parse(await run('gh',['repo','view',`tejasdc/${project}`,'--json','visibility,url']));
     if(repository.visibility!=='PRIVATE'||repository.url!==expectedOrigin(project))throw new Error('The GitHub repository is not the expected private tejasdc repository.');
-    if(originOf(destination)!==expectedOrigin(project))throw new Error('The local Git origin does not name the created repository.');
-    if(git(destination,'remote','get-url','origin')!==`${expectedOrigin(project)}.git`)git(destination,'remote','set-url','origin',`${expectedOrigin(project)}.git`);
-    const branch=git(destination,'branch','--show-current');
+    if(await originOf(destination)!==expectedOrigin(project))throw new Error('The local Git origin does not name the created repository.');
+    if(await git(destination,'remote','get-url','origin')!==`${expectedOrigin(project)}.git`)await git(destination,'remote','set-url','origin',`${expectedOrigin(project)}.git`);
+    const branch=await git(destination,'branch','--show-current');
     if(!branch)throw new Error('The project has no branch to push.');
-    git(destination,'push','-u','origin',branch);
-    const remote=git(destination,'ls-remote','--exit-code','origin','HEAD');
-    if(!remote.startsWith(head(destination)))throw new Error('The project was not pushed to its private GitHub repository; setup order was not recorded.');
-    const commit=head(destination);
+    await git(destination,'push','-u','origin',branch);
+    const remote=await git(destination,'ls-remote','--exit-code','origin','HEAD');
+    if(!remote.startsWith(await head(destination)))throw new Error('The project was not pushed to its private GitHub repository; setup order was not recorded.');
+    const commit=await head(destination);
     const orders=db.transaction(()=>{
       const prior=db.query('SELECT purpose FROM project_creations WHERE project=?').get(project) as {purpose:string}|null;
       if(prior&&prior.purpose!==data.purpose.trim())throw new Error('This project was created with a different purpose.');
@@ -159,14 +168,16 @@ export class ProjectSetup {
     log('info','project_created',{project,commit,here_only:!!data.hereOnly});
     return {project,local:'done',commit,orders};
   }
-  share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=existingName(data.name),peer=this.peer(data.to),source=this.source(data.source);
+  async share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=existingName(data.name),peer=this.peer(data.to),source=this.source(data.source);
+    return this.serialProject(project,async()=>{
     const destination=join(this.workspace,project);
     if(!projectPredicate(destination)||!sessionProject(this.workspace,project))throw new Error('The local project must be a registered Git project with AGENTS.md.');
-    if(originOf(destination)!==expectedOrigin(project))throw new Error('This project is not from github.com/tejasdc under the same name.');
-    const branch=git(destination,'branch','--show-current');if(!branch)throw new Error('Push the project branch before sharing.');
-    const local=head(destination),remote=git(destination,'ls-remote','--heads','origin',branch).split(/\s+/)[0];
+    if(await originOf(destination)!==expectedOrigin(project))throw new Error('This project is not from github.com/tejasdc under the same name.');
+    const branch=await git(destination,'branch','--show-current');if(!branch)throw new Error('Push the project branch before sharing.');
+    const local=await head(destination),remote=(await git(destination,'ls-remote','--heads','origin',branch)).split(/\s+/)[0];
     if(local!==remote)throw new Error('The local branch is ahead of its origin; push first.');
     return this.record(project,peer,source);
+    });
   }
   status(projectValue:unknown,peerValue?:unknown){const project=existingName(projectValue);const peer=peerValue===undefined?null:this.peer(peerValue);
     const rows=db.query(`SELECT * FROM project_setup_orders WHERE project=? AND (? IS NULL OR peer=?) ORDER BY created_at_ms`).all(project,peer,peer) as Outgoing[];
@@ -277,9 +288,13 @@ export class ProjectSetup {
     let project:string;try{project=existingName(raw.project);}catch{return fail({state:'refused',reason:'invalid_name'});}
     if(!raw.origin||typeof raw.origin!=='object'||Array.isArray(raw.origin)||Object.keys(raw.origin).some(key=>!['peer','session','input','run','originatingHuman','terminal'].includes(key)))return fail({state:'refused',reason:'invalid_repository'});
     if(raw.origin.terminal!==true&&(!this.clients.has(raw.origin.peer)||typeof raw.origin.session!=='string'||typeof raw.origin.input!=='string'||typeof raw.origin.run!=='string'))return fail({state:'refused',reason:'invalid_repository'});
+    return this.serialProject(project,async()=>{
+    const latest=db.query('SELECT result_json FROM project_setup_receipts WHERE order_id=?').get(raw.orderId) as {result_json:string|null}|null;
+    if(latest?.result_json){const outcome=JSON.parse(latest.result_json) as Outcome;
+      if(outcome.state!=='failed'||outcome.failureClass==='permanent')return {state:outcome.state,outcome};}
     const destination=join(this.workspace,project);
     if(pathExists(destination)){
-      if(originOf(destination)===expectedOrigin(project)&&projectPredicate(destination)){notesLink(this.workspace,project,destination,false);return fail({state:'already_present',commit:head(destination)});}
+      if(await originOf(destination)===expectedOrigin(project)&&projectPredicate(destination)){notesLink(this.workspace,project,destination,false);return fail({state:'already_present',commit:await head(destination)});}
       return fail({state:'refused',reason:'destination_conflict'});
     }
     const temporary=join(this.workspace,'.project-setup',raw.orderId,project);
@@ -289,21 +304,22 @@ export class ProjectSetup {
       for(const parent of [join(this.workspace,'.project-setup'),dirname(temporary)])if(pathExists(parent)&&!lstatSync(parent).isDirectory())return fail({state:'refused',reason:'destination_conflict'});
       mkdirSync(dirname(temporary),{recursive:true});
       if(pathExists(temporary)&&!lstatSync(temporary).isDirectory())return fail({state:'refused',reason:'destination_conflict'});
-      if(!pathExists(temporary))await runAsync('git',[...CLONE_OPTIONS,'clone','--no-checkout','--no-recurse-submodules',`${expectedOrigin(project)}.git`,temporary]);
-      await runAsync('git',[...CLONE_OPTIONS,'checkout','--force','HEAD'],temporary);
-      if(originOf(temporary)!==expectedOrigin(project))return fail({state:'refused',reason:'invalid_repository'});
+      if(!pathExists(temporary))await run('git',[...CLONE_OPTIONS,'clone','--no-checkout','--no-recurse-submodules',`${expectedOrigin(project)}.git`,temporary]);
+      await run('git',[...CLONE_OPTIONS,'checkout','--force','HEAD'],temporary);
+      if(await originOf(temporary)!==expectedOrigin(project))return fail({state:'refused',reason:'invalid_repository'});
       if(!projectPredicate(temporary))return fail({state:'failed',failureClass:'permanent',reason:'The GitHub repository is not a project on this machine.'});
       if(pathExists(destination))return fail({state:'refused',reason:'destination_conflict'});
       renameSync(temporary,destination);try{rmSync(dirname(temporary),{recursive:true,force:true});}catch{}
       notesLink(this.workspace,project,destination,false);
       if(!projectPredicate(destination))return fail({state:'failed',failureClass:'permanent',reason:'project predicate failed'});
-      return fail({state:'done',commit:head(destination)});
+      return fail({state:'done',commit:await head(destination)});
     }catch(error){
       // The temporary clone is this handler's own; a failed attempt leaves nothing behind.
       try{rmSync(dirname(temporary),{recursive:true,force:true});}catch{}
       return fail({state:'failed',failureClass:classify(error),reason:message(error).slice(0,400)});
     }
     finally{this.receiving.delete(raw.orderId);}
+    });
   }
   receipt(id:string){if(!/^[a-f0-9]{32}$/.test(id))throw new Error('Invalid setup order ID.');const row=db.query('SELECT result_json FROM project_setup_receipts WHERE order_id=?').get(id) as {result_json:string|null}|null;if(!row)throw new Error('Unknown setup order.');return {outcome:row.result_json?JSON.parse(row.result_json):null};}
   pushed(id:string,value:unknown){const row=db.query('SELECT * FROM project_setup_orders WHERE order_id=?').get(id) as Outgoing|null;if(!row)throw new Error('Unknown setup order.');const data=exactKeys(value,['outcome']);const outcome=data.outcome as Outcome;if(!outcome||!['done','already_present','refused','failed'].includes(outcome.state))throw new Error('Invalid setup outcome.');this.complete(row,outcome);return this.status(row.project,row.peer);}

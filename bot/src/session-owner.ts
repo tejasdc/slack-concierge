@@ -1015,8 +1015,8 @@ export class SessionOwner {
     try {writeFileSync(temporary,input.content,{encoding:'utf8',flag:'wx',mode:0o600});renameSync(temporary,path);} catch(error) {try {if(existsSync(temporary)) unlinkSync(temporary);} catch {} throw error;}
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
-  status() {
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate(),
+  async status() {
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
@@ -1034,7 +1034,7 @@ export class SessionOwner {
     } catch {return 0;}
   }
   /** A release waits for every running turn to end; name the sessions it is waiting on. */
-  private deploymentWait() {
+  private async deploymentWait() {
     const run=getActiveDeploymentRun();
     if(!run||!['prepared','draining'].includes(run.status))return null;
     const since=(db.query("SELECT MIN(created_at) AS at FROM deployment_run_events WHERE run_id=? AND event IN ('prepared','draining')").get(run.id) as {at:string|null}|null)?.at??run.created_at;
@@ -1057,10 +1057,10 @@ export class SessionOwner {
       : run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, including the commit subject when its
     // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
-    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    const holds=commit?await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
     // Only commits accepted after activation need another update.
     const newest=getDeploymentDesiredState('concierge')?.desired_commit??null;
-    const queued=commit&&newest&&newest!==commit?pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
+    const queued=commit&&newest&&newest!==commit?await pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
     return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};
   }
   /**
@@ -1070,7 +1070,7 @@ export class SessionOwner {
    * disappears the moment something retries is how four failed updates became invisible
    * (2026-09-23, capture c60c6162).
    */
-  private stuckUpdate() {
+  private async stuckUpdate() {
     const target='concierge';
     const succeeded=(db.query("SELECT MAX(completed_at) AS at FROM deployment_runs WHERE target=? AND status='succeeded'").get(target) as {at:string|null}|null)?.at??'';
     const failures=db.query("SELECT * FROM deployment_runs WHERE target=? AND status IN ('failed','ambiguous') AND completed_at>? ORDER BY created_at").all(target,succeeded) as DeploymentRunRow[];
@@ -1079,7 +1079,7 @@ export class SessionOwner {
     // What has not installed is the whole gap between what is running and what should be, not
     // only the attempt that failed last: later commits queue up behind a failing update.
     const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
-    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
+    const holds=commit?await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
     return {runId:latest.id,commit,notes:holds.notes,subjects:holds.subjects,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
       repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
   }
@@ -1089,7 +1089,7 @@ export class SessionOwner {
    * A commit that should be running, is not running, has no attempt in flight and has stood for
    * longer than a deployment takes to start is stuck, and says so with no attempts to count.
    */
-  private updateNeverStarted(target:string) {
+  private async updateNeverStarted(target:string) {
     const desiredState=getDeploymentDesiredState(target);
     const desired=desiredState?.desired_commit;
     if(!desired||getActiveDeploymentRun(target))return null;
@@ -1099,7 +1099,7 @@ export class SessionOwner {
     if(!installed.size||installed.has(desired))return null;
     const observed=iso(desiredState.observed_at);
     if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
-    const holds=pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
+    const holds=await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
     return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
       tries:0,since:observed,failedAt:null,repair:null,stopped:null};
   }
@@ -2556,12 +2556,12 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=this.projectSetup.new(body);
-      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=this.projectSetup.share(body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[1]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[2]!,url.searchParams.get('peer')??undefined);
-      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...this.status(),operations:this.projectSetup?['project.setup']:[]};
-      else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=releaseHistory();
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:this.projectSetup?['project.setup']:[]};
+      else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);

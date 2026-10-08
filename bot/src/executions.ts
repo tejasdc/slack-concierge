@@ -232,7 +232,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string;
   if (adopted.length || held.length) executionChanged();
   await releaseSettledExecutions();
   pruneExecutionRecords();
-  retireFinishedHostJobs();
+  await retireFinishedHostJobs();
   return { adopted, held };
 }
 
@@ -287,20 +287,22 @@ export async function releaseExecution(execution: ExecutionRow) {
     return;
   }
   if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);
-  else if (hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
+  else if (await hostSupervisorView(execution.execution_id) === "gone") recordExecutionReleased(execution.execution_id);
   // A released host leaves within moments; its launchd job is removed once launchd reports it stopped.
-  if (execution.supervisor === "launchd") setTimeout(retireFinishedHostJobs, 10_000).unref?.();
+  if (execution.supervisor === "launchd") setTimeout(() => {
+    void retireFinishedHostJobs().catch(error => log("warn", "execution_host_retire_failed", errorFields(error)));
+  }, 10_000).unref?.();
 }
 
 /**
  * launchd keeps a per-execution job loaded after its process ends. Jobs of released or lost runs are
  * removed; retireHostJob removes only a job launchd reports as stopped, never a running one.
  */
-export function retireFinishedHostJobs() {
+export async function retireFinishedHostJobs() {
   if (process.platform !== "darwin") return;
   const ended = db.query(`SELECT execution_id FROM executions WHERE supervisor='launchd' AND state IN ('released','lost')
       AND detail IS NOT 'job retired' AND updated_at_ms > ?`).all(Date.now() - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string }[];
   for (const { execution_id } of ended)
-    if (retireHostJob(execution_id)) db.query("UPDATE executions SET detail='job retired' WHERE execution_id=? AND detail IS NOT 'pruned'").run(execution_id);
+    if (await retireHostJob(execution_id)) db.query("UPDATE executions SET detail='job retired' WHERE execution_id=? AND detail IS NOT 'pruned'").run(execution_id);
 }
 

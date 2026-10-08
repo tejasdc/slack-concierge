@@ -3,7 +3,8 @@
  * the machine's own supervisor, and the connection that attaches to it, replays its record and
  * sends it commands. Protocol and states: docs/architecture/EXECUTION-HOST.md.
  */
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
 import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
@@ -202,10 +203,22 @@ export function hostScriptPath(routerBotDir: string) {
  * Start the host under the machine's supervisor, outside the coordinator's own lifetime.
  * Linux: one transient system service per execution, its unit name the one-start lock.
  */
-export function startHost(input: {
+async function supervisorCommand(file: string, args: string[], timeout: number) {
+  try {
+    const result = await promisify(execFile)(file, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
+    return { status: 0, stdout: result.stdout, stderr: result.stderr, error: null as Error | null, signal: null as string | null };
+  } catch (error: any) {
+    return { status: typeof error?.code === "number" ? error.code : null,
+      stdout: String(error?.stdout || ""), stderr: String(error?.stderr || ""),
+      error: typeof error?.code === "number" ? null : error as Error,
+      signal: error?.signal ? String(error.signal) : null };
+  }
+}
+
+export async function startHost(input: {
   stateDir: string; executionId: string; routerBotDir: string; runtime?: string;
   manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
-}): HostLaunch {
+}): Promise<HostLaunch> {
   const directory = executionDirectory(input.stateDir, input.executionId);
   // Everything before the supervisor is asked is a definite refusal: nothing can be running.
   let bytes: string, hostScript: string;
@@ -221,13 +234,13 @@ export function startHost(input: {
   const runtime = input.runtime ?? process.execPath;
   const unit = executionUnit(input.executionId);
   if (process.platform === "linux") {
-    const result = spawnSync("systemd-run", [
+    const result = await supervisorCommand("systemd-run", [
       `--unit=${unit}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group",
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,
-    ], { encoding: "utf8", timeout: 30_000 });
+    ], 30_000);
     // A refusal the supervisor stated means no unit; a timeout or a lost answer does not, and is
     // left to custody (hostCustody), which asks the supervisor what actually exists.
     if (result.error || result.signal) throw new HostUnavailableError(`systemd-run did not answer: ${String(result.error ?? result.signal)}`);
@@ -240,11 +253,11 @@ export function startHost(input: {
     const plist = join(directory, "job.plist");
     try { writeFileSync(plist, launchdJob(unit, [launcher, runtime, "run", hostScript, directory], directory), { mode: 0o644, flag: "wx" }); }
     catch (error) { throw new HostNotStartedError(error instanceof Error ? error.message : String(error)); }
-    const result = spawnSync("launchctl", ["bootstrap", launchdDomain(), plist], { encoding: "utf8", timeout: 30_000 });
+    const result = await supervisorCommand("launchctl", ["bootstrap", launchdDomain(), plist], 30_000);
     if (result.error || result.signal) throw new HostUnavailableError(`launchctl did not answer: ${String(result.error ?? result.signal)}`);
     if (result.status !== 0) {
       // Only a label launchd says it does not hold proves nothing started.
-      if (launchdJobState(input.executionId) === "missing") throw new HostNotStartedError(`launchd refused the host: ${(result.stderr || result.stdout).trim()}`);
+      if (await launchdJobState(input.executionId) === "missing") throw new HostNotStartedError(`launchd refused the host: ${(result.stderr || result.stdout).trim()}`);
       throw new HostUnavailableError(`launchd answered ${result.status} for a job it holds: ${(result.stderr || result.stdout).trim()}`);
     }
   } else {
@@ -259,14 +272,13 @@ export function startHost(input: {
  * a query that failed or timed out is `unknown`, never "gone".
  */
 export type SupervisorView = "alive" | "gone" | "unknown";
-export function hostSupervisorView(executionId: string): SupervisorView {
+export async function hostSupervisorView(executionId: string): Promise<SupervisorView> {
   if (process.platform === "darwin") {
-    const state = launchdJobState(executionId);
+    const state = await launchdJobState(executionId);
     return state === "running" ? "alive" : state === "stopped" || state === "missing" ? "gone" : "unknown";
   }
   if (process.platform !== "linux") return "unknown";
-  const result = spawnSync("systemctl", ["show", `${executionUnit(executionId)}.service`, "--property=ActiveState", "--property=LoadState"],
-    { encoding: "utf8", timeout: 10_000 });
+  const result = await supervisorCommand("systemctl", ["show", `${executionUnit(executionId)}.service`, "--property=ActiveState", "--property=LoadState"], 10_000);
   if (result.status !== 0 || result.error) return "unknown";
   // Read by name: systemd prints properties in its own order, not the order asked for.
   const properties = new Map(result.stdout.trim().split("\n").map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1).trim()] as const));
@@ -281,8 +293,8 @@ export function hostSupervisorView(executionId: string): SupervisorView {
  * What launchd says about an execution's job: `missing` only when it answers that it holds no such
  * label (exit 113), `stopped` when the job is loaded and its process has ended.
  */
-function launchdJobState(executionId: string): "running" | "stopped" | "missing" | "unknown" {
-  const result = spawnSync("launchctl", ["print", `${launchdDomain()}/${executionUnit(executionId)}`], { encoding: "utf8", timeout: 10_000 });
+async function launchdJobState(executionId: string): Promise<"running" | "stopped" | "missing" | "unknown"> {
+  const result = await supervisorCommand("launchctl", ["print", `${launchdDomain()}/${executionUnit(executionId)}`], 10_000);
   if (result.error || result.signal) return "unknown";
   if (result.status === 113) return "missing";
   if (result.status !== 0) return "unknown";
@@ -297,11 +309,11 @@ function launchdJobState(executionId: string): "running" | "stopped" | "missing"
  * Removes a finished execution's launchd job, which launchd keeps loaded after its process ends.
  * Only a job launchd reports as stopped is removed, because removing a running job would end it.
  */
-export function retireHostJob(executionId: string): boolean {
+export async function retireHostJob(executionId: string): Promise<boolean> {
   if (process.platform !== "darwin") return false;
-  const state = launchdJobState(executionId);
-  if (state === "stopped") spawnSync("launchctl", ["bootout", `${launchdDomain()}/${executionUnit(executionId)}`], { timeout: 10_000 });
-  return state === "missing" || (state === "stopped" && launchdJobState(executionId) === "missing");
+  const state = await launchdJobState(executionId);
+  if (state === "stopped") await supervisorCommand("launchctl", ["bootout", `${launchdDomain()}/${executionUnit(executionId)}`], 10_000);
+  return state === "missing" || (state === "stopped" && await launchdJobState(executionId) === "missing");
 }
 
 function launchdJob(label: string, programArguments: string[], directory: string) {
@@ -335,7 +347,7 @@ export async function hostCustody(directory: string, executionId: string): Promi
     try { if ((await connection.status()).executionId === executionId) return "answering"; }
     finally { connection.close(); }
   } catch { /* decided by the supervisor and the record */ }
-  if (hostSupervisorView(executionId) !== "gone") return "held";
+  if (await hostSupervisorView(executionId) !== "gone") return "held";
   try { for await (const frame of streamJournal(directory)) if (frame.k === "x") return "settle-from-record"; } catch {}
   return "dead";
 }
@@ -613,7 +625,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
           // From here a host may exist even if this call fails (a supervisor that accepted the start
           // but whose answer was lost); only startHost's own definite refusals mean it does not.
           launched = true;
-          const launch = startHost({ stateDir: execution.stateDir, executionId: execution.executionId, routerBotDir,
+          const launch = await startHost({ stateDir: execution.stateDir, executionId: execution.executionId, routerBotDir,
             manifest: { executable, args: input.args, cwd: input.cwd,
               environment: { ...(input.inheritEnvironment === false ? {} : process.env as Record<string, string>), ...input.environment },
               initialInput: input.stdin.endsWith("\n") ? input.stdin.slice(0, -1) : input.stdin,
