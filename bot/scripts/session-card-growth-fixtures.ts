@@ -10,7 +10,8 @@ function fixture(count:number){
   const source=new Database(':memory:'),prepared=observedDatabase(new Database(':memory:'));
   source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
     agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
-    CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT);
+    CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
+      saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER);
     CREATE INDEX turns_session_latest ON turns(session_id,id DESC);
     CREATE INDEX turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
     CREATE INDEX turns_session_queued ON turns(session_id,id DESC) WHERE status='queued';
@@ -127,8 +128,33 @@ async function changesGrowth(){
   }
 }
 
+function visibleCardFacts(){
+ const {source,prepared,cards}=fixture(100);
+ try{
+  source.query('UPDATE sessions SET native_metadata_json=? WHERE id=1').run(JSON.stringify({title:'Visible facts',
+    claudeAccount:'personal',interactionPolicy:'consultation-only',turnOutcome:{outcome:'needs_you',question:'界'.repeat(1000),
+      inputId:'input-1',at:'2026-10-08T00:00:00Z'}}));
+  source.query("UPDATE turns SET status='running' WHERE id=1").run();
+  source.query("UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=? WHERE id=7").run(Date.UTC(2026,9,9));
+  cards.apply(1,[{sequence:1,source_table:'sessions',row_key:'1',session_id:1}]);cards.checkpoint(1,1);
+  const read=()=>JSON.parse((prepared.query('SELECT card_json FROM presentation_session_cards WHERE generation=1 AND session_id=1')
+    .get() as {card_json:string}).card_json);
+  const card=read();
+  assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',running:true});
+  assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
+  assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
+  assert.deepEqual(card.savedWork,{kind:'scheduled',status:'queued',startsAt:'2026-10-09T00:00:00.000Z'});
+  source.query("UPDATE turns SET dispatch_failure_class='backoff' WHERE id=7").run();
+  cards.apply(1,[{sequence:2,source_table:'turns',row_key:'7',session_id:1}]);
+  assert.equal(read().savedWork.startsAt,null,'provider retry timing must not be advertised as a chosen start time');
+  source.query("UPDATE turns SET status='done' WHERE id=7").run();
+  cards.apply(1,[{sequence:3,source_table:'turns',row_key:'7',session_id:1}]);
+  assert.equal(read().savedWork,null,'finished saved work must not hide current running work');
+ }finally{source.close();prepared.close();}
+}
+
 export const sessionCardGrowthFixtures={
-  'sessions-window-growth':windowGrowth,
+  'sessions-window-growth':async()=>{visibleCardFacts();await windowGrowth();},
   'sessions-changes-growth':changesGrowth
 } as const;
 export const READ_GROWTH_FIXTURES=sessionCardGrowthFixtures;

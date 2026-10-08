@@ -6,17 +6,14 @@ import type {ProviderKey} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
+import {savedStartAt} from './saved-start-time';
+export {savedStartAt} from './saved-start-time';
 
 export type SavedKind='scheduled'|'banked';
 export type SavedTurn={id:number;session_id:number;status:string;saved_kind:SavedKind;saved_at_ms:number;saved_expires_at_ms:number|null;saved_manual_start:number;
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
   saved_alerted_at_ms:number|null;accepted_input_id:string|null};
-
-export function savedStartAt(turn:SavedTurn):string|null {
-  return turn.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='backoff'&&turn.dispatch_next_attempt_ms
-    ?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
-}
 
 const DAY=24*60*60_000, HOUR=60*60_000;
 export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};

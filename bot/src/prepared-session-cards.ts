@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
+import {savedStartAt} from './saved-start-time';
 
 type SourceSession={id:number;provider_id:string;status:string;native_metadata_json:string|null;
   agent_session_uuid:string|null;slack_channel_id:string|null;slack_thread_ts:string|null;created_at:string;last_turn_at:string|null};
@@ -10,10 +11,13 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   createdAt:string;updatedAt:string;archived:boolean;suspended:boolean;pinned:boolean;saved:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
-  turnOutcome:{outcome:string;inputId:string;at:string}|null;revision?:number}>;
+  interactionPolicy:'standard'|'consultation-only';account:string|null;accountTruncated:boolean;
+  timing:{startedAt:string|null;running:boolean}|null;
+  savedWork:{kind:'scheduled'|'banked';status:string;startsAt:string|null}|null;
+  turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;revision?:number}>;
 type CardRow={generation:number;session_id:number;sort_ms:number;space:SessionSpace;needs_attention:number|null;
   card_json:string;revision:number};
-const MAX_PAGE=40,MAX_BYTES=96*1024,MAX_CARD_BYTES=3*1024;
+const MAX_PAGE=40,MAX_BYTES=96*1024,MAX_CARD_BYTES=8*1024;
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():new Date(0).toISOString();
 const preview=(value:string,maxBytes:number)=>{
   let text='',bytes=0;
@@ -100,8 +104,11 @@ export class PreparedSessionCards {
     const title=preview(labels.title,480),summary=preview(labels.summary,1200),project=labels.project?preview(labels.project,600):null;
     const latest=this.source.query('SELECT id,status,started_at FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(sessionId) as
       {id:number;status:string;started_at:string|null}|null;
-    const active=this.source.query("SELECT id FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1")
-      .get(sessionId) as {id:number}|null;
+    const active=this.source.query("SELECT id,started_at FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1")
+      .get(sessionId) as {id:number;started_at:string|null}|null;
+    const saved=this.source.query(`SELECT saved_kind,status,dispatch_failure_class,dispatch_next_attempt_ms FROM turns
+      WHERE session_id=? AND saved_kind IS NOT NULL AND status='queued' ORDER BY id DESC LIMIT 1`).get(sessionId) as
+      {saved_kind:'scheduled'|'banked';status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null}|null;
     const queued=(this.source.query("SELECT COUNT(*) AS n FROM turns WHERE session_id=? AND status='queued'").get(sessionId) as {n:number}).n;
     const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid
       ?meta.codexLifecycle:null;
@@ -117,6 +124,9 @@ export class PreparedSessionCards {
     const needsAttention=meta.inbox?inboxAttention:Array.isArray(meta.needs)
       ?meta.needs.some((need:{generation?:number})=>(need.generation??0)>(meta.dismissedGeneration??0)):false;
     const origin=meta.origin??'native';
+    const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
+    const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
+    const timed=active??latest;
     const card:SessionCard={id:`concierge:${sessionId}`,title:title.text,titleTruncated:title.truncated,
       summary:summary.text,summaryTruncated:summary.truncated,project:project?.text??null,projectTruncated:project?.truncated??false,
       provider:session.provider_id,origin,catalogueKind:origin==='imported'&&!meta.nativeBinding?'historical-evidence':'conversation',
@@ -124,10 +134,16 @@ export class PreparedSessionCards {
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,
       outcome:meta.outcome??'open',space:spaceForCwd(meta.cwd),needsAttention,attentionCoverage:needsAttention===null?'catching_up':'complete',
       unread:(meta.generation??0)>(meta.readGeneration??0),execution,pendingCount:queued,
+      interactionPolicy:meta.interactionPolicy==='consultation-only'?'consultation-only':'standard',
+      account:account?.text??null,accountTruncated:account?.truncated??false,
+      timing:external?{startedAt:external.startedAt??null,running:external.state==='running'}:
+        timed?{startedAt:timed.started_at?iso(timed.started_at):null,running:!!active}:null,
+      savedWork:saved?{kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved)}:null,
       model:typeof meta.model==='string'?preview(meta.model,120).text:null,
       reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null,
-      turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.inputId==='string'&&typeof meta.turnOutcome.at==='string'
-        ?{outcome:meta.turnOutcome.outcome,inputId:meta.turnOutcome.inputId,at:meta.turnOutcome.at}:null};
+      turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'
+        ?{outcome:meta.turnOutcome.outcome,inputId:meta.turnOutcome.inputId??null,at:meta.turnOutcome.at,
+          question:question?.text??null,questionTruncated:question?.truncated??false}:null};
     const encoded=JSON.stringify(card);
     if(Buffer.byteLength(encoded)>MAX_CARD_BYTES)throw new Error('SESSION_CARD_EXCEEDS_PREPARED_RECORD_BOUND');
     if(previous?.card_json===encoded)return;
