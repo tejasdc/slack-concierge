@@ -10,7 +10,8 @@ import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
-import { MANAGED_CODEX } from "./codex-daemon-file-limit";
+import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
+import { createConnection } from "node:net";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
@@ -93,7 +94,17 @@ function run(command: string, args: string[], timeoutMs: number, environment:Nod
   });
 }
 
-async function activateCodex(): Promise<ActivationReport> {
+// One Codex restart at a time: a switch that arrives during a replacement waits for it and then
+// restarts onto its own account, rather than sharing a result that loaded the old one.
+let codexRestarts: Promise<unknown> = Promise.resolve();
+function oneCodexRestartAtATime<T>(work: () => Promise<T>): Promise<T> {
+  const next = codexRestarts.then(work, work);
+  codexRestarts = next.catch(() => undefined);
+  return next;
+}
+
+function activateCodex(): Promise<ActivationReport> { return oneCodexRestartAtATime(activateCodexNow); }
+async function activateCodexNow(): Promise<ActivationReport> {
   // New Codex work is held for the few seconds of the restart, and only then is running work
   // counted: counting first left a window in which a turn could be claimed onto a server about to
   // stop (outage review, 2026-10-08). Running work is never waited on here; the restart is
@@ -140,55 +151,94 @@ async function activateCodex(): Promise<ActivationReport> {
   }
 }
 
-/** Processes started by `codex app-server --listen`: the server, never a client's `app-server proxy`. */
-function listeningAppServers(): number[] {
-  const found: number[] = [];
-  for (const entry of readdirSync("/proc")) {
-    if (!/^\d+$/.test(entry)) continue;
-    try {
-      const args = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
-      if (args.includes("app-server") && args.includes("--listen")) found.push(Number(entry));
-    } catch { /* gone */ }
-  }
-  return found;
-}
 function childrenOf(pids: number[]): number[] {
   const wanted = new Set(pids), found: number[] = [];
   for (const entry of readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
     try {
-      const parent = Number(readFileSync(`/proc/${entry}/stat`, "utf8").replace(/^.*\) /, "").split(" ")[1]);
-      if (wanted.has(parent)) found.push(Number(entry));
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      if (wanted.has(Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]))) found.push(Number(entry));
     } catch { /* gone */ }
   }
   return found;
 }
 const alive = (pid: number) => existsSync(`/proc/${pid}`);
+const CONTROL_SOCKET = join(homedir(), ".codex", "app-server-control", "app-server-control.sock");
+function socketAnswers(path: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = createConnection(path);
+    const done = (answer: boolean) => { socket.destroy(); resolve(answer); };
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+    setTimeout(() => done(false), 1_000).unref?.();
+  });
+}
 
 /**
  * A server started outside the daemon manager refuses `daemon restart` (from Oct 4 to Oct 7, 2026 that
  * made every Codex switch fail), and on 2026-10-08 one was left running after Codex's own updater
- * failed to bring its replacement up. Replacing it is the runbook's unmanaged-listener repair, done
- * here only because no Codex turn is running and new ones are held: stop it, keep its old socket
- * under a dated name, and start the managed server in its place.
+ * failed to bring its replacement up. Replacing it is the runbook's unmanaged-listener repair: stop
+ * exactly the processes holding the control socket, keep that socket under a dated name, and start the
+ * managed server in its own scope. Concierge's own start-when-absent is held meanwhile so it cannot
+ * bind a socket this then moves aside; if anything else brought a server up first, it is kept.
  */
 async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string }> {
-  const servers = listeningAppServers();
+  const servers = controlSocketListeners(CONTROL_SOCKET);
+  if (!servers.length) return { code: 1, output: "No process holds the Codex control socket." };
   const helpers = childrenOf(servers);
   log("warn", "codex_unmanaged_server_replacing", { servers, helpers });
-  for (const pid of servers) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
-  const deadline = Date.now() + 70_000;
-  while (servers.some(alive) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
-  for (const pid of [...servers, ...helpers]) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
-  const socket = join(homedir(), ".codex", "app-server-control", "app-server-control.sock");
-  if (existsSync(socket)) renameSync(socket, `${socket}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
-  return run(MANAGED_CODEX, ["app-server", "daemon", "start"], 90_000);
+  holdCodexDaemonAutoStart(true);
+  try {
+    for (const pid of servers) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+    const deadline = Date.now() + 70_000;
+    while (servers.some(alive) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
+    for (const pid of [...servers, ...helpers]) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    if (await socketAnswers(CONTROL_SOCKET)) return { code: 0, output: "Another start already brought a server up." };
+    if (existsSync(CONTROL_SOCKET)) renameSync(CONTROL_SOCKET, `${CONTROL_SOCKET}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    return await startCodexDaemonInOwnScope();
+  } finally {
+    holdCodexDaemonAutoStart(false);
+  }
 }
 
-/** Whether the running Codex server was started outside its manager, so the next idle moment should replace it. */
-export async function codexServerUnmanaged(): Promise<boolean> {
+async function codexServerUnmanaged(): Promise<boolean> {
   const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
   return version.code === 0 && version.output.includes("\"running\"") && !version.output.includes("\"backend\"");
+}
+
+/** Codex turns another client (the Mac Codex app) is running on the shared server, as last observed. */
+function externallyRunningCodexTurns(): number {
+  try {
+    return (db.query(`SELECT COUNT(*) AS count FROM sessions WHERE provider_id='codex'
+      AND json_extract(native_metadata_json,'$.codexLifecycle.state')='running'`).get() as { count: number }).count;
+  } catch { return -1; }
+}
+
+let pendingCodexRepair = false;
+/**
+ * Puts a server started outside its manager back under it, at a moment nothing would be cut: no
+ * Concierge Codex turn running, none observed running from another client, and new Codex work held
+ * for the seconds it takes. Unlike an account switch it changes no account, so it releases no held
+ * work. Server only. Retried on every execution change until it is done.
+ */
+function repairUnmanagedCodexServer(): Promise<void> {
+  return oneCodexRestartAtATime(async () => {
+    if (process.platform !== "linux" || !(await codexServerUnmanaged())) { pendingCodexRepair = false; return; }
+    pendingCodexRepair = true;
+    if (!codexUpdaterDisabled()) { log("error", "codex_unmanaged_server_repair_refused", { reason: "automatic_updater_not_disabled" }); return; }
+    holdCodexAdmission(true);
+    try {
+      const running = runningCodexTurns(), external = externallyRunningCodexTurns();
+      if (running !== 0 || external !== 0) { log("info", "codex_unmanaged_server_repair_waiting", { running, external }); return; }
+      const result = await replaceUnmanagedServer();
+      const healthy = !(await codexServerUnmanaged()) && result.code === 0;
+      log(healthy ? "warn" : "error", healthy ? "codex_unmanaged_server_replaced" : "codex_unmanaged_server_repair_failed",
+        { code: result.code, output: result.output.slice(0, 300) });
+      if (healthy) pendingCodexRepair = false;
+    } finally {
+      holdCodexAdmission(false);
+    }
+  });
 }
 
 /**
@@ -385,17 +435,16 @@ export function watchAuthHeldCredentials(): () => void {
       if(keychain)watchCredential(keychain,'claude-code','keychain_event');
     } catch(error){log('error','provider_auth_hold_watch_failed',{provider:'claude-code',source:'keychain_event',error:String(error)});}
   }
+  // A server running outside its manager is put back under it at the first moment nothing runs.
+  let repairing=false;
+  const repair=()=>{if(stopped||repairing)return;repairing=true;
+    void repairUnmanagedCodexServer().catch(error=>log('error','codex_unmanaged_server_repair_failed',{error:String(error)})).finally(()=>{repairing=false;});};
+  repair();
   const detach=observeExecutionChanges(()=>{
     updateInterval();
     if(pendingCodexActivation && runningCodexTurns()===0)check('codex','turn_finished');
+    if(pendingCodexRepair && runningCodexTurns()===0)repair();
   });
-  // A server running outside its manager is replaced at the first moment no Codex turn runs,
-  // through the same deferred activation an account switch uses.
-  if(process.platform==='linux')void codexServerUnmanaged().then(unmanaged=>{
-    if(!unmanaged||stopped)return;
-    log('warn','codex_unmanaged_server_found',{});
-    pendingCodexActivation=true;check('codex','startup');
-  }).catch(()=>{});
   for(const provider of providers)check(provider,'startup');
   updateInterval();
   return ()=>{stopped=true;detach();if(interval)clearInterval(interval);

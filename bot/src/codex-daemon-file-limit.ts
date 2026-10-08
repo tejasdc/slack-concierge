@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,46 @@ export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
   || (process.platform==='darwin'?join(homedir(),'.local','bin','codex'):'/root/.codex/packages/standalone/current/codex');
 
 let daemonStart: Promise<void> | null = null;
+// Held while provider-activation.ts replaces a server started outside its manager: that replacement
+// starts the managed one itself, after moving the old socket aside, and a start from here in between
+// would bind a socket that is then moved away (review of 2026-10-08).
+let autoStartHeld = false;
+export function holdCodexDaemonAutoStart(held: boolean) { autoStartHeld = held; }
+
+/** `daemon start` in a scope of its own, as above, for a caller that needs its answer. */
+export async function startCodexDaemonInOwnScope(): Promise<{ code: number | null; output: string }> {
+  try {
+    const { stdout, stderr } = await run("systemd-run", ["--scope", "--collect", "--quiet", "--description=Shared Codex App Server",
+      MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 90_000 });
+    return { code: 0, output: `${stdout}${stderr}` };
+  } catch (error: any) {
+    return { code: typeof error?.code === "number" ? error.code : 1, output: String(error?.stderr ?? error?.message ?? error) };
+  }
+}
+
+/**
+ * The processes holding the listening control socket itself, found by its inode, so nothing else
+ * that happens to be a Codex process (a client's proxy, an agent's separate `codex exec`, another
+ * home's server) can be mistaken for it.
+ */
+export function controlSocketListeners(socketPath: string): number[] {
+  if (process.platform !== "linux") return [];
+  const inodes = new Set<string>();
+  try {
+    for (const line of readFileSync("/proc/net/unix", "utf8").split("\n").slice(1)) {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length >= 8 && fields[7] === socketPath) inodes.add(fields[6]!);
+    }
+  } catch { return []; }
+  if (!inodes.size) return [];
+  return codexDaemonPids({ includeProxies: false }).filter(pid => {
+    try {
+      return readdirSync(`/proc/${pid}/fd`).some(fd => {
+        try { return inodes.has(readlinkSync(`/proc/${pid}/fd/${fd}`).replace(/^socket:\[(\d+)\]$/, "$1")); } catch { return false; }
+      });
+    } catch { return false; }
+  });
+}
 let lastDaemonStartAt = 0;
 
 /**
@@ -26,7 +66,7 @@ let lastDaemonStartAt = 0;
  * At most one start runs, and not more often than every 30 seconds while the socket refuses.
  */
 export function startCodexDaemonWhenAbsent(reason: string) {
-  if (process.platform !== "linux" || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
+  if (process.platform !== "linux" || autoStartHeld || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
   lastDaemonStartAt = Date.now();
   if (!codexUpdaterDisabled()) {
     log("error", "codex_daemon_start_failed", { reason, error: "Codex automatic App Server updates are not disabled." });
