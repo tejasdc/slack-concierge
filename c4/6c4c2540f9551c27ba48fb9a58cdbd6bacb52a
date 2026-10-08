@@ -1,0 +1,1 @@
+Concurrent reads of different answer versions are checked against their own exact words.
