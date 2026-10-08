@@ -194,12 +194,19 @@ A Mac on macOS 26 or later transcribes recordings with Apple's on-device SpeechT
 `speech/` with `swiftc` (Xcode Command Line Tools) when its source changes, and runs it once so
 the locale's speech assets are installed before the first dictation (`CONCIERGE_SPEECH_LOCALE`,
 default `en-US`). Browser recordings also need `ffmpeg` (`brew install ffmpeg`); the installer
-warns when either is missing. Concierge starts the helper at boot and keeps it: it holds ~21 MB
-while Apple's model lives in the system, and file transcription asks for no Speech permission.
+warns when either is missing. The Mac speech listener runs as its own launchd job,
+`com.tejasdc.concierge-speech`, through the installed signed agent-host app. It starts the
+Apple engine and keeps it ready (~21 MB); file transcription asks for no Speech permission.
+An unrelated Concierge update leaves this job and an active recording alone. The installer
+restarts it only if its own code, engine or certificate changed. Its logs are in the same state
+directory as Concierge, under `logs/speech.log` and `logs/speech.err`; `launchctl print
+gui/$(id -u)/com.tejasdc.concierge-speech` shows the job. A speech-service change can interrupt
+one recording, whose retained audio remains the server transcription fallback. On a Mac-only
+owner, retained-file fallback starts a coordinator-local engine on demand.
 On older macOS the Mac keeps recordings and says it cannot transcribe them.
 
 Dictating in Thinkering in a browser on the Mac never goes through the box for its words. The
-page sends each two-second piece to this Mac's Concierge on 127.0.0.1 as it is recorded, Apple's
+page sends each two-second piece to this Mac's speech service on 127.0.0.1 as it is recorded, Apple's
 engine transcribes it as it arrives, and stopping waits only for the last moments (about
 0.1–0.2 s after stop, even for a four-minute recording, measured September 21, 2026).
 

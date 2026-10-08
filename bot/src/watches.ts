@@ -20,7 +20,7 @@ import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
-  hostSocketPath, hostSupervisorView, newExecutionId, readJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
+  hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -393,8 +393,8 @@ async function commandState(row: WatchRow): Promise<{ state: "running" } | { sta
   const view = hostSupervisorView(executionId);
   if (view === "unknown") return { state: "unknown" };
   try {
-    const exit = readJournal(directory).find(frame => frame.k === "x");
-    if (exit) return { state: "exited", code: exit.d?.code ?? null, signal: exit.d?.signal ?? null };
+    for await(const frame of streamJournal(directory))if(frame.k==="x")
+      return { state: "exited", code: frame.d?.code ?? null, signal: frame.d?.signal ?? null };
   } catch { /* no journal */ }
   return view === "gone" ? { state: "lost" } : { state: "unknown" };
 }

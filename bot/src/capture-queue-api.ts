@@ -9,6 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
+import { CommandIdentityConflict, UnknownCommandTarget, claimHumanCommand, commandStatus, prepareHumanCommand, retainHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -66,6 +67,37 @@ async function requestBody(request: Request): Promise<Record<string, unknown>> {
   return parsed as Record<string, unknown>;
 }
 
+const commandPath = /^\/sessions\/v1\/(?:sessions(?:\/[a-z][a-z0-9-]*%3A[1-9][0-9]*\/(?:inputs|actions|actions\/[A-Za-z0-9_-]+\/cancel|message-actions|stop|outage-choice|reconcile|bind|forks|comparisons|captures|tasks))?|operations\/[A-Za-z0-9:_-]+\/cancel|inbox\/topics(?:\/[A-Za-z0-9:_-]+\/actions)?|consultations|resurrections|saved-work(?:\/settings|\/[0-9]+\/(?:start|time|schedule|drop)))$/i;
+
+function humanCommand(body:Record<string,unknown>):HumanCommand {
+  const command=body as Record<string,unknown>;
+  const clientId=requiredString(command.clientId,"clientId",128);
+  const sessionId=requiredString(command.sessionId,"sessionId",200);
+  const actionId=requiredString(command.actionId,"actionId",200);
+  const door=requiredString(command.door,"door",100);
+  const method=command.method;
+  const path=requiredString(command.path,"path",500);
+  const sequence=requiredNonnegativeInteger(command.sequence,"sequence");
+  const payload=command.body;
+  if(command.version!==1||method!=="POST"||!commandPath.test(path)||!payload||typeof payload!=="object"||Array.isArray(payload)
+    ||(payload as Record<string,unknown>).clientActionId!==actionId||!/^[-a-z0-9:]{8,128}$/i.test(clientId)
+    ||!(/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(sessionId)||sessionId==="workspace")) {
+    throw new Error("Invalid human command envelope.");
+  }
+  const targetSession=path.match(/^\/sessions\/v1\/sessions\/([^/]+)\//);
+  if(targetSession?.[1]&&decodeURIComponent(targetSession[1])!==sessionId)throw new Error("Command stream does not name its target session.");
+  // This is transport validation only. The owner still checks the command's scope, target,
+  // authority and effect; ingress neither rewrites nor interprets its original body.
+  return {version:1,clientId,sessionId,actionId,door,method,path,sequence,body:payload as Record<string,unknown>};
+}
+
+function commandReply(actionId:string) {
+  const row=commandStatus(actionId);
+  if(!row)return null;
+  return {custody:"server",actionId:row.action_id,status:row.status,
+    decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null};
+}
+
 function claimProof(eventId: string, body: Record<string, unknown>): CaptureClaimProof {
   return {
     eventId,
@@ -87,6 +119,71 @@ export function createCaptureQueueRequestHandler(
       return request.method === "GET"
         ? jsonResponse(200, { ok: true })
         : new Response(null, { status: 405, headers: { allow: "GET" } });
+    }
+    if (url.pathname === "/commands" && request.method === "POST") {
+      try {
+        const command=humanCommand(await requestBody(request));
+        const retained=retainHumanCommand(command);
+        dependencies.afterCommit?.("claim",retained.action_id);
+        return jsonResponse(202,commandReply(retained.action_id)!);
+      } catch(error) {
+        if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:"command_identity_conflict"});
+        if(error instanceof UnknownCommandTarget)return jsonResponse(409,{error:"command_target_not_retained"});
+        log("warn","human_command_custody_refused",errorFields(error));
+        return jsonResponse(400,{error:"invalid_command_envelope"});
+      }
+    }
+    if (url.pathname === "/commands/claim" && request.method === "POST") {
+      try {
+        const body=await requestBody(request);
+        const claimId=requiredString(body.claimId,"claimId",128);
+        const claimed=claimHumanCommand(claimId);
+        return claimed?jsonResponse(200,{command:{version:1,clientId:claimed.client_id,sessionId:claimed.session_id,door:claimed.door,
+          sequence:claimed.sequence,actionId:claimed.action_id,method:claimed.method,path:claimed.path,
+          body:JSON.parse(claimed.body_json)},prepared:claimed.prepared_json?JSON.parse(claimed.prepared_json):null,
+          claimId,attempts:claimed.attempts}):
+          new Response(null,{status:204,headers:{"cache-control":"no-store"}});
+      } catch(error) {
+        log("warn","human_command_claim_refused",errorFields(error));
+        return jsonResponse(400,{error:"invalid_command_claim"});
+      }
+    }
+    const settleMatch=url.pathname.match(/^\/commands\/([^/]+)\/(prepare|settle|retry)$/);
+    if(settleMatch&&request.method==="POST") {
+      try {
+        const actionId=decodeURIComponent(settleMatch[1]);
+        const body=await requestBody(request);
+        const claimId=requiredString(body.claimId,"claimId",128);
+        if(settleMatch[2]==="prepare") {
+          if(!body.prepared||typeof body.prepared!=="object"||Array.isArray(body.prepared))throw new Error("Missing prepared command.");
+          prepareHumanCommand(actionId,claimId,body.prepared);
+          return jsonResponse(200,{ok:true});
+        }
+        if(settleMatch[2]==="retry") {
+          const nextAttemptMs=requiredNonnegativeInteger(body.nextAttemptMs,"nextAttemptMs");
+          return retryHumanCommand(actionId,claimId,nextAttemptMs)?jsonResponse(200,{ok:true}):jsonResponse(409,{error:"claim_conflict"});
+        }
+        const ownerStatus=requiredNonnegativeInteger(body.ownerStatus,"ownerStatus");
+        const decisionStage=body.decisionStage;
+        if(ownerStatus<200||ownerStatus>599||!("ownerResponse" in body)||!(["preparation","owner"] as unknown[]).includes(decisionStage))throw new Error("Invalid owner response.");
+        const settled=settleHumanCommand(actionId,claimId,ownerStatus,body.ownerResponse,decisionStage as "preparation"|"owner");
+        return jsonResponse(200,{ok:true,status:settled.status});
+      } catch(error) {
+        log("warn","human_command_settle_refused",errorFields(error));
+        return jsonResponse(409,{error:"claim_conflict"});
+      }
+    }
+    const commandMatch=url.pathname.match(/^\/commands\/([^/]+)$/);
+    if(commandMatch&&request.method==="GET") {
+      const actionId=decodeURIComponent(commandMatch[1]);
+      const reply=commandReply(actionId);
+      return reply?jsonResponse(200,reply):jsonResponse(404,{error:"command_not_found"});
+    }
+    const withdrawMatch=url.pathname.match(/^\/commands\/([^/]+)\/withdraw$/);
+    if(withdrawMatch&&request.method==="POST"){
+      const actionId=decodeURIComponent(withdrawMatch[1]);
+      const row=withdrawPendingCreation(actionId);
+      return row?.status==="canceled"?jsonResponse(200,commandReply(actionId)!):jsonResponse(409,{error:"creation_no_longer_at_ingress"});
     }
     if (request.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
 
@@ -161,7 +258,7 @@ export function startCaptureQueueServer(
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
-    maxRequestBodySize: 16_384,
+    maxRequestBodySize: 1_048_576,
     idleTimeout: 5,
     fetch: createCaptureQueueRequestHandler(config, dependencies),
     error(error) {

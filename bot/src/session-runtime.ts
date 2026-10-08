@@ -1,6 +1,5 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
-import {startLiveSpeechListener} from './live-speech';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
 import {db,abandonTurnArtifactBatch,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
@@ -132,8 +131,6 @@ export async function startSessionRuntime() {
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
   const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
-  // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
-  const liveSpeech=startLiveSpeechListener();
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
@@ -159,7 +156,6 @@ export async function startSessionRuntime() {
     }
     await server.stop(true);
     if(peerServer)await peerServer.stop(true);
-    await liveSpeech?.stop();
   })();
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>void stop().then(()=>process.exit(0)));
   return {host,communication,server,stop};

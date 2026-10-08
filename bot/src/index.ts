@@ -289,6 +289,7 @@ import {
   loadCaptureQueueToken,
   loadCaptureQueueTokenFromPath,
 } from "./capture-delivery-worker";
+import { HumanCommandWorker, callThinkeringCommand } from "./human-command-worker";
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
   getLatestDeploymentTurnReactionStateForSession,
@@ -348,7 +349,9 @@ import {warmSpeechEngine} from './speech-engine';
 
 // Load the speech model now, in the background, so the first dictation after a restart is
 // already warm rather than paying the model load while someone waits.
-warmSpeechEngine();
+// On a Mac the independent speech job keeps the local engine ready across Concierge updates.
+// The coordinator can still start its own engine on demand for retained-file fallback.
+if (process.platform !== 'darwin') warmSpeechEngine();
 
 // Session search by meaning: indexing runs in the background from startup, in both compositions.
 {
@@ -427,6 +430,7 @@ let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
 let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
+let humanCommandWorker: HumanCommandWorker | null = null;
 let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
 let grafanaAlerts: GrafanaAlerts | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
@@ -4023,6 +4027,7 @@ async function drainAndStop(signal: string) {
     await server.stop(false);
   }
   if (captureDeliveryWorker) await captureDeliveryWorker.stop();
+  if (humanCommandWorker) await humanCommandWorker.stop();
   await grafanaAlerts?.stop();
   if (codexRemoteObserver) await codexRemoteObserver.stop();
   if (codexSessionObserver) await codexSessionObserver.stop();
@@ -4083,6 +4088,16 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           void drainAndStop("capture-worker-fatal");
         },
       });
+      humanCommandWorker = new HumanCommandWorker({
+        queueUrl: runtime.profile === "sandbox" ? runtime.captureQueueUrl! : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
+        queueToken: captureQueueToken,
+        prepare: command=>callThinkeringCommand("/session/command-prepare",command,
+          process.env.THINKERING_SESSION_CAPABILITY_SOCKET || "/run/thinkering/session-capabilities.sock"),
+        deliver: (command,prepared)=>callThinkeringCommand("/session/command-deliver-prepared",{
+          version:1,method:command.method,path:command.path,prepared,
+        },process.env.THINKERING_SESSION_CAPABILITY_SOCKET || "/run/thinkering/session-capabilities.sock"),
+      });
+      humanCommandWorker.start();
     }
     const auth: any = await app.client.auth.test();
     const authenticatedAppId = await resolveAuthenticatedSlackAppId(runtime, auth, async (botId) => {

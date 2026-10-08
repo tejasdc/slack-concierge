@@ -1,5 +1,9 @@
 # Capture ingress
 
+The same independent service also holds authenticated human commands until the session owner
+answers. Its separate protocol, identities and receipt stages are in
+[human command intake](HUMAN-COMMAND-INTAKE.md).
+
 Thinkering app bug reports use the additive `kind=bug_report` discriminator on
 `/thinkering`, with the same credential and immutable capture receipt. The existing
 capture worker publishes complete reports and screenshots together to the configured

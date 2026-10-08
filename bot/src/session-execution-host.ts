@@ -47,7 +47,7 @@ import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {pinCodexThreadHooks} from './hook-pins';
-import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,readJournal} from './execution-host-client';
+import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -557,7 +557,7 @@ export class SessionExecutionHost {
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
-        if(adoption)this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
@@ -581,7 +581,7 @@ export class SessionExecutionHost {
    * provably unsent: they fail back to their own queue. One it was writing is settled by the host's
    * record: written means Claude's pickup decides it (during replay or later), absent means unsent.
    */
-  private settleUnsentSteering(turnId:number,execution:ExecutionRow) {
+  private async settleUnsentSteering(turnId:number,execution:ExecutionRow) {
     const rows=db.query(`SELECT steering.id,steering.status,input.id AS input_id FROM turn_steering_messages steering
       LEFT JOIN session_inputs input ON input.steering_id=steering.id
       WHERE steering.turn_id=? AND steering.status IN ('queued','sending')`).all(turnId) as {id:number;status:string;input_id:string|null}[];
@@ -597,7 +597,7 @@ export class SessionExecutionHost {
     const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
     let readable=true;
     try {
-      for(const frame of readJournal(execution.directory)) {
+      for await(const frame of streamJournal(execution.directory)) {
         if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
         if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
         if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);

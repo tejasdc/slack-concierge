@@ -15,7 +15,8 @@ import { once } from "node:events";
 import { basename, join, resolve } from "node:path";
 import { createCaptureEvent, getCaptureEvent, type CaptureEventRow } from "./capture-state";
 import { captureAttachmentSnapshot, retainedCaptureAttachments, type CaptureAttachment } from "./capture-attachments";
-import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
+import { createCaptureQueueRequestHandler, startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
+import { recoverHumanCommands } from "./human-command-state";
 import { errorFields, log } from "./log";
 import { retryTransientDatabaseOperation } from "./database-retry";
 import { DEPLOYMENT_EVENT_PATH } from "./deployment-event-ingress";
@@ -712,6 +713,10 @@ export function createCaptureRequestHandler(
   dependencies: CaptureRequestDependencies = {},
 ) {
   const routesByPath = new Map(config.routes.map((route) => [route.path, route]));
+  const thinkeringRoute=config.routes.find(route=>route.id==="thinkering"&&route.adapter==="thinkering");
+  const humanCommandIntake=thinkeringRoute?createCaptureQueueRequestHandler({
+    ...config.queue,token:thinkeringRoute.auth.token,
+  }):null;
   const grafanaHandler = createGrafanaWebhookHandler({
     token: grafanaBearer(config.queue.token),
     accept: async (alerts) => {
@@ -750,6 +755,11 @@ export function createCaptureRequestHandler(
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const path = url.pathname;
+    // The same server-held Thinkering credential that admits captures admits command custody.
+    // Worker claim and settlement remain confined to the private queue listener and its token.
+    if(humanCommandIntake && ((path==="/commands"&&request.method==="POST")
+      ||(request.method==="GET"&&/^\/commands\/[^/]+$/.test(path))
+      ||(request.method==="POST"&&/^\/commands\/[^/]+\/withdraw$/.test(path))))return humanCommandIntake(request);
     if (path === GRAFANA_ALERT_PATH) return grafanaHandler(request);
     if (path === GITHUB_DEPLOYMENT_WEBHOOK_PATH) {
       return url.search ? jsonResponse(404, { error: "not_found" }) : githubDeploymentHandler(request);
@@ -990,6 +1000,7 @@ export function startCaptureIngress(
   options: CaptureIngressRuntimeOptions = {},
 ) {
   const services = new ProductionCaptureServices(config, options.dependencies);
+  recoverHumanCommands();
   const queueServer = startCaptureQueueServer(config.queue);
   const handler = createCaptureRequestHandler(config, services);
   const server = Bun.serve({

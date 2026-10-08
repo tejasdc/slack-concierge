@@ -59,13 +59,18 @@ message.
 | Message | Rule |
 | --- | --- |
 | `status` | host pid, provider pid, last sequence, exit, journal error |
-| `attach {protocol, from}` | refused unless the protocol matches; fences any earlier attached connection (`fenced`, its commands refused); replays the journal from `from` and switches to live delivery in one synchronous step, so nothing falls between |
+| `attach {protocol, from}` | refused unless the protocol matches; fences the earlier connection; fixes a persisted sequence boundary, streams its journal prefix with socket backpressure, then releases later live frames in order. A compatible extra `streamingReplay` fact and preceding `write_outcome` facts let a new coordinator reduce replay without holding all output frames. Older coordinators ignore those extra facts and retain their version-1 replay behavior. |
 | `submit {id, line, meta}` | only from the attached connection; records `i` before writing; the same `id` returns the first receipt and never writes again; `written: true` proves the pipe accepted it, never that the model read it |
 | `close {id}` | ends stdin; the provider exits by itself |
 | `signal {id, signal}` | SIGINT/SIGTERM/SIGKILL to the provider's process group |
 | `release {id}` | refused while the provider runs or the record is not fully on disk; afterwards the host exits. Sent by the turn's owner only after the turn's outcome is durably settled (`releaseExecutions`), never on seeing the exit, so a crash in between leaves the record for the next coordinator |
 
 A full disk stops reading the provider (backpressure) and is reported in `status`, never a dropped frame.
+The provider's stdout/stderr pipes pause during a replay of the fixed durable prefix. A coordinator
+from before this extension still receives the same original frame sequence. Record-only recovery
+scans the journal in bounded chunks twice: once for write outcomes, once to rebuild the run in
+original order. The complete journal remains the custody record; no byte cursor or snapshot is
+treated as proof of a provider side effect.
 
 ## Coordinator states
 

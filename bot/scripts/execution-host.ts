@@ -16,7 +16,7 @@
  * if it dies mid-step. It imports nothing from the application and never opens the ledger.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, chmodSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync, chmodSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 
@@ -55,6 +55,7 @@ if (existsSync(journalPath)) {
 }
 const journal = openSync(journalPath, "wx", 0o600);
 let sequence = 0;
+let persistedSequence = 0;
 let journalError: string | null = null;
 const live = new Set<(frame: Frame) => void>();
 
@@ -81,6 +82,7 @@ function flush(): boolean {
       return false;
     }
     unwritten.shift(); unwrittenOffset = 0;
+    persistedSequence = head.frame.s;
     for (const send of live) send(head.frame);
   }
   journalError = null;
@@ -203,7 +205,29 @@ function send(socket: Socket, message: unknown) {
 }
 function status() {
   return { op: "status", protocol: HOST_PROTOCOL_VERSION, executionId: manifest.executionId, hostPid: process.pid,
-    providerPid, lastSeq: sequence, exit, journalError, attached: !!attached };
+    providerPid, lastSeq: persistedSequence, exit, journalError, attached: !!attached };
+}
+/** Read a fixed durable prefix in bounded chunks; a torn tail never becomes a frame. */
+async function* durableFrames(bytes: number): AsyncGenerator<Frame> {
+  if (bytes === 0) return;
+  let rest = "";
+  for await (const chunk of createReadStream(journalPath, { encoding: "utf8", end: bytes - 1, highWaterMark: 64 * 1024 })) {
+    rest += chunk;
+    const lines = rest.split("\n");
+    rest = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line) continue;
+      try { yield JSON.parse(line) as Frame; } catch { /* torn journal line */ }
+    }
+  }
+}
+async function sendReplay(socket: Socket, message: unknown): Promise<void> {
+  if (socket.destroyed) return;
+  if (socket.write(`${JSON.stringify(message)}\n`)) return;
+  await new Promise<void>(resolve => {
+    const finish = () => { socket.off("drain", finish); socket.off("close", finish); resolve(); };
+    socket.once("drain", finish); socket.once("close", finish);
+  });
 }
 async function command(socket: Socket, message: any) {
   const id = typeof message.id === "string" && message.id ? message.id : null;
@@ -215,18 +239,47 @@ async function command(socket: Socket, message: any) {
     if (attached && attached !== socket) { send(attached, { op: "fenced" }); attached.end(); }
     attached = socket;
     const from = Number.isSafeInteger(message.from) && message.from > 0 ? message.from : 1;
-    send(socket, { ...status(), op: "attached", until: sequence });
-    // Replay and the switch to live delivery happen in one synchronous step, so no frame
-    // written meanwhile can fall between them.
-    const text = readFileSync(journalPath, "utf8");
-    for (const line of text.split("\n")) {
-      if (!line) continue;
-      let frame: Frame; try { frame = JSON.parse(line); } catch { continue; } // a torn tail is never sent
-      if (frame.s >= from) send(socket, { op: "frame", ...frame });
-    }
-    const deliver = (frame: Frame) => { if (attached === socket) send(socket, { op: "frame", ...frame }); };
+    // Capture a durable boundary and subscribe to later frames before yielding. The provider
+    // pipe pauses while this fixed prefix is streamed, so recovery cannot grow a live-frame
+    // backlog without bound. The coordinator may still ask for status or Stop during replay.
+    const until = persistedSequence;
+    const bytes = fstatSync(journal).size;
+    const pending: Frame[] = [];
+    let replaying = from <= until;
+    const deliver = (frame: Frame) => {
+      if (attached !== socket || frame.s <= until) return;
+      if (replaying) { pending.push(frame); return; }
+      if (!socket.write(`${JSON.stringify({ op: "frame", ...frame })}\n`)) {
+        provider?.stdout?.pause(); provider?.stderr?.pause();
+        socket.once("drain", () => { if (!journalError) { provider?.stdout?.resume(); provider?.stderr?.resume(); } });
+      }
+    };
     live.add(deliver);
     socket.once("close", () => { live.delete(deliver); if (attached === socket) attached = null; });
+    send(socket, { ...status(), op: "attached", until, journalBytes: bytes, streamingReplay: true });
+    if (replaying) {
+      provider?.stdout?.pause(); provider?.stderr?.pause();
+      try {
+        // An outcome can follow its input in the journal. Send the compact outcome facts first
+        // so the coordinator can apply each replayed input at its original position.
+        for await (const frame of durableFrames(bytes)) {
+          if (socket.destroyed || attached !== socket) return;
+          if (frame.k !== "c" || typeof frame.d?.id !== "string") continue;
+          if (frame.d.op === "written" || frame.d.op === "write-failed")
+            await sendReplay(socket, { op: "write_outcome", id: frame.d.id, outcome: frame.d.op === "written" ? "written" : "failed" });
+        }
+        for await (const frame of durableFrames(bytes)) {
+          if (socket.destroyed || attached !== socket) return;
+          if (frame.s >= from && frame.s <= until) await sendReplay(socket, { op: "frame", ...frame });
+        }
+      } finally {
+        // No await between draining the queued live frames and switching the listener to live.
+        replaying = false;
+        for (const frame of pending) deliver(frame);
+        pending.length = 0;
+        if (!journalError) { provider?.stdout?.resume(); provider?.stderr?.resume(); }
+      }
+    }
     return;
   }
   if (socket !== attached) return send(socket, { op: "refused", id, reason: "not the attached coordinator" });

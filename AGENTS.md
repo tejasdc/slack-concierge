@@ -114,6 +114,8 @@ authorization or a change to the default rapid-iteration policy.
 - Capture ingress owns only its capture database. Its executable may import the storage-neutral
   retry and database-retry primitives, but never the application notice worker, retry adapter or
   Concierge ledger; the service user is deliberately not given that production state path.
+  It also keeps exact authenticated human commands until the canonical owner answers; a server
+  custody receipt is never an owner receipt. See [human command intake](docs/architecture/HUMAN-COMMAND-INTAKE.md).
 - An outside CLI agent uses `router-actions.sh external` for Inbox capture or an addressed request;
   its named authorship and pollable reply live in the owner ledger, with no invented requester session.
   Outside capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.
@@ -125,8 +127,10 @@ authorization or a change to the default rapid-iteration policy.
   A forwarded recording is a new custody copy of identical bytes, so it reuses the words its
   original already has (found by `sha256`) instead of being transcribed again.
 - Speech-to-text is one engine process per host behind one line protocol
-  (`bot/src/speech-engine.ts`), chosen by platform. The Mac's Apple engine (~21 MB) loads at
-  startup and stays; the box's Parakeet (~1 GB) loads on the first dictation and is released
+  (`bot/src/speech-engine.ts`), chosen by platform. The Mac browser's listener and Apple engine
+  run in their own launchd job and survive an unrelated Concierge update; see
+  [Mac speech operations](docs/runbooks/PEER-INSTANCES.md#speech-to-text-on-the-mac).
+  The box's Parakeet (~1 GB) loads on the first dictation and is released
   after ten idle minutes, because the iPhone and Mac now transcribe on the device and the box is
   a fallback. The box runs Parakeet TDT 0.6B v3 (`bot/native/parakeet-server.cpp`);
   audio over 45 seconds goes in pieces cut at pauses, because Parakeet's whole-file path

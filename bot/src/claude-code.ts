@@ -221,74 +221,100 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
 
 /** The same reading over events already parsed, so a live run never re-parses what it printed. */
 export function claudeOutputFromEvents(events: readonly JsonValue[], fallbackSessionUUID: string | null = null, initialPrompt?: string, stdout = ""): ClaudeCodeParseResult {
-  let sessionUUID = fallbackSessionUUID;
-  let finalResult = "";
-  let isError = false;
-  let durationMs: number | undefined;
-  let sessionModel: string | undefined;
-  let model: string | undefined;
-  const messageParts: string[] = [];
-  const toolsUsed: string[] = [];
-  let sawAcknowledgedUserInput = false;
-  let awaitingInitialPrompt = initialPrompt !== undefined;
+  const output = new ClaudeOutputAccumulator(fallbackSessionUUID, initialPrompt);
+  for (const event of events) output.push(event);
+  return output.read(events.length === 0 ? stdout : "");
+}
 
-  for (const ev of events) {
-    if (awaitingInitialPrompt) {
-      if (acknowledgedUserText(ev) === initialPrompt) awaitingInitialPrompt = false;
-      else if (ev.type !== "system" || ev.subtype !== "init") continue;
+/** Retains only the current response, not every protocol event the provider has ever emitted. */
+export class ClaudeOutputAccumulator {
+  private sessionUUID: string | null;
+  private finalResult = "";
+  private isError = false;
+  private durationMs: number | undefined;
+  private sessionModel: string | undefined;
+  private model: string | undefined;
+  private messageParts: string[] = [];
+  private toolsUsed: string[] = [];
+  private sawAcknowledgedUserInput = false;
+  private awaitingInitialPrompt: boolean;
+  private seenEvents = false;
+  private eventCount = 0;
+  private responseChars = 0;
+
+  constructor(fallbackSessionUUID: string | null = null, private readonly initialPrompt?: string) {
+    this.sessionUUID = fallbackSessionUUID;
+    this.awaitingInitialPrompt = initialPrompt !== undefined;
+  }
+
+  push(ev: JsonValue): void {
+    this.seenEvents = true;
+    this.eventCount++;
+    if (this.awaitingInitialPrompt) {
+      if (acknowledgedUserText(ev) === this.initialPrompt) this.awaitingInitialPrompt = false;
+      else if (ev.type !== "system" || ev.subtype !== "init") return;
     }
     if (acknowledgedUserText(ev) !== null) {
-      if (sawAcknowledgedUserInput) {
+      if (this.sawAcknowledgedUserInput) {
         // Every accepted stdin user message starts a new visible response
         // segment. This covers interrupted tools, interrupted streaming, and
         // the race where the prior response completes before interrupt ack.
-        messageParts.length = 0;
-        finalResult = "";
-        isError = false;
-        durationMs = undefined;
-        model = sessionModel;
+        this.messageParts.length = 0;
+        this.responseChars = 0;
+        this.finalResult = "";
+        this.isError = false;
+        this.durationMs = undefined;
+        this.model = this.sessionModel;
       }
-      sawAcknowledgedUserInput = true;
+      this.sawAcknowledgedUserInput = true;
     }
-    if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
+    if (typeof ev.session_id === "string") this.sessionUUID = ev.session_id;
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string") {
-      sessionModel = ev.model.trim() || undefined;
-      model = sessionModel;
+      this.sessionModel = ev.model.trim() || undefined;
+      this.model = this.sessionModel;
     }
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
-      sessionUUID = ev.session_id;
+      this.sessionUUID = ev.session_id;
     }
     if (ev.type === "result") {
-      if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
-      if (typeof ev.result === "string") finalResult = ev.result;
-      isError = ev.is_error === true;
-      durationMs = typeof ev.duration_ms === "number" && Number.isSafeInteger(ev.duration_ms) && ev.duration_ms >= 0
+      if (typeof ev.session_id === "string") this.sessionUUID = ev.session_id;
+      if (typeof ev.result === "string") this.finalResult = ev.result;
+      this.isError = ev.is_error === true;
+      this.durationMs = typeof ev.duration_ms === "number" && Number.isSafeInteger(ev.duration_ms) && ev.duration_ms >= 0
         ? ev.duration_ms : undefined;
       if (typeof ev.terminal_reason === "string" && ev.terminal_reason.startsWith("aborted_")) {
-        messageParts.length = 0;
-        finalResult = "";
-        durationMs = undefined;
-        model = sessionModel;
+        this.messageParts.length = 0;
+        this.responseChars = 0;
+        this.finalResult = "";
+        this.durationMs = undefined;
+        this.model = this.sessionModel;
       }
     }
-    if (ev.type !== "assistant") continue;
+    if (ev.type !== "assistant") return;
     if (ev.parent_tool_use_id == null && typeof ev.message?.model === "string"
-        && ev.message.model.trim() && !ev.message.model.startsWith("<")) model = ev.message.model.trim();
+        && ev.message.model.trim() && !ev.message.model.startsWith("<")) this.model = ev.message.model.trim();
     const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
     for (const block of content) {
       if (block?.type === "text" && typeof block.text === "string") {
-        messageParts.push(block.text);
+        this.messageParts.push(block.text);
+        this.responseChars += block.text.length;
       } else if (block?.type === "tool_use") {
-        toolsUsed.push(String(block.name || "tool"));
+        this.toolsUsed.push(String(block.name || "tool"));
       }
     }
   }
 
-  const { text, mark: turnOutcome } = splitTurnOutcomeMarker(finalResult.trim() || messageParts.join("\n\n").trim() || (events.length === 0 ? stdout.trim() : ""));
-  if (events.length === 0 && stdout.trim()) {
-    sessionUUID = sessionUUID || extractUuid(stdout);
+  workload(){return {events:this.eventCount,response_chars:this.responseChars,result_chars:this.finalResult.length,
+    tool_count:this.toolsUsed.length};}
+
+  read(unstructuredOutput = ""): ClaudeCodeParseResult {
+    const { text, mark: turnOutcome } = splitTurnOutcomeMarker(this.finalResult.trim() || this.messageParts.join("\n\n").trim() || (!this.seenEvents ? unstructuredOutput.trim() : ""));
+    const sessionUUID = !this.seenEvents && unstructuredOutput.trim()
+      ? this.sessionUUID || extractUuid(unstructuredOutput) : this.sessionUUID;
+    return { text, sessionUUID, toolsUsed: [...this.toolsUsed], assistantOutput: this.messageParts.some(part => part.trim().length > 0),
+      isError: this.isError, ...(turnOutcome ? { turnOutcome } : {}), ...(this.model ? { model: this.model } : {}),
+      ...(this.durationMs !== undefined ? { durationMs: this.durationMs } : {}) };
   }
-  return { text, sessionUUID, toolsUsed, assistantOutput: messageParts.some(part => part.trim().length > 0), isError, ...(turnOutcome ? { turnOutcome } : {}), ...(model ? { model } : {}), ...(durationMs !== undefined ? { durationMs } : {}) };
 }
 
 function parseClaudeEvents(stdout: string): JsonValue[] {
@@ -500,7 +526,10 @@ export async function runClaudeCodeTurn(input: {
   const initialUsageAttempt = usageAttempt("claude-code", selectedModel ?? "unresolved", input.accountLabel);
   let currentUsageAttempt: UsageAttempt | null = selectedModel ? initialUsageAttempt : null;
   let usageResetAt: number | null = null;
-  let stdout = "";
+  // The host journal keeps the original stream. Only malformed/unstructured output needs a
+  // diagnostic tail here; a valid stream is reduced as each event arrives.
+  let unstructuredOutput = "";
+  let structuredSeen = false;
   let stderr = "";
   let reportedStarted = false;
   let closeInput = () => {};
@@ -577,7 +606,8 @@ export async function runClaudeCodeTurn(input: {
   // and re-parse the whole accumulated output on every chunk: a long turn prints tens of megabytes,
   // so each chunk allocated tens of megabytes, and on 2026-10-07 the owner grew to 41 GB, swapped
   // and froze while several runs streamed (profiles: parseClaudeEvents under onStdout).
-  const streamEvents: JsonValue[] = [];
+  const output = new ClaudeOutputAccumulator(input.sessionUUID, input.prompt);
+  let providerBytes=0,providerChunks=0,largestChunkMs=0;
   let narrationDue: ReturnType<typeof setTimeout> | null = null;
   let providerProducedResult = false;
   let providerTerminalReported = false;
@@ -825,7 +855,7 @@ export async function runClaudeCodeTurn(input: {
     closeProviderInput(modelSwitchError);
   };
   const startUsageFallback = () => {
-    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    const parsed = output.read(unstructuredOutput);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
         || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
     if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
@@ -857,7 +887,7 @@ export async function runClaudeCodeTurn(input: {
    * not report success all leave the original failure exactly as it was.
    */
   const startCompactionRecovery = () => {
-    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    const parsed = output.read(unstructuredOutput);
     if (!parsed.isError || compactionAttempted || compaction || !initialPromptAcknowledged || !writeInput
         || cancellationReason || modelSwitchError || parsed.toolsUsed.length > 0
         || !isContextOverflowRefusal(parsed.text)) return false;
@@ -1295,7 +1325,9 @@ export async function runClaudeCodeTurn(input: {
       try { recoverPredecessorWrite(line, meta); } finally { eventAt = null; }
     },
     onStdout: (chunk, at) => {
-      stdout += chunk;
+      const processingStarted=performance.now();
+      providerBytes+=Buffer.byteLength(chunk);providerChunks++;
+      if (!structuredSeen) unstructuredOutput = (unstructuredOutput + chunk).slice(-64 * 1024);
       eventBuffer += chunk;
       const lines = eventBuffer.split("\n");
       eventBuffer = lines.pop() || "";
@@ -1303,20 +1335,32 @@ export async function runClaudeCodeTurn(input: {
       try {
         for (const line of lines) {
           const event = parseJson(line.trim());
-          if (isRecord(event)) { streamEvents.push(event); handleProtocolEvent(event); }
+          if (isRecord(event)) {
+            structuredSeen = true;
+            unstructuredOutput = "";
+            output.push(event);
+            handleProtocolEvent(event);
+          }
         }
       } finally { eventAt = null; }
+      const chunkMs=performance.now()-processingStarted;
+      largestChunkMs=Math.max(largestChunkMs,chunkMs);
+      if(providerChunks%100===0||chunkMs>=50)log("info","claude_code_output_workload",{
+        session_uuid:observedSessionUuid??input.sessionUUID,provider_bytes:providerBytes,provider_chunks:providerChunks,
+        partial_line_chars:eventBuffer.length,chunk_ms:Math.round(chunkMs),max_chunk_ms:Math.round(largestChunkMs),
+        replayed:at!==undefined,...output.workload(),
+      });
       // Narration is live status only: replayed lines wait for the next live one, and a burst of
       // chunks is read once, a quarter second after it starts.
       if (at !== undefined || narrationDue) return;
       narrationDue = setTimeout(() => {
         narrationDue = null;
-        const parsed = claudeOutputFromEvents(streamEvents, input.sessionUUID, input.prompt);
+        const parsed = output.read(unstructuredOutput);
         if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
       }, 250);
     },
     onStderr: (chunk) => {
-      stderr += chunk;
+      stderr = (stderr + chunk).slice(-4 * 1024);
     },
   }).catch((error) => {
     if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
@@ -1327,18 +1371,18 @@ export async function runClaudeCodeTurn(input: {
   if (narrationDue) { clearTimeout(narrationDue); narrationDue = null; }
   stopTranscriptWatch();
   const finalBufferedEvent = parseJson(eventBuffer.trim());
-  if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
+  if (isRecord(finalBufferedEvent)) { output.push(finalBufferedEvent); handleProtocolEvent(finalBufferedEvent); }
   if (providerProducedResult) reportProviderTerminal();
   closeProviderInput();
   input.onRetryRestartReady?.(null);
   if (retryRestart) {
-    const restarted = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    const restarted = output.read(unstructuredOutput);
     throw new ProviderDispatchError({ message: "Restarting on the model chosen during a provider outage.", failureClass: "retryable",
       terminalConfirmed: true, immediateRetry: true, toolsUsed: restarted.toolsUsed, providerSessionId: restarted.sessionUUID });
   }
   if (cancellationReason) throw cancellationReason;
   if (modelSwitchError) {
-    const failed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    const failed = output.read(unstructuredOutput);
     // A model switch is only ever attempted because this account's usage was refused, so its
     // failure is that refusal: reported as usage exhaustion, the turn moves to an account with
     // room. Reported as a plain error ("429 … model not changed"), it failed on the full account
@@ -1358,8 +1402,10 @@ export async function runClaudeCodeTurn(input: {
     throw new Error("Claude Code ended before producing a terminal result.");
   }
 
-  const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+  const parsed = output.read(unstructuredOutput);
   log("info", "claude_code_turn_finished", {
+    provider_bytes:providerBytes,provider_chunks:providerChunks,max_chunk_ms:Math.round(largestChunkMs),
+    partial_line_chars:eventBuffer.length,...output.workload(),
     code: outcome.code,
     signal: outcome.signal,
     session_uuid: parsed.sessionUUID,

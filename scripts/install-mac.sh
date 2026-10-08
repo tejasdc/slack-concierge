@@ -11,6 +11,8 @@ UPDATE_LABEL=com.tejasdc.concierge-update
 UPDATE_PLIST="$HOME/Library/LaunchAgents/$UPDATE_LABEL.plist"
 AUTO_LABEL=com.tejasdc.concierge-autoupdate
 AUTO_PLIST="$HOME/Library/LaunchAgents/$AUTO_LABEL.plist"
+SPEECH_LABEL=com.tejasdc.concierge-speech
+SPEECH_PLIST="$HOME/Library/LaunchAgents/$SPEECH_LABEL.plist"
 BUN="$STATE/bun/bin/bun"
 BUN_VERSION=${CONCIERGE_MAC_BUN_VERSION:-1.3.14}
 PEERS=${CONCIERGE_PEERS:-'[{"name":"cloud","url":"http://100.118.245.110:8788","paths":["/root/"]}]'}
@@ -208,12 +210,36 @@ plutil -lint "$AUTO_PLIST.tmp" >/dev/null
 mv "$AUTO_PLIST.tmp" "$AUTO_PLIST"
 launchctl print "gui/$(id -u)/$AUTO_LABEL" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$AUTO_PLIST"
 
+# Speech has its own launchd lifetime. Rebuilding Concierge must not end a recording; only a
+# speech-source/certificate change replaces this job. Stage its plist before the coordinator
+# restart so the first installation can start as soon as the old coordinator releases the port.
+speech_revision=""
+if [ -x "$SPEECH_BIN" ]; then
+  sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
+    "$REPO/launchd/$SPEECH_LABEL.plist" > "$SPEECH_PLIST.tmp"
+  plutil -lint "$SPEECH_PLIST.tmp" >/dev/null
+  mv "$SPEECH_PLIST.tmp" "$SPEECH_PLIST"
+  speech_revision=$(shasum -a 256 "$REPO/bot/scripts/live-speech-service.ts" "$REPO/bot/src/live-speech.ts" \
+    "$REPO/bot/src/speech-engine.ts" "$REPO/bot/src/transcription.ts" "$REPO/bot/src/log.ts" \
+    "$SPEECH_BIN" "$SPEECH_TLS/cert.pem" "$SPEECH_TLS/key.pem" | shasum -a 256 | cut -d' ' -f1)
+fi
+installed_speech_revision=$(cat "$STATE/speech/.service-revision" 2>/dev/null || true)
+
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # bootout returns before the service is gone; a bootstrap in that window fails silently.
 for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break; sleep 1; done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
+
+if [ -n "$speech_revision" ] && [ "$speech_revision" != "$installed_speech_revision" ]; then
+  launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
+  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
+  launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
+  echo "$speech_revision" > "$STATE/speech/.service-revision"
+elif [ -n "$speech_revision" ] && ! launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1; then
+  launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
+fi
 
 speech_cert=$(shasum -a 256 "$SPEECH_TLS/cert.pem" 2>/dev/null | cut -d' ' -f1)
 if [ -n "$speech_cert" ] && [ "$(cat "$SPEECH_TLS/.trusted" 2>/dev/null)" != "$speech_cert" ]; then

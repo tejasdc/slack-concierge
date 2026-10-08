@@ -22,6 +22,8 @@ if (process.env.CONCIERGE_TEST_MODE === "1") {
 
 export const captureDb = new Database(`${canonicalCaptureStateDir}/state.db`, { create: true, strict: true });
 captureDb.exec("PRAGMA journal_mode = WAL");
+// A transport-custody receipt must survive a host power loss, not only a process restart.
+captureDb.exec("PRAGMA synchronous = FULL");
 captureDb.exec("PRAGMA busy_timeout = 5000");
 
 captureDb.exec(`
