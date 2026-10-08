@@ -267,18 +267,6 @@ export class CaptureDeliveryWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
   }
 
-  // The readiness check waits out a capture ingress restart under the same policy as every other
-  // queue call. A single attempt here turned a stopped ingress into a Concierge crash loop that
-  // used up its own restart limit (2026-10-08 08:04 UTC, five exits in 30 s, down ~3 minutes).
-  async prepare(): Promise<void> {
-    const health = await this.queueRequest("/health");
-    const healthResult: any = await health.json().catch(() => null);
-    if (!health.ok || !healthResult?.ok) {
-      throw new Error(`Capture queue readiness failed: ${String(healthResult?.error || health.status)}`);
-    }
-    log("info", "capture_delivery_dependencies_ready", { queue_url: this.options.queueUrl });
-  }
-
   async start(): Promise<void> {
     if (this.running) return;
     this.stopping = false;
