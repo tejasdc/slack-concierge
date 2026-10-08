@@ -39,6 +39,13 @@ and retains it in the failed run and repair incident. Shell fail-fast handling
 must not exit from the command substitution before that evidence is recorded.
 Without the builder's error, repair can prove only the failed stage and must not
 guess at an application correction or repeat the candidate for diagnostics.
+The service's recovery preflight configures SQLite's busy timeout before any
+pragma that can take the writer lock. The retiring coordinator may still hold a
+short writer transaction at the restart boundary; recovery waits for that owner
+instead of failing immediately while selecting WAL mode. Incident 62bd0860 on
+October 7, 2026 exposed the ordering bug: the first candidate start failed at
+`PRAGMA journal_mode = WAL` with `SQLITE_BUSY`, and the automatic start one second
+later succeeded after the writer released the lock.
 The same mappings drive the durable Slack status projection on each turn's first
 delivered final response and mirror each lifecycle reaction onto the exact
 originating user input so Slack can place every transition in that user's

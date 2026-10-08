@@ -42,6 +42,9 @@ if (testInvocation) {
 }
 
 export const db = new Database(`${canonicalDir}/state.db`, { create: true });
+// Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
+// update restart, the retiring coordinator can still hold that lock for a moment; configuring
+// the timeout afterwards made the recovery preflight fail immediately instead of waiting.
+db.exec("PRAGMA busy_timeout = 5000");
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA busy_timeout = 5000");
