@@ -128,6 +128,8 @@ authorization or a change to the default rapid-iteration policy.
   and deployment seal refuse missing coverage. Unknown owner GET routes also refuse by default;
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
   The same catalogue document owns the release gates.
+  That gate also exercises actual topic creation, mutation and worker restart through a
+  prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.
 - Prepared receipt lists use one shared status policy for the owner and the presentation
   worker; live retry observations expire with the owner incarnation. See
   [prepared receipts](docs/architecture/PREPARED-RECEIPTS.md).

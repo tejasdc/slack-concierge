@@ -2,6 +2,7 @@ import {existsSync,readFileSync} from 'node:fs';
 import {dirname,join,resolve,relative} from 'node:path';
 import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
 import {checkReaderRefusals} from './presentation-contract-fixture';
+import {checkTopicProjectionLifecycle} from './topic-projection-fixture';
 
 const root=resolve(import.meta.dir,'..');
 const scanner=new Bun.Transpiler({loader:'ts'});
@@ -36,6 +37,7 @@ for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixt
 }
 const results=[];
 checkReaderRefusals();
+const topicProjection=await checkTopicProjectionLifecycle();
 for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   if(!contract.sourceTables.length||!contract.growth||!contract.maxRows||!contract.maxResponseBytes)
     throw new Error(`Incomplete presentation contract: ${name}`);
@@ -45,4 +47,4 @@ for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   await fixture();
   results.push({reader:name,fixture:contract.fixture,durationMs:Math.round(performance.now()-started)});
 }
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,topicProjection,readers:results}));

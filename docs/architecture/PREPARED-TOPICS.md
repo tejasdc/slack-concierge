@@ -63,3 +63,12 @@ including management displays and nonempty attention pages. It checks explicit s
 coverage, deletion changes and generation resets. The parity fixture also exercises Inbox
 cutover, expired change cursors and interrupted rebuild cleanup. These are
 local fixture results, not live product acceptance.
+
+The existing presentation release gate also runs `topic-projection-fixture.ts`: canonical
+topic creation and rename must advance a separate worker's prepared checkpoint, then a
+mutation made while that worker is stopped must appear after its real restart and lease
+recovery. It checks nonempty management history and the revision digest of every history
+item. Finalize the item digest only after questions, requests **and history** have been
+written; finalizing before history made every real topic mutation throw and prevented
+the shared projection checkpoint from advancing (Oct 8, 2026). Static reader growth
+fixtures alone did not exercise this source-to-projection boundary.

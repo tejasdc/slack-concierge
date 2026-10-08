@@ -256,6 +256,7 @@ export class PreparedTopics {
    this.prepared.query('DELETE FROM presentation_topics WHERE generation=? AND topic_id=?').run(generation,topicId);
    if(previous&&previous.session_id===context.sessionId)this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,NULL)').run(generation,topicId,previous.summary_json);
    return;}
+  value.detail.topic.history.forEach((item,index)=>writeItem(item,'history',index));
   const ref=this.retain({...value.detail,collections:'paged',itemsRevision:itemDigest.digest('hex')});
   const summary=this.compact(value.summary,ref);
   const replyTargets=Buffer.byteLength(json(value.detail.replyTargets))<=4096?value.detail.replyTargets:
@@ -277,7 +278,6 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
-  value.detail.topic.history.forEach((item,index)=>writeItem(item,'history',index));
   const searchId=(this.prepared.query('SELECT rowid AS id FROM presentation_topics WHERE generation=? AND topic_id=?').get(generation,topicId) as {id:number}).id;
   this.prepared.query('DELETE FROM presentation_topic_search WHERE rowid=?').run(searchId);
   this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(searchId);
