@@ -1,0 +1,1 @@
+Release checks reject prepared readers whose work grows with unrelated history.
