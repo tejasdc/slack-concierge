@@ -655,12 +655,30 @@ export class SessionOwner {
     const meta=sessionMetadata(session);
     return this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended;
   }
-  view(session:SessionRow) {
-    const meta=sessionMetadata(session);
+  /**
+   * The view's execution state alone. A peer delivery's status asks only whether its recipient is
+   * still working, and building whole views for that was a fifth of every Inbox receipts read
+   * (2026-10-07 profile).
+   */
+  executionState(session:SessionRow) {
+    return this.executionOf(session,sessionMetadata(session)).execution;
+  }
+  private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
     const runs=db.query('SELECT id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
     const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
-    const timedRun=active??latest;
     const queued=runs.filter(run=>run.status==='queued').length;
+    const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
+    const lastStarted=runs.find(run=>run.status!=='queued'&&run.started_at);
+    // External provider work has no owner input/run. Project its evidence without manufacturing one.
+    const external=observed&&observed.state!=='idle'&&!active&&!runs.some(run=>run.provider_turn_id===observed.turnId&&observed.turnId)
+      && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
+    const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
+    return {runs,latest,active,queued,external,execution};
+  }
+  view(session:SessionRow) {
+    const meta=sessionMetadata(session);
+    const {runs,latest,active,queued,external,execution}=this.executionOf(session,meta);
+    const timedRun=active??latest;
     const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
     const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
@@ -669,12 +687,6 @@ export class SessionOwner {
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
     const attentionOpen=openAttention(session);
-    const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
-    const lastStarted=runs.find(run=>run.status!=='queued'&&run.started_at);
-    // External provider work has no owner input/run. Project its evidence without manufacturing one.
-    const external=observed&&observed.state!=='idle'&&!active&&!runs.some(run=>run.provider_turn_id===observed.turnId&&observed.turnId)
-      && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
-    const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
