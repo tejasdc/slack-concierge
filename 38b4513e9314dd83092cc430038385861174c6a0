@@ -1,0 +1,1 @@
+A message you send in a session window now always reaches the agent: if the agent finished what it was doing just before your message arrived, your message becomes its next one instead of failing.
