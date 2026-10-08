@@ -9,7 +9,8 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   project:string|null;projectTruncated:boolean;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
   createdAt:string;updatedAt:string;archived:boolean;suspended:boolean;pinned:boolean;saved:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
-  unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;revision?:number}>;
+  unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
+  turnOutcome:{outcome:string;inputId:string;at:string}|null;revision?:number}>;
 type CardRow={generation:number;session_id:number;sort_ms:number;space:SessionSpace;needs_attention:number|null;
   card_json:string;revision:number};
 const MAX_PAGE=40,MAX_BYTES=96*1024,MAX_CARD_BYTES=3*1024;
@@ -124,7 +125,9 @@ export class PreparedSessionCards {
       outcome:meta.outcome??'open',space:spaceForCwd(meta.cwd),needsAttention,attentionCoverage:needsAttention===null?'catching_up':'complete',
       unread:(meta.generation??0)>(meta.readGeneration??0),execution,pendingCount:queued,
       model:typeof meta.model==='string'?preview(meta.model,120).text:null,
-      reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null};
+      reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null,
+      turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.inputId==='string'&&typeof meta.turnOutcome.at==='string'
+        ?{outcome:meta.turnOutcome.outcome,inputId:meta.turnOutcome.inputId,at:meta.turnOutcome.at}:null};
     const encoded=JSON.stringify(card);
     if(Buffer.byteLength(encoded)>MAX_CARD_BYTES)throw new Error('SESSION_CARD_EXCEEDS_PREPARED_RECORD_BOUND');
     if(previous?.card_json===encoded)return;

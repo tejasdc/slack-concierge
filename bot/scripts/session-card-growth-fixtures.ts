@@ -100,6 +100,7 @@ export const sessionCardGrowthFixtures={
   'sessions-window-growth':windowGrowth,
   'sessions-changes-growth':changesGrowth
 } as const;
+export const READ_GROWTH_FIXTURES=sessionCardGrowthFixtures;
 
 if(import.meta.main){
   for(const [name,check] of Object.entries(sessionCardGrowthFixtures)){await check();console.log(`${name}: passed`);}

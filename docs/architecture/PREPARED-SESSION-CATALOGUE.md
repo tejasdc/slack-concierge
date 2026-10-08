@@ -27,7 +27,9 @@ A card that moves across the keyset boundary is supplied by that change feed; an
 update never forces pagination to restart. A generation change, expired change horizon or
 invalid cursor produces a typed reset. No browser checkpoint advances on a transport receipt.
 
-The prepared tables index `(generation, space, sort time, session)` and filtered attention.
+Each card also carries the last declared turn outcome's identity and time, so the notification
+reader can select and order a bounded page without reconstructing the session. The prepared
+tables index `(generation, space, sort time, session)` and filtered attention.
 Canonical turn probes use narrow per-session latest, active, queued, started and exact provider
 turn indexes. The release fixture `bot/scripts/session-card-growth-fixtures.ts` grows unrelated
 sessions and prior turns tenfold, checks the indexed plans and bounded pages, and changes a card
