@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import {initializePresentationChanges} from './presentation-changes';
 
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
@@ -154,8 +155,14 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_thread_link ON session_owner_events(sequence) WHERE kind='thread_link';
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
+        CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);
+        CREATE INDEX IF NOT EXISTS turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
+        CREATE INDEX IF NOT EXISTS turns_session_queued ON turns(session_id) WHERE status='queued';
+        CREATE INDEX IF NOT EXISTS turns_session_started ON turns(session_id,id DESC) WHERE status<>'queued' AND started_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS turns_session_provider_turn ON turns(session_id,provider_turn_id) WHERE provider_turn_id IS NOT NULL;
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
+        CREATE INDEX IF NOT EXISTS session_owner_events_message_delta ON session_owner_events(session_id,sequence) WHERE kind='message';
         -- A history page's input and metadata projections look each message up by session and
         -- message id; without this they parsed the JSON of every message event of the session
         -- per requested message (43 messages × 3,680 events: 2.3 s a page, 14 s for a delta
@@ -439,6 +446,7 @@ export function initializeSessionOwnerSchema(db: Database) {
       // When a question he set aside comes back in front of him (ISO instant); null for one set aside with no time.
       add('inbox_questions','defer_until','defer_until TEXT');
       add('session_peer_requests','thread_root_input_id','thread_root_input_id TEXT');
+      initializePresentationChanges(db);
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     // Immediate: it reads the schema and then writes (idempotent inserts, index statements). A

@@ -438,12 +438,12 @@ export class SessionExecutionHost {
     }
     const provider=this.options.providers[session.provider_id];
     if(!provider?.history||!session.agent_session_uuid)return null;
-    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit});
+    return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id});
   }
   private async detail(session:NonNullable<ReturnType<typeof getSessionById>>,detailKey:string) {
     if(session.provider_id==='chatgpt') {if(!this.capabilityClient)throw new Error('ChatGPT detail capability unavailable.');return this.capabilityClient.detail({...this.readRef(session),detailKey});}
     const provider=this.options.providers[session.provider_id];if(!provider?.detail||!session.agent_session_uuid)throw new Error('Native detail capability unavailable.');
-    return provider.detail({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),detailKey});
+    return provider.detail({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),detailKey,ownerSessionId:session.id});
   }
   private async artifact(session:NonNullable<ReturnType<typeof getSessionById>>,artifactId:string) {
     if(session.provider_id!=='chatgpt'||!this.capabilityClient)throw new Error('Artifact download capability unavailable.');

@@ -74,6 +74,7 @@ export interface ProviderHistoryInput {
   cwd: string;
   cursor: string | null;
   limit: number;
+  ownerSessionId?: number;
 }
 
 export interface ProviderHistoryPage {
@@ -86,6 +87,7 @@ export interface ProviderDetailInput {
   sessionUuid: string;
   cwd: string;
   detailKey: string;
+  ownerSessionId?: number;
 }
 
 function record(value: unknown): Record<string, any> | null {

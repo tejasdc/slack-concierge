@@ -7,6 +7,7 @@ import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
+import {preparedTopicEntries} from './presentation-message-reader';
 
 /**
  * Topics: the Inbox's recognizable conversations. A topic owns a set of thread roots, the
@@ -1005,39 +1006,20 @@ function topicEventSentence(payload:any):string {
 /** Entries: this topic's Inbox messages plus its management events, in owner sequence order. */
 export function topicEntries(topicId:string,cursor:string|null=null,limit:number|null=null) {
   const session=inboxOrThrow();
-  const roots=new Set(topicRoots(topicId));
   const size=Math.min(200,Math.max(1,Number(limit)||30));
-  const before=cursor===null||cursor===''?Number.MAX_SAFE_INTEGER:Number(cursor);
-  if(!Number.isSafeInteger(before))throw new TopicError('Invalid entries cursor.');
-  refreshRootMemo();
-  const collected:{sequence:number;message:any}[]=[];
-  let scanned=0,position=before;
-  while(collected.length<size+1&&scanned<5000) {
-    const rows=db.query(`${inboxRows} AND event.sequence<? ORDER BY event.sequence DESC LIMIT 500`).all(position) as any[];
-    if(!rows.length)break;
-    scanned+=rows.length;
-    position=rows.at(-1)!.sequence;
-    for(const row of rows) {
-      const messageId=inboxMessageId(row);
-      if(!messageId)continue;
-      const root=rootOf(row.session_id,messageId);
-      if(!root||!roots.has(root))continue;
-      collected.push({sequence:row.sequence,message:inboxMessage(row)});
-      if(collected.length>=size+1)break;
-    }
-  }
-  const events=(db.query(`SELECT event_id,payload_json,created_at,sequence FROM session_owner_events
-    WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=? AND sequence<?
-    ORDER BY sequence DESC LIMIT ?`).all(session.id,...MANAGEMENT_KINDS,topicId,before,size+1) as any[]).map(row=>{
-      const payload=JSON.parse(row.payload_json);
-      return {sequence:row.sequence,message:{id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
-        topicEvent:{change:payload.change,by:payload.by??null,reason:payload.reason??null,revision:payload.revision??null},
-        createdAt:iso(row.created_at)}};
-    });
-  const merged=[...collected,...events].sort((first,second)=>second.sequence-first.sequence);
-  const page=merged.slice(0,size);
-  const more=merged.length>size;
-  return {messages:page.slice().reverse().map(entry=>entry.message),nextCursor:more&&page.length?String(page.at(-1)!.sequence):null};
+  const head=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
+  const page=preparedTopicEntries(topicId,size,cursor,head);
+  const messages=page.keys.map(key=>{
+    if(key.messageId)return inboxMessageById(session.id,key.messageId);
+    const row=db.query('SELECT event_id,payload_json,created_at FROM session_owner_events WHERE event_id=? AND session_id=?')
+      .get(key.topicEventId,session.id) as {event_id:string;payload_json:string;created_at:string}|null;
+    if(!row)return null;
+    const payload=JSON.parse(row.payload_json);
+    return {id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
+      topicEvent:{change:payload.change,by:payload.by??null,reason:payload.reason??null,revision:payload.revision??null},
+      createdAt:iso(row.created_at)};
+  }).filter(Boolean);
+  return {messages,nextCursor:page.nextCursor,coverage:page.coverage};
 }
 
 export function resolveTopicMessage(messageId:string) {

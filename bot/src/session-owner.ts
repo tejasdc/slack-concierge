@@ -6,6 +6,8 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {ledgerRows} from './ledger-rows';
+import {observeStorageOperation,storageObservationFailures,type StorageWork} from './storage-observation';
+import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
 import {presentSessionForPeer} from './peer-identity';
@@ -37,6 +39,7 @@ import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} fro
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {preparedMessages} from './presentation-message-reader';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -265,6 +268,28 @@ const ledgerHead=()=>(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FRO
 const newestInputRow=(sessionId:number)=>(db.query('SELECT COALESCE(MAX(rowid),0) AS rowid FROM session_inputs WHERE session_id=?').get(sessionId) as {rowid:number}).rowid;
 /** Opaque to clients: the session, the newest input then, and the inputs still able to change. */
 type ReceiptPosition={v:1;s:number;w:number;live:number[]};
+type PresentationPosition={v:2;k:'receipts';s:number;e:number;a:number;h:number};
+type ReceiptWindowPosition={v:2;k:'window';s:number;e:number;h:number;w:number;b:number};
+const PRESENTATION_PAGE=40;
+function encodePresentationPosition(position:PresentationPosition) {
+  return Buffer.from(JSON.stringify(position)).toString('base64url');
+}
+function decodePresentationPosition(raw:string,sessionId:number):PresentationPosition|null {
+  if(raw.length>256)return null;
+  try {
+    const value=JSON.parse(Buffer.from(raw,'base64url').toString('utf8'));
+    return value?.v===2&&value.k==='receipts'&&value.s===sessionId&&
+      [value.e,value.a,value.h].every((number:unknown)=>Number.isSafeInteger(number)&&Number(number)>=0)&&value.a<=value.h?value:null;
+  }catch{return null;}
+}
+function decodeReceiptWindowPosition(raw:string,sessionId:number):ReceiptWindowPosition|null {
+  if(raw.length>256)return null;
+  try {
+    const value=JSON.parse(Buffer.from(raw,'base64url').toString('utf8'));
+    return value?.v===2&&value.k==='window'&&value.s===sessionId&&
+      [value.e,value.h,value.w,value.b].every((number:unknown)=>Number.isSafeInteger(number)&&Number(number)>=0)&&value.b<=value.w?value:null;
+  }catch{return null;}
+}
 const SETTLED_DELIVERY=new Set(['received','retained']);
 // Outcomes a later answer could still revise stay open: undetermined, unanswered and
 // decision_needed are conservative here, costing a resend rather than a stale receipt.
@@ -689,20 +714,22 @@ export class SessionOwner {
     return this.executionOf(session,sessionMetadata(session)).execution;
   }
   private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
-    const runs=db.query('SELECT id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
-    const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
-    const queued=runs.filter(run=>run.status==='queued').length;
+    const fields='id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms';
+    const latest=db.query(`SELECT ${fields} FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
+    const active=db.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
+    const queued=(db.query("SELECT count(*) AS count FROM turns WHERE session_id=? AND status='queued'").get(session.id) as {count:number}).count;
     const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
-    const lastStarted=runs.find(run=>run.status!=='queued'&&run.started_at);
+    const lastStarted=db.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status<>'queued' AND started_at IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
     // External provider work has no owner input/run. Project its evidence without manufacturing one.
-    const external=observed&&observed.state!=='idle'&&!active&&!runs.some(run=>run.provider_turn_id===observed.turnId&&observed.turnId)
+    const matchingExternal=observed?.turnId?db.query('SELECT 1 FROM turns WHERE session_id=? AND provider_turn_id=? LIMIT 1').get(session.id,observed.turnId):null;
+    const external=observed&&observed.state!=='idle'&&!active&&!matchingExternal
       && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
     const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
-    return {runs,latest,active,queued,external,execution};
+    return {latest,active,queued,external,execution};
   }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
-    const {runs,latest,active,queued,external,execution}=this.executionOf(session,meta);
+    const {latest,active,queued,external,execution}=this.executionOf(session,meta);
     const timedRun=active??latest;
     const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
@@ -870,6 +897,75 @@ export class SessionOwner {
     // Everything settled before this read stays settled, so what is still open now is
     // exactly the open ones among these.
     return {session:this.view(row),operations,asOf:encodeReceiptPosition(row.id,watermark,page,operations)};
+  }
+  presentationReceiptWindow(id:string,requestedLimit:number|null,cursor:string|null) {
+    const session=this.session(id),limit=Math.min(PRESENTATION_PAGE,Math.max(1,requestedLimit??PRESENTATION_PAGE));
+    const decoded=cursor?decodeReceiptWindowPosition(cursor,session.id):null;
+    const epoch=presentationEpoch(db);
+    if(cursor&&(!decoded||decoded.e!==epoch.epoch))
+      throw new SessionOwnerError('This receipt window has expired; start a bounded window again.',409,'PRESENTATION_RESET_REQUIRED');
+    // The head and exact page of identities are one short read transaction. A concurrent update
+    // after it is caught from that head by the change stream, including while older pages load.
+    const page=db.transaction(()=>{
+      const head=decoded?.h??presentationHead(db);
+      const watermark=decoded?.w??newestInputRow(session.id);
+      const before=decoded?.b??watermark+1;
+      const rows=db.query(`SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? AND rowid<=? AND rowid<?
+        ORDER BY rowid DESC LIMIT ?`).all(session.id,watermark,before,limit+1) as (AcceptedSessionInput&{sequence:number})[];
+      return {head,watermark,rows};
+    })();
+    const visible=page.rows.slice(0,limit);
+    const operations=visible.map(input=>this.receipt(input));
+    const nextCursor=page.rows.length>limit&&visible.length?Buffer.from(JSON.stringify({v:2,k:'window',s:session.id,e:epoch.epoch,
+      h:page.head,w:page.watermark,b:visible.at(-1)!.sequence} satisfies ReceiptWindowPosition)).toString('base64url'):null;
+    const asOf=encodePresentationPosition({v:2,k:'receipts',s:session.id,e:epoch.epoch,a:page.head,h:page.head});
+    return {operations,nextCursor,asOf};
+  }
+  /** A compact, fixed-head change position. Unlike v1, it never contains the open receipt set.
+   * This resolves only the changed page; it is not an all-history export. */
+  presentationReceiptChanges(id:string,token:string,requestedLimit:number|null) {
+    const session=this.session(id),position=decodePresentationPosition(token,session.id);
+    const epoch=presentationEpoch(db);
+    if(!position||position.e!==epoch.epoch||position.a<epoch.retained_after)
+      throw new SessionOwnerError('This presentation position has expired; start a bounded window again.',409,'PRESENTATION_RESET_REQUIRED');
+    const limit=Math.min(PRESENTATION_PAGE,Math.max(1,requestedLimit??PRESENTATION_PAGE));
+    const head=position.a===position.h?presentationHead(db):position.h;
+    if(position.a>head)throw new SessionOwnerError('This presentation position is ahead of the owner.',409,'PRESENTATION_RESET_REQUIRED');
+    const changes=presentationChangesForSession(db,session.id,position.a,head,limit);
+    const after=changes.at(-1)?.sequence??head;
+    const inputIds=new Set<string>();const turnIds=new Set<number>();const requestIds=new Set<string>();
+    const topicIds=new Set<string>();const sessionIds=new Set<number>();
+    for(const change of changes) {
+      if(change.input_id)inputIds.add(change.input_id);
+      if(change.target_input_id)inputIds.add(change.target_input_id);
+      if(change.turn_id)turnIds.add(change.turn_id);
+      if(change.request_id)requestIds.add(change.request_id);
+      if(change.topic_id)topicIds.add(change.topic_id);
+      if(change.session_id)sessionIds.add(change.session_id);
+      if(change.target_session_id)sessionIds.add(change.target_session_id);
+    }
+    const ids=<T extends string|number>(values:ReadonlySet<T>)=>JSON.stringify([...values]);
+    if(turnIds.size) {
+      for(const found of db.query(`SELECT accepted_input_id AS id FROM turns WHERE id IN (SELECT value FROM json_each(?)) AND accepted_input_id IS NOT NULL
+        UNION SELECT id FROM session_inputs WHERE turn_id IN (SELECT value FROM json_each(?))`).all(ids(turnIds),ids(turnIds)) as {id:string}[])inputIds.add(found.id);
+    }
+    if(requestIds.size) {
+      const parameter=ids(requestIds);
+      for(const found of db.query(`SELECT source_input_id AS id FROM session_communication_requests WHERE request_id IN (SELECT value FROM json_each(?))
+        UNION SELECT target_input_id AS id FROM session_communication_requests WHERE request_id IN (SELECT value FROM json_each(?))
+        UNION SELECT source_input_id AS id FROM session_peer_requests WHERE request_id IN (SELECT value FROM json_each(?))
+        UNION SELECT target_input_id AS id FROM session_peer_deliveries WHERE request_id IN (SELECT value FROM json_each(?))
+        UNION SELECT target_input_id AS id FROM session_external_requests WHERE request_id IN (SELECT value FROM json_each(?))`).all(parameter,parameter,parameter,parameter,parameter) as {id:string|null}[])
+        if(found.id)inputIds.add(found.id);
+    }
+    const rows=inputIds.size?db.query(`SELECT * FROM session_inputs WHERE session_id=? AND id IN (SELECT value FROM json_each(?))`)
+      .all(session.id,ids(inputIds)) as AcceptedSessionInput[]:[];
+    const operations=rows.map(input=>this.receipt(input));
+    const found=new Set(rows.map(row=>row.id));
+    const removed=[...inputIds].filter(inputId=>!found.has(inputId)&&changes.some(change=>change.input_id===inputId&&change.session_id===session.id));
+    const next=encodePresentationPosition({v:2,k:'receipts',s:session.id,e:epoch.epoch,a:after,h:head});
+    return {operations,removed,affectedTopics:[...topicIds],affectedSessions:[...sessionIds].map(value=>`concierge:${value}`),
+      asOf:next,hasMore:after<head};
   }
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
@@ -2337,7 +2433,12 @@ export class SessionOwner {
       const payload=row.payload;
       const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message,metadata,identity):null;
       const inputId=projected?.inputId??row.input_id;
-      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),payload:projected?{...payload,message:projected.message}:payload};
+      const owner=getSessionById(row.session_id);
+      const root=owner&&sessionMetadata(owner).inbox&&inputId&&['message','accepted','inbox_capture','result','post'].includes(row.kind)
+        ?inboxThreadRoot(row.session_id,String(inputId)):null;
+      const topicId=root?topicOfRoot(root):null;
+      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),
+        payload:{...(projected?{...payload,message:projected.message}:payload),...(root?{root,topicId}:{} )}};
     }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runIds||runIds.includes(row.runId!)));
     // The page boundary is the last row this read scanned, not the last row it kept,
     // so a continuation never re-reads or skips a filtered event.
@@ -2372,19 +2473,26 @@ export class SessionOwner {
   async handle(request:Request):Promise<Response|null> {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
-    if(url.pathname.endsWith('/stream'))return this.handleRequest(request);
     startOwnerLoopMonitor();
-    const label=`${request.method} ${url.pathname}${url.search?`?${[...url.searchParams.keys()].join('&')}`:''}`;
+    const staticParts=new Set(['sessions','v1','inbox','topics','resolve','entries','questions','focus','attention','dismiss','reads','events','stream','history','messages','attachments','transcription','search','context','providers','profiles','switch','saved-work','settings','start','time','schedule','drop','receipts','reactions','pins','projects','workspace','files','usage','transcripts','stop','title','reply','reply-targets','received','source','turns','input','state','opening','create','operations','actions']);
+    const route=url.pathname.split('/').filter(Boolean).map(part=>staticParts.has(part)?part:':id').join('/');
+    const label=`${request.method} /${route}`;
     const started=performance.now();
     ownerRequestsInFlight.add(label);
+    let status:number|null=null;
+    let bytes:number|null=null;
+    let work:StorageWork|null=null;
     try {
-      const response=await this.handleRequest(request);
+      const response=await observeStorageOperation(label,()=>this.handleRequest(request),measured=>{work=measured;});
+      status=response?.status??null;
+      bytes=Number(response?.headers.get('content-length'))||null;
       const ms=Math.round(performance.now()-started);
       if(ms>=SLOW_OWNER_REQUEST_MS)noteSlowOwnerRequest(label,ms);
-      if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status:response?.status??null,
-        bytes:Number(response?.headers.get('content-length'))||null});
+      if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status,bytes});
       return response;
     } finally {
+      log('info','owner_request_completed',{route:label,duration_ms:Math.round(performance.now()-started),status,bytes,
+        ...(work??{}),observation_failures:storageObservationFailures()});
       ownerRequestsInFlight.delete(label);
     }
   }
@@ -2449,6 +2557,21 @@ export class SessionOwner {
         result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='receipts'&&parts[3]==='changes'&&parts.length===4)
+        result=this.presentationReceiptChanges(parts[2]!,url.searchParams.get('after')??'',boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE));
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='receipts'&&parts.length===3)
+        result=this.presentationReceiptWindow(parts[2]!,boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE),url.searchParams.get('cursor'));
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='messages'&&parts.length===2){
+        const session=this.session(url.searchParams.get('sessionId')??'');
+        const root=url.searchParams.get('root')??'';
+        if(!root||root.length>256)throw new SessionOwnerError('A thread root is required.');
+        const sourceHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
+        const page=preparedMessages(session.id,root,Math.min(20,boundedLimit(url.searchParams.get('limit'),20)??20),url.searchParams.get('cursor'),sourceHead);
+        result={messages:page.keys.map(key=>inboxMessageById(session.id,key.messageId)).filter(Boolean),
+          nextCursor:page.nextCursor,coverage:page.coverage};
+      }
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)
+        result={session:this.view(this.session(parts[1]!))};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');
