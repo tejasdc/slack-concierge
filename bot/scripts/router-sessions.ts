@@ -12,7 +12,6 @@ router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
-router-actions.sh sessions reset-credit <source-flags> --action-id A --provider codex [--account <address>] --reason <why>
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] -- <text>
@@ -101,7 +100,6 @@ export type SessionCommunicationRequest =
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
-  | { operation: "reset-credit"; body: { source: Source; action_id: string; provider: string; account?: string; reason: string } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
@@ -337,14 +335,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const outcome = operation === 'outcome' ? args.shift() : undefined;
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "reset-credit" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, topics, projects, peers, usage, reset-credit, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "reset-credit" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "reset-credit" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -391,10 +389,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag==='--period'&&operation==='usage')
       || (flag === "--limit" && operation === "search")
-      || ((flag === "--provider" || flag === "--account" || flag === "--reason") && operation === "reset-credit")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
-      || (flag === "--action-id" && (operation === "reset-credit" || operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -471,25 +468,6 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='cancel') {
     if(separator>=0)invalid('cancel does not accept text or a -- separator.');
     return {operation,body:{source,action_id:actionId,request_id:identity!}};
-  }
-  // A planner asks for a grant to be spent; the owner's policy decides. The caller never
-  // names a window, because a grant cannot be aimed at one: it carries its own reset type
-  // and the provider reports which windows it cleared only afterwards.
-  if(operation==='reset-credit') {
-    if(separator>=0)invalid('reset-credit takes --reason, not text after --.');
-    const provider=flags.get('--provider');
-    if(provider!=='codex')invalid('--provider codex is required; no other provider grants resets to spend.');
-    const reason=flags.get('--reason')?.trim();
-    if(!reason)invalid('--reason is required: say what the spend is for, so the decision is readable later.');
-    const account=flags.get('--account')?.trim();
-    if(flags.has('--account')&&!account)invalid('--account takes the account address, or leave it off to let the policy choose.');
-    return {operation,body:{source,action_id:actionId,provider,reason,...(account?{account}:{})}};
-  }
-  if(operation==='thread') {
-    if(separator>=0)invalid('thread places an accepted input; it accepts no text.');
-    const placement=flags.get('--thread');
-    if(detach===!!placement)invalid('thread requires either --thread <message-id> or --detach.');
-    return {operation,body:{source,action_id:actionId,input_id:identity!,...(detach?{detach:true}:{thread:placement!})}};
   }
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');

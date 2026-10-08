@@ -235,11 +235,21 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const blockedAccount = input.account ?? currentAccount(provider)?.label
     ?? usage?.accounts.find(account => account.current)?.label ?? null;
   const episode = `provider-reset-auto:${provider}:${blockedAccount ?? "unknown"}:${input.clearsAtMs}`;
+  // The blocked account's own windows, read by what the provider calls them. A window this
+  // cannot identify stays null, and null never argues for spending: when the weekly state
+  // is unknown the rule refuses, which is the safe direction for something finite.
+  const blockedWindows = (usage?.accounts ?? []).find(account => account.label === blockedAccount)?.windows ?? [];
+  const named = (match: (name: string) => boolean) =>
+    blockedWindows.find(window => match(window.name.toLowerCase()))?.usedPercent ?? null;
   const decision = decideAutomaticReset({
     provider, blockedAccount, accountsWithRoom: accountsWithRoom(provider),
     candidates: (usage?.accounts ?? []).flatMap(account => account.resetCredits?.available
       ? [{ account: account.label, available: account.resetCredits.available,
            expiresAt: account.resetCredits.expiresAt ?? null }] : []),
+    windows: {
+      weeklyUsedPercent: named(name => name.includes("week") || name === "7d"),
+      fiveHourUsedPercent: named(name => name.includes("5h") || name.includes("5 h") || name.includes("hour") || name.includes("session")),
+    },
     alreadyDecided: !!db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(episode),
   });
   if (!decision.use) {

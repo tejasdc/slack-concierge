@@ -478,53 +478,42 @@ Account choice at the next dispatch does not change the login of a running proce
 earlier credential-switching proposal in
 [the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md) is historical.
 
-## A grant cannot be aimed at a window, so timing is the whole optimisation
+## A grant is spent only against a spent weekly allowance
 
-Tejas asked, 2026-10-08, to "take advantage of like which one gives us the most tokens …
-each of the free sets can either reset a weekly limit or … a 5 hour limit". **There is no
-such lever.** Read out of the Codex app server's own protocol rather than inferred:
+Tejas cancelled the pre-expiry spend on 2026-10-08, hours after it shipped: "Obviously we're
+gonna reset only after we completely consume the entire fucking thing. We're not resetting
+before hundred percent dude … we only use actual resets for the whole weekly consumption …
+please do not build any sort of spending reset on whatever before it expires at all." The
+72-hour at-risk window, the 60%-used threshold, the last-8-hours override and the
+`sessions reset-credit` command an agent could call are all removed; nothing spends a grant
+because it is about to lapse, and no agent can ask for one to be spent.
 
-- `RateLimitResetCreditDetails` carries **`reset_type`**, `granted_at`, `expires_at`,
-  `credits`. What a grant clears is a property of the grant, fixed when it was issued.
-- `ConsumeAccountRateLimitResetCreditParams` validates exactly one thing —
-  `creditId must not be empty`. There is no window, limit or target parameter.
-- `ConsumeRateLimitResetCreditResponse` carries **`windows_reset`**, plural: the provider
-  reports which windows it reset *after* the fact.
-- Both accounts' live grants are titled **"Full reset"**.
+`decideAutomaticReset` now requires, on top of the conditions it always had (work genuinely
+held, no other account of that provider with room, a grant on the blocked account):
 
-So the design records rather than chooses: `codex-reset-credit.ts` keeps the grant's declared
-`reset_type` and the response's `windows_reset` on the outcome and in the log, every time.
-Until a grant has actually been spent, what "Full reset" covers on these accounts is not
-established — the first deliberate spend is also the measurement.
+- the blocked account's **weekly** allowance fully used; **or**
+- his one exception — the five-hour window exhausted while the weekly is **at or above 95%**,
+  because a full reset clears both and at that point almost the whole week comes back with
+  it. "Almost" is 95% deliberately: the cost of being wrong is a grant that cannot be got
+  back, so at 95% a reset forfeits at most a twentieth of the week, where 90% would throw
+  away a tenth — most of a day's allowance.
 
-What remains is timing, and timing is the optimisation. A full reset is worth exactly the
-consumption it gives back, so spending at 40% used throws away more than half of it and
-spending at 95% recovers nearly all. `decideLapsePreventingReset` in
-`provider-reset-policy.ts` therefore waits as long as is safe and spends at the deepest
-consumption: a grant is **at risk** inside 72 hours of its expiry, worth spending at or above
-60% used, spent regardless of depth inside the last 8 hours because there is no later chance,
-and never spent below 10% used because a full reset would return almost nothing. Among
-eligible accounts it picks the deepest one. Exercised against the real grants on 2026-10-08:
-fourteen days out it spends nothing; at 48 hours and 88% it spends; at 48 hours and 44% it
-waits; at 4 hours and 31% it spends anyway; at 4 hours and 3% it declines as pointless.
+**A five-hour wall never spends a grant.** It does not need to: that window refills within
+hours on its own, the held work already carries the instant it clears, and the queue brings
+it back then. Confirmed in production rather than from this document — `provider_usage_hold_released`
+fired three times in the 36 hours to 2026-10-08, releasing 6, 7 and 3 pieces of held work,
+the latest at 06:54 UTC, with no grant involved in any of them.
 
-**A capacity planner asks; this decides.** `router-actions.sh sessions reset-credit
---provider codex [--account <address>] --reason <why>` with the usual source flags and a
-stable `--action-id` reaches `SessionCommunicationCoordinator.resetCredit`, which reads this
-machine's own account readings, runs the rule, and spends only on a decision to use. The
-caller never touches a provider call and cannot name a window, because there is none to name.
-It is idempotent by action id — a retry returns the first decision instead of spending twice —
-on top of the provider being the cross-machine lock (`alreadyRedeemed`). The trigger is the
-planner's own schedule; nothing inside Concierge spends on a timer, so if the planner stops
-running, grants will lapse again.
+**An unreadable window refuses.** The blocked account's windows are matched by what the
+provider calls them, and a window this cannot identify stays null; null never argues for
+spending, so when the weekly state cannot be established the answer is no. The five-hour
+window is frequently absent from the Codex reading altogether, which is why only the weekly
+one is required.
 
-**Claude grants do not exist to include.** The Claude usage source exposes 37 fields and not
-one is a credit, grant, bonus or extra reset; its only reset-shaped values are
-`fiveHour.resetsAt`, `sevenDay.resetsAt` and the scoped equivalents, which are when those
-windows refill by themselves. Stored readings show `resetCredits: null` on both Claude
-accounts, correctly. His "even Claude Code has at least like one reset" (2026-10-08) is best
-explained as the window rolling over, which is real and not spendable. The rule and the router
-command both refuse any provider but Codex rather than pretending otherwise.
+What a grant clears is still recorded, because it still cannot be chosen: the grant carries
+its own `reset_type`, the consume call validates only that a credit id is present, and the
+response reports `windows_reset` afterwards. `codex-reset-credit.ts` keeps both on every
+spend. His own Accounts button is unchanged.
 
 ## Banked resets, so none of them lapses unused
 

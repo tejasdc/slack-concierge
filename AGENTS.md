@@ -779,20 +779,22 @@ authorization or a change to the default rapid-iteration policy.
   Codex grants these; Anthropic publishes no per-account list to spend. The Accounts button
   stays for when he wants to spend one himself. See
   [banked resets](docs/architecture/PROVIDER-USAGE.md#banked-resets-so-none-of-them-lapses-unused).
-  **A grant cannot be aimed at a window, so it is recorded rather than chosen.** The grant
-  carries its own `reset_type`, the consume call validates only that a credit id is present,
-  and the response reports `windows_reset` afterwards; both accounts' grants are titled "Full
-  reset". So `codex-reset-credit.ts` keeps the declared type and the reported windows on every
-  spend, and nothing offers a window choice. What is left is timing, and a full reset is worth
-  the consumption it returns, so `decideLapsePreventingReset` waits as long as is safe and
-  spends at the deepest consumption: at risk inside 72 hours of expiry, worth spending at 60%
-  used, spent regardless inside the last 8 hours, never below 10%. A capacity planner asks
-  through `sessions reset-credit --provider codex [--account <address>] --reason <why>` and
-  that rule decides; the caller never reaches a provider call, and the planner's schedule is
-  the only trigger, so nothing spends on a timer inside Concierge. Claude grants do not exist
-  to include: its usage source publishes no credit of any kind, and his "even Claude Code has
-  at least like one reset" (2026-10-08) is the window refilling by itself. Source: Tejas,
-  2026-10-08, "take advantage of like which one gives us the most tokens".
+  **A grant is spent only against a spent weekly allowance, never early.** Tejas cancelled the
+  pre-expiry spend hours after it shipped (2026-10-08): "we're not resetting before hundred
+  percent dude … we only use actual resets for the whole weekly consumption … please do not
+  build any sort of spending reset on whatever before it expires at all." The at-risk window,
+  the used-percent threshold, the last-hours override and the agent-callable `sessions
+  reset-credit` command are removed; nothing spends because a grant is about to lapse, and no
+  agent can ask for one. `decideAutomaticReset` additionally requires the blocked account's
+  weekly allowance fully used, or his one exception: the five-hour window exhausted while the
+  weekly is at or above `WEEKLY_ALMOST_EXHAUSTED_PERCENT` (95%, conservative because a grant
+  cannot be got back). **A five-hour wall never spends one** — that window refills on its own
+  and held work already carries the instant it clears; `provider_usage_hold_released` fired
+  three times in the 36 hours to 2026-10-08 releasing 6, 7 and 3 held inputs, no grant
+  involved. A window this cannot identify in the reading stays null and null never argues for
+  spending, so an unreadable weekly refuses. What a grant clears is still recorded rather than
+  chosen: the grant carries its own `reset_type`, the consume call takes only a credit id, and
+  the response reports `windows_reset` afterwards.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
