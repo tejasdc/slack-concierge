@@ -150,6 +150,28 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
   }).immediate();
 }
 
+/** A transport-size refusal happens before the full browser body reaches ingress. Record a
+ * compact terminal slot under the same action and sequence; no owner effect is asserted. */
+export function retainOversizedHumanCommand(command:HumanCommand):HumanCommandRow {
+ const bodyJson=JSON.stringify(command.body);
+ const digest=createHash('sha256').update(JSON.stringify([command.version,command.clientId,command.sessionId,
+  command.sequence,command.actionId,command.door,command.method,command.path,bodyJson])).digest('hex');
+ return captureDb.transaction(()=>{
+  const existing=row(command.actionId);if(existing)return existing;
+  captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
+  const occupied=captureDb.query('SELECT action_id FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
+   .get(command.clientId,command.sessionId,command.sequence) as {action_id:string}|null;
+  if(occupied)throw new CommandIdentityConflict();
+  captureDb.query(`INSERT INTO human_commands
+   (action_id,door,client_id,session_id,sequence,method,path,body_json,digest,status,owner_status,decision_stage,owner_response_json)
+   VALUES (?,?,?,?,?,?,?,?,?,'refused',413,'preparation',?)`).run(command.actionId,command.door,command.clientId,
+    command.sessionId,command.sequence,command.method,command.path,bodyJson,digest,
+    JSON.stringify({error:{code:'COMMAND_TOO_LARGE',message:'This command was too large to send.'}}));
+  advanceStream(command.clientId,command.sessionId);
+  return row(command.actionId)!;
+ }).immediate();
+}
+
 // A worker crash after sending cannot prove the owner did not accept. The same action is sent
 // again; the canonical owner, not this transport journal, deduplicates its semantic effect.
 export function recoverHumanCommands(workerId?:string): number {

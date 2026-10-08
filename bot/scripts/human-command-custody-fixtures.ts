@@ -14,7 +14,8 @@ const fetchQueue=(path:string,body?:unknown)=>handler(new Request('http://fixtur
  method:body===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,...(body===undefined?{}:{'content-type':'application/json'})},
  body:body===undefined?undefined:JSON.stringify(body)}));
 const command=(actionId:string,sessionId:string,sequence:number,path:string)=>({version:1,clientId:'fixture-browser',sessionId,
- sequence,actionId,door:'fixture',method:'POST',path,body:{clientActionId:actionId}});
+ sequence,actionId,door:'fixture',method:'POST',path,
+ body:{clientActionId:actionId,action:actionId.includes('close')?{kind:'close',reason:'Fixture'}:{kind:'read',sequence:1}}});
 const status=async(id:string)=>(await (await fetchQueue('/commands/'+id)).json()) as {status:string;ownerStatus:number|null;decisionStage:string|null};
 const wait=async(id:string,wanted:string)=>{const until=Date.now()+5000;while(Date.now()<until){
  const row=await status(id);if(row.status===wanted)return row;await Bun.sleep(20);
@@ -22,14 +23,23 @@ const wait=async(id:string,wanted:string)=>{const until=Date.now()+5000;while(Da
 let worker:InstanceType<typeof HumanCommandWorker>|null=null;
 try{
  const topic='topic:fixture';
- const malformed=command('bad-path',topic,1,'/sessions/v1/inbox/topics/%ZZ/close');
- const close=command('close-action',topic,2,'/sessions/v1/inbox/topics/topic%3Afixture/close');
- const read=command('read-action','topic:other',1,'/sessions/v1/inbox/topics/topic%3Aother/read');
- const invalidPrepared=command('bad-prepared','topic:invalid',1,'/sessions/v1/inbox/topics/topic%3Ainvalid/read');
- const prepOutage=command('prep-outage','topic:outage',1,'/sessions/v1/inbox/topics/topic%3Aoutage/read');
- const uncertain=command('lost-ack','topic:uncertain',1,'/sessions/v1/inbox/topics/topic%3Auncertain/mark');
- const attemptLimit=command('attempt-limit','topic:limit',1,'/sessions/v1/inbox/topics/topic%3Alimit/close');
- for(const item of [malformed,close,read,invalidPrepared,prepOutage,uncertain,attemptLimit])assert.equal((await fetchQueue('/commands',item)).status,202);
+ const malformed=command('bad-path',topic,1,'/sessions/v1/inbox/topics/%ZZ/actions');
+ const close=command('close-action',topic,2,'/sessions/v1/inbox/topics/topic%3Afixture/actions');
+ const read=command('read-action','topic:other',1,'/sessions/v1/inbox/topics/topic%3Aother/actions');
+ const invalidPrepared=command('bad-prepared','topic:invalid',1,'/sessions/v1/inbox/topics/topic%3Ainvalid/actions');
+ const prepOutage=command('prep-outage','topic:outage',1,'/sessions/v1/inbox/topics/topic%3Aoutage/actions');
+ const uncertain=command('lost-ack','topic:uncertain',1,'/sessions/v1/inbox/topics/topic%3Auncertain/actions');
+ const attemptLimit=command('attempt-limit','topic:limit',1,'/sessions/v1/inbox/topics/topic%3Alimit/actions');
+ const oversized=command('oversized','topic:size',1,'/sessions/v1/inbox/topics/topic%3Asize/actions');
+ const afterSize=command('after-size','topic:size',2,'/sessions/v1/inbox/topics/topic%3Asize/actions');
+ const existing=command('already-retained','topic:retained',1,'/sessions/v1/inbox/topics/topic%3Aretained/actions');
+ for(const item of [malformed,close,read,invalidPrepared,prepOutage,uncertain,attemptLimit,afterSize,existing])
+  assert.equal((await fetchQueue('/commands',item)).status,202);
+ assert.equal((await fetchQueue('/commands/refuse-oversize',oversized)).status,202);
+ assert.equal((await wait('oversized','refused')).ownerStatus,413);
+ // A late compact refusal cannot overwrite an action the owner may already have seen.
+ assert.equal((await fetchQueue('/commands/refuse-oversize',existing)).status,202);
+ assert.equal((await status('already-retained')).status,'pending');
  // A healthy browser can rejoin its retained command without consuming another sequence.
  assert.equal((await fetchQueue('/commands',close)).status,202);
  captureDb.query("UPDATE human_commands SET created_at=datetime('now','-3 minutes') WHERE action_id IN ('lost-ack','prep-outage')").run();
@@ -53,6 +63,8 @@ try{
  assert.equal((await wait('prep-outage','refused')).decisionStage,'preparation');
  assert.equal((await wait('close-action','delivered')).ownerStatus,200);
  assert.equal((await wait('read-action','delivered')).ownerStatus,200);
+ assert.equal((await wait('after-size','delivered')).ownerStatus,200);
+ assert.equal((await wait('already-retained','delivered')).ownerStatus,200);
  assert.equal((await wait('lost-ack','unconfirmed')).ownerStatus,null);
  assert.equal((await wait('attempt-limit','unconfirmed')).ownerStatus,null);
  assert.deepEqual(new Set(stopped),new Set(['prep-outage','lost-ack','attempt-limit']));
@@ -65,5 +77,5 @@ try{
  assert.equal(effects.get('lost-ack'),1);
  console.log(JSON.stringify({check:'human-command-custody',status:'passed',encodedTopic:true,
   malformedPreparation:'terminal',independentStreams:'progressed',lostAck:'unconfirmed-then-same-action',
-  attemptBudget:'stopped',effects:effects.size}));
+  oversize:'terminal-before-owner',existingCustody:'wins',attemptBudget:'stopped',effects:effects.size}));
 }finally{await worker?.stop();await rm(root,{recursive:true,force:true});}

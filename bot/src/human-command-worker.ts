@@ -83,8 +83,10 @@ export class HumanCommandWorker {
         const next=nextRetry({policy:RETRY_POLICIES.humanCommandQueue,attempt:this.queueFailures,
           startedAtMs:this.queueFailureSince,nowMs:Date.now(),classification:'transient'});
         this.nextPollMs=next.action==='retry'?Math.max(0,next.atMs-Date.now()):RETRY_POLICIES.humanCommandQueue.capDelayMs;
-        if(next.action==='stop'&&!this.queueNotified){this.queueNotified=true;
-          await this.options.queueStopped?.('The command custody queue stopped answering; retained commands remain pending.');}
+        if(next.action==='stop'&&!this.queueNotified){
+          await this.options.queueStopped?.('The command custody queue stopped answering; retained commands remain pending.');
+          this.queueNotified=true;
+        }
         if(this.queueFailures===1||this.queueFailures%10===0)
           log("warn","human_command_claim_unavailable",{attempts:this.queueFailures,...errorFields(error)});
         return;
