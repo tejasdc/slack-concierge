@@ -372,10 +372,12 @@ export class SessionCapabilityClient {
     return value;
   }
 
-  async sourceHistory(input: SourceRef & { cursor: string | null; limit: number }) {
-    const value = await this.post<{ messages: CapabilityMessage[]; nextCursor: string | null }>("/sources/history",
-      { sourceId: input.sourceId, sourceVersion: input.sourceVersion, branch: input.branch, cursor: input.cursor, limit: input.limit });
+  async sourceHistory(input: SourceRef & { cursor: string | null; limit: number; eventId?: string }) {
+    const value = await this.post<{ messages: CapabilityMessage[]; nextCursor: string | null; retainedEventId?:string }>("/sources/history",
+      { sourceId: input.sourceId, sourceVersion: input.sourceVersion, branch: input.branch, cursor: input.cursor, limit: input.limit,
+        ...(input.eventId?{eventId:input.eventId}:{}) });
     verifyHistory(value, input);
+    if(input.eventId)verify(value.retainedEventId===input.eventId,'Prepared history did not prove the requested archive event.');
     return value;
   }
 

@@ -20,6 +20,7 @@ import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestion
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
+import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
@@ -1821,7 +1822,7 @@ export class SessionOwner {
    */
   private retainArchiveSource(pin:{sourceId:string;sourceVersion:string;branch:unknown;eventId:string}) {
     const sources=this.runtime.sources!;
-    if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1});
+    if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1,eventId:pin.eventId});
     return sources.context({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,eventId:pin.eventId,limit:1});
   }
   private sourceSession(source:any):SessionRow {
@@ -1909,7 +1910,11 @@ export class SessionOwner {
         let unavailable=0;
         for(const [index,candidate] of examined.entries()) {
           if(retained[index]!.status==='rejected'){unavailable++;continue;}
-          const session=this.sourceSession(candidate.source);
+          const proof=(retained[index] as PromiseFulfilledResult<any>).value;
+          const source=retainedArchiveSearchSource(candidate.source,{sourceId:candidate.source.id,sourceVersion:candidate.source.version,
+            branch:candidate.source.branch,eventId:candidate.matches[0].eventId},proof);
+          if(!source){unavailable++;continue;}
+          const session=this.sourceSession(source);
           add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null})));
         }
         if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
@@ -1943,7 +1948,11 @@ export class SessionOwner {
         else {
           const outcome=retained[index]!;
           session=native(hit.target.nativeId);
-          if(!session&&outcome.status==='fulfilled'&&outcome.value)session=this.sourceSession(outcome.value.source);
+          if(!session&&outcome.status==='fulfilled'&&outcome.value){
+            const source=retainedArchiveSearchSource(hit.target.source,{sourceId:hit.target.sourceId,
+              sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId},outcome.value);
+            if(source)session=this.sourceSession(source);
+          }
           if(!session){unretained++;continue;}
         }
         if(!session||meaningRank.has(session.id))continue;

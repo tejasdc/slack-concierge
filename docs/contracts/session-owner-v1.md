@@ -401,6 +401,15 @@ When the response limit leaves returned archive candidates unexamined, coverage 
 incomplete and its reason/omissions state their count. Those candidates are not read,
 retained or materialized merely to establish coverage; this count does not estimate
 matches beyond the source adapter's returned candidate set.
+Archive candidates must pass two independent facts before becoming an imported session:
+compact metadata from the exact indexed source/version/branch, and a prepared-history
+response that confirms the matched event in that pinned version. The prepared-history
+request supplies `eventId`; its response supplies the same `retainedEventId`, or the source
+capability refuses a missing event. A failed or older responder makes archive coverage
+incomplete and omits that candidate; it cannot turn the whole source context into a search
+fallback. Deploy the source responder before this consumer. A release check must prove the
+new responder's event-membership response for a known frozen source before activating this
+consumer; old clients that do not send `eventId` retain their existing page response.
 
 `POST /sessions/v1/requests`:
 ```text

@@ -264,7 +264,7 @@ authorization or a change to the default rapid-iteration policy.
   same federated search the Inbox gets, including a live word search of the asking machine; the Mac
   searches alone only when the server cannot be reached, and says so. Decision history, starting
   with the September QMD evaluation, and the working-text measurement are in
-  [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md).
+  [session search by meaning](docs/plans/2026-10-07-session-search-by-meaning.md). Archive search joins indexed identity to exact prepared event proof; its consumer check runs in the build.
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing

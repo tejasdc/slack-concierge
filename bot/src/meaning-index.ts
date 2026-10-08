@@ -5,6 +5,8 @@ import {inflateRawSync} from 'node:zlib';
 import {Database} from 'bun:sqlite';
 import {db} from './state-database';
 import {log} from './log';
+import type {CapabilitySource} from './session-capability-client';
+import {indexedArchiveSource} from './archive-search-source';
 
 /**
  * Session search by meaning. Word search finds a session only when the query's words appear in
@@ -41,7 +43,7 @@ const RESULT_PREAMBLE=/^Session (?:final|progress|stalled) event [0-9a-f-]{36} f
 /** A carried result ends with its delivery record as one line of JSON; the reply's words are what came before it. */
 const RESULT_RECORD=/\n\n\{[^\n]*\}\s*$/;
 
-export type MeaningHit={target:{kind:'session';sessionId:number}|{kind:'peer';peer:string;remoteSessionId:string}|{kind:'archive';sourceId:string;sourceVersion:string;eventId:string;branch?:unknown;nativeId?:string|null};score:number;text:string;at:string|null;ref:string};
+export type MeaningHit={target:{kind:'session';sessionId:number}|{kind:'peer';peer:string;remoteSessionId:string}|{kind:'archive';sourceId:string;sourceVersion:string;eventId:string;branch?:unknown;nativeId?:string|null;source?:CapabilitySource};score:number;text:string;at:string|null;ref:string};
 export type MeaningSearch={available:boolean;hits:MeaningHit[];reason:string|null;indexed:number;pending:boolean};
 
 /** One llama.cpp server process, started on first use; CPU only, because the box's Vulkan path failed in September. */
@@ -255,7 +257,11 @@ export class MeaningIndex {
       const row=archive.query(`SELECT s.metadata,e.eventId FROM bodies b JOIN evidence e ON e.bodyId=b.id JOIN sources s ON s.rowid=e.sourceRow WHERE b.hash=? AND b.lane='dialogue' ORDER BY e.id DESC LIMIT 1`).get(key.slice('archive:'.length)) as any;
       if(!row)return null;
       const source=JSON.parse(row.metadata);
-      return {kind:'archive',sourceId:source.id,sourceVersion:source.version,eventId:row.eventId,branch:source.branch??null,nativeId:typeof source.nativeId==='string'?source.nativeId:null};
+      const metadata=indexedArchiveSource(source);
+      if(!metadata)return null;
+      return {kind:'archive',sourceId:source.id,sourceVersion:source.version,eventId:row.eventId,branch:source.branch??null,
+        nativeId:typeof source.nativeId==='string'?source.nativeId:null,
+        source:metadata};
     }catch{return null;}
   }
   async search(query:string,limit:number):Promise<MeaningSearch> {

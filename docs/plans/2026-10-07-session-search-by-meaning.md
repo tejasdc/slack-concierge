@@ -104,6 +104,12 @@ The September design's own "Concierge-owned vector path", with the same model it
   3. the best-matching passage counts for each session;
   4. archive matches resolve to the native session when the transcript belongs to one here, or
      else through the existing archive retention path.
+  An archive meaning hit carries the compact source metadata already read from Thinkering's
+  search index. Before Concierge creates an imported session from that metadata, Thinkering's
+  prepared history reader proves the exact frozen version, branch and matched event through
+  an indexed membership check. A missing proof omits that candidate with incomplete coverage;
+  it never reads the whole transcript as a fallback. The October 8 correction closed a 502
+  caused by treating a prepared page's `{messages,nextCursor}` as if it also contained `source`.
 - **Ranking:** word matches and meaning matches are fused by reciprocal rank (k=60). A session
   both find rises.
 - **What callers see:** each result says `match: {words, meaning}`, and coverage reports whether
