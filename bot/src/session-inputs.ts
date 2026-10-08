@@ -272,8 +272,13 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
     const session=getSessionById(source.session_id);
     if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
-    if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND id>? LIMIT 1`).get(source.session_id,sourceTurnId))return null;
-    if(db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND origin IN ('human','agent')
+    // A provider refusal stopped one account, not the work: the request that turn served is still
+    // owed, and a newer input (often another requester's, steered into a busy session) does not
+    // answer it. Dropping it settled a lab agent's request as failed at 2:54 AM on 2026-10-08
+    // while the other account had room. Other continuations still yield to newer input.
+    const refused=reason.kind==='provider_refused';
+    if(!refused&&db.query(`SELECT 1 FROM turns WHERE session_id=? AND id>? LIMIT 1`).get(source.session_id,sourceTurnId))return null;
+    if(!refused&&db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND origin IN ('human','agent')
       AND turn_id IS NULL AND created_at>=? LIMIT 1`).get(source.session_id,source.ended_at))return null;
     const id=`turn-continuation:${sourceTurnId}`;
     const prior=getAcceptedSessionInput(id);
@@ -290,8 +295,12 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
       ...(source.native_run_id?{sourceRunId:source.native_run_id}:{})}).input;
     const queued=enqueueSessionInput(saved.id);
     if(queued.turn_id!==null){
-      const wait=reason.waitUntilMs && reason.waitUntilMs>Date.now()?reason.waitUntilMs:0;
+      // A usage wall on one account is no reason to wait while another has room: it runs now and the
+      // account choice sends it there.
+      const elsewhere=reason.kind==='provider_refused'&&reason.refusal==='usage'&&reason.elsewhere===true;
+      const wait=!elsewhere&&reason.waitUntilMs && reason.waitUntilMs>Date.now()?reason.waitUntilMs:0;
       const hold=reason.kind==='provider_refused'&&reason.refusal==='sign_in'?'auth_wait'
+        :elsewhere?null
         :reason.kind==='provider_refused'&&reason.refusal==='usage'&&!wait?'usage_wait'
         :reason.kind==='boundary'&&wait?'chosen_time':'backoff';
       db.query(`UPDATE turns SET dispatch_failure_class=?,dispatch_next_attempt_ms=? WHERE id=? AND status='queued'`)
@@ -301,11 +310,13 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
   })();
 }
 
-/** A newer addressed request takes over; the old continuation never runs beside it. */
+/** A newer addressed request takes over; the old continuation never runs beside it. A continuation owed
+ * because a provider refused (one account out) is not superseded by new input; only pause and archive end it. */
 export function discardQueuedTurnContinuations(sessionId:number,why:'new_input'|'pause'|'archive'):number {
   return db.transaction(()=>{
     const rows=db.query(`SELECT turns.id FROM turns JOIN session_inputs ON session_inputs.id=turns.accepted_input_id
-      WHERE turns.session_id=? AND turns.status='queued' AND session_inputs.scope='turn-continuation'`).all(sessionId) as {id:number}[];
+      WHERE turns.session_id=? AND turns.status='queued' AND session_inputs.scope='turn-continuation'
+        AND (?<>'new_input' OR COALESCE(json_extract(session_inputs.payload_json,'$.continuation.reason.kind'),'')<>'provider_refused')`).all(sessionId,why) as {id:number}[];
     for(const row of rows){
       finishTurn(row.id,'cancelled',`Continuation superseded by ${why}.`);
       recordSessionEvent({eventId:`continuation-discarded:${row.id}`,sessionId,turnId:row.id,kind:'continuation_discarded',payload:{why}});

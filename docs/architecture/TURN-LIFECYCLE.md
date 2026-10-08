@@ -721,3 +721,13 @@ Process heartbeats serialize and retry transient SQLite contention. Timer callba
 - Codex shared transport and Remote projection: `bot/src/codex-app-server-client.ts`, `bot/src/codex-app-server-bridge.mjs`, `bot/src/codex.ts`, and `bot/src/codex-remote-observer.ts`
 - TODO projection: `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
 - Focused tests: `bot/tests/agent-progress.test.ts`, `bot/tests/agent-projection-state.test.ts`, `bot/tests/session-turn-queue.test.ts`, `bot/tests/queued-turn-execution.test.ts`, `bot/tests/turn-dispatch-seams.test.ts`, `bot/tests/provider-dispatch-retention.test.ts`, `bot/tests/provider-dispatch-execution.test.ts`, `bot/tests/provider-failures.test.ts`, `bot/tests/state-fork-lock.test.ts`, `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`
+
+## A usage refusal is one account's limit, not a stop (2026-10-08)
+
+A Claude turn that had already worked when one account refused for usage is always continued,
+even when the session has newer inputs queued (those are often other requesters' and do not
+answer the refused request), and new input no longer discards such a continuation; pause and
+archive still do. When the dispatcher would place work on another account now, the continuation
+runs at once and no hold notice is sent. The request the refused turn served stays open while any
+continuation in its chain is still going, so the continuation's reply settles it. The refusal text
+names the account and never promises a retry; what happens next is decided after it.

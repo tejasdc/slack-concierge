@@ -1524,6 +1524,25 @@ export class SessionCommunicationCoordinator {
             this.chaseStranded(request, turn.id, effect);
             return;
         }
+        // A turn the provider refused is carried on by its continuation, so the request it served
+        // stays open for that continuation's reply (following repeated refusals). Settling it failed
+        // here closed requests at 2:54 AM on 2026-10-08 whose work then resumed on the account with
+        // room, and the eventual answer was refused as already settled.
+        if (turn.status === 'error') {
+            const continuationOf = (id: number) => db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?").get(`turn-continuation:${id}`) as {id:number;status:string}|null;
+            let next = continuationOf(turn.id);
+            const seen = new Set<number>([turn.id]);
+            // Follow the whole chain of refusals; each continuation either carries on or ends.
+            while (next && next.status === 'error' && !seen.has(next.id)) {
+                seen.add(next.id);
+                const after = continuationOf(next.id);
+                if (!after) break;
+                next = after;
+            }
+            const terminal = new Set(['done', 'error', 'cancelled']);
+            if (next && !terminal.has(next.status)) return;
+            if (next && next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
+        }
         // The provider's own words say why, so the requester can tell a refused API call from an
         // interrupted run; a bare "ended with error" was read as the release cutting two runs off
         // when Anthropic had refused them for rate limits (September 23, 2026).

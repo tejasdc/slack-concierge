@@ -216,6 +216,17 @@ export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,n
   });
 }
 
+/**
+ * Whether a Claude account other than `refused` can take the work now, by the same rules dispatch
+ * uses (selection, proof, usage, the refused account's recorded limit), so the two never disagree.
+ */
+export function claudeAccountWithRoomBesides(refused:string|null):boolean{
+  try {
+    const next=chooseClaudeDispatch(refused);
+    return !!next&&next.account!==refused;
+  } catch { return false; }
+}
+
 /** Held for a sign-in, never run on the main folder's login instead (the message is a sign-in refusal on purpose). */
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});

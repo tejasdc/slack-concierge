@@ -1345,7 +1345,7 @@ export async function runClaudeCodeTurn(input: {
     // while the other had room (2026-10-07, 9:02 PM).
     const waitsForReset = usageResetAt !== null && usageResetAt > Date.now();
     throw new ProviderDispatchError({
-      message: `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} ${waitsForReset ? 'This input keeps its place and is tried again then.' : 'This input will not retry automatically.'} ${modelSwitchError.message}`,
+      message: `Claude usage is exhausted on ${input.accountLabel ?? 'this Claude account'}${usageResetAt ? ` until ${new Date(usageResetAt).toISOString()}` : ''}. This is one account's limit, not a stop: Concierge sends the work to another Claude account with room, and holds it for the reset only when no account has room. ${modelSwitchError.message}`,
       failureClass: "parked_terminal", terminalConfirmed: true,
       toolsUsed: failed.toolsUsed, assistantOutput: failed.assistantOutput, providerSessionId: failed.sessionUUID,
       ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
@@ -1376,7 +1376,7 @@ export async function runClaudeCodeTurn(input: {
     const waitsForReset = usageExhausted && usageResetAt !== null && usageResetAt > Date.now();
     throw new ProviderDispatchError({
       message: usageExhausted
-        ? `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} ${waitsForReset ? 'This input keeps its place and is tried again then.' : 'This input will not retry automatically.'} ${parsed.text}`
+        ? `Claude usage is exhausted on ${input.accountLabel ?? 'this Claude account'}${usageResetAt ? ` until ${new Date(usageResetAt).toISOString()}` : ''}. This is one account's limit, not a stop: Concierge sends the work to another Claude account with room, and holds it for the reset only when no account has room. ${parsed.text}`
         : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,

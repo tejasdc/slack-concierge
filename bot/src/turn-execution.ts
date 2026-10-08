@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
-import {chooseClaudeDispatch,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
+import {chooseClaudeDispatch,claudeAccountWithRoomBesides,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
@@ -1231,10 +1231,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
     } else {
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
-      const refusal=structuredFailure?.terminalConfirmed && input.providerId!=='chatgpt'
+      const refused=structuredFailure?.terminalConfirmed && input.providerId!=='chatgpt'
         && (observedAssistantOutput || observedToolCount>0 || structuredFailure.assistantOutput
           || structuredFailure.toolsUsed.length>0 || artifactActivity)
         ? providerRefusalContinuationReason(String(error),structuredFailure.clearsAtMs,Date.now(),dispatchAttempt):null;
+      // Whether any other Claude account can take the work now, judged against the account this
+      // attempt actually ran on (the selected account counts too).
+      const refusal=refused&&refused.refusal==='usage'&&input.providerId==='claude-code'
+        &&claudeAccountWithRoomBesides(runningClaudeAccount)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
       const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;
@@ -1244,7 +1248,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           :interruption?()=>{queueTurnContinuation(input.turnId,{kind:'interrupted',detail:interruption});}:undefined)) {
         throw new Error("Failed turn could not atomically release its session lock.");
       }
-      if(refusal && continuationTurnId!==null)noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',
+      if(refusal && continuationTurnId!==null && !(refusal.kind==='provider_refused'&&refusal.elsewhere))noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',
         model:input.model??null,turnId:continuationTurnId,reason:refusal,
         account:input.providerId==='claude-code'?runningClaudeAccount:null},recordSessionEvent);
     }

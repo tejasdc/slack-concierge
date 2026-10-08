@@ -94,6 +94,8 @@ export function isRefreshableAuthFailure(message: string): boolean {
 }
 
 export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in';
+  /** Another account of the same provider had room when this one refused, so nothing waits. */
+  elsewhere?:boolean;
   detail:string;waitUntilMs?:number|null};
 
 /** Shared by live failure handling and the one-time recent-backlog pass. */
