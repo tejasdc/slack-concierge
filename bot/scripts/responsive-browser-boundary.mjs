@@ -117,7 +117,8 @@ try{
    try{return await window.fixture.sessionClient.topicAction(fixtureTopicId,action,actionId);}
    catch(error){return {status:error.status,code:error.code};}
   },{actionId,action,fixtureTopicId});
-  assert.ok(result?.topic,JSON.stringify(result));
+  if(action.kind==='read')assert.equal(result?.readSequence,1,JSON.stringify(result));
+  else assert.ok(result?.topic,JSON.stringify(result));
   const custody=await page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()),actionId);
   assert.equal(custody.status,'delivered');assert.equal(custody.decisionStage,'owner');
  }
@@ -145,7 +146,7 @@ try{
   text:'Browser lost acknowledgement fixture.',selection:undefined,intent:undefined,delivery:'queue'}).catch(()=>{});},
   {id:lostId,session});
  await expect.poll(()=>page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()).then(value=>value.status),lostId),{timeout:10000}).toBe('unconfirmed');
- assert.equal((await page.evaluate(id=>window.fixture.getBrowserCommand(id),lostId)).halted,true);
+ await expect.poll(()=>page.evaluate(id=>window.fixture.getBrowserCommand(id).then(command=>command?.halted),lostId),{timeout:10000}).toBe(true);
  await page.reload();await composer().waitFor();
  assert.equal((await page.evaluate(id=>window.fixture.getBrowserCommand(id),lostId)).actionId,lostId);
  await page.evaluate(id=>window.fixture.retryFromDevice(id),lostId);
