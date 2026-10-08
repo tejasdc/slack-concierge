@@ -1808,6 +1808,20 @@ export class SessionOwner {
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
   }
+  /**
+   * Proves one exact archived source version is still retained before a search shows it. The
+   * proof is Thinkering's prepared history page of that version: built once from the digest-checked
+   * snapshot and immutable afterwards, so it answers in milliseconds. It used to be a `context`
+   * read with `limit:1`, which re-read and serialized the whole snapshot on every search: the Inbox
+   * router's 289 MB transcript answered in 5.8 s with 120 MB per candidate, four such candidates
+   * made one search take 10.2 s, and the owner parsed every byte on its own loop (2026-10-08).
+   * A composition without prepared history keeps the context read.
+   */
+  private retainArchiveSource(pin:{sourceId:string;sourceVersion:string;branch:unknown;eventId:string}) {
+    const sources=this.runtime.sources!;
+    if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1});
+    return sources.context({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,eventId:pin.eventId,limit:1});
+  }
   private sourceSession(source:any):SessionRow {
     if(!source||!['codex','claude-code','chatgpt'].includes(source.provider)||typeof source.id!=='string'||typeof source.branch!=='string'||!/^[a-f0-9]{64}$/.test(source.version))throw new SessionOwnerError('Source adapter returned incomplete identity.',502);
     const existing=db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id')=? AND json_extract(native_metadata_json,'$.source.branch')=?").get(source.id,source.branch) as SessionRow|null;
@@ -1888,8 +1902,8 @@ export class SessionOwner {
           const omission=`Archive candidates not examined or retained because the response limit was reached: ${distinct.length-examined.length}.`;
           coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
         }
-        // Each retention check reads its archive file; running them together keeps search as slow as the slowest one, not their sum.
-        const retained=await Promise.allSettled(examined.map((candidate:any)=>this.runtime.sources!.context({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId,limit:1})));
+        // Retention checks run together, so search is as slow as the slowest one, not their sum.
+        const retained=await Promise.allSettled(examined.map((candidate:any)=>this.retainArchiveSource({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId})));
         let unavailable=0;
         for(const [index,candidate] of examined.entries()) {
           if(retained[index]!.status==='rejected'){unavailable++;continue;}
@@ -1910,7 +1924,7 @@ export class SessionOwner {
       // Archive matches that are not a session here are retained together, as the word path does above.
       const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
       const retained=await Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
-        ?this.runtime.sources.context({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId,limit:1})
+        ?this.retainArchiveSource({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId})
         :Promise.resolve(null)));
       let unretained=0;
       for(const [index,hit] of meaning.hits.entries()) {
