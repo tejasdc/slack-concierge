@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
-import {accountHome,currentAccount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
+import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
@@ -170,7 +170,7 @@ function accountUsedPercent(provider:ProviderKey,account:AccountUsage):number|nu
  * logins are not files (the Mac keeps them in the Keychain) has no such homes and is unchanged.
  */
 export function claudeRunsFromOwnHomes():boolean {
-  return listProfiles('claude-code').length>0;
+  return keptProfileCount('claude-code')>0;
 }
 
 /** The account selected for agents and its home, when that is one of the homes (never the main folder's login). */

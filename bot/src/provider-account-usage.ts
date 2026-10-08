@@ -439,6 +439,15 @@ function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): v
   log("warn", "provider_account_changed_released_hold", { provider, released });
 }
 
+/** The account names in the stored reading, with nothing derived from which account is in use. */
+export function storedProviderAccountLabels(provider: ProviderKey): string[] {
+  const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
+    .get(provider) as { usage_json: string } | null;
+  if (!row) return [];
+  try { return ((JSON.parse(row.usage_json) as ProviderUsage).accounts ?? []).flatMap(account => account.label ? [account.label] : []); }
+  catch { return []; }
+}
+
 export function providerAccountUsage(provider: ProviderKey): ProviderUsage | null {
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;

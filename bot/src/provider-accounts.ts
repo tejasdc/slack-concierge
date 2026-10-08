@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log";
 // Type-only in the other direction, so this is a one-way dependency at runtime.
-import { providerAccountUsage } from "./provider-account-usage";
+import { storedProviderAccountLabels } from "./provider-account-usage";
 
 // Which account a provider's credentials currently belong to, and the named
 // credential snapshots the operator can switch between.
@@ -334,7 +334,11 @@ function profileAccountEmail(provider: ProviderKey, id: string): string | null {
 function recoverProfileAccountEmail(provider: ProviderKey, id: string): string | null {
   if (provider !== "claude-code") return null;
   const known = new Set<string>();
-  for (const account of providerAccountUsage(provider)?.accounts ?? []) if (account.label) known.add(account.label);
+  // The stored readings, not providerAccountUsage(): that view marks the agents' account by asking
+  // whether accounts have homes, which lists profiles, which lands back here for any account with no
+  // recorded name. The cycle ran until the stack overflowed (a catch hid it), re-reading every
+  // account file ~3,000 times per Accounts read and freezing the owner for up to 144 s (2026-10-08).
+  for (const label of storedProviderAccountLabels(provider)) known.add(label);
   const live = claudeSignIn?.label ?? readJson(join(homedir(), ".claude.json"))?.oauthAccount?.emailAddress;
   if (typeof live === "string" && live) known.add(live);
   for (const address of known) {
@@ -350,6 +354,11 @@ function recoverProfileAccountEmail(provider: ProviderKey, id: string): string |
     return address;
   }
   return null;
+}
+
+/** How many accounts this machine keeps, without reading who they are. */
+export function keptProfileCount(provider: ProviderKey): number {
+  return profileSources(provider).size;
 }
 
 export function listProfiles(provider: ProviderKey): ProviderProfile[] {
