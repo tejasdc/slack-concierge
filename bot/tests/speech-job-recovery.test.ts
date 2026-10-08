@@ -6,6 +6,9 @@ import {NoSpeech} from '../src/transcription';
 import {processSpeechJob} from '../src/speech-job-worker';
 import {pendingSpeechJobs,speechRoot} from '../src/speech-job-spool';
 import {join} from 'node:path';
+import {mkdir,writeFile,mkdtemp,rm,symlink} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {speechJobAudio,speechJobProgress,finishedSpeechJobIds} from '../src/speech-job-spool';
 
 const owner=()=>new SessionOwner({wake:()=>{},steer:()=>false,stop:async()=>false,available:()=>true},'/tmp');
 const root=speechRoot(process.env.CONCIERGE_STATE_DIR!);
@@ -85,4 +88,35 @@ test('HTTP start acknowledges custody before speech and status later returns wor
  const done=await service.handle(new Request(url));
  expect(done?.status).toBe(200);
  expect(await done!.json()).toEqual({state:'done',text:'route words'});
+});
+
+test('corrupt oldest audio is terminal and a later recording can finish',async()=>{
+ const bad=attachment('original'),good=attachment('later');
+ await owner().transcribeAttachment(bad,{},true);
+ await owner().transcribeAttachment(good,{},true);
+ await writeFile(speechJobAudio(root,bad),'changed bytes');
+ let invoked=false;
+ await processSpeechJob(pendingSpeechJobs(root).find(job=>job.attachmentId===bad)!,async()=>{invoked=true;throw new Error('must not invoke');});
+ expect(invoked).toBe(false);
+ expect(owner().transcriptionState(bad)).toEqual({state:'failed',reason:'retained_audio_invalid'});
+ expect(pendingSpeechJobs(root).some(job=>job.attachmentId===bad)).toBe(false);
+ await processSpeechJob(pendingSpeechJobs(root).find(job=>job.attachmentId===good)!,async input=>({slackFileId:input.slackFileId,title:input.title,text:'later words',source:'parakeet'}));
+ expect(owner().transcriptionState(good)).toEqual({state:'done',text:'later words'});
+});
+
+test('per-recording progress does not enumerate unrelated queued custody',async()=>{
+ const id=attachment('fixed lookup');await owner().transcribeAttachment(id,{},true);
+ const unrelated=join(root,'queued',randomUUID());
+ await symlink('/nonexistent-speech-test-path',unrelated);
+ try{expect(speechJobProgress(root,id).state).toBe('queued');}finally{await rm(unrelated);}
+});
+
+test('finished reconciliation pages rotate past unreadable results',async()=>{
+ const scratch=await mkdtemp(join(tmpdir(),'speech-reconcile-'));
+ try{const ids=Array.from({length:97},()=>randomUUID());
+  await Promise.all(ids.map(id=>mkdir(join(scratch,'finished',id),{recursive:true})));
+  const found=new Set<string>();
+  for(let page=0;page<15;page++){const batch=finishedSpeechJobIds(scratch,8);expect(batch.length).toBeLessThanOrEqual(8);batch.forEach(id=>found.add(id));}
+  expect(found.size).toBe(ids.length);
+ }finally{await rm(scratch,{recursive:true,force:true});}
 });

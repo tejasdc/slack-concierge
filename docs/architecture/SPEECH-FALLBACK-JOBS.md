@@ -30,7 +30,7 @@ is the recovery source if a staging artifact is lost. Abandoned partial staging 
 after an hour; successful artifacts are removed after commit, and terminal no-speech/failure
 is recorded in the ledger.
 
-Isolated verification: `CONCIERGE_TEST_AUTHORIZATION=native-attribution-5eaa0768 bun test
+Isolated verification: `CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 bun test
 tests/speech-job-recovery.test.ts` from `bot/`. It proves duplicate and concurrent start, a
 result from a separate worker process read by a new owner, terminal silence/failure,
 device precedence, and the HTTP start/status
@@ -41,3 +41,30 @@ On the server, a fresh outside monitor owns sustained degradation notices and re
 investigation. The in-process freeze notice yields while that monitor is active, avoiding
 two incidents for one stall. On the Mac, where the outside monitor does not run, the local
 notice stays in place. Both machines keep the underlying lag and request logs.
+
+## Custody and bounded status reads
+
+Staging flushes the audio and manifest, then the staging directory and published queue
+directories before acknowledging custody. Result publication flushes its file and both
+rename parents before completion; this is stronger than rename alone. Concurrent starts
+join the same attachment and also flush published directory custody before returning.
+Only the owner commits the transcript and removes the finished artifact afterward.
+
+Per-recording progress reads only that recording metadata. It no longer enumerates the
+queue to invent an exact rank; queued status includes its elapsed wait. Finished artifact
+reconciliation keeps one directory iterator per spool and reads at most the requested
+page of directory entries, rotating past unreadable results instead of starving later ones.
+The iterator closes at end-of-directory. Metadata/result records are size-checked before
+reading; complete text remains subject to the existing 200,000-character transcript contract.
+
+The independent worker verifies audio with a streaming checksum, without a second whole
+audio buffer. Corrupt or missing audio becomes a retained `retained_audio_invalid` result
+and later jobs continue. Its pending-queue scans are asynchronous and heartbeat scans
+cannot overlap. These scans are O(pending recordings), not O(finished recording history);
+queue aggregate health remains exact. A malformed manifest is reported as `job_invalid`
+by the recording status and retained for diagnosis, while valid later jobs remain eligible.
+
+Recovery tests also cover corrupt oldest audio followed by successful later audio, bounded
+status reads with broken unrelated custody, and rotating finished pages. The tests do not
+simulate a power failure or prove disk hardware honors flushes. The flush ordering is explicit
+in the storage boundary and the real supervised lifetime is checked after activation.
