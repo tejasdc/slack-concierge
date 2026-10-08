@@ -1,0 +1,1 @@
+The repair system can detect page preparation that has stopped progressing even when the server answers quickly.
