@@ -21,6 +21,7 @@ import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
+import {readClaudeCachedMessage,readCodexHistoryMessage} from './provider-history';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
@@ -113,13 +114,14 @@ export class SessionExecutionHost {
       capabilities:session=>this.capabilities(session),
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
+      historyMessage:(session,messageId,turnId)=>this.historyMessage(session,messageId,turnId),
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       auth:{status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
-      sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
+      sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),historyMessage:input=>this.capabilityClient!.sourceHistoryMessage(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
@@ -439,6 +441,12 @@ export class SessionExecutionHost {
     const provider=this.options.providers[session.provider_id];
     if(!provider?.history||!session.agent_session_uuid)return null;
     return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit,ownerSessionId:session.id});
+  }
+  private async historyMessage(session:SessionRow,messageId:string,turnId:string|null) {
+    if(!session.agent_session_uuid)return null;
+    if(session.provider_id==='claude-code')return readClaudeCachedMessage(session.agent_session_uuid,messageId);
+    if(session.provider_id==='codex'&&turnId)return readCodexHistoryMessage(session.agent_session_uuid,turnId,messageId);
+    return null;
   }
   private async detail(session:NonNullable<ReturnType<typeof getSessionById>>,detailKey:string) {
     if(session.provider_id==='chatgpt') {if(!this.capabilityClient)throw new Error('ChatGPT detail capability unavailable.');return this.capabilityClient.detail({...this.readRef(session),detailKey});}

@@ -114,6 +114,9 @@ authorization or a change to the default rapid-iteration policy.
   owner-retained live messages by exact identity. Cold history states that it is indexing;
   raw transcript changes without corresponding retained events trigger a background rebuild.
   See [provider history index](docs/architecture/PROVIDER-HISTORY-INDEX.md).
+  Long history messages are page previews with an exact, digest-checked selected-message
+  detail read; source, message and accepted-input identity remain attached to the preview.
+  See the [history wire contract](docs/contracts/session-owner-v1.md).
 - The interactive session catalogue is a prepared, bounded read over the owner's ledger;
   new card fields need canonical change-journal coverage and a growth fixture. The worker,
   cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).

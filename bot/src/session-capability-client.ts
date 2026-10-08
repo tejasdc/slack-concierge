@@ -364,6 +364,16 @@ export class SessionCapabilityClient {
     return value;
   }
 
+  async sourceHistoryMessage(input:SourceRef & {messageId:string}) {
+    const value=await this.post<{message:CapabilityMessage}>('/sources/history/message',input);
+    verify(isRecord(value)&&isRecord(value.message)&&value.message.id===input.messageId
+      &&typeof value.message.content==='string','Invalid exact source message response.');
+    const evidence=value.message.source;
+    verify(evidence?.sourceId===input.sourceId&&evidence.sourceVersion===input.sourceVersion
+      &&evidence.eventId===input.messageId,'Exact source message pin changed.');
+    return value.message;
+  }
+
   async refreshSources() {
     const value = await this.post<{ refresh: SourceRefresh[] }>("/sources/refresh", { provider: "chatgpt" });
     verify(isRecord(value) && Array.isArray(value.refresh), "Invalid source refresh response.");

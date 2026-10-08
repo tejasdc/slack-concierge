@@ -60,6 +60,8 @@ export interface ProviderHistoryMessage {
   detailKey?: string;
   attachments?: Array<{ id: string; name: string; contentType: string }>;
   richContent?: unknown;
+  /** Exact structured words live behind a verified selected-message detail read. */
+  contentDetail?: {digest:string;bytes:number;parts:number};
   marks?: {reactions:string[];saved:boolean};
 }
 
@@ -186,6 +188,23 @@ export async function readCodexHistory(input: ProviderHistoryInput,
   }
   return { messages, nextCursor: page.nextCursor === null ? null : encode({ sessionUuid: input.sessionUuid, cursor: page.nextCursor }),
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };
+}
+
+/** An explicit detail read uses the provider's exact turn and item identity, not a history scan. */
+export async function readCodexHistoryMessage(sessionUuid:string,turnId:string,messageId:string,
+  request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryMessage|null> {
+  if(!sessionUuid||!turnId||!messageId||[sessionUuid,turnId,messageId].some(value=>value.length>512))
+    throw new Error('INVALID_HISTORY_REFERENCE');
+  let cursor:string|null=null;
+  do {
+    const page=codexPage(await request('thread/items/list',{
+      threadId:sessionUuid,turnId,cursor,limit:100,sortDirection:'desc'}));
+    const entry=page.data.find(value=>value?.turnId===turnId&&value?.item?.id===messageId);
+    if(entry)return codexHistoryMessages(entry.item,turnId,sessionUuid).find(value=>value.id===messageId)??null;
+    if(page.nextCursor===cursor)throw new Error('PROVIDER_HISTORY_INVALID');
+    cursor=page.nextCursor;
+  } while(cursor!==null);
+  return null;
 }
 
 export async function readCodexHistoryDetail(input: ProviderDetailInput,
@@ -465,6 +484,20 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
     return { messages:[...messages,...added], nextCursor,
       ...(coverage ? { coverage } : {}) };
   } finally { cache.db.close(); }
+}
+
+/** The immutable Claude cache indexes provider message IDs to one transcript row. */
+export function readClaudeCachedMessage(sessionUuid:string,messageId:string):ProviderHistoryMessage|null {
+  if(!messageId||messageId.length>512)throw new Error('INVALID_HISTORY_REFERENCE');
+  const cache=openCache(sessionUuid);
+  if(!cache)throw new Error('HISTORY_INDEXING');
+  try {
+    const row=cache.db.query(`SELECT rows.json FROM message_ids
+      JOIN rows ON rows.ordinal=message_ids.ordinal WHERE message_ids.id=?`)
+      .get(messageId) as {json:string}|null;
+    if(!row)return null;
+    return claudeHistoryMessages(JSON.parse(row.json),sessionUuid).find(message=>message.id===messageId)??null;
+  } finally {cache.db.close();}
 }
 
 async function claudeCachedDetail(input: ProviderDetailInput): Promise<{ content: string }> {

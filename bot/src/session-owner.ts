@@ -12,6 +12,8 @@ import {observeStorageOperation,storageObservationFailures,withStorageReadBudget
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
+import {historyContent,historyContentDetail,previewHistoryMessage} from './history-message-preview';
+import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
   preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
@@ -177,7 +179,7 @@ const ledgerHistory=Symbol('ledger history projection');
  */
 const historyPath=Symbol('history path');
 type HistoryPath='inbox'|'provider'|'none';
-const HISTORY_WINDOW=200;
+const HISTORY_WINDOW=20;
 const savedExcerpt=(content:string)=>{const text=content.replace(/\s+/g,' ').trim();return text.length>280?text.slice(0,279)+'…':text;};
 // Marking a message that never streamed through the owner reads its transcript to prove
 // it exists; this bounds that walk for a very long session.
@@ -332,12 +334,13 @@ export type SessionOwnerRuntime = {
   stop(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   history?(session:SessionRow,cursor:string|null,limit:number):Promise<unknown>;
+  historyMessage?(session:SessionRow,messageId:string,turnId:string|null):Promise<ProviderHistoryMessage|null>;
   detail?(session:SessionRow,key:string):Promise<unknown>;
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
-  sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;refresh?():Promise<any>};
+  sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string}):Promise<unknown>;
   auth?:{
@@ -444,6 +447,7 @@ export function readInputExecution(input:AcceptedSessionInput) {
 
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
 export class SessionOwner {
+  private readonly historyDetails=new HistoryDetailCache();
   projectSetup?:ProjectSetup;
   communication?:SessionCommunicationCoordinator;
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
@@ -1672,11 +1676,12 @@ export class SessionOwner {
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
   async history(id:string,cursor:string|null,limit:number) {
     const head=ledgerHead(),session=this.session(id);
-    const page=await this.readHistory(id,cursor,limit) as ProviderHistoryPage,metadata=sessionMetadata(session);
+    const page=await this.readHistory(id,cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit))) as ProviderHistoryPage,metadata=sessionMetadata(session);
     const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages));
-    if((page as any)[ledgerHistory])return {...page,asOf};
-    if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
-    return {...projectSessionHistory(parseSessionId(id),page),asOf};
+    if((page as any)[ledgerHistory])return {...page,asOf,messages:page.messages.map(previewHistoryMessage)};
+    if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>previewHistoryMessage({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
+    const projected=projectSessionHistory(parseSessionId(id),page);
+    return {...projected,asOf,messages:projected.messages.map(previewHistoryMessage)};
   }
   /**
    * Everything added or changed since a page's `asOf`, as complete projected messages,
@@ -1686,13 +1691,13 @@ export class SessionOwner {
   async historyDelta(id:string,after:string) {
     const reset={reset:true as const};
     const position=decodePosition(after),session=this.session(id);
-    if(!position||position.k==='none'||position.g!==(session.binding_generation??1))return reset;
+    if(!position||position.k==='none'||position.n>HISTORY_WINDOW||position.g!==(session.binding_generation??1))return reset;
     const head=ledgerHead();
     if(position.s>head||position.k==='inbox'&&(position.n!==0||position.a!==null)||
       position.k==='provider'&&!(position.a===null&&position.n===0||position.a!==null&&position.n>0&&position.h!==null))return reset;
     if(position.k==='inbox') {
       const messages=inboxHistoryAfter(session,position.s,HISTORY_WINDOW);
-      return messages?{messages:messages.map(message=>this.projectInboxMessage(message)),asOf:encodePosition({...position,s:head})}:reset;
+      return messages?{messages:messages.map(message=>previewHistoryMessage(this.projectInboxMessage(message))),asOf:encodePosition({...position,s:head})}:reset;
     }
     if(!['codex','claude-code'].includes(session.provider_id)||!this.runtime.history)return reset;
     // Read the transcript itself, the source of the page the client holds: enough to find
@@ -1719,8 +1724,46 @@ export class SessionOwner {
     if(changed===null)return reset;
     const freshIds=new Set(fresh.map(message=>message.id));
     const messages=page.messages.filter(message=>freshIds.has(message.id)||held.has(message.id)&&changed.has(message.id));
-    return {messages:projectSessionHistory(session.id,{...page,messages}).messages,
+    return {messages:projectSessionHistory(session.id,{...page,messages}).messages.map(previewHistoryMessage),
       asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};
+  }
+  async historyMessageDetail(id:string,messageId:string,digest:string,part:number,turnId:string|null) {
+    if(!messageId||messageId.length>512||!/^[a-f0-9]{64}$/.test(digest)
+      ||!Number.isSafeInteger(part)||part<0||turnId!==null&&turnId.length>512)
+      throw new SessionOwnerError('An exact message version and part are required.');
+    const session=this.session(id),metadata=sessionMetadata(session);
+    const key=JSON.stringify([session.id,session.binding_generation??1,messageId,turnId,digest]);
+    try{return await this.historyDetails.part(key,part,async()=>{
+    const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
+      AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC LIMIT 1`)
+      .get(session.id,messageId) as {payload_json:string}|null;
+    let message=event?(JSON.parse(event.payload_json) as {message:ProviderHistoryMessage}).message:null;
+    if(!message&&metadata.inbox)message=inboxMessageById(session.id,messageId);
+    if(!message&&metadata.origin==='imported'&&!metadata.nativeBinding&&metadata.source&&this.runtime.sources?.historyMessage)
+      message=await this.runtime.sources.historyMessage({sourceId:metadata.source.id,sourceVersion:metadata.source.version,
+        branch:metadata.source.branch,messageId});
+    if(!message&&this.runtime.historyMessage)message=await this.runtime.historyMessage(session,messageId,turnId);
+    if(!message&&/^(input|output):[1-9][0-9]*$/.test(messageId)) {
+      const turnIdNumber=Number(messageId.split(':')[1]);
+      const turn=db.query('SELECT id,user_text,agent_text FROM turns WHERE id=? AND session_id=?')
+        .get(turnIdNumber,session.id) as {id:number;user_text:string;agent_text:string|null}|null;
+      if(turn)message={id:messageId,role:messageId.startsWith('input:')?'user':'assistant',
+        content:messageId.startsWith('input:')?turn.user_text:turn.agent_text??'',tool:null,phase:null};
+      if(turn&&messageId.startsWith('input:')){
+        const accepted=acceptedInputForTurn(turn.id);
+        if(accepted)message=projectAcceptedInput(message!,accepted);
+      }
+    }
+    if(!message||message.id!==messageId)throw new SessionOwnerError('That exact message is unavailable.',404,'MESSAGE_NOT_FOUND');
+    // A user message may be displayed from its immutable accepted input, rather than
+    // provider scaffolding; the detail must use those same words and exact attribution.
+    if(!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
+    else if(metadata.inbox)message=this.projectInboxMessage(message as any);
+    if(historyContentDetail(message).digest!==digest)throw new SessionOwnerError('That message changed. Refresh it and try again.',409,'HISTORY_DETAIL_RESET_REQUIRED');
+    return historyContent(message);
+    });}
+    catch(error){if(error instanceof Error&&error.message==='HISTORY_DETAIL_PART_NOT_FOUND')
+      throw new SessionOwnerError('That message part does not exist.',404,'MESSAGE_PART_NOT_FOUND');throw error;}
   }
   private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
     return inboxAttribution(db)(message);
@@ -2552,8 +2595,11 @@ export class SessionOwner {
         const after=url.searchParams.get('after');
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
         result=after!==null?await this.historyDelta(parts[1]!,after)
-          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
+          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)));
       }
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6)
+        result=await this.historyMessageDetail(parts[1]!,parts[4]!,url.searchParams.get('digest')??'',
+          Number(url.searchParams.get('part')??'0'),url.searchParams.get('turnId'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.receipt(this.input(parts[1]!));
