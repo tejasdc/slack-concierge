@@ -18,6 +18,7 @@ import {
   getSessionById,
   getSlackThreadStatus,
   interruptOrphanedTurn,
+  listGhostRunningTurnsForOwner,
   listRecoverableTurns,
   markTurnDeliveryFailed,
   markTurnResponseDelivered,
@@ -92,6 +93,37 @@ interface AgentSessionStatusProjectionResult {
   error: string | null;
 }
 
+/**
+ * How long a turn may stay 'running' with no executions row written before this coordinator
+ * declares it a ghost. Dispatch should either reach `retainExecutionIntent` or raise an error
+ * within a few seconds; 120 s leaves generous headroom for pre-dispatch work (account check,
+ * usage read, history preparation) without letting a silent stall sit for an hour.
+ */
+export const GHOST_TURN_INTERRUPT_AGE_MS = 120_000;
+
+/**
+ * Interrupts turns the current coordinator holds in 'running' with no matching executions row,
+ * started more than `maxAgeMs` ago. These are the ghosts the 2026-10-08 incident uncovered:
+ * dispatch marked the turn running but something swallowed the launch before an executions row
+ * was written, and neither existing recovery path catches a stalled turn owned by the LIVE
+ * coordinator. The sweep runs at startup (next to the dead-owner reconciliation) and on a
+ * periodic watchdog cadence throughout the coordinator's lifetime.
+ *
+ * Returns the number of turns interrupted. Each interrupt uses the shared
+ * `interruptOrphanedTurn` transaction so triggers fire and the sessions move back to idle.
+ */
+export function sweepGhostRunningTurns(instanceId: string, maxAgeMs = GHOST_TURN_INTERRUPT_AGE_MS): number {
+  let interrupted = 0;
+  for (const turn of listGhostRunningTurnsForOwner(instanceId, maxAgeMs)) {
+    const reason = `Coordinator held this turn running without producing an execution host record for ${Math.round(maxAgeMs / 1000)} s; interrupted so the session's queued work can dispatch. The input is preserved in history.`;
+    if (interruptOrphanedTurn(turn.id, instanceId, reason)) {
+      interrupted += 1;
+      log("warn", "ghost_running_turn_interrupted", { turn_id: turn.id, session_id: turn.session_id, turn_kind: turn.turn_kind });
+    }
+  }
+  return interrupted;
+}
+
 export async function reconcileRecoverableTurns(input: {
   nativeOnly?: boolean;
   client: any;
@@ -99,6 +131,8 @@ export async function reconcileRecoverableTurns(input: {
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   services: TurnRecoveryServices;
 }): Promise<"done" | "stopped"> {
+  const sweptGhosts = sweepGhostRunningTurns(input.instanceId);
+  if (sweptGhosts > 0) log("warn", "ghost_running_turns_swept", { count: sweptGhosts, scope: "startup" });
   for (const turn of listRecoverableTurns()) {
     if (input.isOwnerAlive({
       pid: turn.owner_pid || 0,

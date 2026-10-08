@@ -1486,6 +1486,37 @@ export function isTurnArtifactStagingCleanupComplete(turnId: number) {
     && Number(row.unremoved_count || 0) === 0;
 }
 
+/**
+ * Turns the current coordinator holds in 'running' with no matching executions row and started
+ * more than `maxAgeMs` ago. These are ghosts: dispatch was accepted (status became running, owner
+ * set), but no execution host record was ever written, so neither `claimAdoptableExecutions`
+ * (which reads through the executions JOIN) nor the dead-owner pass in `reconcileRecoverableTurns`
+ * (which skips a live owner) catches them. The ghost blocks that session's FIFO forever otherwise.
+ *
+ * Introduced after the 2026-10-08 incident where five such ghosts held 20 queued turns for 1-2
+ * hours and nearly caused a Codex-app-server restart for the wrong reason.
+ */
+export function listGhostRunningTurnsForOwner(ownerInstanceId: string, maxAgeMs: number): RecoverableTurnRow[] {
+  return db.query(`
+    SELECT t.id, t.session_id, s.slack_channel_id, s.slack_thread_ts,
+           t.slack_user_msg_ts, t.slack_bot_msg_ts, t.slack_reply_thread_ts,
+           t.response_tldr, t.provider_duration_ms, t.agent_text, t.outbound_text, t.status,
+           t.provider_admission_intended_at, t.turn_kind, t.requested_by_user_id, t.projection_mode,
+           t.progress_stream_ts, t.progress_stream_state, t.progress_activity_id, t.stop_requested_at, t.dispatch_attempt,
+           t.owner_instance_id, p.pid AS owner_pid, p.boot_id AS owner_boot_id,
+           p.process_start_ticks AS owner_process_start_ticks
+    FROM turns t
+    JOIN sessions s ON s.id=t.session_id
+    LEFT JOIN process_instances p ON p.instance_id=t.owner_instance_id
+    LEFT JOIN executions e ON e.turn_id=t.id AND e.dispatch_attempt=t.dispatch_attempt
+    WHERE t.status='running'
+      AND t.owner_instance_id=?
+      AND e.execution_id IS NULL
+      AND (CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', t.started_at) AS INTEGER)) * 1000 >= ?
+    ORDER BY t.id
+  `).all(ownerInstanceId, maxAgeMs) as RecoverableTurnRow[];
+}
+
 export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | null, reason: string): boolean {
   let interrupted = false;
   db.transaction(() => {

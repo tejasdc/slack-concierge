@@ -240,7 +240,7 @@ import { executeAgentTurn } from "./turn-execution";
 import { legacyProgressChunks, progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
 import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
 import { handleAgentSessionStop } from "./agent-session-stop";
-import { reconcileRecoverableTurns } from "./turn-recovery";
+import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
 import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {
@@ -3937,6 +3937,24 @@ watchAuthHeldCredentials();
 // Provider accounts dialog.
 void refreshClaudeAccount();
 setInterval(() => { if (!draining) void refreshClaudeAccount(); }, USAGE_REFRESH_MS);
+
+// Watchdog for ghost running turns: a turn this coordinator holds in 'running' with no
+// executions row written for over two minutes is a dispatch that stalled silently; neither
+// `claimAdoptableExecutions` (needs an executions row) nor the dead-owner reconciliation
+// (needs a dead owner) will catch it. Introduced after the 2026-10-08 ghost-turn incident
+// (docs/incidents/2026-10-08-ghost-turns-and-near-codex-restart.md).
+setInterval(() => {
+  if (draining) return;
+  try {
+    const swept = sweepGhostRunningTurns(instanceId);
+    if (swept > 0) {
+      log("warn", "ghost_running_turns_swept", { count: swept, scope: "watchdog", max_age_ms: GHOST_TURN_INTERRUPT_AGE_MS });
+      sessionTurnQueue?.wake();
+    }
+  } catch (error) {
+    log("error", "ghost_running_turn_sweep_failed", errorFields(error));
+  }
+}, 60_000);
 
 let periodicForkRecovery: Promise<unknown> | null = null;
 setInterval(() => {
