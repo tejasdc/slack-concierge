@@ -1633,12 +1633,14 @@ export class SessionCommunicationCoordinator {
                     const asked = members.find(member => member.request_id === answer.request_id)!;
                     return `## ${words.responding_session_id ?? `concierge:${asked.target_session_id}`} · request ${answer.request_id} · ${words.workDisposition ?? this.row(answer.request_id).outcome}\n\n${answerView(asked,words)}`;
                 });
-                const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
+                // The return and the record of which answers it carries are written together, so a crash between them cannot start a second return.
+                const accepted = db.transaction(() => { const admitted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
                     sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                     text:`Batch "${batch}": ${(()=>{const stalled=members.filter(member=>!member.outcome);return stalled.length?`${answers.length} answers below; still open after a stall: ${stalled.map(member=>`${member.request_id} (concierge:${member.target_session_id})`).join(', ')}, whose answer will return on its own if it comes.`:`all ${members.length} requests are answered (${answers.length} answers below).`;})()} This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${parts.join('\n\n')}`,
                     ...(()=>{const files=answers.flatMap(answer=>JSON.parse(answer.payload_json).attachments??[]);return files.length?{attachments:files as string[]}:{};})()});
                 for (const answer of answers)
-                    db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(accepted.id, answer.event_id);
+                    db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(admitted.id, answer.event_id);
+                return admitted; })();
                 for (const answer of answers) this.followReturn(answer.event_id, accepted.id);
                 return;
             }
@@ -1746,7 +1748,7 @@ export class SessionCommunicationCoordinator {
             // A Concierge update holds new starts and yields running work for a few minutes. Work
             // waiting only for that is not stalled, so look again after the update instead.
             // A recipient waiting on its own request to another session, or on a watch, is working through it, not stalled.
-            if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms))) {
+            if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms, false))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 continue;

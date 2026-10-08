@@ -46,7 +46,7 @@ export function updateDraining(): boolean {
 export const AWAITING_INSPECTION = 'outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL';
 
 /** A request this session sent that is still able to wake it with its answer. */
-export function waitingOnLiveRequest(sessionId: number, sinceMs = 0): boolean {
+export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnswers = true): boolean {
     const live = `outcome IS NULL AND stalled_at_ms IS NULL AND (overdue_at_ms IS NULL OR created_at_ms>=${REMINDERS_SINCE_MS})`;
     return !!db.query(`SELECT 1 FROM session_communication_requests request
         LEFT JOIN session_inputs target ON target.id=request.target_input_id
@@ -57,15 +57,15 @@ export function waitingOnLiveRequest(sessionId: number, sinceMs = 0): boolean {
         // A request that has just been answered still wakes this session until its answer is taken
         // in: on 2026-10-08 three requests were reported stalled in the same second their worker's
         // own sub-request settled, before the return that woke it had started a turn.
-        || !!db.query(`SELECT 1 FROM session_communication_requests request
+        || untakenAnswers && !!db.query(`SELECT 1 FROM session_communication_requests request
             JOIN session_communication_events answer ON answer.request_id=request.request_id AND answer.kind='final'
             WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId, sinceMs);
 }
 
 /** The worker ended its turn waiting on something that will wake it: its own live request, or a watch it registered (watches.ts). */
-export function waitingOnDependency(sessionId: number, sinceMs = 0): boolean {
+export function waitingOnDependency(sessionId: number, sinceMs = 0, untakenAnswers = true): boolean {
     return !!db.query("SELECT 1 FROM watches WHERE session_id=? AND created_at_ms>=? AND (state IN ('accepted','observing') OR delivery_state='pending') LIMIT 1").get(sessionId, sinceMs)
-        || waitingOnLiveRequest(sessionId, sinceMs);
+        || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
 
 /** Whether something already in the system will wake this worker again. */
