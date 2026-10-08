@@ -286,7 +286,7 @@ export class MeaningIndex {
     const hits:MeaningHit[]=[],seen=new Set<string>();
     // One read-only connection per search, a bounded number of lookups, and none at all when the
     // archive cannot be opened: a failing lookup must never walk every candidate on the owner's loop.
-    let archive:Database|null=null,archiveReason:string|null=null,lookups=0;
+    let archive:Database|null=null,archiveReason:string|null=null,lookups=0,unresolved=0;
     try{archive=this.archive();}catch(error){archiveReason=`Archive matches skipped: ${error instanceof Error?error.message:String(error)}`;}
     try{
       for(const {index,score} of ranked){
@@ -295,7 +295,7 @@ export class MeaningIndex {
         if(target.kind==='archive'){
           if(!archive||lookups>=limit*3)continue;
           lookups++;
-          const resolved=this.resolveArchive(archive,this.keys[index]!);if(!resolved)continue;target=resolved;
+          const resolved=this.resolveArchive(archive,this.keys[index]!);if(!resolved){unresolved++;continue;}target=resolved;
         }
         // Many prompts of one archived conversation are one result.
         const identity=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:`a:${target.nativeId??target.sourceId}`;
@@ -303,7 +303,8 @@ export class MeaningIndex {
         hits.push({target,score:Math.round(score*1000)/1000,text:this.texts[index]!,at:this.times[index]??null,ref:this.keys[index]!});
       }
     }finally{archive?.close();}
-    const reason=[this.caughtUp?null:'The meaning index is still catching up; older sessions may be missing.',archiveReason].filter(Boolean).join(' ')||null;
+    const reason=[this.caughtUp?null:'The meaning index is still catching up; older sessions may be missing.',archiveReason,
+      unresolved?`${unresolved} archive meaning matches had unavailable or invalid indexed source metadata and were omitted.`:null].filter(Boolean).join(' ')||null;
     return {available:true,hits,reason,indexed,pending:!this.caughtUp};
   }
 }
