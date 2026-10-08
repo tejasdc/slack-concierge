@@ -115,6 +115,11 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- Inbox's human replies) seeks by session; without this the catalogue's per-imported-
         -- session lookup scanned 10,787 rows 651 times and took 3.9 s per read (2026-09-25).
         CREATE INDEX IF NOT EXISTS session_inputs_session_kind ON session_inputs(session_id,kind);
+        -- A request's receipt names the input that carried it; without this every receipt read the
+        -- whole 1.4 GB table, about 5 ms each, and the Inbox's 234 open requests made every
+        -- two-second poll cost 2.5 s of the owner's single thread (2026-10-07). Partial, so it only
+        -- serves lookups that name kind='request'.
+        CREATE INDEX IF NOT EXISTS session_inputs_request ON session_inputs(request_id) WHERE kind='request';
         CREATE TABLE IF NOT EXISTS session_attachments (
           id TEXT PRIMARY KEY, action_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
