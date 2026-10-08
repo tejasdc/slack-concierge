@@ -27,7 +27,12 @@
     "control/capture-drain-status.js": "bot/scripts/capture-drain-status.ts",
     "control/healthcheck.js": "bot/scripts/healthcheck.ts",
     "control/capture-healthcheck.js": "bot/scripts/capture-healthcheck.ts",
-    "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts"
+    "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts",
+    "control/application/presentation-message-worker.js": "bot/src/presentation-message-worker.ts",
+    "control/application/presentation-search-read.js": "bot/src/presentation-search-read.ts",
+    "control/application/provider-history-worker.js": "bot/src/provider-history-worker.ts",
+    "control/application/provider-history-sync-worker.js": "bot/src/provider-history-sync-worker.ts",
+    "control/application/speech-job-worker.js": "bot/src/speech-job-worker.ts"
   },
   "controlFiles": {
     "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
@@ -50,5 +55,12 @@
     "control/systemd/concierge-capture.conf": "systemd/concierge-capture.conf",
     "control/systemd/router-actions.sh": "systemd/router-actions.sh",
     "control/config/capture-routes.toml": "config/capture-routes.toml"
-  }
+  },
+  "applicationBundles": [
+    "control/application/presentation-message-worker.js",
+    "control/application/presentation-search-read.js",
+    "control/application/provider-history-worker.js",
+    "control/application/provider-history-sync-worker.js",
+    "control/application/speech-job-worker.js"
+  ]
 }

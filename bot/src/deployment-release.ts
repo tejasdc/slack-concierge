@@ -27,6 +27,7 @@ export interface ReleaseManifest {
   compatibility_digest: string;
   artifact_digest: string;
   files: Record<string, string>;
+  application_bundle_source_digest?: string;
 }
 
 export interface PreparedRelease {
@@ -53,13 +54,7 @@ export interface ReleaseServices {
 }
 
 const APPLICATION_FILES = [
-  "presentation-check.json",
   "bot/src/index.js",
-  "bot/src/presentation-message-worker.js",
-  "bot/src/presentation-search-read.js",
-  "bot/src/provider-history-worker.js",
-  "bot/src/provider-history-sync-worker.js",
-  "bot/src/speech-job-worker.js",
   "bot/src/codex-app-server-bridge.mjs",
   "bot/scripts/rename-exchange.py",
 ];
@@ -75,10 +70,11 @@ const APPLICATION_FILES = [
 interface ArtifactDeclaration {
   controlBundles: Record<string, string>;
   controlFiles: Record<string, string>;
+  applicationBundles: string[];
 }
 
 function checkedDeclaration(value: unknown, label: string): ArtifactDeclaration {
-  const candidate = value as { format?: unknown; controlBundles?: unknown; controlFiles?: unknown } | null;
+  const candidate = value as { format?: unknown; controlBundles?: unknown; controlFiles?: unknown; applicationBundles?:unknown } | null;
   if (!candidate || candidate.format !== 1) throw new Error(`${label} has an unsupported format.`);
   const table = (entries: unknown, name: string, sourcePattern: RegExp) => {
     if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`${label} ${name} is not a table.`);
@@ -92,9 +88,14 @@ function checkedDeclaration(value: unknown, label: string): ArtifactDeclaration 
     }
     return result;
   };
+  const controlBundles=table(candidate.controlBundles, "controlBundles", /^bot\/[A-Za-z0-9._\/-]+\.ts$/);
+  const applicationBundles=candidate.applicationBundles??[];
+  if(!Array.isArray(applicationBundles)||applicationBundles.some(path=>typeof path!=='string'||!path.startsWith('control/application/')||!controlBundles[path]))
+    throw new Error(`${label} application bundles must name declared application paths.`);
   return {
-    controlBundles: table(candidate.controlBundles, "controlBundles", /^bot\/[A-Za-z0-9._\/-]+\.ts$/),
+    controlBundles,
     controlFiles: table(candidate.controlFiles, "controlFiles", /^[A-Za-z0-9._\/@-]+$/),
+    applicationBundles:[...new Set(applicationBundles)],
   };
 }
 
@@ -103,7 +104,8 @@ const BUILT_IN = checkedDeclaration(BUILT_IN_DECLARATION, "Built-in artifact dec
 // A source that predates the declaration file (an old commit being rebuilt) uses this code's list.
 function declarationFor(controlSourceRoot: string): ArtifactDeclaration {
   const path = join(controlSourceRoot, "bot/src/deployment-artifact-files.json");
-  if (!existsSync(path)) return BUILT_IN;
+  if (!existsSync(path)) return {...BUILT_IN,applicationBundles:[],controlBundles:Object.fromEntries(
+    Object.entries(BUILT_IN.controlBundles).filter(([destination])=>!BUILT_IN.applicationBundles.includes(destination)))};
   return checkedDeclaration(JSON.parse(readFileSync(path, "utf8")), "Candidate artifact declaration");
 }
 
@@ -281,32 +283,37 @@ export class TrustedRootReleaseManager {
       }
       // Run the candidate's isolated growth checks before sealing any runnable artifact.
       // This executes in the update runner, not the interactive owner process.
-      const presentationCheck=this.services.spawn([
-        '/usr/bin/timeout','90',this.environment.bunExecutable,
+      const applicationDeclaration=declarationFor(sourceRoot);
+      const hasPresentationGate=existsSync(join(sourceRoot,'bot/scripts/presentation-release-check.ts'));
+      if(applicationDeclaration.applicationBundles.length&&!hasPresentationGate)
+        throw new Error('Candidate application is missing its presentation release check.');
+      const presentationCheck=hasPresentationGate?this.services.spawn([
+        '/usr/bin/timeout','90','/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
+        `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
+        this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
-      ],{cwd:join(sourceRoot,'bot')});
-      if(presentationCheck.exitCode!==0)throw new Error(
+      ],{cwd:join(sourceRoot,'bot')}):null;
+      if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${Buffer.from(presentationCheck.stderr).toString('utf8').slice(0,2000)}`);
-      writeFileSync(join(outputRoot,'presentation-check.json'),presentationCheck.stdout,{mode:0o444});
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
       await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src/index.js"));
-      await this.services.build(join(sourceRoot, "bot/src/presentation-message-worker.ts"), join(outputRoot, "bot/src/presentation-message-worker.js"));
-      await this.services.build(join(sourceRoot, "bot/src/presentation-search-read.ts"), join(outputRoot, "bot/src/presentation-search-read.js"));
-      await this.services.build(join(sourceRoot, "bot/src/provider-history-worker.ts"), join(outputRoot, "bot/src/provider-history-worker.js"));
-      await this.services.build(join(sourceRoot, "bot/src/provider-history-sync-worker.ts"), join(outputRoot, "bot/src/provider-history-sync-worker.js"));
-      await this.services.build(join(sourceRoot, "bot/src/speech-job-worker.ts"), join(outputRoot, "bot/src/speech-job-worker.js"));
       await this.services.build(
         join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
         join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
         "node",
       );
-      const declaration = declarationFor(effectiveControlSourceRoot);
+      const controlDeclaration=declarationFor(effectiveControlSourceRoot);
+      // Keep the namespace understood by older builders, but a hybrid's application workers
+      // always come from its application commit, never the independently upgraded control.
+      const applicationPaths=new Set(applicationDeclaration.applicationBundles);
+      const declaration={...controlDeclaration,controlBundles:{...controlDeclaration.controlBundles,
+        ...Object.fromEntries([...applicationPaths].map(path=>[path,applicationDeclaration.controlBundles[path]!]))}};
       const runtimeFiles = runtimeFilesFor(declaration);
       for (const [destination, source] of Object.entries(declaration.controlBundles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        await this.services.build(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
+        await this.services.build(join(applicationPaths.has(destination)?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       for (const [destination, source] of Object.entries(declaration.controlFiles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
@@ -333,6 +340,7 @@ export class TrustedRootReleaseManager {
         runtime_digest: runtimeDigest,
         compatibility_digest: compatibilityDigest,
         files,
+        ...(applicationPaths.size?{application_bundle_source_digest:sourceTreeDigest}:{}),
       };
       const artifactDigest = digest(JSON.stringify(unsigned));
       const manifest: ReleaseManifest = { ...unsigned, artifact_digest: artifactDigest };

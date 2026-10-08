@@ -1,3 +1,4 @@
+import {releaseWorkerPath} from "./release-worker";
 import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
@@ -264,21 +265,8 @@ async function sourceVersion(sessionUuid: string, cwd: string) {
   catch { return null; }
 }
 
-function historyWorkerPath() {
-  const adjacent = join(dirname(process.argv[1] || ""), "provider-history-worker.js");
-  if (existsSync(adjacent)) return adjacent;
-  const source = join(import.meta.dir, "provider-history-worker.ts");
-  if (existsSync(source)) return source;
-  throw new Error("HISTORY_WORKER_UNAVAILABLE");
-}
-
-function historyVerifyWorkerPath() {
-  const adjacent=join(dirname(process.argv[1] || ""),"provider-history-sync-worker.js");
-  if(existsSync(adjacent))return adjacent;
-  const source=join(import.meta.dir,"provider-history-sync-worker.ts");
-  if(existsSync(source))return source;
-  throw new Error("HISTORY_WORKER_UNAVAILABLE");
-}
+function historyWorkerPath(){return releaseWorkerPath("provider-history-worker");}
+function historyVerifyWorkerPath(){return releaseWorkerPath("provider-history-sync-worker");}
 
 function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
   if(queuedVerifications.has(sessionUuid))return queuedVerifications.get(sessionUuid);

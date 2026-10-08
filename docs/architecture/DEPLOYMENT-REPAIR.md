@@ -54,6 +54,43 @@ Neither reaction starts or resumes a provider session.
 
 ## Immutable releases
 
+### Application workers and the first upgraded builder
+
+Application worker entrypoints are declared in `deployment-artifact-files.json` under
+`control/application/`, a namespace the previously installed builder already seals. The
+`applicationBundles` classification names entries in that same source map; it is not a
+second source list. The directory name is transport compatibility, not execution ownership:
+the owner resolves workers inside its own immutable application artifact, never the moving
+deployment `control` link. A control-only hybrid built by the new builder takes these files
+from its application commit and seals `application_bundle_source_digest`. An older builder
+can package an ordinary same-commit application/control release correctly; its hybrid with
+new workers is refused because it cannot prove their application provenance.
+
+The running deploy script already calls the candidate's `drain-status.js adoptable-check`
+before activation. That candidate command first verifies its sealed manifest and required
+application files, extracts the exact Git archive matching `source_tree_digest` into a
+temporary directory, and runs the isolated presentation growth gate. Scratch owner/capture
+paths and the scoped test authorization replace production state configuration. Missing
+workers, missing gate, failed growth check, unavailable source archive, or unknown hybrid
+provenance refuse before the live pointer changes. The receipt is printed as
+`candidate_application_checked` in the detached deploy log with application and artifact
+identity; the already sealed artifact is never edited to append a test receipt.
+
+New builders also run the gate before sealing. Both old and new verifiers retain the
+manifest-owned file-set rule, so adding application workers does not invalidate an older
+rollback artifact. The independent speech worker starts through the **application** current
+link; it finishes a job before exiting on a changed application artifact, allowing systemd
+to restart it on that application's worker. It does not follow a control-only link change.
+If a rollback predates speech jobs, retained spool custody is preserved for forward
+recovery; an old owner is not claimed to reconcile a job protocol it never implemented.
+
+`bun bot/scripts/release-application-compatibility.ts` is a production-read-only isolated
+acceptance harness. It uses the installed control's exact builder source against a scratch
+candidate repository, exercises the sealed candidate's actual preactivation command, runs
+its bundled search worker on scratch data, verifies old/new seals, checks hybrid source
+pinning, and rejects missing checks/unproved provenance. It never activates an artifact,
+changes a live pointer, opens the production ledger, or invokes a supervisor mutation.
+
 `bot/src/deployment-release.ts` builds releases from committed Git archives, not
 from the mutable checkout. Normal releases use one commit for both application
 and control provenance. The one-time cutover explicitly combines application

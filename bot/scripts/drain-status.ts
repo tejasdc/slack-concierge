@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { isAncestorProcess, isProcessIdentityAlive, processIdentity } from "../src/runtime-identity";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {dirname,join,resolve} from "node:path";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION } from "../src/execution-host-client";
 import { provenRunKinds, turnContinuesThroughRestart } from "../src/execution-survival";
+import {checkReleaseApplication} from '../src/deployment-application-check';
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -57,6 +58,14 @@ const flag = (name: string) => { const at = process.argv.indexOf(name); return a
 try {
   const command = process.argv[2];
   if (command === "host-protocols") finish(0, { status: "host-protocols", current: HOST_PROTOCOL_VERSION, adoptable: ADOPTABLE_HOST_PROTOCOLS });
+  if(command==='application-check'||command==='adoptable-check'&&!flag('--candidate-contract')){
+    const artifact=resolve(import.meta.dir,'..');
+    if(existsSync(join(artifact,'manifest.json'))){
+      const proof=checkReleaseApplication(artifact,process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source',dirname(dirname(artifact)));
+      if(command==='application-check')finish(0,proof);
+      console.error(JSON.stringify({event:'candidate_application_checked',...proof}));
+    }else if(command==='application-check'||process.argv[1]?.endsWith('.js'))throw new Error('Application checks require a sealed release.');
+  }
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
   if (!["check", "claim", "recover", "release", "holds", "adoptable-check"].includes(command)) {

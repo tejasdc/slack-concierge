@@ -108,6 +108,8 @@ authorization or a change to the default rapid-iteration policy.
   and capability host, not another queue, dispatcher or session authority.
   Peer discovery uses durable prepared-card pages and deltas, never a full-view refresh;
   see [bounded offline catalogue](docs/runbooks/PEER-INSTANCES.md#bounded-offline-catalogue).
+  Application workers are candidate-declared and checked before activation even by the
+  preceding builder; see [release compatibility](docs/architecture/DEPLOYMENT-REPAIR.md#application-workers-and-the-first-upgraded-builder).
 - Claude history pages use an off-owner SDK import and an indexed derived snapshot, then merge
   owner-retained live messages by exact identity. Cold history states that it is indexing;
   raw transcript changes without corresponding retained events trigger a background rebuild.

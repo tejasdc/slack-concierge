@@ -54,7 +54,7 @@ the growth fixtures and loaded timing measurements cover that distinct risk.
 `bot/scripts/presentation-release-check.ts` is part of the build and deployment candidate
 seal. Missing fixtures fail it. It also traverses the presentation worker's local import
 graph and refuses application writers or lifecycle initialization. A successful deployment
-retains its `presentation-check.json` evidence beside the sealed release.
+records the candidate preactivation receipt (`candidate_application_checked`) in the detached deployment log, bound to the exact artifact and application commit. The first upgrade is checked by the candidate itself even when the running builder predates presentation workers.
 
 The catalogue fixture runs the actual prepared readers under the same storage budgets,
 checks bounded wire sizes and indexed deep-page access, and exercises movement between

@@ -60,7 +60,7 @@ if(import.meta.main){
  void removeAbandonedSpeechStaging(root).catch(()=>{});
  setInterval(()=>void removeAbandonedSpeechStaging(root).catch(()=>{}),60*60_000);
  log('info','speech_worker_ready',{});
- const current='/var/lib/slack-concierge-deployment/current/bot/src/speech-job-worker.js';
+ const current='/var/lib/slack-concierge-deployment/current/control/application/speech-job-worker.js';
  const startedFile=process.platform==='linux'?(()=>{try{const file=statSync(current);return {device:file.dev,inode:file.ino};}catch{return null;}})():null;
  for(;;){
   const jobs=await pendingSpeechJobsAsync(root);

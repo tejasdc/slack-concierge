@@ -1,6 +1,6 @@
+import {releaseWorkerPath} from "./release-worker";
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
-import {join} from 'node:path';
 import {log} from './log';
 
 const unit='concierge-speech-worker';
@@ -14,11 +14,9 @@ function run(command:string,args:string[]):Promise<{code:number|null;stderr:stri
  });
 }
 function workerEntry(){
- const bundled='/var/lib/slack-concierge-deployment/current/bot/src/speech-job-worker.js';
- if(existsSync(bundled))return bundled;
- const source=join(import.meta.dir,'speech-job-worker.ts');
- if(existsSync(source))return source;
- throw new Error('The speech worker is absent from the installed release.');
+ const installed="/var/lib/slack-concierge-deployment/current/control/application/speech-job-worker.js";
+ if(existsSync(installed))return installed;
+ return releaseWorkerPath("speech-job-worker");
 }
 /** Starts one independent, supervised lane. The unit keeps working while Concierge restarts. */
 export function ensureSpeechWorker(stateDir:string):Promise<void>{
