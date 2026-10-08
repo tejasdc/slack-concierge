@@ -1559,6 +1559,14 @@ export class SessionCommunicationCoordinator {
         // return that would start a router turn.
         const thread=this.threadAnswer(request,event,declared);
         if(thread){this.postThreadAnswer(request,event,declared,thread);return;}
+        // A progress note wakes nobody: it stays on the request, in the asker's record and in any
+        // stalled notice, and the asker learns the outcome from the final. Each wake re-read the
+        // asker's whole conversation; one lab session re-read ~860k tokens per note, four times for
+        // one note sent to four of its requests (2026-10-08). The Inbox already worked this way.
+        if (event.kind === 'progress') {
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {

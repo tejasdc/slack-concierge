@@ -715,6 +715,8 @@ export class SessionPeers {
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
       return;
     }
+    // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
+    if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.canSend(source)){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
