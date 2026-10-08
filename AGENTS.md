@@ -47,6 +47,11 @@ and mandatory review requirements in this repository and linked historical mater
 
 ## Working boundaries
 
+- Grafana operational alerts now file provider-free native Inbox notices and queue
+  service-authored investigation turns; the external work-flow supervisor owns
+  responsive-owner memory and latency repair. Webhook acceptance alone does not
+  prove notice delivery or agent admission. See [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
+
 - Scheduled and banked work use the existing queued turn and wake timer. A saved item starts
   in its own named session, so later inputs follow its FIFO. `saved_kind` and the saved rule
   survive provider requeues. A banked item waiting for its chosen time has no provider-retry

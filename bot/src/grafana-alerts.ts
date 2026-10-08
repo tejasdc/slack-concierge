@@ -109,7 +109,16 @@ export class GrafanaAlerts {
   accept(alerts: GrafanaAlert[]) {
     if (this.stopping) throw new Error("Alert receiver is draining.");
     const receipts = this.options.db.transaction(() => alerts.map(alert => {
-      const previous = this.row(alert.fingerprint);
+      let previous = this.row(alert.fingerprint);
+      const oldEpisode = previous && (alert.startsAt < previous.starts_at
+        || (alert.startsAt === previous.starts_at && previous.status === "resolved" && alert.status === "firing"));
+      if (previous && !oldEpisode && previous.channel !== this.options.destinationChannel && alert.status === "firing") {
+        // A retained Slack receipt cannot be the root of a native Inbox notice.
+        this.options.db.query(`UPDATE grafana_alerts SET channel=?,root_ts=NULL,delivered_revision=0,
+          delivery_status='pending',owner_id=NULL,error=NULL,investigation_episode=NULL
+          WHERE fingerprint=?`).run(this.options.destinationChannel, alert.fingerprint);
+        previous = this.row(alert.fingerprint);
+      }
       if (previous && previous.condition !== alert.condition) throw new Error("Alert fingerprint changed its condition.");
       const stale = previous && (alert.startsAt < previous.starts_at
         || (alert.startsAt === previous.starts_at && previous.status === "resolved" && alert.status === "firing"));
@@ -137,8 +146,9 @@ export class GrafanaAlerts {
     for (const row of this.options.db.query("SELECT * FROM grafana_alerts WHERE delivery_status='sending'").all() as GrafanaAlertRow[]) {
       if (row.owner_id && this.options.isOwnerAlive(row.owner_id)) continue;
       this.options.db.query(`UPDATE grafana_alerts SET delivery_status=?,owner_id=NULL,error=? WHERE fingerprint=? AND delivery_status='sending'`)
-        .run(row.root_ts ? "pending" : "parked", row.root_ts ? null : "ambiguous_post_after_owner_death", row.fingerprint);
-      if (!row.root_ts) this.observe("grafana_alert_parked", { fingerprint: row.fingerprint, reason: "ambiguous_post_after_owner_death" });
+        .run(row.channel === "native:inbox" || row.root_ts ? "pending" : "parked",
+          row.channel === "native:inbox" || row.root_ts ? null : "ambiguous_post_after_owner_death", row.fingerprint);
+      if (!row.root_ts && row.channel !== "native:inbox") this.observe("grafana_alert_parked", { fingerprint: row.fingerprint, reason: "ambiguous_post_after_owner_death" });
     }
     this.wake();
   }
@@ -153,9 +163,9 @@ export class GrafanaAlerts {
       const current = this.row(row.fingerprint)!;
       if (current.status !== "firing" || current.investigation_episode === current.starts_at) return;
       let turnId: number | null = null;
-      if (!["TestAlert", "ConciergeWebhookAcceptance"].includes(current.condition)) {
+      if (!["TestAlert", "ConciergeWebhookAcceptance", "ConciergeDegraded"].includes(current.condition)) {
         const active = this.options.db.query(`SELECT turn.id FROM turns turn JOIN grafana_alerts alert
-          ON alert.investigation_turn_id=turn.id WHERE alert.condition=? AND turn.turn_kind='machine_alert'
+          ON alert.investigation_turn_id=turn.id WHERE alert.condition=? AND turn.turn_kind IN ('machine_alert','native')
           AND turn.status IN ('queued','running','delivering','parked') LIMIT 1`).get(current.condition) as { id: number } | null;
         turnId = active?.id ?? this.options.admit(current);
       }
@@ -190,22 +200,23 @@ export class GrafanaAlerts {
         FROM grafana_alerts WHERE condition=? AND channel=?`).get(row.condition, row.channel, row.condition, row.channel) as { count: number; firing: number; root_ts: string | null };
       // One condition root survives fingerprint changes; the worker serializes
       // first publication before another instance can discover its confirmed root.
-      row = { ...row, root_ts: condition.root_ts || row.root_ts, conditionFiring: Boolean(condition.firing),
+      row = { ...row, root_ts: row.channel === "native:inbox" ? row.root_ts : condition.root_ts || row.root_ts, conditionFiring: Boolean(condition.firing),
         instances: this.options.db.query(`SELECT * FROM grafana_alerts WHERE condition=? AND channel=?
           ORDER BY (fingerprint=?) DESC, status='firing' DESC, starts_at DESC, fingerprint LIMIT 64`)
           .all(row.condition, row.channel, row.fingerprint) as GrafanaAlertRow[],
         hiddenInstances: Math.max(0, condition.count - 64) };
+      if (row.channel === "native:inbox") row = { ...row, conditionFiring: row.status === "firing", instances: [row], hiddenInstances: 0 };
       const claimed = this.options.db.query(`UPDATE grafana_alerts SET delivery_status='sending',owner_id=?,attempts=attempts+1,root_ts=?
         WHERE fingerprint=? AND delivery_status='pending'`).run(this.options.ownerId, row.root_ts, row.fingerprint);
       if (!claimed.changes) continue;
       let ts: string;
       try { ts = await this.options.publish(row); }
       catch (error) {
-        const retry = error instanceof GrafanaSlackError && error.retryable && row.attempts < 2;
+        const retry = row.channel === "native:inbox" || error instanceof GrafanaSlackError && error.retryable && row.attempts < 2;
         this.options.db.query(`UPDATE grafana_alerts SET delivery_status=?,owner_id=NULL,error=?,next_attempt_ms=?
           WHERE fingerprint=? AND delivery_status='sending' AND owner_id=?`).run(retry ? "pending" : "parked",
           error instanceof GrafanaSlackError ? error.safeCode : "unconfirmed_delivery",
-          Date.now() + Math.max(1000 * 2 ** row.attempts, error instanceof GrafanaSlackError ? error.retryAfterMs : 0),
+          Date.now() + Math.max(Math.min(60_000, 1000 * 2 ** Math.min(row.attempts, 6)), error instanceof GrafanaSlackError ? error.retryAfterMs : 0),
           row.fingerprint, this.options.ownerId);
         this.observe(retry ? "grafana_alert_retry" : "grafana_alert_parked", { fingerprint: row.fingerprint });
         continue;

@@ -300,6 +300,7 @@ import {
 import { acceptGitHubDeploymentPush, catchUpMissedPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
 import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
+import { admitNativeGrafanaInvestigation, publishNativeGrafanaAlert } from "./grafana-native";
 import { admitGrafanaInvestigation } from "./grafana-turns";
 import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
@@ -4178,14 +4179,18 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         serviceOnline = true;
         if (captureQueueToken) {
           grafanaAlerts = new GrafanaAlerts({
-            db, destinationChannel: alertChannel, ownerId: instanceId,
+            db, destinationChannel: "native:inbox", ownerId: instanceId,
             isOwnerAlive: (ownerId) => {
               const owner = db.query("SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?")
                 .get(ownerId) as any;
               return Boolean(owner && isProcessIdentityAlive(owner));
             },
-            publish: (row) => publishGrafanaAlert({ row, token: cfg.bot_token }),
-            admit: (row) => admitGrafanaInvestigation(row, alertOperator),
+            publish: (row) => row.channel === "native:inbox"
+              ? publishNativeGrafanaAlert(row)
+              : publishGrafanaAlert({ row, token: cfg.bot_token }),
+            admit: (row) => row.channel === "native:inbox"
+              ? admitNativeGrafanaInvestigation(row, process.env.CONCIERGE_WORKSPACE_ROOT || "/root/workspace")
+              : admitGrafanaInvestigation(row, alertOperator),
             wakeTurns: () => sessionTurnQueue?.wake(),
             observe: (event, fields) => log(event.includes("failed") || event.includes("parked") ? "error" : "info", event, fields),
           });
