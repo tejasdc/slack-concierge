@@ -53,11 +53,13 @@ His own messages show the door they came through ("You · iPhone Action Button",
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
 the capture's recorded source or the door thnkr.ing names for its own screens.
 
-An outside CLI agent uses `router-actions.sh external <name> capture` at the owner
+An outside CLI agent uses `router-actions.sh external <name> capture [--id <stable-id>]` at the owner
 socket. The owner records it with the distinct `outside-agent` source kind and required
 outside-agent name; Monologue cannot carry that name. It is shown as
 `Outside agent · <name>` and enters the normal Inbox router turn. It is separate from `test-capture`, which cites an existing run
-and deliberately starts no Inbox turn.
+and deliberately starts no Inbox turn. The stable ID is the retry identity: the
+same name, ID and content returns the original retained capture without a second
+router turn, while changed content conflicts. Omitting it creates a fresh random ID.
 
 ## Durable receipt
 

@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS turns (
   ended_at           DATETIME,
   UNIQUE(session_id, slack_user_msg_ts)
 );
+CREATE INDEX IF NOT EXISTS turns_queued_order ON turns(id) WHERE status='queued';
+CREATE INDEX IF NOT EXISTS turns_session_order_status ON turns(session_id,id,status);
 
 CREATE TABLE IF NOT EXISTS turn_dependencies (
   turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
@@ -4993,59 +4995,90 @@ export function authHeldInputCount(providerId: ProviderId): number {
 /** The queue's view of execution-survival.ts: which kinds may start while an update installs. */
 export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
+const CLAIMABLE_QUEUED_TURN_WHERE = `
+  turn.status='queued'
+  AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
+  AND NOT EXISTS (
+    SELECT 1 FROM turn_dependencies dependency
+    JOIN turns prerequisite ON prerequisite.id=dependency.prerequisite_turn_id
+    WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL
+      AND NOT (${SETTLED_EXECUTION_SQL})
+  )
+  AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+  AND COALESCE(turn.dispatch_failure_class,'') NOT IN ('auth_wait','usage_wait')
+  AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'scheduled' OR turn.saved_expires_at_ms IS NULL OR turn.saved_expires_at_ms>?)
+  AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
+  AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
+    (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
+      AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
+        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
+        AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
+  AND turn.session_id NOT IN (SELECT value FROM json_each(?))
+  AND NOT EXISTS (
+    SELECT 1 FROM turns older
+    WHERE older.session_id=turn.session_id AND older.id<turn.id
+      AND ${EARLIER_TURN_BLOCKS_SQL}
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM turns live
+    WHERE live.session_id=turn.session_id AND live.id<>turn.id
+      AND live.status IN ('running', 'delivering')
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM turn_artifact_deliveries artifact
+    JOIN turns artifact_turn ON artifact_turn.id=artifact.turn_id
+    WHERE artifact_turn.session_id=turn.session_id
+      AND artifact.status IN ('pending', 'sending')
+  )
+  AND (? = 0 OR (turn.turn_kind='native'
+    AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+    AND ((session.provider_id='claude-code' AND ?=1)
+      OR (session.provider_id='codex' AND ?=1 AND (turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR ?=1)))))`;
+
+function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
+  return [nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
+    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0,survivable?.codexPrivate ? 1 : 0] as const;
+}
+
+function currentClaimSurvivability() {
+  return db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get() ? survivableRunKinds() : null;
+}
+
+export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:string};
+
+/** The owner queue's own admission view, bounded for the local supervisor read. */
+export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly number[]=[],olderThanMs=10*60_000,limit=30):ClaimableNotClaimedRow[] {
+  const survivable=currentClaimSurvivability();
+  if(survivable&&!survivable.claude&&!survivable.codexShared)return [];
+  const bounded=Math.max(0,Math.min(30,Math.trunc(limit)));
+  if(!bounded)return [];
+  return (db.query(`SELECT turn.id AS turn_id,turn.session_id,strftime('%Y-%m-%dT%H:%M:%fZ',turn.started_at) AS queued_at
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
+      AND session.status<>'archived' AND unixepoch(turn.started_at)*1000<=?
+    ORDER BY turn.id LIMIT ?`).all(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),nowMs-olderThanMs,bounded) as Array<{turn_id:number;session_id:number;queued_at:string}>)
+    .map(row=>({turnId:row.turn_id,sessionId:row.session_id,queuedAt:row.queued_at}));
+}
+
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     settleTurnDependencies();
     // While an update is being installed, only runs that are proven to survive the coordinator's
     // restart start; everything else waits for the install, as before. A model reply is never
     // held for an update when its kind can carry on through it.
-    const draining = !!db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get();
-    const survivable = draining ? survivableRunKinds() : null;
+    const survivable = currentClaimSurvivability();
     if (survivable && !survivable.claude && !survivable.codexShared) return null;
     while (true) {
       const candidate = db.query(`
         SELECT turn.id AS turn_id, turn.session_id, session.status AS session_status
         FROM turns turn
         JOIN sessions session ON session.id=turn.session_id
-        WHERE turn.status='queued'
-          AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
-          AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
-          AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
-          AND COALESCE(turn.dispatch_failure_class,'') NOT IN ('auth_wait','usage_wait')
-          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'scheduled' OR turn.saved_expires_at_ms IS NULL OR turn.saved_expires_at_ms>?)
-          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
-          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
-            (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
-              AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-                AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
-              AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
-                AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
-          AND turn.session_id NOT IN (SELECT value FROM json_each(?))
-          AND NOT EXISTS (
-            SELECT 1 FROM turns older
-            WHERE older.session_id=turn.session_id AND older.id<turn.id
-              AND ${EARLIER_TURN_BLOCKS_SQL}
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM turns live
-            WHERE live.session_id=turn.session_id AND live.id<>turn.id
-              AND live.status IN ('running', 'delivering')
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM turn_artifact_deliveries artifact
-            JOIN turns artifact_turn ON artifact_turn.id=artifact.turn_id
-            WHERE artifact_turn.session_id=turn.session_id
-              AND artifact.status IN ('pending', 'sending')
-          )
-          AND (? = 0 OR (turn.turn_kind='native'
-            AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
-            AND ((session.provider_id='claude-code' AND ?=1)
-              OR (session.provider_id='codex' AND ?=1 AND (turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR ?=1)))))
+        WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
         ORDER BY turn.id
         LIMIT 1
-      `).get(nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
-        survivable ? 1 : 0, survivable?.claude ? 1 : 0, survivable?.codexShared ? 1 : 0, survivable?.codexPrivate ? 1 : 0) as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable)) as { turn_id: number; session_id: number; session_status: string } | null;
       if (!candidate) return null;
 
       if (candidate.session_status === "archived") {

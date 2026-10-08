@@ -8,21 +8,27 @@ requester session:
 
 ```bash
 router-actions.sh external work-flow-supervisor capture -- "A message for the Inbox router"
-router-actions.sh external work-flow-supervisor capture --file /path/to/evidence.txt -- "Please route this"
+router-actions.sh external work-flow-supervisor capture --id incident-42 --file /path/to/evidence.txt -- "Please route this"
 router-actions.sh external work-flow-supervisor ask '<exact-discovered-session-address>' --action-id incident-42 --requested-effect work -- "Check this incident"
 router-actions.sh external work-flow-supervisor get '<request-id>'
 ```
 
 Names match `^[a-z][a-z0-9-]{2,40}$`. `ask` also accepts `--text-file` in place of
-text after `--`; its action ID is stable across retries. Capture enters the normal
-Inbox intake and starts its router turn. Direct asks use the normal recipient queue
+text after `--`; its action ID is stable across retries. Capture accepts a stable
+`--id` of 1–200 letters, digits, dots, underscores, colons or hyphens. Repeating
+the same ID, name and bytes returns the first receipt and starts no second router
+turn; changed bytes conflict. Without `--id`, the helper creates a fresh random ID.
+Capture enters the normal Inbox intake and starts its router turn. Direct asks use the normal recipient queue
 and reply command. The outside caller polls `get`; no return input is delivered to
 an imaginary session. The owner socket is root only. The old `test-capture` command
 remains a path check by an agent already inside Concierge and starts no Inbox turn.
 
 The same root-only owner socket answers `GET /supervisor/ping` with process identity,
-start time and installed release, and `POST /supervisor/wake` with the owner paths it
-woke. Wake schedules existing work without replaying any input.
+start time and installed release, `GET /supervisor/flow` with the bounded owner-native
+claimable-turn and undelivered-return view, and `POST /supervisor/wake` with the owner
+paths it woke. Flow reuses the queue claim predicate and return audit query; it does
+not infer state from ledger rows independently. Wake schedules existing work without
+replaying any input.
 
 ## Waiting for a local process
 

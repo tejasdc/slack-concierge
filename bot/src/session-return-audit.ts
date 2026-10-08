@@ -13,10 +13,21 @@ import { REMINDERS_SINCE_MS } from './request-liveness';
  * reached its destination.
  */
 const GRACE_MS = 10 * 60 * 1000;
-const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, r.source_session_id
+const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, e.created_at_ms, r.source_session_id
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
     WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1) AND e.accepted_input_id IS NULL
-      AND e.status NOT IN ('held','retained','received') ${extra}`;
+      AND e.status NOT IN ('held','retained','received') AND e.created_at_ms<=? ${extra}`;
+export type UndeliveredReturnRow={event_id:string;request_id:string;status:string;created_at_ms:number;source_session_id:number;peer:boolean};
+/** The audit and local supervisor read one definition; the supervisor supplies a hard bound. */
+export function undeliveredReturnRows(now=Date.now(),limit?:number):UndeliveredReturnRow[] {
+    const bounded=limit===undefined?null:Math.max(0,Math.min(30,Math.trunc(limit)));
+    if(bounded===0)return [];
+    const read=(events:string,requests:string,extra:string,peer:boolean)=>(db.query(`${UNDELIVERED(events,requests,extra)} ORDER BY e.created_at_ms,e.event_id${bounded===null?'':' LIMIT ?'}`)
+        .all(now-GRACE_MS,...(bounded===null?[]:[bounded])) as Array<Omit<UndeliveredReturnRow,'peer'>>).map(row=>({...row,peer}));
+    return [...read('session_communication_events','session_communication_requests','AND r.source_input_id IS NOT NULL',false),
+        ...read('session_peer_events','session_peer_requests','',true)]
+        .sort((a,b)=>a.created_at_ms-b.created_at_ms||a.event_id.localeCompare(b.event_id)).slice(0,bounded??undefined);
+}
 /**
  * A return whose input was recorded and then died with the turn that received it.
  * Recording a return does not discharge it: on 2026-09-22 nine returns were written into
@@ -30,7 +41,6 @@ const UNHANDLED = (events: string, requests: string, extra: string) => `SELECT e
       JOIN turns turn ON turn.id=input.turn_id
     WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1)
       AND turn.status IN ('error','parked') AND turn.input_context_received_by_turn_id IS NULL ${extra}`;
-const firstSeen = new Map<string, number>();
 const reported = new Set<string>();
 const reportedUnhandled = new Set<string>();
 const loggedUnhandled = new Set<string>();
@@ -45,19 +55,12 @@ let auditedAt = -Infinity;
 export function auditUndeliveredReturns(now = Date.now()) {
     if (now - auditedAt < AUDIT_EVERY_MS) return;
     auditedAt = now;
-    const rows = [
-        ...(db.query(UNDELIVERED('session_communication_events', 'session_communication_requests', 'AND r.source_input_id IS NOT NULL')).all() as any[]).map(row => ({ ...row, peer: null })),
-        ...(db.query(UNDELIVERED('session_peer_events', 'session_peer_requests', '')).all() as any[]).map(row => ({ ...row, peer: true })),
-    ];
-    const current = new Set(rows.map(row => row.event_id as string));
-    for (const id of firstSeen.keys()) if (!current.has(id)) firstSeen.delete(id);
+    const rows = undeliveredReturnRows(now);
     for (const row of rows) {
-        const seen = firstSeen.get(row.event_id) ?? now;
-        firstSeen.set(row.event_id, seen);
-        if (now - seen < GRACE_MS || reported.has(row.event_id)) continue;
+        if (reported.has(row.event_id)) continue;
         reported.add(row.event_id);
         log('error', 'session_return_undelivered', { event_id: row.event_id, request_id: row.request_id, status: row.status,
-            source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer, undelivered_ms: now - seen });
+            source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer, undelivered_ms: now - row.created_at_ms });
     }
     const unhandled = [
         ...(db.query(UNHANDLED('session_communication_events', 'session_communication_requests', 'AND r.source_input_id IS NOT NULL')).all() as any[]).map(row => ({ ...row, peer: null })),

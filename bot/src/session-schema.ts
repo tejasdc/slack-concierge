@@ -220,6 +220,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           target_input_id TEXT NOT NULL UNIQUE, requested_effect TEXT NOT NULL,
           text TEXT NOT NULL, payload_hash TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'recorded', outcome TEXT, result_json TEXT,
+          reminded_at_ms INTEGER, reminded_via TEXT, hook_offered_run TEXT, stalled_at_ms INTEGER,
           created_at_ms INTEGER NOT NULL, UNIQUE(agent_name,action_id)
         );
         CREATE TABLE IF NOT EXISTS session_external_replies (
@@ -388,6 +389,16 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_peer_deliveries','reminded_via','reminded_via TEXT');
       add('session_peer_deliveries','hook_offered_run','hook_offered_run TEXT');
       add('session_peer_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      add('session_external_requests','reminded_at_ms','reminded_at_ms INTEGER');
+      add('session_external_requests','reminded_via','reminded_via TEXT');
+      add('session_external_requests','hook_offered_run','hook_offered_run TEXT');
+      add('session_external_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      db.exec(`CREATE INDEX IF NOT EXISTS session_communication_events_undelivered_age
+          ON session_communication_events(created_at_ms,event_id)
+          WHERE accepted_input_id IS NULL AND status NOT IN ('held','retained','received');
+        CREATE INDEX IF NOT EXISTS session_peer_events_undelivered_age
+          ON session_peer_events(created_at_ms,event_id)
+          WHERE accepted_input_id IS NULL AND status NOT IN ('held','retained','received');`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
       // author exist, so another instance's ledger is untouched. A correction never re-labels in the

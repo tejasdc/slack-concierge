@@ -1164,11 +1164,15 @@ export class SessionOwner {
     // starting the Inbox's own turn.
     const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
-    const digest=hash(stablePayload({source:input.source,text:input.text,files:input.files??[]}));
+    const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[]}));
+    const digest=digestFor(input.source);
     const accepted=db.transaction(()=>{
       const prior=getAcceptedSessionInput(`capture:${captureId}`);
       if(prior) {
-        if(JSON.parse(prior.payload_json).capture?.digest!==digest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
+        const priorCapture=JSON.parse(prior.payload_json).capture;
+        const comparedDigest=source.kind==='outside-agent'&&priorCapture?.source?.recordedAt
+          ?digestFor({...source,recordedAt:priorCapture.source.recordedAt}):digest;
+        if(priorCapture?.digest!==comparedDigest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
         return prior;
       }
       const session=this.ensureInboxSession();

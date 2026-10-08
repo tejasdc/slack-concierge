@@ -2,14 +2,35 @@
 
 ## Outside-agent owner socket entrance
 
-The root-only `requests.sock` also accepts `GET /supervisor/ping` and
-`POST /supervisor/wake`. Ping reads no ledger; it returns `{ok,pid,startedAt,release}`.
+The root-only `requests.sock` also accepts `GET /supervisor/ping`, `GET
+/supervisor/flow` and `POST /supervisor/wake`. Ping reads no ledger; it returns
+`{ok,pid,startedAt,release}`.
 Wake requests the existing queue, communication, peer, project and watch paths to
 run, and returns `{woken:[...]}` without replaying input.
 
+Flow returns the owner's bounded view of work that should already be moving:
+
+```json
+{
+  "claimableNotClaimed": [{"turnId": 123, "sessionId": 45, "queuedAt": "2026-10-08T12:34:56.000Z"}],
+  "undeliveredReturns": [{"eventId": "event-id", "requestId": "request-id", "status": "recorded", "sourceSessionId": 45, "peer": false}],
+  "checkedAt": "2026-10-08T12:45:00.000Z"
+}
+```
+
+`claimableNotClaimed` contains at most 30 turns queued for more than ten minutes
+that the queue's own current admission predicate would accept, including update
+drain, per-session ordering, active execution, saved-work, dependency and artifact
+delivery gates. `undeliveredReturns` contains at most 30 local and peer rows older
+than the return audit's ten-minute grace, from that audit's query. Partial indexes
+bound both reads. This route is installed only on the local owner socket.
+
 `POST /external/capture` accepts `{name,id,recordedAt,text,files?}` and calls the
 normal Inbox capture intake with `source.kind:"outside-agent"` and retained
-`source.metadata.outsideAgent`. It queues the ordinary router turn. `POST
+`source.metadata.outsideAgent`. It queues the ordinary router turn. Repeating the
+same name, stable ID and content returns the original capture and does not queue a
+second turn; changed content under that ID conflicts. The helper accepts `--id`
+and creates a random ID when it is absent. `POST
 /external/ask` accepts `{name,address,action_id,text,requestedEffect?}`; the exact
 local session address is resolved by the owner. A repeated `(name,action_id)` with
 the same content returns the same request; changed content is refused. The owner
@@ -17,7 +38,10 @@ retains `request:<id>` on the recipient's queue. Its normal `sessions reply` clo
 the request, while `POST /external/get` with `{name,request_id}` reads the retained
 state, execution and replies. The outside caller has no Concierge session, so no
 return input or requester notice is created. A recipient that ends without an
-explicit final leaves a pollable `awaiting-explicit-reply` state.
+explicit final leaves a pollable `awaiting-explicit-reply` state. The Stop hook
+applies the same reminder and stalled eligibility as local agent requests, so an
+unanswered outside request is not offered in every later run forever; the outside
+caller reads `stalled` by polling instead of receiving a return or notice.
 
 An outside name matches `^[a-z][a-z0-9-]{2,40}$`. Accepted input authorship carries
 `author.kind:"agent"` and `author.outsideAgent:{name,label}`; the label is

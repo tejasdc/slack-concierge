@@ -76,6 +76,11 @@ type EventRow = {
     accepted_input_id: string | null;
     created_at_ms: number;
 };
+type ExternalRequestRow={
+    request_id:string;agent_name:string;target_session_id:number;target_input_id:string;requested_effect:string;
+    status:string;outcome:string|null;created_at_ms:number;reminded_at_ms:number|null;reminded_via:string|null;
+    hook_offered_run:string|null;stalled_at_ms:number|null;
+};
 type Actor = {
     source: CommunicationSource;
     session: number;
@@ -255,8 +260,9 @@ export class SessionCommunicationCoordinator {
         const accepted=getAcceptedSessionInput(row.target_input_id);
         const observed=accepted?readInputExecution(accepted):null;
         const terminal=observed&&['completed','failed','canceled','uncertain'].includes(observed.state);
-        return {request_id:id,from:`Outside agent · ${name}`,status:!row.outcome&&terminal?'awaiting-explicit-reply':row.status,outcome:row.outcome,
+        return {request_id:id,from:`Outside agent · ${name}`,status:!row.outcome&&row.stalled_at_ms?'stalled':!row.outcome&&terminal?'awaiting-explicit-reply':row.status,outcome:row.outcome,
             target_session_id:`concierge:${row.target_session_id}`,target_input_id:row.target_input_id,
+            stalled_at_ms:row.stalled_at_ms,
             execution:observed?{state:observed.state,acknowledged_at:observed.acknowledgedAt}:null,
             result:row.result_json?JSON.parse(row.result_json):null,
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
@@ -455,9 +461,12 @@ export class SessionCommunicationCoordinator {
             owed.push({request_id:request.request_id,requester:`concierge:${request.source_session_id}`,requested_effect:effect,command:replyCommand(request.request_id,effect)});
         }
         owed.push(...(this.dependencies.peers?.owedDeliveries(running.session_id,runId,{offer:input.offer??[],remind:!!input.remind})??[]));
-        for(const request of db.query(`SELECT request_id,agent_name,requested_effect,target_input_id FROM session_external_requests
-            WHERE target_session_id=? AND outcome IS NULL ORDER BY created_at_ms`).all(running.session_id) as any[]) {
+        for(const request of db.query(`SELECT * FROM session_external_requests
+            WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY created_at_ms`)
+            .all(running.session_id,REMINDERS_SINCE_MS) as ExternalRequestRow[]) {
             if(!getAcceptedSessionInput(request.target_input_id)?.turn_id)continue;
+            if(input.offer?.includes(request.request_id))db.query('UPDATE session_external_requests SET hook_offered_run=? WHERE request_id=?').run(runId,request.request_id);
+            if(input.remind)db.query("UPDATE session_external_requests SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),request.request_id,runId);
             owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
                 requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
         }
@@ -1295,6 +1304,20 @@ export class SessionCommunicationCoordinator {
         log('warn', 'session_request_stalled', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}`, reason: next.reason });
         this.wake();
     }
+    /** Outside callers poll their request, so stalling changes only that durable state. */
+    private chaseExternalStranded(request:ExternalRequestRow) {
+        if(request.outcome||request.stalled_at_ms!==null)return;
+        const accepted=getAcceptedSessionInput(request.target_input_id);
+        if(!accepted?.turn_id)return;
+        const turn=db.query('SELECT status FROM turns WHERE id=?').get(accepted.turn_id) as {status:string}|null;
+        if(!turn||['queued','running','delivering'].includes(turn.status))return;
+        const next=strandedStep(this.dependencies.owner!,{requestId:request.request_id,workerSessionId:request.target_session_id,
+            createdAtMs:request.created_at_ms,remindedAtMs:request.reminded_at_ms,remindedVia:request.reminded_via,stalledAtMs:request.stalled_at_ms});
+        if(next.step!=='stall')return;
+        const changed=db.query("UPDATE session_external_requests SET status='stalled',stalled_at_ms=? WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL")
+            .run(this.now(),request.request_id).changes;
+        if(changed)log('warn','external_session_request_stalled',{request_id:request.request_id,worker_session_id:`concierge:${request.target_session_id}`,reason:next.reason});
+    }
     private hasNativePartialReply(request: RequestRow): boolean {
         return !!request.source_input_id && !!db.query(
             "SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' LIMIT 1",
@@ -1692,6 +1715,8 @@ export class SessionCommunicationCoordinator {
                 this.inspectProviderHolds();
                 this.inspectOverdue();
                 auditUndeliveredReturns(this.now());
+                for(const request of db.query('SELECT * FROM session_external_requests WHERE outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY created_at_ms')
+                    .all(REMINDERS_SINCE_MS) as ExternalRequestRow[])this.chaseExternalStranded(request);
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
                     this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
                 for (const event of db.query("SELECT * FROM session_communication_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as EventRow[])
