@@ -238,6 +238,24 @@ test('consultation creates a distinct pinned child and same-child follow-up pres
   expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:2});
 });
 
+test('a ChatGPT snapshot is questioned through a restricted Claude child without sending to ChatGPT',async()=>{
+  const sourceId='chatgpt-snapshot',sourceVersion='b'.repeat(64),boundary='assistant-message';
+  const messages=[{eventId:'user-message',role:'user',text:'Build a reading garden.'},{eventId:boundary,role:'assistant',text:'Use a circular path.'}]
+    .map((entry,ordinal)=>({...entry,ordinal,sourceId,sourceVersion,locator:`snapshot:${ordinal}`,textHash:createHash('sha256').update(entry.text).digest('hex')}));
+  const source={id:sourceId,provider:'chatgpt',version:sourceVersion,branch:boundary,title:'Garden conversation',consultation:{sourceId,sourceVersion,boundary,packetVersion:'dialogue-v1'},messages};
+  host=new SessionExecutionHost({instanceId:'owner',registry:registry(),providers:{codex:provider,'claude-code':{...provider,id:'claude-code'}},defaultCwd:'/tmp',wake:()=>{}});
+  host.owner.runtime.sources={search:async()=>{throw new Error('unused');},import:async()=>{throw new Error('unused');},context:async()=>({source,evidence:messages,hasMore:false})};
+  const parent=createNativeSession('chatgpt',{origin:'imported',title:source.title,source});
+  const view=host.owner.view(parent);expect(view.capabilities).toMatchObject({send:false,consult:true});
+  const accepted=await request(host.owner,'consultations',{clientActionId:randomUUID(),address:view.address,sourceId,sourceVersion,boundary,text:'What path was proposed?'});
+  expect(accepted.status).toBe(202);
+  const child=host.owner.get(accepted.body.operation.childSessionId).session;
+  expect(child).toMatchObject({provider:'claude-code',origin:'reconstructed',interactionPolicy:'consultation-only'});
+  await execute();expect(runs[0]).toMatchObject({interactionPolicy:'consultation-only'});
+  expect(runs[0]!.prompt).toContain('not a message from the historical assistant or its user');
+  expect(getSessionById(parent.id)!.agent_session_uuid).toBeNull();
+});
+
 test('uncertain native receipt is inspectable and never creates a replacement provider effect',async()=>{
   const client=capability(),fixture=uncertainChat(client);let inspected=0;
   client.reconcile=async run=>{inspected++;return {runId:run.runId,state:'uncertain',acknowledgedAt:null,nativeBinding:null,result:null,error:{code:'UNKNOWN_EFFECT',message:'Native send remains unknown.'}};};

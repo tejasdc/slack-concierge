@@ -213,6 +213,8 @@ Codex reads effective configuration for every consultation thread start/resume, 
 
 ChatGPT uses its original account/conversation/browser binding. Explicit human bind retains a control intent before independent source/account/anchor verification. The capability adapter independently reads the exact owner operation and current binding before any browser send. Prepared bytes/model/attachment hashes are pinned at provider admission. Existing-effect observation and reconciliation never resend. Failed start, unavailable browser and uncertain send remain visible ChatGPT outcomes; another provider is never silently substituted. Inventory and snapshots grant no execution. There is no ChatGPT MCP endpoint or outbound model session tooling.
 
+An imported ChatGPT snapshot with a complete text branch may be consulted through an information-only Claude child pinned to its exact source version and branch. Its answer is attributed to that child agent as a present reading with citations, never to ChatGPT or the imported user. This does not bind, continue or write to the native ChatGPT thread. See [coverage and consultation](../plans/2026-10-08-chatgpt-history-coverage-and-consultation.md).
+
 ## Peer instances
 
 A second Concierge (Tejas's Mac, `CONCIERGE_PEER_NAME=mac`) is a peer: the same

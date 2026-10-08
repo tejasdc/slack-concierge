@@ -540,6 +540,8 @@ authorization or a change to the default rapid-iteration policy.
   binds one native session to that UUID; peer archive resurrection still makes a distinct copy.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.
+  ChatGPT imports use a restricted Claude child for cited snapshot questions; the child
+  speaks as a current consulting agent, never as ChatGPT or the imported user.
 - ChatGPT uses the existing private profile, transcript custody and browser capability.
   Deliberate provider choice and same-provider failures remain visible. Operator-owned
   daily refresh and explicit refresh use the common owner; no competing browser or index.

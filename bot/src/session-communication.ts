@@ -957,11 +957,12 @@ export class SessionCommunicationCoordinator {
         }
         let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
-        const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
+        // An agent's question must never become a user-role send in a human-bound ChatGPT thread.
+        const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&(targetSession.provider_id==='chatgpt'||!this.dependencies.owner?.canSend(targetSession));
         if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
-        if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
+        if((historical||consultationOnly)&&input.requestedEffect==='work')throw new Error('Historical consultation only accepts information — no actions.');
         if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
         if (target?.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
