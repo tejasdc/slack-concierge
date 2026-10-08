@@ -564,12 +564,16 @@ export class SessionExecutionHost {
    * later coordinator from its execution host after a restart, through the same steps.
    */
   async run(claim:QueuedTurnClaimRow,adoption?:Adoption) {
+    log('info','dispatch_trace',{step:'run_entry',turn_id:claim.turn_id,session_id:claim.session_id,provider_model:claim.provider_model,adopted:!!adoption});
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
+    log('info','dispatch_trace',{step:'before_record_session_event',turn_id:claim.turn_id});
     if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+    log('info','dispatch_trace',{step:'before_registry_run',turn_id:claim.turn_id});
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
+        log('info','dispatch_trace',{step:'inside_registry_run',turn_id:claim.turn_id});
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
@@ -643,6 +647,7 @@ export class SessionExecutionHost {
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
+    log('info','dispatch_trace',{step:'runModel_entry',turn_id:claim.turn_id});
     const saved=savedTurn(claim.turn_id);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
     if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {

@@ -141,14 +141,18 @@ is in a stuck or confused state (as here), queued work sits forever instead of e
 or starting a sibling. This is a real design question, not a bug introduced today. Tracked for a
 later discussion.
 
-## Follow-ups
+## What this incident does not include
 
-- [ ] Investigate Codex app server at ~100% of one core for 6+ hours (independent anomaly;
-      Concierge was unaffected but this is worth tracing).
-- [ ] Trace the specific dispatch path that silently stalled without writing an executions row
-      or logging a dispatch error. The invariant fix catches the symptom; the root cause of
-      the silent stall is still unknown.
-- [ ] Open discussion on per-session FIFO vs. steering coherence (above).
+Three things were in an earlier draft of this doc that do not belong here. Removing them so
+this record stays about this incident:
+
+- The Codex app server at 100% of one core is an unrelated anomaly observed on the same box.
+  It needs its own capture if it needs tracking.
+- The per-session FIFO question Tejas raised during the incident is a design discussion. It
+  belongs wherever design discussions live, not here.
+- The root cause of the silent dispatch stall is a separate open bug and does not fit as a
+  bullet on an incident doc. The invariant fix in this change catches the symptom at 120 s;
+  the root cause is tracked separately.
 
 ## Timeline (UTC)
 

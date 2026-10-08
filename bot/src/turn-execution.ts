@@ -295,6 +295,7 @@ interface AgentSessionStatusProjectionResult {
 }
 
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
+  log("info", "dispatch_trace", { step: "executeAgentTurn_entry", turn_id: input.turnId, provider_id: input.providerId, presentation: input.presentation });
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
