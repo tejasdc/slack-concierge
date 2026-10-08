@@ -382,6 +382,34 @@ export function attachSessionSteering(inputId:string,turnId:number) {
   })();
 }
 /**
+ * His messages reach the agent in the order he sent them. When a message of his joins the running
+ * work, any earlier message of his in that session still waiting for its own turn, with no
+ * delivery choice of its own, comes with it, oldest first: its waiting turn is withdrawn and the
+ * caller delivers it into the run ahead of the later one. Without this a message recorded into a
+ * conversation sat queued behind the run while the next one he typed went straight in and was
+ * answered (concierge:4081, 2026-10-08 23:42). A message he explicitly queued stays queued: that
+ * was his choice of "after this work".
+ */
+export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string):AcceptedSessionInput[] {
+  return db.transaction(()=>{
+    const later=getAcceptedSessionInput(laterInputId);
+    if(!later||later.origin!=='human')return [];
+    const rows=db.query(`SELECT input.id AS id,turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+      WHERE input.session_id=? AND input.id<>? AND input.origin='human' AND input.kind='input' AND input.steering_id IS NULL
+        AND input.receipt_json IS NULL AND json_extract(input.payload_json,'$.delivery') IS NULL
+        AND turn.status='queued' AND turn.accepted_input_id=input.id AND turn.saved_kind IS NULL
+        AND turn.owner_instance_id IS NULL AND turn.provider_started_at IS NULL
+        AND input.rowid<(SELECT rowid FROM session_inputs WHERE id=?)
+      ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
+    for(const row of rows) {
+      db.query("UPDATE turns SET accepted_input_id=NULL WHERE id=? AND status='queued'").run(row.turn_id);
+      finishTurn(row.turn_id,'cancelled','Joined the running work with his next message.');
+      db.query('UPDATE session_inputs SET turn_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?').run(row.id,row.turn_id);
+    }
+    return rows.map(row=>getAcceptedSessionInput(row.id)!);
+  })();
+}
+/**
  * A live input the provider provably never received is not failed work. The
  * coordinator chose that live delivery, so its refusal returns the input to the
  * session's own queue, where it runs when the session can next receive it.

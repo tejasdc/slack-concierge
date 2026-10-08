@@ -3,7 +3,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -502,32 +502,41 @@ export class SessionExecutionHost {
       if(!db.query("SELECT 1 FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(target.turnId))return false;
       if(input.origin==='service'&&input.source_run_id!==nativeRunId(target.turnId))return false;
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
-      const attached=attachSessionSteering(input.id,target.turnId);
-      const steeringId=attached.steering_id!;
-      // A follow-up's delivery changes mid-turn with no other owner event on it, so each
-      // change is announced on that input; surfaces refresh its receipt at once instead
-      // of showing it queued until their next periodic check.
-      const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:`delivery:${input.id}:${state}`,
-        sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-      const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
-        prepareText:async root=>{
-          const attachments=this.owner.attachments(body.attachments);
-          let text=this.prompt(attached);
-          if(attachments.length) {
-            if(!root)throw new Error('The active turn has no owned attachment root.');
-            const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
-          }
-          if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt')text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
-          updateTurnSteeringReplayText(steeringId,text,attachments.length);
-          return text;
-        },
-        onSending:()=>markTurnSteeringMessageSending(steeringId),
-        onSent:()=>{markTurnSteeringMessageSent(steeringId);deliveryChanged('sent');},
-        onError:error=>{markTurnSteeringMessageFailed(steeringId,error.message);deliveryChanged('failed');},
-        onAmbiguous:error=>{markTurnSteeringMessageAmbiguous(steeringId,error.message);deliveryChanged('ambiguous');},
-        onAmbiguousFinalized:()=>{finalizeTurnSteeringMessageAmbiguity(steeringId);}});
-      if(!accepted){markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');deliveryChanged('failed');}
-      return accepted;
+      // One message into the run, with its own words and files.
+      const deliver=(one:AcceptedSessionInput):boolean=>{
+        const input=one,body=JSON.parse(one.payload_json);
+        const attached=attachSessionSteering(input.id,target.turnId);
+        const steeringId=attached.steering_id!;
+        // A follow-up's delivery changes mid-turn with no other owner event on it, so each
+        // change is announced on that input; surfaces refresh its receipt at once instead
+        // of showing it queued until their next periodic check.
+        const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:`delivery:${input.id}:${state}`,
+          sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+          prepareText:async root=>{
+            const attachments=this.owner.attachments(body.attachments);
+            let text=this.prompt(attached);
+            if(attachments.length) {
+              if(!root)throw new Error('The active turn has no owned attachment root.');
+              const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
+            }
+            if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt')text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
+            updateTurnSteeringReplayText(steeringId,text,attachments.length);
+            return text;
+          },
+          onSending:()=>markTurnSteeringMessageSending(steeringId),
+          onSent:()=>{markTurnSteeringMessageSent(steeringId);deliveryChanged('sent');},
+          onError:error=>{markTurnSteeringMessageFailed(steeringId,error.message);deliveryChanged('failed');},
+          onAmbiguous:error=>{markTurnSteeringMessageAmbiguous(steeringId,error.message);deliveryChanged('ambiguous');},
+          onAmbiguousFinalized:()=>{finalizeTurnSteeringMessageAmbiguity(steeringId);}});
+        if(!accepted){markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');deliveryChanged('failed');}
+        return accepted;
+      };
+      // His earlier messages still waiting for their own turn go in first, in his order
+      // (releaseEarlierWaitingInputs); one the run cannot take returns to the queue.
+      const earlier=sessionMetadata(session).interactionPolicy==='consultation-only'?[]:releaseEarlierWaitingInputs(input.session_id,input.id);
+      for(const one of earlier)if(!deliver(one))enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
+      return deliver(input);
     });
     return matched.matched&&matched.value;
   }
