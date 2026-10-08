@@ -96,6 +96,21 @@ function noteInMessage(message: string) {
  * understand, look, what the back end is going … every single thing that is, we are changing,
  * every update is gonna matter, right? … Yes, maybe I don't visibly see, but who cares?"
  */
+// A sentence is often written after its commit is pushed, as a note on `refs/notes/update`, and
+// this checkout fetched only branches: on 2026-10-08 a change with a note showed him its developer
+// subject instead. A summary missing a sentence fetches the notes in the background, at most every
+// few minutes, so the next read has them without the owner waiting on the network.
+const NOTES_REFRESH_MS = 3 * 60_000;
+let notesRefreshedAt = 0;
+function refreshNotesSoon() {
+  if (Date.now() - notesRefreshedAt < NOTES_REFRESH_MS) return;
+  notesRefreshedAt = Date.now();
+  try {
+    Bun.spawn({ cmd: ["git", "fetch", "--quiet", "origin", "+refs/notes/update:refs/notes/update"], cwd: repositoryRoot(),
+      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, stdout: "ignore", stderr: "ignore" });
+  } catch { /* The next read tries again after the interval. */ }
+}
+
 export function pendingUpdateSummary(previous: string | null, revision: string): {
   notes: string[];
   subjects: string[];
@@ -108,6 +123,7 @@ export function pendingUpdateSummary(previous: string | null, revision: string):
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
     if (!note || /^internal\.?$/i.test(note)) {
+      refreshNotesSoon();
       if (!subjects.includes(change.title)) subjects.push(change.title);
       continue;
     }

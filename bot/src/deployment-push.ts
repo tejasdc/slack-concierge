@@ -63,6 +63,8 @@ export async function acceptGitHubDeploymentPush(
 ) {
   if (services.ensureSource) services.ensureSource();
   successful(services.git(["fetch", "--quiet", "origin", "main"]), "git fetch origin main");
+  // Sentences written for him after a commit was pushed live in notes; the update line reads them here.
+  services.git(["fetch", "--quiet", "origin", "+refs/notes/update:refs/notes/update"]);
   const desiredCommit = successful(services.git(["rev-parse", "origin/main"]), "git rev-parse origin/main");
   if (!/^[0-9a-f]{40}$/.test(desiredCommit)) throw new Error("origin/main did not resolve to a full Git commit");
 

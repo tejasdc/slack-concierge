@@ -1023,7 +1023,11 @@ export class SessionOwner {
     // He is told what every change in the update does, including the commit subject when its
     // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
     const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
-    return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects};
+    // An update installs what was pushed when it started; what was pushed since installs in the next
+    // one. The line names those too, so a short list never reads as all that is coming (2026-10-08).
+    const newest=getDeploymentDesiredState('concierge')?.desired_commit??null;
+    const queued=commit&&newest&&newest!==commit?pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
+    return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};
   }
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every
