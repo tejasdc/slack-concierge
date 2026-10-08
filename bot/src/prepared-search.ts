@@ -23,7 +23,8 @@ function snippet(text:string,terms:string[]){
 }
 
 export class PreparedSearchIndex {
- constructor(private readonly db:Database){
+ constructor(private readonly db:Database,initialize=true){
+  if(!initialize)return;
   db.exec(`CREATE TABLE IF NOT EXISTS prepared_search_documents(
     id INTEGER PRIMARY KEY,document_key TEXT NOT NULL UNIQUE,session_id INTEGER NOT NULL,
     kind TEXT NOT NULL,role TEXT NOT NULL,text TEXT NOT NULL,folded TEXT NOT NULL,metadata TEXT NOT NULL

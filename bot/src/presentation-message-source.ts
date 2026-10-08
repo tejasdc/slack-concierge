@@ -5,9 +5,9 @@ export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:str
 /** This is the Inbox's retained message predicate, with a bounded event-sequence walk. */
 export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event.event_id,event.input_id,event.kind,event.created_at,
   json_extract(owner.native_metadata_json,'$.inbox') AS is_inbox,
-  json_extract(input.payload_json,'$.capture') IS NOT NULL AS has_capture,
-  COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 AS has_result_text,
-  json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 AS has_attachments,
+  CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.capture') IS NOT NULL ELSE 0 END AS has_capture,
+  CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
+  CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
     THEN json_extract(event.payload_json,'$.topicId') END AS topic_id,
   CASE WHEN event.kind='message' THEN json_extract(event.payload_json,'$.message.id') END AS owner_message_id
