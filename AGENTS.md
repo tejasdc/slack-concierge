@@ -110,6 +110,9 @@ authorization or a change to the default rapid-iteration policy.
   owner-retained live messages by exact identity. Cold history states that it is indexing;
   raw transcript changes without corresponding retained events trigger a background rebuild.
   See [provider history index](docs/architecture/PROVIDER-HISTORY-INDEX.md).
+- The interactive session catalogue is a prepared, bounded read over the owner's ledger;
+  new card fields need canonical change-journal coverage and a growth fixture. The worker,
+  cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
   private `tejasdc` repository before retaining a peer setup order; `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never

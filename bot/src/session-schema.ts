@@ -109,6 +109,13 @@ export function initializeSessionOwnerSchema(db: Database) {
         );
         CREATE UNIQUE INDEX IF NOT EXISTS turns_accepted_input ON turns(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS turns_native_run ON turns(native_run_id) WHERE native_run_id IS NOT NULL;
+        -- Prepared session cards ask only for a session's latest turn and bounded current
+        -- execution facts. These indexes keep one changed card independent of turn history.
+        CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);
+        CREATE INDEX IF NOT EXISTS turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
+        CREATE INDEX IF NOT EXISTS turns_session_queued ON turns(session_id,id DESC) WHERE status='queued';
+        CREATE INDEX IF NOT EXISTS turns_session_started ON turns(session_id,id DESC) WHERE status<>'queued' AND started_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS turns_session_provider_turn ON turns(session_id,provider_turn_id) WHERE provider_turn_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS steering_accepted_input ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);

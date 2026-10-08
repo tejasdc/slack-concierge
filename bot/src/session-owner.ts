@@ -47,6 +47,7 @@ import {containingProject,sessionProject,sessionProjects} from './session-projec
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
+import {preparedSessionWindow,preparedSessionChanges} from './presentation-session-reader';
 import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,waitingSavedWork} from './saved-work';
@@ -2524,6 +2525,21 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='actions'&&parts.length===4)
         result=topicHumanAction(parts[2]!,body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
+        const space=sessionSpaceParam(url.searchParams.get('space'));
+        if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
+        const attention=url.searchParams.get('needsAttention');
+        if(attention!==null&&attention!=='true'&&attention!=='false')throw new SessionOwnerError('needsAttention is true or false.');
+        result=preparedSessionWindow({space,needsAttention:attention==='true',cursor:url.searchParams.get('cursor'),
+          limit:boundedLimit(url.searchParams.get('limit'),40)??20});
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='changes'&&parts.length===3){
+        const space=sessionSpaceParam(url.searchParams.get('space'));
+        if(!space)throw new SessionOwnerError('space is required: lab or everyday.');
+        const cursor=url.searchParams.get('cursor');
+        if(!cursor)throw new SessionOwnerError('A catalogue revision is required.');
+        result=preparedSessionChanges(cursor,space,boundedLimit(url.searchParams.get('limit'),40)??20);
+      }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list(sessionSpaceParam(url.searchParams.get('space')))};
       else if(request.method==='GET'&&parts[0]==='lab'&&parts.length===1) result=this.lab(boundedLimit(url.searchParams.get('limit'),500)??200);
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();

@@ -1,6 +1,8 @@
 import { basename } from 'node:path';
 import type { SessionRow } from './state';
 import { sessionMetadata } from './session-inputs';
+import {spaceForCwd,type SessionSpace} from './session-space';
+export {LAB_PROJECTS,LAB_PROJECT_PREFIX,isLabProject,spaceForCwd,type SessionSpace} from './session-space';
 
 /**
  * What a session is for, enforced where requests are accepted rather than asked of the agent.
@@ -26,18 +28,8 @@ export function isWritingSession(session: SessionRow): boolean {
  * (Tejas, 2026-10-08: "identify the experimentation related sessions … so it doesn't clutter all
  * of our sessions") [decision: lab-runs-inside-concierge-in-its-own-space].
  */
-export const LAB_PROJECTS: readonly string[] = ['agent-ecology', 'lab-commons'];
-export const LAB_PROJECT_PREFIX = 'expertise-';
-
-/** Any folder inside a lab project is lab work too, so agent-ecology/expertise/<name> needs no registration of its own. */
-export function isLabProject(cwd: string | null | undefined): boolean {
-  if (!cwd) return false;
-  return cwd.split('/').some(name => LAB_PROJECTS.includes(name)) || basename(cwd).startsWith(LAB_PROJECT_PREFIX);
-}
-
-export type SessionSpace = 'lab' | 'everyday';
 export function sessionSpace(session: SessionRow): SessionSpace {
-  return isLabProject(sessionMetadata(session).cwd) ? 'lab' : 'everyday';
+  return spaceForCwd(sessionMetadata(session).cwd);
 }
 
 /** The Inbox router takes every capture; intake is its job, not a pile-up. */
