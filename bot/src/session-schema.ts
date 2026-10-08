@@ -398,7 +398,18 @@ export function initializeSessionOwnerSchema(db: Database) {
           WHERE accepted_input_id IS NULL AND status NOT IN ('held','retained','received');
         CREATE INDEX IF NOT EXISTS session_peer_events_undelivered_age
           ON session_peer_events(created_at_ms,event_id)
-          WHERE accepted_input_id IS NULL AND status NOT IN ('held','retained','received');`);
+          WHERE accepted_input_id IS NULL AND status NOT IN ('held','retained','received');
+        -- Single-row lookups the coordinator, author resolution and every live update make. Each
+        -- used to read its whole table; together with the sessions table they were re-read ~50 times
+        -- in 15 s while the owner sat frozen with nothing in flight (2026-10-08). Narrow and equality-
+        -- only, so none of them can satisfy another query's ORDER BY and take it over.
+        CREATE INDEX IF NOT EXISTS session_peer_events_request ON session_peer_events(request_id);
+        CREATE INDEX IF NOT EXISTS session_peer_events_accepted_input ON session_peer_events(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_peer_replies_request ON session_peer_replies(request_id);
+        CREATE INDEX IF NOT EXISTS session_peer_deliveries_target_input ON session_peer_deliveries(target_input_id);
+        CREATE INDEX IF NOT EXISTS session_communication_requests_routed ON session_communication_requests(routed_request_id) WHERE routed_request_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_peer_requests_open ON session_peer_requests(request_id) WHERE outcome IS NULL;
+        CREATE INDEX IF NOT EXISTS sessions_inbox ON sessions(id) WHERE json_extract(native_metadata_json,'$.inbox')=1;`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
       // author exist, so another instance's ledger is untouched. A correction never re-labels in the
