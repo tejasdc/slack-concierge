@@ -49,7 +49,8 @@ async function main() {
       session_uuid TEXT NOT NULL,cwd TEXT NOT NULL,source_path TEXT NOT NULL,
       source_size INTEGER NOT NULL,source_mtime_ms REAL NOT NULL,
       row_count INTEGER NOT NULL,generation TEXT NOT NULL,event_cutoff INTEGER NOT NULL,
-      tail_uuid TEXT
+      tail_uuid TEXT,verified_source_size INTEGER NOT NULL,
+      verified_source_mtime_ms REAL NOT NULL,verified_tail_uuid TEXT,needs_reimport INTEGER NOT NULL DEFAULT 0
     ); CREATE TABLE rows (ordinal INTEGER PRIMARY KEY,uuid TEXT NOT NULL,json TEXT NOT NULL);
     CREATE INDEX rows_uuid ON rows(uuid);
     CREATE TABLE message_ids (id TEXT PRIMARY KEY,ordinal INTEGER NOT NULL);
@@ -59,8 +60,9 @@ async function main() {
     const insertTool = db.query("INSERT INTO tool_names(tool_id,name) VALUES(?,?)");
     const insertMessageId = db.query("INSERT OR IGNORE INTO message_ids(id,ordinal) VALUES(?,?)");
     db.transaction(() => {
-      db.query("INSERT INTO meta VALUES(?,?,?,?,?,?,?,?,?)").run(sessionUuid,cwd,sourcePath,
-        before.size,before.mtimeMs,rows.length,generation,eventCutoff,tailUuid);
+      db.query("INSERT INTO meta VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(sessionUuid,cwd,sourcePath,
+        before.size,before.mtimeMs,rows.length,generation,eventCutoff,tailUuid,
+        before.size,before.mtimeMs,tailUuid,0);
       for (let index = 0; index < rows.length; index++) {
         const row: any = rows[index]!;
         insertRow.run(index,row.uuid,JSON.stringify(row));

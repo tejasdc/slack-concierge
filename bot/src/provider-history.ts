@@ -1,13 +1,14 @@
 import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
 import { claudeConfigDir, locateClaudeTranscript } from "./claude-transcript-watch";
 import { log } from "./log";
 import { db as ownerDb } from "./state";
+import { preparedOwnerMessageVersion } from "./presentation-message-reader";
 import type { RunResult } from "./codex";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
@@ -208,13 +209,14 @@ export async function readCodexHistoryDetail(input: ProviderDetailInput,
 }
 
 type ClaudeCacheMeta = { session_uuid: string; cwd: string; source_path: string; source_size: number;
-  source_mtime_ms: number; row_count: number; generation: string; event_cutoff: number; tail_uuid: string | null };
+  source_mtime_ms: number; row_count: number; generation: string; event_cutoff: number; tail_uuid: string | null;
+  verified_source_size: number; verified_source_mtime_ms: number; verified_tail_uuid: string | null; needs_reimport: number };
 const queuedImports = new Map<string, Promise<void>>();
 const activeImportChildren = new Set<ReturnType<typeof Bun.spawn>>();
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>();
 const observedVersions = new Map<string, string>();
 const retryImportAt = new Map<string, number>();
-const verifiedAppends = new Map<string,{generation:string;sourceSize:number;sourceMtimeMs:number;tailUuid:string|null}>();
+const queuedVerifications = new Map<string,Promise<void>>();
 let importLane = Promise.resolve();
 process.on("exit", () => { for (const child of activeImportChildren) child.kill();
   for (const timer of pendingRefresh.values()) clearTimeout(timer); });
@@ -233,6 +235,16 @@ function openCache(sessionUuid: string): { db: Database; meta: ClaudeCacheMeta }
     db = new Database(path, { readonly: true, strict: true });
     const meta = db.query("SELECT * FROM meta").get() as ClaudeCacheMeta | null;
     if (!meta || meta.session_uuid !== sessionUuid) throw new Error("INVALID_HISTORY_CACHE");
+    try {
+      const status=JSON.parse(readFileSync(path+".verified.json","utf8")) as Partial<ClaudeCacheMeta>;
+      if(status.generation===meta.generation && Number.isSafeInteger(status.verified_source_size)
+        && typeof status.verified_source_mtime_ms==="number") {
+        meta.verified_source_size=status.verified_source_size!;
+        meta.verified_source_mtime_ms=status.verified_source_mtime_ms;
+        meta.verified_tail_uuid=typeof status.verified_tail_uuid==="string"?status.verified_tail_uuid:null;
+        meta.needs_reimport=status.needs_reimport===1?1:0;
+      }
+    } catch { /* The immutable baseline remains valid without a verifier checkpoint. */ }
     return { db, meta };
   } catch (error) {
     db?.close();
@@ -258,6 +270,38 @@ function historyWorkerPath() {
   const source = join(import.meta.dir, "provider-history-worker.ts");
   if (existsSync(source)) return source;
   throw new Error("HISTORY_WORKER_UNAVAILABLE");
+}
+
+function historyVerifyWorkerPath() {
+  const adjacent=join(dirname(process.argv[1] || ""),"provider-history-sync-worker.js");
+  if(existsSync(adjacent))return adjacent;
+  const source=join(import.meta.dir,"provider-history-sync-worker.ts");
+  if(existsSync(source))return source;
+  throw new Error("HISTORY_WORKER_UNAVAILABLE");
+}
+
+function queueHistoryVerification(sessionUuid:string,ownerSessionId:number) {
+  if(queuedVerifications.has(sessionUuid))return queuedVerifications.get(sessionUuid);
+  if(queuedImports.has(sessionUuid))return;
+  const work=importLane.then(async()=>{
+    const command=process.platform==="linux"
+      ? ["setpriv","--pdeathsig","KILL",process.execPath,"run",historyVerifyWorkerPath(),cachePath(sessionUuid),
+          join(process.env.CONCIERGE_STATE_DIR!,"state.db"),String(ownerSessionId),sessionUuid]
+      : [process.execPath,"run",historyVerifyWorkerPath(),cachePath(sessionUuid),
+          join(process.env.CONCIERGE_STATE_DIR!,"state.db"),String(ownerSessionId),sessionUuid];
+    const child=Bun.spawn(command,{stdout:"ignore",stderr:"ignore",env:{HOME:process.env.HOME || homedir()}});
+    activeImportChildren.add(child);
+    const timeout=setTimeout(()=>child.kill(),30_000);
+    try {
+      const code=await child.exited;
+      if(code!==0)log("warn","provider_history_verification_failed",{session_uuid:sessionUuid,exit_code:code});
+    } finally {clearTimeout(timeout);activeImportChildren.delete(child);}
+  }).catch(error=>log("warn","provider_history_verification_failed",{session_uuid:sessionUuid,
+    reason:error instanceof Error?error.name:"unknown"}));
+  queuedVerifications.set(sessionUuid,work);
+  importLane=work.then(()=>{});
+  void work.finally(()=>queuedVerifications.delete(sessionUuid));
+  return work;
 }
 
 function queueCanonicalImport(sessionUuid: string, cwd: string, sourcePath: string, ownerSessionId?: number) {
@@ -309,7 +353,12 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
       scheduleQuietRefresh(sessionUuid, cwd, current, ownerSessionId);
       return;
     }
-    queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId);
+    if(ownerSessionId)await queueHistoryVerification(sessionUuid,ownerSessionId);
+    const cache=openCache(sessionUuid);
+    const stillUncovered=!cache || cache.meta.source_path!==current.path || cache.meta.needs_reimport===1 || cache.meta.verified_source_size!==current.size
+      || cache.meta.verified_source_mtime_ms!==current.mtimeMs;
+    cache?.db.close();
+    if(stillUncovered)queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId);
   }, 5_000);
   timer.unref?.();
   pendingRefresh.set(sessionUuid, timer);
@@ -323,60 +372,36 @@ function cacheCoverage(sessionUuid: string): ProviderHistoryPage["coverage"] {
       : "Conversation history is being prepared from its provider record."] };
 }
 
-type RetainedMessage = { sequence: number; message: ProviderHistoryMessage };
-function retainedMessages(sessionId: number | undefined, after: number, through: number): { rows: RetainedMessage[]; overflow: boolean } {
-  if (!sessionId) return { rows: [], overflow: false };
-  const rows = ownerDb.query(`SELECT sequence,payload_json FROM session_owner_events
-    WHERE session_id=? AND kind='message' AND sequence>? AND sequence<=?
-    ORDER BY sequence DESC LIMIT 201`).all(sessionId, after, through) as {sequence:number;payload_json:string}[];
-  const latest = new Map<string, RetainedMessage>();
-  for (const row of rows) {
-    const message = (JSON.parse(row.payload_json) as {message?: ProviderHistoryMessage}).message;
-    if (typeof message?.id === "string" && !latest.has(message.id)) latest.set(message.id,{sequence:row.sequence,message});
-  }
-  return { rows: [...latest.values()].sort((a,b)=>a.sequence-b.sequence), overflow: rows.length > 200 };
+type NovelId={messageId:string;firstSequence:number};
+function novelIds(db:Database,sessionId:number,cutoff:number,head:number,before:number,limit:number):{
+  ids:NovelId[];hasMore:boolean;appliedSequence:number;complete:boolean
+} {
+  const presentationPath=join(process.env.CONCIERGE_STATE_DIR!,"presentation.db");
+  if(!existsSync(presentationPath))return {ids:[],hasMore:false,appliedSequence:0,complete:false};
+  db.query("ATTACH DATABASE ? AS presentation").run(presentationPath);
+  try {
+    const meta=db.query(`SELECT generation,event_watermark AS appliedSequence,ready
+      FROM presentation.presentation_message_meta WHERE singleton=1`).get() as
+      {generation:number;appliedSequence:number;ready:number}|null;
+    if(!meta?.ready)return {ids:[],hasMore:false,appliedSequence:0,complete:false};
+    const rows=db.query(`SELECT p.message_id AS messageId,p.first_sequence AS firstSequence
+      FROM presentation.presentation_owner_messages p
+      WHERE p.generation=? AND p.session_id=? AND p.first_sequence>? AND p.first_sequence<=?
+        AND p.first_sequence<? AND NOT EXISTS(SELECT 1 FROM message_ids b WHERE b.id=p.message_id)
+      ORDER BY p.first_sequence DESC LIMIT ?`)
+      .all(meta.generation,sessionId,cutoff,head,before,limit+1) as NovelId[];
+    return {ids:rows.slice(0,limit),hasMore:rows.length>limit,
+      appliedSequence:meta.appliedSequence,complete:meta.appliedSequence>=head};
+  } finally {db.exec("DETACH DATABASE presentation");}
 }
 
-/** A changed Claude source is covered when it is an append of rows already retained by the owner.
- * Branches, compactions, external edits and an oversized tail require a new canonical SDK import. */
-async function appendCovered(meta: ClaudeCacheMeta, source: {path:string;size:number;mtimeMs:number}|null,
-  ownerSessionId: number|undefined, ids: ReadonlySet<string>): Promise<{covered:boolean;tailUuid:string|null}> {
-  const missing = {covered:false,tailUuid:meta.tail_uuid};
-  if (!source || source.path !== meta.source_path || source.size < meta.source_size || meta.cwd === "") return missing;
-  if (source.size === meta.source_size) return {covered:source.mtimeMs === meta.source_mtime_ms,tailUuid:meta.tail_uuid};
-  if (!ownerSessionId || source.size - meta.source_size > 4 * 1024 * 1024) return missing;
-  const handle = await open(source.path,"r");
-  try {
-    const bytes = Buffer.alloc(source.size-meta.source_size);
-    const read = await handle.read(bytes,0,bytes.length,meta.source_size);
-    if (read.bytesRead !== bytes.length) return missing;
-    const tail = bytes.toString("utf8");
-    if (!tail.endsWith("\n")) return missing;
-    let parent = meta.tail_uuid;
-    for (const line of tail.split("\n")) {
-      if (!line) continue;
-      let row: Record<string,any>;
-      try { row = JSON.parse(line); } catch { return missing; }
-      if (row.isCompactSummary === true || row.type === "summary" || row.subtype === "compact_boundary") return missing;
-      if (typeof row.uuid === "string" && row.uuid) {
-        if (parent && typeof row.parentUuid === "string" && row.parentUuid && row.parentUuid !== parent) return missing;
-        parent = row.uuid;
-      }
-      if ((row.type === "user" || row.type === "assistant") && row.isSidechain !== true && row.isMeta !== true
-        && row.parent_tool_use_id == null && typeof row.uuid === "string") {
-        const parts = Array.isArray(row.message?.content) ? row.message.content : [];
-        const text = typeof row.message?.content === "string" || parts.some((part:any)=>part?.type === "text");
-        if (text && !ids.has(row.uuid)) return missing;
-        if (parts.some((part:any)=>(part?.type === "tool_use" || part?.type === "tool_result") &&
-          !ids.has(part.type === "tool_result" ? `${part.tool_use_id}:result` : part.id))) return missing;
-      }
-      if (row.type === "attachment" && row.attachment?.type === "queued_command") {
-        const id = row.attachment.source_uuid || row.uuid;
-        if (typeof id !== "string" || !ids.has(id)) return missing;
-      }
-    }
-    return {covered:true,tailUuid:parent};
-  } finally { await handle.close(); }
+function retainedVersionMessage(sessionId:number,id:string,head:number):{message:ProviderHistoryMessage;eventId:string}|null {
+  const version=preparedOwnerMessageVersion(sessionId,id,head);
+  if(!version)return null;
+  const row=ownerDb.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='message'")
+    .get(version.eventId,sessionId) as {payload_json:string}|null;
+  const message=row?(JSON.parse(row.payload_json) as {message?:ProviderHistoryMessage}).message:null;
+  return message?.id===id?{message,eventId:version.eventId}:null;
 }
 
 async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHistoryPage> {
@@ -388,26 +413,23 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
   try {
     const { db, meta } = cache;
     const location = input.cursor === null ? null : decode(input.cursor,input.sessionUuid);
-    if (location && (location.generation !== meta.generation || !Number.isSafeInteger(location.position)
-      || location.position < 1 || !Number.isSafeInteger(location.overlayHead))) throw new Error("STALE_HISTORY_CURSOR");
+    if (location && (location.generation!==meta.generation || !Number.isSafeInteger(location.overlayHead)
+      || !["overlay","baseline"].includes(location.phase))) throw new Error("STALE_HISTORY_CURSOR");
     const overlayHead = location ? location.overlayHead : input.ownerSessionId ?
-      ((ownerDb.query("SELECT MAX(sequence) AS n FROM session_owner_events WHERE session_id=?").get(input.ownerSessionId) as {n:number|null}).n || 0) : 0;
-    const retained = retainedMessages(input.ownerSessionId,meta.event_cutoff,overlayHead);
-    const found = db.query("SELECT ordinal FROM message_ids WHERE id=?");
-    const replacements = new Map<string,ProviderHistoryMessage>();
-    const added: RetainedMessage[] = [];
-    for (const entry of retained.rows) {
-      const indexed = found.get(entry.message.id) as {ordinal:number}|null;
-      if (indexed) replacements.set(entry.message.id,entry.message);
-      else added.push(entry);
-    }
-    const total = meta.row_count + added.length;
-    const end = location ? location.position : total;
-    if (end > total) throw new Error("STALE_HISTORY_CURSOR");
-    const offset = Math.max(0,end-input.limit);
-    let rows: SessionMessage[];
-    rows = offset < meta.row_count ? (db.query("SELECT json FROM rows WHERE ordinal>=? AND ordinal<? ORDER BY ordinal")
-      .all(offset,Math.min(end,meta.row_count)) as {json:string}[]).map(row=>JSON.parse(row.json)) : [];
+      ((ownerDb.query("SELECT MAX(sequence) AS n FROM session_owner_events WHERE session_id=? AND kind='message'")
+        .get(input.ownerSessionId) as {n:number|null}).n || meta.event_cutoff) : meta.event_cutoff;
+    const phase=location?.phase || "overlay";
+    const before=phase==="overlay" ? (location?.beforeFirstSequence ?? Number.MAX_SAFE_INTEGER) : 0;
+    if(phase==="overlay" && (!Number.isSafeInteger(before) || before<1))throw new Error("STALE_HISTORY_CURSOR");
+    const novel=input.ownerSessionId && phase==="overlay"
+      ? novelIds(db,input.ownerSessionId,meta.event_cutoff,overlayHead,before,input.limit)
+      : {ids:[] as NovelId[],hasMore:false,appliedSequence:overlayHead,complete:true};
+    const remaining=phase==="baseline" ? input.limit : novel.hasMore ? 0 : input.limit-novel.ids.length;
+    const end=phase==="baseline" ? location?.position : meta.row_count;
+    if(!Number.isSafeInteger(end) || end<0 || end>meta.row_count)throw new Error("STALE_HISTORY_CURSOR");
+    const offset=Math.max(0,end-remaining);
+    const rows=remaining>0 ? (db.query("SELECT json FROM rows WHERE ordinal>=? AND ordinal<? ORDER BY ordinal")
+      .all(offset,end) as {json:string}[]).map(row=>JSON.parse(row.json)) as SessionMessage[] : [];
     const needed = new Set<string>();
     for (const row of rows) for (const part of Array.isArray((row as any).message?.content) ? (row as any).message.content : [])
       if (part?.type === "tool_result" && typeof part.tool_use_id === "string") needed.add(part.tool_use_id);
@@ -419,35 +441,60 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
     }
     const omissions = new Set<string>();
     const messages = rows.flatMap(row => claudeHistoryMessages(row, input.sessionUuid, omissions, toolNames));
-    for (let index=0;index<messages.length;index++) {
-      const newer = replacements.get(messages[index]!.id);
-      if (newer) messages[index] = newer;
+    let missingVersion=false;
+    for(let index=0;index<messages.length;index++) {
+      const message=messages[index]!;
+      const newer=input.ownerSessionId ? retainedVersionMessage(input.ownerSessionId,message.id,overlayHead) : null;
+      if(newer)messages[index]=newer.message;
+      if(newer?.message.role==="tool")messages[index]!.detailKey=encode({sessionUuid:input.sessionUuid,
+        ownerEventId:newer.eventId,ownerSessionId:input.ownerSessionId});
     }
-    messages.push(...added.slice(Math.max(0,offset-meta.row_count),Math.max(0,end-meta.row_count)).map(entry=>entry.message));
-    for (const message of messages) if (message.detailKey) {
-      message.detailKey = encode({ ...decode(message.detailKey, input.sessionUuid), generation: meta.generation });
+    const added:ProviderHistoryMessage[]=[];
+    for(const id of novel.ids.slice().reverse()) {
+      const version=retainedVersionMessage(input.ownerSessionId!,id.messageId,overlayHead);
+      if(!version){missingVersion=true;continue;}
+      const message={...version.message};
+      if(message.role==="tool")message.detailKey=encode({sessionUuid:input.sessionUuid,
+        ownerEventId:version.eventId,ownerSessionId:input.ownerSessionId});
+      added.push(message);
     }
-    const checkpoint = verifiedAppends.get(input.sessionUuid);
-    const effectiveMeta = checkpoint?.generation === meta.generation ? {...meta,source_size:checkpoint.sourceSize,
-      source_mtime_ms:checkpoint.sourceMtimeMs,tail_uuid:checkpoint.tailUuid} : meta;
-    const verdict = meta.cwd === input.cwd && !retained.overflow ? await appendCovered(effectiveMeta,source,input.ownerSessionId,
-      new Set(retained.rows.map(entry=>entry.message.id))) : {covered:false,tailUuid:meta.tail_uuid};
-    const covered = verdict.covered;
-    if (covered && source) verifiedAppends.set(input.sessionUuid,{generation:meta.generation,sourceSize:source.size,
-      sourceMtimeMs:source.mtimeMs,tailUuid:verdict.tailUuid});
-    if (!covered && source) scheduleQuietRefresh(input.sessionUuid,input.cwd,source,input.ownerSessionId);
-    const coverage = !covered ? cacheCoverage(input.sessionUuid) : omissions.size ? { complete: false, omissions: [...omissions] } : undefined;
-    return { messages, nextCursor: offset > 0
-      ? encode({ sessionUuid: input.sessionUuid, position:offset, overlayHead, generation:meta.generation }) : null,
+    for (const message of messages) if (message.detailKey && !decode(message.detailKey,input.sessionUuid).ownerEventId) {
+      message.detailKey=encode({...decode(message.detailKey,input.sessionUuid),generation:meta.generation});
+    }
+    const pathChanged=!!source && meta.source_path!==source.path;
+    const sourceChanged=!source || pathChanged ||
+      meta.verified_source_size!==source.size || meta.verified_source_mtime_ms!==source.mtimeMs;
+    if(sourceChanged && source && input.ownerSessionId && !meta.needs_reimport && !pathChanged)
+      queueHistoryVerification(input.sessionUuid,input.ownerSessionId);
+    if((sourceChanged || meta.needs_reimport) && source && (!input.ownerSessionId || meta.needs_reimport || pathChanged))
+      scheduleQuietRefresh(input.sessionUuid,input.cwd,source,input.ownerSessionId);
+    const covered=!sourceChanged && !meta.needs_reimport && meta.cwd===input.cwd && novel.complete && !missingVersion;
+    const coverage=!covered ? cacheCoverage(input.sessionUuid) : omissions.size ? {complete:false,omissions:[...omissions]} : undefined;
+    const nextCursor=novel.hasMore ? encode({sessionUuid:input.sessionUuid,phase:"overlay",
+      beforeFirstSequence:novel.ids.at(-1)!.firstSequence,overlayHead,generation:meta.generation})
+      : offset>0 ? encode({sessionUuid:input.sessionUuid,phase:"baseline",position:offset,
+        overlayHead,generation:meta.generation}) : null;
+    return { messages:[...messages,...added], nextCursor,
       ...(coverage ? { coverage } : {}) };
   } finally { cache.db.close(); }
 }
 
 async function claudeCachedDetail(input: ProviderDetailInput): Promise<{ content: string }> {
+  const location=decode(input.detailKey,input.sessionUuid);
+  if(location.ownerEventId!==undefined) {
+    if(typeof location.ownerEventId!=="string" || !Number.isSafeInteger(location.ownerSessionId)
+      || location.ownerSessionId!==input.ownerSessionId)throw new Error("INVALID_HISTORY_REFERENCE");
+    const row=ownerDb.query(`SELECT payload_json FROM session_owner_events
+      WHERE event_id=? AND session_id=? AND kind='message'`).get(location.ownerEventId,input.ownerSessionId) as
+      {payload_json:string}|null;
+    if(!row)throw new Error("PROVIDER_HISTORY_ITEM_NOT_FOUND");
+    const message=(JSON.parse(row.payload_json) as {message?:ProviderHistoryMessage}).message;
+    if(!message || message.role!=="tool")throw new Error("PROVIDER_HISTORY_ITEM_NOT_FOUND");
+    return {content:message.content};
+  }
   const cache = openCache(input.sessionUuid);
   if (!cache) throw new Error("HISTORY_INDEXING");
   try {
-    const location = decode(input.detailKey, input.sessionUuid);
     if (location.generation !== cache.meta.generation) throw new Error("STALE_HISTORY_CURSOR");
     if (typeof location.uuid !== "string" || !location.uuid) throw new Error("INVALID_HISTORY_REFERENCE");
     if (location.toolId === undefined && (!Number.isSafeInteger(location.offset) || location.offset < 0
