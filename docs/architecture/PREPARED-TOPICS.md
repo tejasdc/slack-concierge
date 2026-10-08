@@ -78,6 +78,8 @@ Fast cached responses do not prove current prepared content. The existing worker
 `presentation_worker_health` numeric observations at most once per ten seconds from its
 ordinary work loop and successful batch yields. It records generation, applied and target
 sequence, completed batch progress, last progress time and consecutive failed passes.
+A committed checkpoint advance also counts as progress when a small catch-up pass
+finishes without yielding a batch. An unchanged idle checkpoint never resets progress age.
 A lease renewal never counts as progress. A completed pass resets the failure count;
 partial progress does not erase repeated failures. Database observation failure emits
 `available:false` without source text, identifiers or exception contents.
