@@ -1,0 +1,1 @@
+Preparing long threads avoids collecting all of their large answers in memory at once.
