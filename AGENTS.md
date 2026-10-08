@@ -997,7 +997,6 @@ executable details; do not duplicate constants or invent another authority.
 Update the relevant current-state document in the same commit when behavior or ownership
 changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
-The owner answers every read from one event loop. When `owner_event_loop_lag` says it is held,
 Ledger calls are observed at the shared database boundary (`storage-observation.ts`), with
 operation-local counts, duration, returned rows and value bytes; see
 [storage observation](docs/architecture/STORAGE-OBSERVATION.md). Keep the wrapper when adding
@@ -1008,7 +1007,7 @@ When `owner_event_loop_lag` says the owner is held,
 `$CONCIERGE_STATE_DIR/diagnostics/` (`owner-cpu-profile.ts`), but only when the service runs with
 `CONCIERGE_OWNER_CPU_PROFILE=1`: on 2026-10-07 starting it froze the owner 20–40 s each time and
 preceded 40 GB runaways, so it is refused by default. `owner_memory` logs the owner's memory each
-minute (object types above 4 GB). Never cap Concierge's memory: Tejas rejected ceilings outright
+minute without walking the heap under pressure. Allocation diagnostics need isolated overhead validation before use; RSS is process attribution, not an allocator diagnosis. Never cap Concierge's memory: Tejas rejected ceilings outright
 (2026-10-07) and wants the cause found and fixed. **Health notices go to the repair agent, not to him**
 [decision: repair-agent-before-tejas]: a crash or stop (systemd failure hooks), a freeze
 (`owner-responsiveness.ts`: a minute of freezing in five, or one freeze of 30 s), work not moving
@@ -1021,6 +1020,7 @@ hands the report to the repair agent, and pages him through Thinkering's own soc
 stays down after that or the investigator says only he can fix it. Usage, key-change and project set-up
 notices still go to his Inbox. Each repair has one owner; the table is in remote-box README's work-flow
 supervisor section. Name the code path before
+
 changing anything. Loops over ledger rows use `ledgerRows()`, never a statement's `iterate()`: an
 early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
 ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its

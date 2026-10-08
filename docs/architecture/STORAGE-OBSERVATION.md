@@ -22,8 +22,12 @@ scopes ignore later detached work; background work must establish its own explic
 An observation sink failure increments `storageObservationFailures()` and never replaces a
 successful command or its original failure. Callers expose this loss count in their telemetry.
 
-The standalone `bun run bot/scripts/storage-observation-check.ts` uses only its own in-memory
+The release build runs `bot/scripts/storage-observation-check.ts`; it uses only its own in-memory
 database. It checks overlapping async scopes, query errors, byte semantics, transaction behavior,
 iterator finalization and sink failure, and reports large-result observation overhead. It never
 imports the application ledger or configures a production state path. Instrumentation is not a
 performance gate by itself: readers and releases must enforce their separate cost contracts.
+
+Routine owner memory readings also export the observation-loss counter, with RSS, heap,
+external and array-buffer sizes. They do not walk the heap when it is already large. The
+external host observer owns process/swap/pressure evidence during a blocked event loop.

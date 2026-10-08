@@ -1,7 +1,8 @@
-import {heapStats,profile} from 'bun:jsc';
+import {profile} from 'bun:jsc';
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {log} from './log';
+import {storageObservationFailures} from './storage-observation';
 
 /**
  * A CPU profile of the running owner, on demand: `kill -URG <pid>` samples the JavaScript
@@ -40,25 +41,18 @@ export function summarizeProfile(traces:{frames:Frame[]}[],seconds:number):strin
  * The owner's memory, once a minute. On 2026-10-07 it reached 20–43 GB within an hour six times
  * (systemd's memory peaks), pushed the machine into swap, froze every read and made the 8:03 PM
  * update's first start fail while the dying process still held the ledger; nothing said what the
- * memory was. Above 4 GB the reading also names the most numerous object types, at most every
- * ten minutes because counting them walks the heap.
+ * memory was. Routine readings must remain cheap even under pressure: no heap walk or automatic
+ * profiler belongs on the already exhausted owner's loop. The external sampler keeps observing
+ * when this loop cannot answer. Allocation attribution requires a separately validated diagnostic.
  */
-const MEMORY_EVERY_MS=60_000,BREAKDOWN_ABOVE_BYTES=4*1024**3,BREAKDOWN_EVERY_MS=10*60_000;
+const MEMORY_EVERY_MS=60_000;
 export function startOwnerMemoryReadings() {
-  let brokenDownAt=0;
   const timer=setInterval(()=>{
     try {
       const usage=process.memoryUsage();
-      const large=usage.rss>BREAKDOWN_ABOVE_BYTES&&Date.now()-brokenDownAt>BREAKDOWN_EVERY_MS;
-      let breakdown={};
-      if(large){
-        brokenDownAt=Date.now();
-        const stats=heapStats();
-        breakdown={heap_capacity_mb:Math.round(stats.heapCapacity/2**20),extra_mb:Math.round(stats.extraMemorySize/2**20),objects:stats.objectCount,
-          top_types:Object.fromEntries(Object.entries(stats.objectTypeCounts).sort((a,b)=>b[1]-a[1]).slice(0,15))};
-      }
-      log(usage.rss>BREAKDOWN_ABOVE_BYTES?'warn':'info','owner_memory',{rss_mb:Math.round(usage.rss/2**20),heap_used_mb:Math.round(usage.heapUsed/2**20),
-        heap_total_mb:Math.round(usage.heapTotal/2**20),external_mb:Math.round(usage.external/2**20),array_buffers_mb:Math.round(usage.arrayBuffers/2**20),...breakdown});
+      log('info','owner_memory',{rss_mb:Math.round(usage.rss/2**20),heap_used_mb:Math.round(usage.heapUsed/2**20),
+        heap_total_mb:Math.round(usage.heapTotal/2**20),external_mb:Math.round(usage.external/2**20),array_buffers_mb:Math.round(usage.arrayBuffers/2**20),
+        storage_observation_failures:storageObservationFailures()});
     } catch(error){log('warn','owner_memory_failed',{error:String(error)});}
   },MEMORY_EVERY_MS);
   timer.unref?.();
