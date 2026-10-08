@@ -21,7 +21,7 @@ router-actions.sh sessions ask --peer <instance> --machine-need "<what only that
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
-router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name>]
+router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name> | --journal entry|checkin]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
@@ -111,7 +111,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string } }
@@ -436,6 +436,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--summary-file' && operation === 'note')
       || (flag === '--add-to' && operation === 'note')
       || (flag === '--person' && operation === 'note')
+      || (flag === '--journal' && operation === 'note')
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post' || operation === 'outcome'))
       || (flag === '--quiet-because' && operation === 'outcome')
       || ((flag === '--his-words' || flag === '--why-not-answered' || flag === '--only-he-can') && (operation === 'outcome' || operation === 'reply'))
@@ -518,7 +519,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const person=flags.get('--person')?.trim();
     if(flags.has('--person')&&!person)invalid('--person takes the person\'s name, as he says it.');
     if(person&&addTo)invalid('A note goes to one place: --person or --add-to, not both.');
-    return {operation,body:{source,action_id:actionId,captureId:identity!,summary,...(addTo?{addTo}:{}),...(person?{person}:{})}};
+    // His journal in thnkr.ing (Tejas, 2026-10-08: "another section for journals"): the capture's
+    // journal part becomes an entry (or a check-in) on the Journal page, its words still the Source.
+    const journal=flags.get('--journal');
+    if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
+    if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
+    return {operation,body:{source,action_id:actionId,captureId:identity!,summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');

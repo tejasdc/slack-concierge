@@ -346,7 +346,7 @@ export type SessionOwnerRuntime = {
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
   sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
-  saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string}):Promise<unknown>;
+  saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}):Promise<unknown>;
   auth?:{
     status(fresh?:boolean):unknown|Promise<unknown>;
     start(provider:string,profileId?:string|null):Promise<unknown>;
@@ -1255,11 +1255,11 @@ export class SessionOwner {
     const session=getSessionById(accepted.session_id)!;
     return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(accepted),id:accepted.id}};
   }
-  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId:string;summary?:string;addTo?:string;person?:string}) {
+  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
     const captured=retainedInboxCapture(input.captureId),body=JSON.parse(captured.payload_json);
     const operation=retainSessionInput({sessionId:input.sourceSessionId,scope:`communication:${input.sourceInputId}`,actionId:input.actionId,kind:'capture-note',origin:'agent',
-      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{captureId:input.captureId,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person})}}).input;
+      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{captureId:input.captureId,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})}}).input;
     const prior=operation.receipt_json?JSON.parse(operation.receipt_json):{};
     if(prior.state==='completed')return {operation:this.receipt(operation),note:prior.note};
     const original=body.capture.originalTextAttachmentId?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):body.text;
@@ -1267,7 +1267,7 @@ export class SessionOwner {
     try {
       // The note capability deduplicates this immutable captureId. Retrying a
       // lost response reads the same note and preserves later human edits.
-      const note=await this.runtime.saveCaptureNote({captureId:input.captureId,text:original,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person})});
+      const note=await this.runtime.saveCaptureNote({captureId:input.captureId,text:original,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})});
       const result=object(note);
       for(const key of ['source','note'])if(typeof result[key]?.objectId!=='string'||typeof result[key]?.revision!=='string')throw new SessionOwnerError('Note capability returned incomplete object revisions.',502);
       if(typeof result.created!=='boolean')throw new SessionOwnerError('Note capability omitted its creation disposition.',502);
