@@ -1,0 +1,1 @@
+Delivery status preserves the real waiting condition and retry state without rebuilding all receipts.
