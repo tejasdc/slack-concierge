@@ -132,6 +132,26 @@ moves the daemon, its updater and their children into a transient `codex-app-ser
 `codex_daemon_moved_to_own_scope` or `codex_daemon_scope_move_failed`. Moving changes only the
 cgroup; nothing restarts. `systemd-cgls -u 'codex-app-server*'` shows where it lives.
 
+## Only The Manager Brings A Missing Server Back
+
+Codex updates itself: its updater stops the running server and launches a replacement. At
+3:53 PM on 2026-10-08 the replacement for 0.162.0 quit with `app-server control socket is already
+in use` because the old server had not yet let go, and the updater gave up after its ten-second
+readiness wait. Five seconds later the Mac Codex app's SSH payload, which starts
+`codex app-server --listen unix://` whenever nothing answers, started an unmanaged server
+(`daemon version` without `backend`). Two changes close that path:
+
+- `install-codex-stop-hook.sh` installs `/etc/ssh/sshd_config.d/50-codex-managed-app-server.conf`
+  with `SetEnv CODEX_SSH_SKIP_APP_SERVER_BOOT=true`, the payload's own opt-out, checked with
+  `sshd -t` before a reload. The Mac app then only connects through its proxy, and its
+  forwarded SSH agent is no longer linked into the control directory.
+- When a Concierge connection finds the socket refusing or missing, `startCodexDaemonWhenAbsent`
+  (`codex-daemon-file-limit.ts`) runs `daemon start` in a fresh scope, at most once per
+  30 seconds, logging `codex_daemon_started_when_absent` or `codex_daemon_start_failed`.
+
+An unmanaged server that is already running is left alone: replacing it is a restart, which
+follows the repair section above once admission is idle.
+
 ## OAuth Token Revocation Triggers The Same Restart
 
 An account-side OAuth token revocation while the App Server is loaded leaves
