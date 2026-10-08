@@ -113,12 +113,14 @@ export class SessionExecutionHost {
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
-    const defaultAccount=currentAccount(provider);
-    const selection=provider==='claude-code'?claudeAccountSelection():null;
-    const saved=listProfiles(provider);
+    let mark=performance.now();
+    const step=(name:string)=>{const now=performance.now();this.authViewSteps[name]=Math.round(now-mark);mark=now;};
+    const defaultAccount=currentAccount(provider);step('current_account_ms');
+    const selection=provider==='claude-code'?claudeAccountSelection():null;step('selection_ms');
+    const saved=listProfiles(provider);step('list_profiles_ms');
     // Where accounts have homes of their own, the main folder's login is a terminal's and is never
     // offered: agents never run on it, so a hand sign-in there cannot displace theirs.
-    const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
+    const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();step('own_homes_ms');
     const profiles=provider==='claude-code'&&ownHomes
       ?saved.map(profile=>({...profile,current:selection?.profileId===profile.id}))
       :provider==='claude-code'&&defaultAccount
@@ -197,9 +199,18 @@ export class SessionExecutionHost {
     const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.
-    return [this.providerAuthView('claude-code'),this.providerAuthView('codex')].map(view=>({...view,checking}));
+    return (['claude-code','codex'] as const).map(provider=>{
+      // The Accounts page waits on this read, so a slow one names its own steps: on 2026-10-08 it took
+      // ~10 s a read and finding why took a system-call trace.
+      const started=performance.now();this.authViewSteps={};
+      const view=this.providerAuthView(provider);
+      const total=Math.round(performance.now()-started);
+      if(total>=500)log('warn','provider_auth_view_slow',{provider,total_ms:total,fresh,...this.authViewSteps});
+      return {...view,checking};
+    });
   }
   private providerAuthCheck:Promise<void>|null=null;
+  private authViewSteps:Record<string,number>={};
   private providerAuthCheckedAt=0;
   /**
    * Spends one banked reset on a named account, then reads that account again.
