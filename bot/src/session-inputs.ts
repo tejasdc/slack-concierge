@@ -377,9 +377,9 @@ export function recoverUnsentSteeredInput(inputId:string) {
     // A settled receipt is immutable history, and an input the queue would
     // refuse must stay attached to its evidence rather than become orphaned.
     if(input.receipt_json&&JSON.parse(input.receipt_json).state)return input;
-    // A pinned human live delivery names one exact run; it refuses rather than
-    // silently becoming a later queued turn.
-    if(JSON.parse(input.payload_json).delivery==='steer')return input;
+    // Only a service's exact-run delivery refuses; his own message that missed its piece of work is
+    // his next message (2026-10-08, two messages to concierge:4168 lost this way).
+    if(JSON.parse(input.payload_json).delivery==='steer'&&input.origin==='service')return input;
     const steering=db.query(`SELECT status,provider_sent_at FROM turn_steering_messages
       WHERE id=? AND accepted_input_id=? AND slack_user_msg_ts IS NULL`).get(input.steering_id,input.id) as {status:string;provider_sent_at:string|null}|null;
     if(steering?.status!=='failed'||steering.provider_sent_at)return input;

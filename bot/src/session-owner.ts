@@ -849,7 +849,10 @@ export class SessionOwner {
     const payload=JSON.parse(input.payload_json);
     if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer')enqueueSessionInput(input.id);
     else if(!this.runtime.steer(input)) {
-      if(payload.delivery==='steer')db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:'The selected live run ended before this input could be steered.'}),input.id);
+      // His message whose piece of work ended between admission and delivery is the session's next
+      // message, never a failure; only a non-human exact-run delivery fails here.
+      if(payload.delivery==='steer'&&input.origin!=='service'&&input.kind==='input')enqueueSessionInput(recoverUnsentSteeredInput(input.id).id);
+      else if(payload.delivery==='steer')db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:'The selected live run ended before this input could be steered.'}),input.id);
       // A run that stopped accepting live input between the attempt and its
       // refusal leaves an unsent steering row; the input still owes its queue.
       else enqueueSessionInput(recoverUnsentSteeredInput(input.id).id);
@@ -1305,15 +1308,22 @@ export class SessionOwner {
     validateReviewSelection(session.id,input);
     this.attachments(input.attachments);
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
+    // HIS MESSAGE TO A SESSION ALWAYS REACHES IT. Sent while the agent is working, it joins that
+    // piece of work; if that piece has already ended (an orchestrating session runs a new one every
+    // few seconds), the same message is accepted as the session's next one instead of being refused.
+    // Refusing it lost two of his messages to concierge:4168 at 2:31 AM on 2026-10-08, and a browser
+    // that resends cannot help a copy of the app that has not updated (report: "Every single request
+    // in the session as failure"). Exact-run steering stays for service notices, which are not this route.
+    const asQueued=(value:Record<string,any>)=>{const {expectedRunId:_run,...rest}=value;return {...rest,delivery:'queue'};};
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
-    if(prior){if(prior.session_id!==session.id||prior.kind!=='input'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
+    if(prior){const kept=stablePayload(JSON.parse(prior.payload_json));if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
     this.validateAttachments(session,input.attachments);
     if(input.expectedRunId!==undefined&&input.delivery!=='steer')throw new SessionOwnerError('expectedRunId requires explicit steer delivery.');
     if(input.delivery==='steer') {
       const active=db.query("SELECT id,native_run_id,stop_requested_at FROM turns WHERE session_id=? AND status='running'").get(session.id) as {id:number;native_run_id:string;stop_requested_at:string|null}|null;
-      if(!input.expectedRunId||active?.native_run_id!==input.expectedRunId)throw new SessionOwnerError('The selected live run changed; input was not steered.',409);
-      if(!this.view(session).capabilities.steer||acceptedInputForTurn(active.id)?.kind==='fork')throw new SessionOwnerError('This execution does not support steering.',409,'CAPABILITY_UNAVAILABLE');
-      if(active.stop_requested_at)throw new SessionOwnerError('The selected live run is stopping; input was not steered.',409,'RUN_STOPPING');
+      const joinable=!!active&&!!input.expectedRunId&&active.native_run_id===input.expectedRunId&&!active.stop_requested_at
+        &&this.view(session).capabilities.steer&&acceptedInputForTurn(active.id)?.kind!=='fork';
+      if(!joinable){const queued=asQueued(input);for(const key of Object.keys(input))delete input[key];Object.assign(input,queued);}
     }
     // A reply inside an Inbox thread goes to the agent working on it unless he addressed the
     // router; the owner decides from the thread's record and he can override in the To line
