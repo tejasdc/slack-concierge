@@ -348,12 +348,14 @@ import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,mi
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
 import {warmSpeechEngine} from './speech-engine';
+import {ensureSpeechWorker} from './speech-job-supervisor';
 
 // Load the speech model now, in the background, so the first dictation after a restart is
 // already warm rather than paying the model load while someone waits.
 // On a Mac the independent speech job keeps the local engine ready across Concierge updates.
 // The coordinator can still start its own engine on demand for retained-file fallback.
-if (process.platform !== 'darwin') warmSpeechEngine();
+if (process.platform === 'darwin') warmSpeechEngine();
+else void ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!).catch(()=>{});
 
 // Session search by meaning: indexing runs in the background from startup, in both compositions.
 {
@@ -515,6 +517,12 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   },
 });
 const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
+if(process.platform==='linux'){
+  // Results are small spool artifacts. Only this owner commits them to the attachment ledger;
+  // a bounded pass also catches a result produced while Concierge was restarting.
+  sessionExecutionHost.owner.reconcileFinishedSpeechJobs();
+  setInterval(()=>sessionExecutionHost.owner.reconcileFinishedSpeechJobs(),1_000);
+}
 sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.status() ?? { available: false, reason: "Capture delivery has not started." };
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;

@@ -157,8 +157,10 @@ authorization or a change to the default rapid-iteration policy.
   prompt; Chrome also asks once for its local-network permission. When the device produced no
   words, the owner that holds the recording transcribes it with its own engine: Parakeet on the
   box, Apple's on a Mac-only installation. There is no relay between machines (Tejas,
-  September 21, 2026: the fallback is the owner path). Transcriptions still run one at a time through the lane in
-  `transcription.ts`; `audio_transcribed` names the engine (and the peer) and never text.
+  September 21, 2026: the fallback is the owner path). On Linux the fallback runs in one
+  independent supervised speech worker, with the owner alone committing its result;
+  [speech fallback jobs](docs/architecture/SPEECH-FALLBACK-JOBS.md) owns the protocol,
+  recovery and live checks. `audio_transcribed` names the engine (and the peer) and never text.
   whisper.cpp remains only as a logged fallback on the box and is scheduled for removal.
   `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements
   and the wider voice design are in Thinkering's

@@ -137,6 +137,13 @@ export function initializeSessionOwnerSchema(db: Database) {
           content_type TEXT NOT NULL, sha256 TEXT NOT NULL, bytes BLOB NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS session_attachment_transcription_outcomes (
+          attachment_id TEXT PRIMARY KEY REFERENCES session_attachments(id),
+          sha256 TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('no-speech','failed')),
+          reason TEXT,
+          completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS session_owner_events (
           sequence INTEGER PRIMARY KEY AUTOINCREMENT,
           event_id TEXT NOT NULL UNIQUE,

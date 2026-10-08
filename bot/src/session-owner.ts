@@ -4,6 +4,8 @@ import {basename,dirname,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
+import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJobProgress,speechRoot,stageSpeechJob} from './speech-job-spool';
+import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
@@ -2169,18 +2171,83 @@ export class SessionOwner {
   // second one behind it.
   private readonly transcribing=new Map<string,Promise<{text:string}>>();
   transcriptionState(id:string) {
-    const row=db.query('SELECT content_type,transcript_text IS NOT NULL AS done FROM session_attachments WHERE id=?').get(id) as {content_type:string;done:number}|null;
+    const row=db.query('SELECT content_type,sha256,transcript_text FROM session_attachments WHERE id=?').get(id) as {content_type:string;sha256:string;transcript_text:string|null}|null;
     if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
-    if(row.done)return {state:'done' as const};
+    if(row.transcript_text!==null){
+      if(process.platform==='linux')void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
+      return {state:'done' as const,text:row.transcript_text};
+    }
+    if(process.platform==='linux'){
+      const settled=db.query('SELECT sha256,state,reason FROM session_attachment_transcription_outcomes WHERE attachment_id=?').get(id) as {sha256:string;state:'no-speech'|'failed';reason:string|null}|null;
+      if(settled){
+        if(settled.sha256!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
+        void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
+        return settled.state==='no-speech'?{state:'no-speech' as const,text:''}:{state:'failed' as const,reason:settled.reason??'transcriber_failed'};
+      }
+      const root=speechRoot(process.env.CONCIERGE_STATE_DIR!);
+      const result=readSpeechJobResult(root,id);
+      if(result){
+        if(result.sha256!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
+        db.transaction(()=>{
+          if(result.kind==='words')db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server',transcript_engine=?,duration_ms=? WHERE id=? AND sha256=? AND transcript_text IS NULL")
+            .run(result.text,result.source,result.audioMs,id,result.sha256);
+          else db.query('INSERT OR IGNORE INTO session_attachment_transcription_outcomes(attachment_id,sha256,state,reason) VALUES(?,?,?,?)')
+            .run(id,result.sha256,result.kind,result.reason??null);
+        })();
+        void removeFinishedSpeechJob(root,id).catch(error=>log('warn','speech_job_cleanup_failed',{attachment_id:id,reason:String(error)}));
+        if(result.kind==='words')return {state:'done' as const,text:result.text};
+        if(result.kind==='no-speech')return {state:'no-speech' as const,text:''};
+        return {state:'failed' as const,reason:result.reason??'transcriber_failed'};
+      }
+      return speechJobProgress(root,id);
+    }
     return transcriptionProgress(id)??{state:'idle' as const};
   }
-  transcribeAttachment(id:string,body?:unknown) {
+  reconcileFinishedSpeechJobs(limit=32){
+    if(process.platform!=='linux')return 0;
+    const root=speechRoot(process.env.CONCIERGE_STATE_DIR!);
+    let settled=0;
+    for(const id of finishedSpeechJobIds(root,limit)){
+      try{this.transcriptionState(id);settled++;}
+      catch(error){log('warn','speech_job_reconcile_failed',{attachment_id:id,reason:error instanceof Error?error.message:'unknown'});}
+    }
+    return settled;
+  }
+  async transcribeAttachment(id:string,body?:unknown,asyncResult=false):Promise<{text:string}|ReturnType<SessionOwner['transcriptionState']>> {
     if(body&&typeof body==='object'&&Object.keys(body).length)return this.acceptDeviceTranscript(id,body);
+    if(process.platform==='linux'){
+      let state=this.transcriptionState(id);
+      if(state.state==='idle'){
+        const row=db.query('SELECT id,name,content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {id:string;name:string;content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
+        if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+        if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
+        if(row.transcript_text!==null)return asyncResult?{state:'done',text:row.transcript_text}:{text:row.transcript_text};
+        await stageSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),{attachmentId:id,sha256:row.sha256,name:row.name,contentType:row.content_type,bytes:row.bytes});
+        state=this.transcriptionState(id);
+      }
+      await ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!).catch(()=>{
+        throw new SessionOwnerError('The speech worker is unavailable. Your recording is kept and can be retried.',424,'AUDIO_WORKER_UNAVAILABLE');
+      });
+      if(asyncResult)return state;
+      // Existing clients expect words from POST. A restart drops only this waiter; the
+      // supervised job and retained audio survive, so the retry rejoins by attachment ID.
+      for(;;){
+        const current=this.transcriptionState(id);
+        if(current.state==='done'||current.state==='no-speech')return {text:current.text};
+        if(current.state==='unavailable')throw new SessionOwnerError('The speech worker is unavailable. Your recording is kept and can be retried.',424,'AUDIO_WORKER_UNAVAILABLE');
+        if(current.state==='failed')throw new SessionOwnerError(current.reason==='transcriber_missing'
+          ?'Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.'
+          :'Speech-to-text could not turn this recording into words. Your recording is kept.',422,
+          current.reason==='transcriber_missing'?'AUDIO_TRANSCRIBER_UNAVAILABLE':'AUDIO_TRANSCRIPTION_FAILED');
+        await new Promise(resolve=>setTimeout(resolve,250));
+      }
+    }
     const pending=this.transcribing.get(id);
-    if(pending)return pending;
+    if(pending){const result=await pending;return asyncResult?{state:'done' as const,text:result.text}:result;}
     const job=this.transcribeAttachmentOnce(id).finally(()=>this.transcribing.delete(id));
     this.transcribing.set(id,job);
-    return job;
+    const result=await job;
+    return asyncResult?{state:'done' as const,text:result.text}:result;
   }
   // The person's own phone can turn a recording into words before this server does. Those words
   // are kept beside the verified audio with the engine that produced them, and never replace words
@@ -2648,7 +2715,8 @@ export class SessionOwner {
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start'&&parts.length===4)result=await this.transcribeAttachment(parts[1]!,body,true);
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body,url.searchParams.get('async')==='1');
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=await this.resurrect(body);
       else if(request.method==='POST'&&parts[0]==='resurrections'&&parts[1]==='native'&&parts.length===2)result=this.resumeNative(body);
@@ -2688,7 +2756,7 @@ export class SessionOwner {
       else throw new SessionOwnerError('Unknown session owner route.',404);
       if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return ownerJson({error:(result as any).operation.error},{status:409});
       const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
-      return ownerJson(result,{status:request.method==='POST'&&!readOnly&&!prior?202:200});
+      return ownerJson(result,{status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError)return ownerJson({error:{code:error.code,message:error.message}},{status:503});
       if(error instanceof TopicError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});

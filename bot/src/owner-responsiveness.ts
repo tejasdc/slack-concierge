@@ -1,4 +1,5 @@
 import { db } from "./state-database";
+import {readFileSync} from 'node:fs';
 import { log } from "./log";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
@@ -22,6 +23,19 @@ const BLOCKED_IN_WINDOW_MS = 60_000;      // a minute of freezing within five mi
 const SINGLE_FREEZE_MS = 30_000;          // or one freeze long enough to time out a page
 const QUIET_TO_CLOSE_MS = 10 * 60_000;
 const NOTICE_PREFIX = "owner-stuck:";
+const EXTERNAL_OBSERVATION='/var/lib/remote-box-observability/textfile/concierge-monitor.json';
+let externalCheckedAt=0,externalAvailable=false;
+function externalMonitorAvailable(now:number){
+  if(process.platform!=='linux')return false; // the Mac has no remote-box observer
+  if(now-externalCheckedAt<5_000)return externalAvailable;
+  externalCheckedAt=now;
+  try{
+    const snapshot=JSON.parse(readFileSync(EXTERNAL_OBSERVATION,'utf8')) as {schema?:number;observed_at?:number};
+    const age=now/1000-(snapshot.observed_at??0);
+    externalAvailable=snapshot.schema===1&&typeof snapshot.observed_at==='number'&&age>=-30&&age<180;
+  }catch{externalAvailable=false;}
+  return externalAvailable;
+}
 
 const stalls: { at: number; ms: number }[] = [];
 const slow: { at: number; label: string; ms: number }[] = [];
@@ -66,6 +80,16 @@ function evaluate(now: number): void {
   const bad = blocked >= BLOCKED_IN_WINDOW_MS || longest >= SINGLE_FREEZE_MS;
   if (bad) {
     lastBadAt = now;
+    // The outside work-flow supervisor owns one alert and repair investigation while its
+    // observations are installed and fresh. This local fallback remains for the Mac and for
+    // a server where that independent monitor has not yet been activated.
+    if(externalMonitorAvailable(now)){
+      if(episodeStartedAt!==null){
+        episodeStartedAt=null;
+        closeNotices(now,'The independent service monitor has taken over this investigation. Nothing waits on you.');
+      }
+      return;
+    }
     if (episodeStartedAt === null) {
       episodeStartedAt = stalls[0]?.at ?? now;
       openNotice(now, blocked, longest);
@@ -124,11 +148,11 @@ function openNotice(now: number, blocked: number, longest: number): void {
 }
 
 /** Every open freeze notice, including one a previous process opened before it was restarted. */
-function closeNotices(now: number): void {
+function closeNotices(now: number,reason?:string): void {
   const rows = db.query(`SELECT id FROM session_inputs WHERE scope=? AND id LIKE ?`)
     .all(SERVICE_NOTICE_SCOPE, `service:service-notice:${NOTICE_PREFIX}%`) as { id: string }[];
   for (const row of rows) {
-    try { settleServiceNotice({ inputId: row.id, text: `Concierge is answering normally again as of ${noticeTime(db, now)}. Nothing waits on you.` }); }
+    try { settleServiceNotice({ inputId: row.id, text: reason??`Concierge is answering normally again as of ${noticeTime(db, now)}. Nothing waits on you.` }); }
     catch (error) { log("error", "owner_unresponsive_settle_failed", { input_id: row.id, error: String(error) }); }
   }
 }
