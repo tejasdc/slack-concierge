@@ -10,6 +10,8 @@ import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {presentationContractFor} from './presentation-reader-contracts';
+import {preparedTopics,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
+  preparedTopicResolution,preparedTopicDetail} from './presentation-topic-reader';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
@@ -2478,6 +2480,42 @@ export class SessionOwner {
         result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
+        const state=url.searchParams.get('state')??'open';
+        if(!['open','closed','background','all'].includes(state))throw new SessionOwnerError('Unknown thread list.');
+        const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Thread search is too long.');
+        result=preparedTopics({state:state as 'open'|'closed'|'background'|'all',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[2]==='changes'&&parts.length===3){
+        const after=url.searchParams.get('after');if(!after)throw new SessionOwnerError('A thread revision is required.');
+        result=preparedTopicChanges(after,boundedLimit(url.searchParams.get('limit'),20)??20);
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[2]==='resolve'&&parts.length===3){
+        const message=url.searchParams.get('message');if(!message||message.length>400)throw new SessionOwnerError('An exact message is required.');
+        result=preparedTopicResolution(message);
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[3]==='items'&&parts.length===4){
+        const kind=url.searchParams.get('kind')??'questions',filter=url.searchParams.get('filter')??'open';
+        if(!['questions','requests','history'].includes(kind)||!['open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown thread section.');
+        result=preparedTopicItems({topicId:parts[2]!,kind:kind as 'questions'|'requests'|'history',filter,inputId:url.searchParams.get('inputId')??undefined,
+          cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===3){
+        const filter=url.searchParams.get('filter')??'open';
+        if(!['open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown question filter.');
+        result=preparedTopicOverview(parts[2]!,filter);
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='questions'&&parts.length===2){
+        const state=url.searchParams.get('state')??'open';
+        if(!['open','reading','checking','deferred','history'].includes(state))throw new SessionOwnerError('Unknown question filter.');
+        result=preparedQuestions({state,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topic-details'&&parts.length===3){
+        const part=Number(url.searchParams.get('part')??'0');
+        if(!/^[a-f0-9]{64}$/.test(parts[2]!)||!Number.isSafeInteger(part)||part<0)throw new SessionOwnerError('Invalid thread detail reference.');
+        result=preparedTopicDetail(parts[2]!,part);
+        if(!result)throw new SessionOwnerError('That thread detail has changed. Refresh the thread and try again.',409,'PRESENTATION_RESET_REQUIRED');
+      }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='receipts'&&parts[3]==='changes'&&parts.length===4)
         result=this.presentationReceiptChanges(parts[2]!,url.searchParams.get('after')??'',boundedLimit(url.searchParams.get('limit'),PRESENTATION_PAGE));
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='receipts'&&parts.length===3)

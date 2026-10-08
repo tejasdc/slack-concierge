@@ -1,5 +1,4 @@
 import type {Database} from 'bun:sqlite';
-import {noticeTime} from './notice-time';
 import {inputExecutionFacts,receiptOperationState,type ReceiptTurnFacts,type ReceiptSteeringFacts} from './session-receipt-state';
 import {receiptStatusFromFacts,type StatusContext,type InputStatusDetail} from './session-receipt-status';
 import {survivableRunKinds} from './execution-survival';

@@ -2,6 +2,27 @@
  * The release harness runs these descriptors against retained-cardinality fixtures; adding
  * a route here without a fixture is a build failure, not a performance waiver. */
 export const PRESENTATION_READERS={
+  topicWindow:{route:'GET /sessions/v1/presentation/topics',collection:'topics',
+    growth:'unrelated topics and matching search postings',maxRows:20,maxStorageRows:240,maxResponseBytes:262_144,
+    sourceTables:['presentation_topics'],fixture:'topics-window-growth'},
+  topicChanges:{route:'GET /sessions/v1/presentation/topics/changes',collection:'topic-changes',
+    growth:'earlier topic changes',maxRows:20,maxResponseBytes:262_144,
+    sourceTables:['presentation_topic_changes'],fixture:'topics-changes-growth'},
+  topicResolution:{route:'GET /sessions/v1/presentation/topics/resolve',collection:'topic-resolution',
+    growth:'unrelated Inbox messages and topic history',maxRows:1,maxResponseBytes:32_768,
+    sourceTables:['presentation_messages','presentation_topics'],fixture:'topics-resolution-growth'},
+  topicOverview:{route:'GET /sessions/v1/presentation/topics/:topic',collection:'topic-overview',
+    growth:'historical topic requests questions and changes',maxRows:60,maxResponseBytes:524_288,
+    sourceTables:['presentation_topics','presentation_topic_items','presentation_topic_questions'],fixture:'topics-overview-growth'},
+  topicItems:{route:'GET /sessions/v1/presentation/topics/:topic/items',collection:'topic-items',
+    growth:'historical topic items and unrelated question filters',maxRows:20,maxResponseBytes:131_072,
+    sourceTables:['presentation_topic_items','presentation_topic_questions'],fixture:'topics-items-growth'},
+  topicQuestions:{route:'GET /sessions/v1/presentation/questions',collection:'questions',
+    growth:'settled questions and unrelated topics',maxRows:20,maxResponseBytes:262_144,
+    sourceTables:['presentation_topic_questions','presentation_question_counts'],fixture:'topics-questions-growth'},
+  topicDetail:{route:'GET /sessions/v1/presentation/topic-details/:hash',collection:'topic-detail-parts',
+    growth:'retained item length and unrelated topic detail',maxRows:1,maxResponseBytes:131_072,
+    sourceTables:['presentation_topic_chunks'],fixture:'topics-detail-growth'},
   messageWindow:{route:'GET /sessions/v1/presentation/messages',collection:'messages',
     growth:'unrelated Inbox roots and message versions',maxRows:20,maxResponseBytes:262_144,
     sourceTables:['presentation_messages'],fixture:'messages-window-growth'},
@@ -32,7 +53,7 @@ export function presentationContractFor(method:string,path:string){
   for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
     const pattern=contract.route.slice(4).split('/').map(part=>part.startsWith(':')?'[^/]+':part).join('/');
     if(new RegExp(`^${pattern}$`).test(path))return {name:name as PresentationReaderName,...contract,
-      storage:{maxCalls:128,maxRows:contract.maxRows*4+20,maxResultBytes:contract.maxResponseBytes*2}};
+      storage:{maxCalls:128,maxRows:'maxStorageRows' in contract?contract.maxStorageRows:contract.maxRows*4+20,maxResultBytes:contract.maxResponseBytes*2}};
   }
   return null;
 }

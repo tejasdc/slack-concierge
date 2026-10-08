@@ -1,4 +1,3 @@
-import {topicEventSentence} from './topic-event-display';
 import {questionDisplay} from './topic-display-rules';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
@@ -10,6 +9,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
+import {preparedTopicEventDisplays} from './presentation-topic-reader';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -943,26 +943,19 @@ export function readTopic(topicId:string,limit:number|null=null) {
 
 /** Entries: this topic's Inbox messages plus its management events, in owner sequence order. */
 export function topicEntries(topicId:string,cursor:string|null=null,limit:number|null=null) {
-  const session=inboxOrThrow();
-  const size=Math.min(200,Math.max(1,Number(limit)||30));
+  const size=Math.min(20,Math.max(1,Number(limit)||20));
   const head=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
   const page=preparedTopicEntries(topicId,size,cursor,head);
   const displayKeys=page.keys.filter((key):key is typeof key&{messageId:string}=>!!key.messageId);
   const preparedDisplays=preparedInboxDisplays(displayKeys);
   const displayBySequence=new Map(displayKeys.map((key,index)=>[key.sequence,preparedDisplays[index]]));
+  const managementKeys=page.keys.filter(key=>!key.messageId);
+  const managementDisplays=preparedTopicEventDisplays(managementKeys.map(key=>key.sequence));
+  managementKeys.forEach((key,index)=>displayBySequence.set(key.sequence,managementDisplays[index]));
   if([...displayBySequence.values()].some(value=>value===null))
     return {messages:[],nextCursor:null,coverage:{complete:false as const,code:'presentation_indexing' as const,
       retryAfterMs:1000,appliedSequence:page.coverage.appliedSequence}};
-  const messages=page.keys.map(key=>{
-    if(key.messageId)return displayBySequence.get(key.sequence);
-    const row=db.query('SELECT event_id,payload_json,created_at FROM session_owner_events WHERE event_id=? AND session_id=?')
-      .get(key.topicEventId,session.id) as {event_id:string;payload_json:string;created_at:string}|null;
-    if(!row)return null;
-    const payload=JSON.parse(row.payload_json);
-    return {id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
-      topicEvent:{change:payload.change,by:payload.by??null,reason:payload.reason??null,revision:payload.revision??null},
-      createdAt:iso(row.created_at)};
-  }).filter(Boolean);
+  const messages=page.keys.map(key=>displayBySequence.get(key.sequence)).filter(Boolean);
   return {messages,nextCursor:page.nextCursor,coverage:page.coverage};
 }
 

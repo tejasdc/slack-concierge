@@ -61,3 +61,17 @@ checks bounded wire sizes and indexed deep-page access, and exercises movement b
 spaces, attention changes and generation reset. Change readers explicitly select the
 space-and-sequence index: without that requirement SQLite can choose the general sequence
 index and walk unrelated changes before satisfying a small page.
+
+## Topic and question readers
+
+The same worker prepares topic summaries, question counts, paged requests and questions,
+message resolution, and management-event display text. Interactive topic routes use the
+read-only presentation connection and the registered reader budgets. Each collection page
+contains at most twenty items; large exact text is retrieved only through explicit,
+digest-addressed parts. Missing prepared values report indexing rather than returning a
+false empty result. Topic timelines combine prepared message and management displays,
+without parsing retained canonical event bodies on the request thread.
+
+`topic-growth-fixtures.ts` exercises each registered topic reader at 100, 1,000 and
+10,000 topics under its storage budget. Canonical writes and action validation remain
+with the existing owner; a prepared preview never grants permission for an action.
