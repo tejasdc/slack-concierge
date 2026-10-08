@@ -11,13 +11,16 @@ mutate production state.
 Run it only with the scoped native acceptance authorization:
 
 ```sh
-CONCIERGE_TEST_AUTHORIZATION=native-attribution-5eaa0768 bun run bot/scripts/responsive-loaded-acceptance.ts
+CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 bun run bot/scripts/responsive-loaded-acceptance.ts
 ```
 
-The current page read deliberately uses the legacy unpaged session endpoint, so
-its rising database call count is a **known failure signal**, not a passing
-release check. Once the browser consumes prepared bounded endpoints and the old
-unpaged interactive path is refused, move the harness to those exact endpoints
-and require fixed query work as message count and unrelated catalogue size grow.
-The synthetic probe does not measure browser paint, queue age, or provider pickup;
-those require separate end-to-end observations.
+The catalogue read uses the actual prepared page route and a separate real presentation
+worker. Use `--sessions=100` and `--sessions=1000` to compare identical pages across a
+tenfold increase in unrelated sessions. Provider frames arrive gradually during the
+interaction rather than finishing in one initial burst. The report includes actual route
+query counts and response times; it must not substitute for receipt/topic growth fixtures.
+
+The provider history callback is synthetic; its timings do not prove native provider
+history performance. The synthetic probe does not measure browser paint, queue age, provider
+pickup or browser closure. Those require separate end-to-end observations. A transport
+pause in this harness is explicitly not evidence of closing and reopening a browser.

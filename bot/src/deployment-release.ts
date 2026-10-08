@@ -53,6 +53,7 @@ export interface ReleaseServices {
 }
 
 const APPLICATION_FILES = [
+  "presentation-check.json",
   "bot/src/index.js",
   "bot/src/presentation-message-worker.js",
   "bot/src/presentation-search-read.js",
@@ -278,6 +279,15 @@ export class TrustedRootReleaseManager {
       if (effectiveControlSourceRoot !== sourceRoot) {
         symlinkSync(dependencyRoot, join(effectiveControlSourceRoot, "bot/node_modules"), "dir");
       }
+      // Run the candidate's isolated growth checks before sealing any runnable artifact.
+      // This executes in the update runner, not the interactive owner process.
+      const presentationCheck=this.services.spawn([
+        '/usr/bin/timeout','90',this.environment.bunExecutable,
+        join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
+      ],{cwd:join(sourceRoot,'bot')});
+      if(presentationCheck.exitCode!==0)throw new Error(
+        `Candidate presentation cost check failed: ${Buffer.from(presentationCheck.stderr).toString('utf8').slice(0,2000)}`);
+      writeFileSync(join(outputRoot,'presentation-check.json'),presentationCheck.stdout,{mode:0o444});
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });

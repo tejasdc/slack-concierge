@@ -41,3 +41,23 @@ The card projection must preserve the owner view's pure title and space rules; t
 is shared with the existing owner. Runtime provider capabilities and selected-session obligations
 are deliberately resolved only for the exact detail requested. Any new field copied into a card
 requires adding its canonical writer to the change journal and extending the growth fixture.
+
+## Enforced release boundary
+
+`presentation-reader-contracts.ts` registers each interactive prepared route, its growth
+dimension, sources, row and response-byte limits, and executable fixture. An unregistered
+prepared GET is refused. The owner measures database calls, returned rows and value bytes
+and refuses collection queries without an outer limit or readers that exceed their budget.
+These measurements are not a count of SQLite pages scanned; access-path assertions in
+the growth fixtures and loaded timing measurements cover that distinct risk.
+
+`bot/scripts/presentation-release-check.ts` is part of the build and deployment candidate
+seal. Missing fixtures fail it. It also traverses the presentation worker's local import
+graph and refuses application writers or lifecycle initialization. A successful deployment
+retains its `presentation-check.json` evidence beside the sealed release.
+
+The catalogue fixture runs the actual prepared readers under the same storage budgets,
+checks bounded wire sizes and indexed deep-page access, and exercises movement between
+spaces, attention changes and generation reset. Change readers explicitly select the
+space-and-sequence index: without that requirement SQLite can choose the general sequence
+index and walk unrelated changes before satisfying a small page.

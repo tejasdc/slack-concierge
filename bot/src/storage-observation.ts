@@ -24,11 +24,15 @@ export class StorageReadBudgetError extends Error {
   }
 }
 export function withStorageReadBudget<T>(budget:StorageReadBudget,read:()=>T):T {
-  return readBudgets.run(budget,read);
+  // A caller cannot accidentally disable enforcement by omitting telemetry setup.
+  return scopes.getStore()&&!scopes.getStore()!.closed?readBudgets.run(budget,read):
+    observeStorageOperation('bounded-read',()=>readBudgets.run(budget,read),()=>{});
 }
 function admitRead(sql:string,method:string,work:StorageWork){
   const budget=readBudgets.getStore();if(!budget)return;
-  if(!/^\s*(SELECT|WITH)\b/i.test(sql)||method==='run'||method==='exec')throw new StorageReadBudgetError('write_in_reader');
+  // WITH can prefix UPDATE/DELETE ... RETURNING as well as SELECT. Prepared readers
+  // currently need only SELECT; extending this grammar needs an engine-backed check.
+  if(!/^\s*SELECT\b/i.test(sql)||method==='run'||method==='exec')throw new StorageReadBudgetError('write_in_reader');
   if(method==='iterate'||(['all','values'].includes(method)&&!/\bLIMIT\s+(?:\?|\$[\w]+|[0-9]+)(?:\s+OFFSET\s+(?:\?|[0-9]+))?\s*;?\s*$/i.test(sql)))
     throw new StorageReadBudgetError('unbounded_collection');
   if(work.db_calls>=budget.maxCalls)throw new StorageReadBudgetError('calls');

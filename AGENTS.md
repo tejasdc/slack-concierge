@@ -113,6 +113,8 @@ authorization or a change to the default rapid-iteration policy.
 - The interactive session catalogue is a prepared, bounded read over the owner's ledger;
   new card fields need canonical change-journal coverage and a growth fixture. The worker,
   cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).
+  Prepared routes require a registered read contract and executable growth fixture; the build
+  and deployment seal refuse missing coverage. The same document owns these release gates.
 - Prepared receipt lists use one shared status policy for the owner and the presentation
   worker; live retry observations expire with the owner incarnation. See
   [prepared receipts](docs/architecture/PREPARED-RECEIPTS.md).

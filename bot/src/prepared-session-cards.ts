@@ -170,10 +170,10 @@ export function readPreparedSessionWindow(database:Database,options:{space:Sessi
       position.h<meta.change_base||!Number.isSafeInteger(position.id)||!Number.isFinite(position.sort)))
       return {cards:[],nextCursor:null,asOf:encode({v:1,g:meta.generation,h:head,space:options.space}),coverage:{complete:false,code:'reset',appliedSequence:meta.source_head}};
     const rows=database.query(`SELECT session_id,sort_ms,card_json,revision FROM presentation_session_cards WHERE generation=? AND space=?
-      AND (?=0 OR needs_attention=1)
-      AND (sort_ms<? OR (sort_ms=? AND session_id<?))
-      ORDER BY sort_ms DESC,session_id DESC LIMIT ?`).all(meta.generation,options.space,options.needsAttention?1:0,
-        position?.sort??Number.MAX_SAFE_INTEGER,position?.sort??Number.MAX_SAFE_INTEGER,position?.id??Number.MAX_SAFE_INTEGER,limit+1) as CardRow[];
+      ${options.needsAttention?'AND needs_attention=1':''}
+      AND (sort_ms,session_id)<(?,?)
+      ORDER BY sort_ms DESC,session_id DESC LIMIT ?`).all(meta.generation,options.space,
+        position?.sort??Number.MAX_SAFE_INTEGER,position?.id??Number.MAX_SAFE_INTEGER,limit+1) as CardRow[];
     const cards:SessionCard[]=[];let bytes=0;
     for(const row of rows.slice(0,limit)){
       const size=Buffer.byteLength(row.card_json);
@@ -211,10 +211,10 @@ export function readPreparedSessionChanges(database:Database,cursor:string,space
   type ChangeRow={change_id:number;session_id:number;before_json:string|null;after_json:string|null;
     before_revision:number|null;source_sequence:number};
   const before=database.query(`SELECT change_id,session_id,before_json,after_json,before_revision,source_sequence
-    FROM presentation_session_changes WHERE generation=? AND before_space=? AND change_id>? AND change_id<=?
+    FROM presentation_session_changes INDEXED BY presentation_session_changes_before_space WHERE generation=? AND before_space=? AND change_id>? AND change_id<=?
     ORDER BY change_id LIMIT ?`).all(meta.generation,space,position.h,head,pageLimit+1) as ChangeRow[];
   const after=database.query(`SELECT change_id,session_id,before_json,after_json,before_revision,source_sequence
-    FROM presentation_session_changes WHERE generation=? AND after_space=? AND change_id>? AND change_id<=?
+    FROM presentation_session_changes INDEXED BY presentation_session_changes_after_space WHERE generation=? AND after_space=? AND change_id>? AND change_id<=?
     ORDER BY change_id LIMIT ?`).all(meta.generation,space,position.h,head,pageLimit+1) as ChangeRow[];
   const rows=[...new Map([...before,...after].map(row=>[row.change_id,row])).values()]
     .sort((a,b)=>a.change_id-b.change_id).slice(0,pageLimit+1);

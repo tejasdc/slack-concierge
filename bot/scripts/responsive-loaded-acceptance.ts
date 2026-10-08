@@ -1,5 +1,5 @@
 /** Loaded, isolated acceptance of execution-host adoption and owner responsiveness.
- * Usage: CONCIERGE_TEST_AUTHORIZATION=native-attribution-5eaa0768 bun run bot/scripts/responsive-loaded-acceptance.ts
+ * Usage: CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 bun run bot/scripts/responsive-loaded-acceptance.ts
  * All provider output and owner state are generated under /tmp; no user/provider effects. */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -7,10 +7,10 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const AUTH="native-attribution-5eaa0768";
+const AUTH="responsive-system-b1eed622";
 if(process.env.CONCIERGE_TEST_AUTHORIZATION!==AUTH)throw new Error("Scoped native acceptance authorization required");
 const base=resolve(import.meta.dir,"../..");
-type Fixture={root:string;ids:string[];directories:string[];gates:string[]};
+type Fixture={root:string;ids:string[];directories:string[];gates:string[];catalogueSize:number};
 const percentile=(values:number[],p:number)=>values.length?values.slice().sort((a,b)=>a-b)[Math.min(values.length-1,Math.ceil(values.length*p)-1)]!:null;
 const summary=(values:number[])=>({count:values.length,p50:percentile(values,.5),p95:percentile(values,.95),max:values.length?Math.max(...values):null});
 const memory=()=>{const usage=process.memoryUsage();return {rss:usage.rss,heap:usage.heapUsed};};
@@ -34,8 +34,24 @@ async function probe(mode:"pre"|"measure",configPath:string){
     import("../src/execution-host-client"),import("../src/claude-code"),import("../src/session-owner"),import("../src/session-inputs"),
     import("../src/human-command-state")]);
   const session=createNativeSession("claude-code",{title:"Loaded acceptance",cwd:fixture.root,project:"slack-concierge"});
+  for(let index=1;index<fixture.catalogueSize;index++)createNativeSession("claude-code",{
+    title:`Unrelated fixture ${index}`,cwd:fixture.root,project:"slack-concierge"});
   const owner=new SessionOwner({wake:()=>{},steer:()=>false,stop:async()=>false,available:()=>true,
     history:async()=>({messages:[{id:"fixture-message",role:"assistant",content:"prepared",tool:null,phase:null}],nextCursor:null})},fixture.root);
+  const projector=spawn(process.execPath,[join(base,'bot/src/presentation-message-worker.ts')],{
+    env:process.env,stdio:['ignore','ignore','pipe']});
+  let projectorErrors='';projector.stderr.on('data',chunk=>{projectorErrors=(projectorErrors+String(chunk)).slice(-4000);});
+  process.once('exit',()=>projector.kill('SIGKILL'));
+  const catalogueUrl='http://127.0.0.1/sessions/v1/presentation/sessions/window?space=everyday&limit=20';
+  const readyBy=Date.now()+30_000;let preparedReady=false;
+  while(Date.now()<readyBy){
+    if(projector.exitCode!==null)throw new Error(`Projector exited: ${projectorErrors}`);
+    const response=await owner.handle(new Request(catalogueUrl));
+    const page=await response?.json() as any;
+    if(response?.status===200&&page.coverage?.complete&&page.cards?.length===20){preparedReady=true;break;}
+    await pause(25);
+  }
+  if(!preparedReady)throw new Error(`Catalogue preparation did not finish: ${projectorErrors}`);
   const delays={page:[] as number[],history:[] as number[],send:[] as number[],custody:[] as number[]};
   const lag:number[]=[];let lastTick=performance.now(),peak=memory(),events=0,replayEnded=0;
   const tick=setInterval(()=>{const now=performance.now();lag.push(Math.max(0,now-lastTick-50));lastTick=now;
@@ -63,7 +79,8 @@ async function probe(mode:"pre"|"measure",configPath:string){
     const start=performance.now();const response=await owner.handle(new Request(url));
     delays[kind].push(performance.now()-start);
     if(!response || response.status!==200)throw new Error(`${kind} returned ${response?.status}`);
-    await response.text();
+    const value=await response.json() as any;
+    if(kind==='page'&&value.cards?.length!==20)throw new Error('Prepared catalogue did not return the requested page');
   };
   const send=async(actionId:string,text:string)=>{
     const start=performance.now();const response=await owner.handle(new Request(`${baseUrl}/inputs`,{method:"POST",
@@ -75,7 +92,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
   const start=performance.now();
   let lastAction="";let accepted:any;
   for(let index=0;index<40;index++){
-    await read("page",baseUrl);
+    await read("page",catalogueUrl);
     await read("history",`${baseUrl}/history?limit=20`);
     lastAction=`loaded-${index}`;
     const body={clientActionId:lastAction,text:`Synthetic input ${index}`,delivery:"queue"};
@@ -85,7 +102,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     delays.custody.push(performance.now()-custodyStart);
     if(retained.status!=="pending")throw new Error("Human command custody was not retained");
     accepted=await send(lastAction,`Synthetic input ${index}`);
-    if(index===19)await pause(250); // browser background/close gap; durable state stays server-side
+    if(index===19)await pause(250); // Transport pause only; real browser closure is a separate check.
     await pause(10);
   }
   console.log(JSON.stringify({kind:"stage",name:"interaction_done",count:40,ms:Math.round(performance.now()-start)}));
@@ -96,7 +113,9 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(repeated.action_id!==lastAction)throw new Error("Duplicate custody changed action identity");
   const duplicate=await send(lastAction,"Synthetic input 39");
   if(JSON.stringify(accepted)!==JSON.stringify(duplicate))throw new Error("Duplicate client action changed acceptance");
-  await Promise.allSettled(pending);
+  const hostResults=await Promise.allSettled(pending);
+  const hostFailure=hostResults.find(result=>result.status==='rejected');
+  if(hostFailure?.status==='rejected')throw hostFailure.reason;
   console.log(JSON.stringify({kind:"stage",name:"hosts_settled"}));
   clearInterval(tick);
   const cpu=process.cpuUsage();
@@ -106,12 +125,16 @@ async function probe(mode:"pre"|"measure",configPath:string){
     interactionMs:Math.round(performance.now()-start),events,hostCount:fixture.ids.length,
     page:summary(delays.page),history:summary(delays.history),send:summary(delays.send),custody:summary(delays.custody),
     loopLag:summary(lag),peakRssBytes:peak.rss,peakHeapBytes:peak.heap,swapBytes:swap,
-    cpuUserMs:cpu.user/1000,cpuSystemMs:cpu.system/1000,duplicateAccepted:true}));
+    cpuUserMs:cpu.user/1000,cpuSystemMs:cpu.system/1000,duplicateAccepted:true,catalogueSize:fixture.catalogueSize,
+    historySource:'synthetic provider page',browserClosureTested:false}));
+  projector.kill('SIGTERM');
   await pause(30); // flush the result; the owner monitor's interval otherwise keeps this fixture alive
   process.exit(0);
 }
 
 async function main(){
+  const catalogueSize=Number(process.argv.find(value=>value.startsWith('--sessions='))?.split('=')[1]??1000);
+  if(!Number.isSafeInteger(catalogueSize)||catalogueSize<20||catalogueSize>10_000)throw new Error('Use --sessions=20..10000');
   const root=await mkdtemp(join(tmpdir(),"concierge-loaded-"));
   const environment={...process.env,CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,"capture"),
     CONCIERGE_TEST_MODE:"1",CONCIERGE_TEST_AUTHORIZATION:AUTH};
@@ -122,7 +145,7 @@ const [gate,session]=process.argv.slice(2);
 const frame=(index:number)=>JSON.stringify({type:'assistant',session_id:session,message:{model:'synthetic',content:[{type:'text',text:'x'.repeat(3900)+index}]}})+'\\n';
 for(let i=0;i<2000;i++)process.stdout.write(frame(i));
 while(!existsSync(gate))await Bun.sleep(20);
-for(let i=2000;i<2400;i++)process.stdout.write(frame(i));
+for(let i=2000;i<2450;i++){process.stdout.write(frame(i));await Bun.sleep(2);}
 process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'complete',is_error:false})+'\\n');`);
   const ids=Array.from({length:6},(_,index)=>`loaded-${index}`);
   const directories=ids.map(id=>join(root,"exec",id));
@@ -145,7 +168,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
     const journals=await Promise.all(directories.map(directory=>stat(join(directory,"journal")).then(file=>file.size)));
     if(journals.some(size=>size<8_000_000))throw new Error(`Journals did not reach 8 MB: ${journals}`);
     const configPath=join(root,"fixture.json");
-    await writeFile(configPath,JSON.stringify({root,ids,directories,gates} satisfies Fixture));
+    await writeFile(configPath,JSON.stringify({root,ids,directories,gates,catalogueSize} satisfies Fixture));
     const first=spawn(process.execPath,["run",import.meta.path,"--probe","pre",configPath],{env:environment,stdio:["ignore","pipe","pipe"]});
     let firstOutput="";first.stdout.on("data",chunk=>{firstOutput+=chunk.toString();});
     const attachedBy=Date.now()+20_000;
