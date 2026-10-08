@@ -942,7 +942,12 @@ The owner answers every read from one event loop. When `owner_event_loop_lag` sa
 `CONCIERGE_OWNER_CPU_PROFILE=1`: on 2026-10-07 starting it froze the owner 20–40 s each time and
 preceded 40 GB runaways, so it is refused by default. `owner_memory` logs the owner's memory each
 minute (object types above 4 GB). Never cap Concierge's memory: Tejas rejected ceilings outright
-(2026-10-07) and wants the cause found and fixed. Name the code path before
+(2026-10-07) and wants the cause found and fixed. A freeze also reaches him without anyone reading the journal: `owner-responsiveness.ts` counts the
+lag, and a minute of freezing in five, or one freeze of 30 s, files one provider-free Inbox notice naming
+the slow pages, closed with "answering normally again" after ten quiet minutes. It runs on the owner's
+own loop, so it reports when a freeze ends; a total hang still needs a watcher outside Concierge with a
+delivery path that does not pass through it (none exists yet; 2026-10-08, after an account-list cycle
+froze the owner for hours unnoticed). Name the code path before
 changing anything. Loops over ledger rows use `ledgerRows()`, never a statement's `iterate()`: an
 early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
 ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its

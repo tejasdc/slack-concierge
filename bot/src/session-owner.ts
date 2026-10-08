@@ -6,6 +6,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {ledgerRows} from './ledger-rows';
+import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
 import {presentSessionForPeer} from './peer-identity';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
@@ -264,11 +265,12 @@ let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
  */
 function startOwnerLoopMonitor() {
   if(ownerLoopMonitor)return;
+  startOwnerResponsivenessWatch();
   let expected=performance.now()+250;
   ownerLoopMonitor=setInterval(()=>{
     const now=performance.now(),lag=Math.round(now-expected);
     expected=now+250;
-    if(lag>=200)log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight]});
+    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight]});noteOwnerStall(lag);}
   },250);
   ownerLoopMonitor.unref?.();
 }
@@ -2204,6 +2206,7 @@ export class SessionOwner {
     try {
       const response=await this.handleRequest(request);
       const ms=Math.round(performance.now()-started);
+      if(ms>=SLOW_OWNER_REQUEST_MS)noteSlowOwnerRequest(label,ms);
       if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status:response?.status??null,
         bytes:Number(response?.headers.get('content-length'))||null});
       return response;

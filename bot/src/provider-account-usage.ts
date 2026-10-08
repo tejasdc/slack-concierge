@@ -453,5 +453,10 @@ export function providerAccountUsage(provider: ProviderKey): ProviderUsage | nul
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
   try { return { ...withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }
-  catch { return null; }
+  catch (error) {
+    // Said out loud: this catch once hid a stack overflow from an account-list cycle for hours
+    // while every Accounts read froze the owner (2026-10-08).
+    log("error", "provider_account_usage_unreadable", { provider, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+    return null;
+  }
 }
