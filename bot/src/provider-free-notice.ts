@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { recordRepairNotice, REPAIR_FIRST_KINDS } from "./repair-notices";
 
 /** The scope every service notice input carries; the one mark that says "nobody's turn wrote this". */
 export const SERVICE_NOTICE_SCOPE = "service:provider-free-notice";
@@ -33,6 +34,8 @@ export function publishProviderFreeNotice(db: Database, input: {
   kind: string;
   payload?: Record<string, unknown>;
 }): boolean {
+  // A health notice is the repair agent's to work on first; he hears only what it cannot solve.
+  if (REPAIR_FIRST_KINDS.has(input.kind)) return recordRepairNotice(db, input);
   const inbox = db.query(`SELECT id,native_metadata_json FROM sessions
     WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`)
     .get() as { id: number; native_metadata_json: string | null } | null;

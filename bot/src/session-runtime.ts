@@ -22,6 +22,7 @@ import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,
 import {migrateInboxTopics,wakeDeferredQuestions} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
+import {startRepairNoticeDelivery} from './repair-notices';
 import {CodexSessionObserver} from './codex-session-observer';
 import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
@@ -129,6 +130,7 @@ export async function startSessionRuntime() {
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
   startStuckWorkWatch(wake,()=>registry.activeSessions);
+  startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
   const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
   // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
   const liveSpeech=startLiveSpeechListener();

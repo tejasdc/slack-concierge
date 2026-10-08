@@ -27,6 +27,7 @@ import {
 } from "./channel";
 import { errorFields, log } from "./log";
 import { startStuckWorkWatch } from "./stuck-work-watch";
+import { startRepairNoticeDelivery } from "./repair-notices";
 import { installOwnerCpuProfileSignal } from "./owner-cpu-profile";
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
@@ -4144,6 +4145,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner));
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
+            startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);
             if (peering.listen) {
               peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner),onContact:()=>projectSetup.wake()});
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});

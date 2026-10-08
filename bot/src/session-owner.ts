@@ -32,6 +32,8 @@ import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message-author';
 import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
+import {noticeTime} from './provider-free-notice';
+import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,replyTargets,resolveTopicMessage,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
@@ -905,6 +907,31 @@ export class SessionOwner {
       saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs);
     }
     return getAcceptedSessionInput(operation.id)!;
+  }
+  /**
+   * Hands pending health notices to the standing repair agent, creating it the first time; Tejas
+   * hears only what it declares needs him (`repair-notices.ts`). One input carries every notice
+   * pending at that moment, so a burst of crashes is one turn, not one each.
+   */
+  deliverRepairNotices():number {
+    const pending=pendingRepairNotices(db);
+    if(!pending.length)return 0;
+    const target=this.requestTarget({provider:REPAIR_AGENT_PROVIDER,project:REPAIR_AGENT_PROJECT});
+    if(!this.runtime.available(target.provider))return 0;
+    let session=db.query(`SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.repairAgent')=1
+      AND status!='archived' ORDER BY id DESC LIMIT 1`).get() as SessionRow|null;
+    if(!session) {
+      const {provider,...metadata}=target;
+      session=createNativeSession(provider,{title:REPAIR_AGENT_TITLE,...metadata,repairAgent:true});
+      const created=retainSessionInput({sessionId:session.id,scope:'service:repair-agent',actionId:`repair-agent:${session.id}`,kind:'create',origin:'service',
+        payload:{...target,title:REPAIR_AGENT_TITLE}}).input;
+      this.recordCreation(session,created,false);
+    }
+    const inputId=`repair-notice:${pending[0].key}`.slice(0,200);
+    this.admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
+      text:repairNoticeText(pending,ms=>noticeTime(db,ms))});
+    markRepairNoticesDelivered(db,pending.map(notice=>notice.key),inputId);
+    return pending.length;
   }
   savedWorkList(){
     return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
