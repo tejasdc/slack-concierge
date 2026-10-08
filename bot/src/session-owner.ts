@@ -807,7 +807,7 @@ export class SessionOwner {
     // A request no table knows leaves the receipt without a conversation; it never refuses the read.
     const conversation=input.request_id&&this.communication?this.communication.find(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
-    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
+    const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
@@ -1433,10 +1433,13 @@ export class SessionOwner {
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
       // His message is his answer to whatever this session (or Inbox thread) asked him.
-      if(!saved.duplicate&&!agent)clearNeedsForHumanInput(session.id,input);
-      if(forward&&!saved.duplicate)recordForwardedThreadReply(session,saved.input,forward);
+      const canceled=saved.input.receipt_json&&JSON.parse(saved.input.receipt_json).state==='canceled';
+      if(!saved.duplicate&&!agent&&!canceled)clearNeedsForHumanInput(session.id,input);
+      if(forward&&!saved.duplicate&&!canceled)recordForwardedThreadReply(session,saved.input,forward);
       return saved;
     })();
+    if(retained.input.receipt_json&&JSON.parse(retained.input.receipt_json).state==='canceled')
+      return {operation:this.receipt(retained.input)};
     if(forward) {
       if(!this.communication)throw new SessionOwnerError('Session communication is unavailable; the reply was kept and not sent.',503);
       this.communication.forwardReply({inbox:session,inputId:retained.input.id,target:forward,text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
@@ -1580,17 +1583,41 @@ export class SessionOwner {
     const followed=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_followed_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,followedAt:iso(row.created_at)}));
     return {sessions,messages,followed};
   }
+  private cancelQueuedInput(target:AcceptedSessionInput) {
+    const current=readInputExecution(target);
+    const saved=target.receipt_json?JSON.parse(target.receipt_json):{};
+    if(saved.state==='canceled')return;
+    if(saved.state||current.turn&&(current.turn.status!=='queued'||current.turn.provider_admission_intended_at||current.turn.provider_started_at||current.turn.provider_turn_id||current.turn.provider_input_acknowledged_at))throw new SessionOwnerError('Input is no longer cancelable; Stop an admitted exact run.',409,'OPERATION_NOT_CANCELABLE');
+    if(target.steering_id)throw new SessionOwnerError('Input is attached to a live run; Stop its exact run.',409,'OPERATION_NOT_CANCELABLE');
+    if(target.turn_id){finishTurn(target.turn_id,'cancelled',null);settleTurnDependencies(target.turn_id);}
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
+  }
+  cancelAction(id:string,targetActionId:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId']);
+    if(!targetActionId||targetActionId.length>200||targetActionId===actionId(input))throw new SessionOwnerError('Name the distinct action to cancel.');
+    const operation=this.saveControl(session,'cancel-action',{...input,targetActionId},()=>{
+      const target=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?")
+        .get(targetActionId) as AcceptedSessionInput|null;
+      if(target&&(target.session_id!==session.id||target.origin!=='human'||!['input','create'].includes(target.kind)))
+        throw new SessionOwnerError('Only this conversation’s human input can be canceled here.',403);
+      if(target)this.cancelQueuedInput(target);
+      const existing=db.query("SELECT session_id FROM session_input_cancellations WHERE scope='surface:thinkering' AND action_id=?")
+        .get(targetActionId) as {session_id:number}|null;
+      if(existing&&existing.session_id!==session.id)throw new SessionOwnerError('Action identity belongs to another conversation.',409);
+      const control=db.query("SELECT id FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as {id:string};
+      db.query("INSERT OR IGNORE INTO session_input_cancellations(scope,action_id,session_id,canceled_by_input_id) VALUES('surface:thinkering',?,?,?)")
+        .run(targetActionId,session.id,control.id);
+      return {targetActionId,targetOperationId:target?.id??null,state:target?'canceled':'canceled_before_acceptance'};
+    });
+    executionChanged();this.runtime.wake();
+    return {operation:this.receipt(operation),target:JSON.parse(operation.receipt_json!).result};
+  }
   cancel(operationId:string,body:unknown) {
     const target=this.input(operationId),input=object(body);only(input,['clientActionId']);
     const session=getSessionById(target.session_id)!;
     if(target.origin!=='human'||!['input','create'].includes(target.kind))throw new SessionOwnerError('Only an owner-origin input can be canceled here.',403);
     const operation=this.saveControl(session,'cancel',{...input,operationId},()=>{
-      const current=readInputExecution(target);
-      const saved=target.receipt_json?JSON.parse(target.receipt_json):{};
-      if(saved.state||current.turn&&(current.turn.status!=='queued'||current.turn.provider_admission_intended_at||current.turn.provider_started_at||current.turn.provider_turn_id||current.turn.provider_input_acknowledged_at))throw new SessionOwnerError('Input is no longer cancelable; Stop an admitted exact run.',409,'OPERATION_NOT_CANCELABLE');
-      if(target.steering_id)throw new SessionOwnerError('Input is attached to a live run; Stop its exact run.',409,'OPERATION_NOT_CANCELABLE');
-      if(target.turn_id){finishTurn(target.turn_id,'cancelled',null);settleTurnDependencies(target.turn_id);}
-      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
+      this.cancelQueuedInput(target);
     });
     executionChanged();this.runtime.wake();
     return {operation:this.receipt(this.input(target.id))};
@@ -2441,6 +2468,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=this.submit(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===5&&parts[2]==='actions'&&parts[4]==='cancel') result=this.cancelAction(parts[1]!,parts[3]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=await this.messageAction(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=await this.stop(parts[1]!,body);

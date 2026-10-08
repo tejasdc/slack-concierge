@@ -197,6 +197,7 @@ export function recordSessionInputAttention(inputId:string) {
   })();
 }
 export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string}) {
+ return db.transaction(()=>{
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
   const payload=stablePayload(input.payload);
   const old=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId) as AcceptedSessionInput|null;
@@ -206,9 +207,16 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     return {input:old,duplicate:true};
   }
   const id=input.id??randomUUID();
+  const cancellation=db.query('SELECT session_id,canceled_by_input_id FROM session_input_cancellations WHERE scope=? AND action_id=?')
+    .get(input.scope,input.actionId) as {session_id:number;canceled_by_input_id:string}|null;
+  if(cancellation&&(cancellation.session_id!==input.sessionId||input.origin!=='human'||!['input','create'].includes(input.kind)))
+    throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
   db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null);
+  if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
+    .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
   return {input:getAcceptedSessionInput(id)!,duplicate:false};
+ })();
 }
 function reopenDoneSessionForExecutableInput(session:SessionRow,input:AcceptedSessionInput,turnId:number) {
   const metadata=sessionMetadata(session);
