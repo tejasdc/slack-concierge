@@ -1,0 +1,1 @@
+Browser recovery checks now cover thread actions and messages whose acknowledgment was lost.
