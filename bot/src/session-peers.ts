@@ -15,6 +15,8 @@ import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './sessio
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
+import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
+import {noticeTime} from './provider-free-notice';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 
 /**
@@ -707,6 +709,12 @@ export class SessionPeers {
       if(execution.answersWithTurn&&execution.dedicated&&execution.text)this.settle(row,effect==='work'?'undetermined':'answered',execution.text,output);
       return;
     }
+    if(execution.status==='cancelled'){
+      const at=typeof execution.stoppedByTejasAtMs==='number'?execution.stoppedByTejasAtMs:null;
+      this.settle(row,'canceled',at!==null?stoppedByTejasText(at,` on ${row.peer}`):cancelledWithoutHisStopText(` on ${row.peer}`),
+        {...output,...(at!==null?{stoppedBy:'tejas',stoppedAtMs:at}:{stoppedBy:'not-tejas'})});
+      return;
+    }
     this.settle(row,execution.status==='cancelled'?'canceled':'failed',`The recipient execution on ${row.peer} ended with ${execution.status}${execution.status!=='cancelled'&&execution.error?`: ${String(execution.error).slice(0,400)}`:''}.`,output);
   }
   private async deliver(event:PeerEventRow) {
@@ -735,6 +743,22 @@ export class SessionPeers {
     }
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
+    if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
+      const root=row.thread_root_input_id??(forwarded?row.source_input_id:null);
+      if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
+        const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+        const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
+        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
+          respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
+          text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
+          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
+        if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
+        db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+        log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
+        return;
+      }
+    }
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.canSend(source)){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
@@ -930,7 +954,7 @@ export class SessionPeers {
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(execution),
-      execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,answersWithTurn,
+      execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,stoppedByTejasAtMs:turn.status==='cancelled'?stoppedByTejas(turn.id)?.atMs??null:null,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
       hold:inputHold(input),updating:updateDraining(),
       replies,stalled:row.stalled_at_ms===null?null:{atMs:row.stalled_at_ms,reason:row.stalled_reason??'the worker sent no final reply after one reminder'}};

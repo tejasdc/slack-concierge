@@ -428,7 +428,10 @@ authorization or a change to the default rapid-iteration policy.
   without a return, and the Inbox silently lost 64 finished results on September 21,
   2026, so never reintroduce a settled-but-unreturned state. `session-return-audit.ts`
   logs `session_return_undelivered` (error) once for any settled result still
-  unreturned after ten minutes. A partial reply is not a result and wakes nobody: it is recorded on
+  unreturned after ten minutes. A run ended by his own Stop (a human `stop` operation naming that
+  run, `stopped-by-tejas.ts`) settles as his stop: a quiet line in the Inbox thread it served, never
+  a router turn or a notification; a cancellation without his Stop says so and asks for follow-up.
+  A partial reply is not a result and wakes nobody: it is recorded on
   the request and read with `sessions get`, because each wake re-read the asker's whole
   conversation (one lab session, ~860k tokens per note, four times for one note, 2026-10-08). Legacy `retained` rows stay as history; the Inbox's
   rows from that day were re-delivered once in one digest reply, and rows the old runtime

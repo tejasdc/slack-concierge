@@ -19,6 +19,8 @@ import {boardCommand,type BoardActor,type BoardInput} from './commons-board-serv
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
+import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
+import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
@@ -1106,6 +1108,29 @@ export class SessionCommunicationCoordinator {
         if(!agentReply||!request.thread_root_input_id||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(request.thread_root_input_id))return null;
         return {root:request.thread_root_input_id,forwarded:null};
     }
+    /**
+     * He stopped the run working for one of his threads: the thread gets a quiet service line and
+     * nothing wakes the router or files anything for him. On 2026-10-08 the bare "ended with
+     * cancelled" return made the router post and file a reading item, and he was notified about
+     * an agent he had just stopped. A forwarded reply of his is marked cancelled, not stalled.
+     */
+    private postHisStop(request:RequestRow,event:EventRow,declared:any):boolean {
+        const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        const inbox=getSessionById(request.source_session_id);
+        const root=request.thread_root_input_id??(forwarded?request.source_input_id:null);
+        if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return false;
+        const responder=getSessionById(request.target_session_id);
+        const title=responder?sessionMetadata(responder).title??null:null;
+        postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
+            inboxInputId:forwarded?.inboxInputId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
+            text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
+            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
+        if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+            .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
+        db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+        log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
+        return true;
+    }
     private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
         const responder=getSessionById(request.target_session_id);
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
@@ -1553,6 +1578,7 @@ export class SessionCommunicationCoordinator {
         // stays open for that continuation's reply (following repeated refusals). Settling it failed
         // here closed requests at 2:54 AM on 2026-10-08 whose work then resumed on the account with
         // room, and the eventual answer was refused as already settled.
+        let ended: { id: number; status: string } = { id: turn.id, status: turn.status };
         if (turn.status === 'error') {
             const continuationOf = (id: number) => db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?").get(`turn-continuation:${id}`) as {id:number;status:string}|null;
             let next = continuationOf(turn.id);
@@ -1567,6 +1593,14 @@ export class SessionCommunicationCoordinator {
             const terminal = new Set(['done', 'error', 'cancelled']);
             if (next && !terminal.has(next.status)) return;
             if (next && next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
+            if (next) ended = next;
+        }
+        if (ended.status === 'cancelled') {
+            // His own Stop is his choice, not news; any other cancellation is work someone must follow up.
+            const stop = stoppedByTejas(ended.id);
+            this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : cancelledWithoutHisStopText(),
+                { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId } : { stoppedBy: 'not-tejas' }) });
+            return;
         }
         // The provider's own words say why, so the requester can tell a refused API call from an
         // interrupted run; a bare "ended with error" was read as the release cutting two runs off
@@ -1582,6 +1616,7 @@ export class SessionCommunicationCoordinator {
         // return that would start a router turn.
         const thread=this.threadAnswer(request,event,declared);
         if(thread){this.postThreadAnswer(request,event,declared,thread);return;}
+        if(declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared))return;
         // A progress note wakes nobody: it stays on the request, in the asker's record and in any
         // stalled notice, and the asker learns the outcome from the final. Each wake re-read the
         // asker's whole conversation; one lab session re-read ~860k tokens per note, four times for
