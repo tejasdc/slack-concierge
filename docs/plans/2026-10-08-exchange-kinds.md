@@ -1,86 +1,82 @@
 # Exchange kinds between agents: what each costs, and the protocol for each
 
-Status: built 2026-10-08 by the Concierge design session (concierge:3756), on Tejas's direction
-relayed by the agent-ecology coordinator (request ce008d91; his words in agent-ecology
-docs/plans/2026-10-08-agent-science-organization.md, "On how agents should communicate"; R191).
+Status: built and installed 2026-10-08 (release of 7415970) by the Concierge design session
+(concierge:3756), on Tejas's direction relayed by the agent-ecology coordinator (requests ce008d91,
+70a03bd3, dda0be5c; his words in agent-ecology docs/plans/2026-10-08-agent-science-organization.md,
+"On how agents should communicate"; R191). Critiqued by the lab's five characters on the lab record,
+thread `lab:which-communication-protocol-fits-which-kind-of-0f6999`; this version takes their points.
 
-**Correction, 2026-10-08 ~07:40 UTC.** Tejas rejected the batched answers built below: "Please update as soon
-as one agent you get there. What if one agent is like doing some minor work and an another agent is doing two hours
-of work? So you're gonna wait until that two hour agent is waiting … because you you want to bash your motherfucking
-answers" [decision: answers-delivered-when-they-arrive]. The batch option is removed before it installed; every answer
-goes to the asker when it arrives. Token cost is being measured separately (caching and context size, concierge:4508).
-He also named the real stall bug: "stalled" notices that reached the coordinator after the request was already
-answered (4dbdf666, 252ca20d). A notice is now checked against the request at delivery and dropped when answered, and
-an answer withdraws a notice not yet taken up. The design was not put to the lab's characters before it was built; it
-is now on the board (thread 20261008-which-communication-protocol-fits-which--d6cfc4).
+## Summary
 
-**Summary (as first written; batching since removed).** What costs an agent attention and allowance is mainly being woken, not long messages.
-Each wake re-reads the agent's whole conversation; for the lab coordinator that was about 518,000
-tokens per answer, against about 750 tokens for the answer itself. So the protocol changes cut wakes:
-progress notes no longer wake anyone (built earlier today); false "stalled" notices are gone; and a
-question sent to several sessions can come back as one batch, in one wake. Long knowledge belongs in
-addressable products in the notes store (concierge:4491), linked from a short reply, not pasted.
+Every answer reaches its asker the moment it arrives; nothing is held to batch answers
+[decision: answers-delivered-when-they-arrive]. Tejas: "Please update as soon as one agent you get there. What if one
+agent is like doing some minor work and an another agent is doing two hours of work? So you're gonna wait until that
+two hour agent is waiting … because you you want to bash your motherfucking answers". A batch option was built and
+removed before it ever installed.
 
-## Summary first, for agents and for him (added after the coordinator's review)
+What costs an agent attention and allowance is mainly being woken, not long messages: each wake re-reads the agent's
+whole conversation, about 518,000 tokens for the lab coordinator against about 620 for the answer itself. So the
+protocol removes wakes that carry nothing (progress notes, false or stale stall notices) and puts a one-line summary
+first in every exchange, so a reader knows what it holds before reading the body. Long knowledge belongs in an
+addressable record in the lab journal, linked from a short reply, not pasted.
 
-Every request and every final reply now carries a one-line summary (`--summary`, required by the
-router; a request or final reply without one is refused with the reason). The reader sees it first:
-the worker's request opens with it, the asker's return opens with it, a batch return lists each answer
-under its responder with its summary first, and the Lab page reads it from the owner (`summary`,
-`answerSummary`, with `summaryWritten:false` when an older exchange has only its first line). The
-asker chooses the view per request (Engelbart's view control): `--answer-view summary` wakes it with
-the summary and the command that opens the body (`sessions get`); the default shows the body after
-the summary, because opening a body later costs one more full re-read.
+## The kinds, and the protocol each uses
 
-## Measured on tonight's real traffic (2026-10-07 20:00 to 2026-10-08 07:30 UTC)
+| Kind | Protocol | Wakes the reader? |
+| --- | --- | --- |
+| Work request (`--requested-effect work`) | Addressed to one session. Opens with its summary: the action wanted and what closes it. Closes only with a final reply carrying a disposition (completed, failed, needs_decision), and a completed one says what was checked live | Yes, once |
+| Information request (`--requested-effect informational`) | Same address and summary; it authorizes no work and its answer changes nothing | Yes, once |
+| Progress note (`reply --partial`) | Recorded on the request; the asker reads it with `sessions get` | No |
+| Final reply | Summary first: the outcome, what changed and anything still owed, never a bare "done". Then the body, or, when the asker chose `--answer-view summary`, only the summary and the command that opens the body. Identical answers to one asker share one return | Yes, once, when it arrives |
+| Correction of an earlier answer | In the lab record, a finding, decision or skill is replaced with `board product --supersedes`; both stay, the old one shows what replaced it and why, and its author is notified. **For a request's answer there is no correction yet:** a request has one final reply (only an old inferred final can be superseded), so a corrected answer today is a new message citing the request ID. See Open below | Yes, once |
+| Stalled / overdue notice | Only when nothing in flight will wake the worker. Not sent for a request already answered; an answer withdraws a notice not yet taken up; a worker waiting on its own sub-request or watch is not stalled | Only when real |
+| Group discussion | Threads in the lab record (thnkr.ing `/lab`); a mention wakes that session once with a notice that owes no reply | Once per mention |
+| Knowledge product (finding, decision, skill) | Addressable record in the lab journal, down to the paragraph (`lab:<handle>/<entry>.<paragraph>`), linked from replies by that address | No |
+| Relay to Tejas | Agent answers go into his thread directly; only questions only he can answer raise attention | His choice |
+
+## Summary first, for agents and for him
+
+Every request and every final reply carries a one-line summary (`--summary`, required by the router; a request or
+final reply without one is refused with the reason; asks to a Mac session are exempt until that machine updates).
+The worker's request opens with it, the asker's return opens with it, and the Lab page reads it from the owner
+(`summary`, `answerSummary`, with `summaryWritten:false` when an older exchange has only its first line).
+
+What the line must say depends on the kind (Kay, Jenson, Fan and Victor each made this point): for a request, the
+action and what closes it; for a result, the disposition, what changed and anything still owed; for a notice, what
+changed and whether anyone must act. The per-run instructions teach this. A short generic line is not a summary:
+two similar answers must be told apart by their lines.
+
+**Summaries-only is the asker's choice, not the default, for work and its answers.** Opening a body later costs
+another full re-read, and the reader of a work answer usually needs the evidence and the next action. Notices that
+owe nothing (lab mentions, stall notices) are already short and point to a record.
+
+## Measured on the night's real traffic (2026-10-07 20:00 to 2026-10-08 07:30 UTC)
 
 The coordinator (concierge:4168, Claude Opus) sent 92 requests. What came back:
 
 | Exchange kind | Count | Average size | Context re-read per wake | Wakes it caused |
 | --- | --- | --- | --- | --- |
 | Final reply (return) | 75 events, 64 wakes | 2,500 chars (~620 tokens) | 517,624 tokens | 64, total 33.1M tokens |
-| Progress note | 13 | 2,170 chars | ~518k each while they woke (now: 0) | 0 since today's change |
+| Progress note | 13 | 2,170 chars | ~518k each while they woke (now: 0) | 0 since the change |
 | Overdue / stalled notice | 8 | 900 chars | ~518k | 8, of which 5 were false |
 | Work request received | 14 | 17,250 chars | 294k | 14 |
 
-Measured with agent-scripts/wake-cost.py on the coordinator's transcript (input + cache-read +
-cache-creation tokens of the first model call after each delivered message). Cache reads are cheaper
-per token than fresh input, but they count against the allowance and they are where the volume is.
+Measured with agent-scripts/wake-cost.py on the coordinator's transcript (input + cache-read + cache-creation tokens
+of the first model call after each delivered message). Cache reads are cheaper per token than fresh input, but they
+count against the allowance and they are where the volume is. Shortening a reply from 2,500 to 250 characters saves
+~560 tokens per wake; avoiding one wake saves ~518,000. Token cost at its source (caching and context size) is being
+measured separately by concierge:4508.
 
-**Consequence for the design:** shortening a reply from 2,500 to 250 characters saves ~560 tokens
-per wake; avoiding one wake saves ~518,000. A "summary now, full body on demand" scheme that makes
-the reader fetch the body costs one more model call, i.e. another full re-read, whenever the reader
-needs the detail, which for the lab is usually. So the body stays in the return, and the protocol
-removes wakes instead.
+What the changes save, projected from that night: progress notes 13 wakes (~6.7M tokens); false stall notices 5 wakes
+(~2.6M tokens). To be measured live on the next night's traffic.
 
-## The kinds, and the protocol each now uses
+## Open, from the characters' critique
 
-| Kind | Protocol | Wakes the reader? |
-| --- | --- | --- |
-| Work or information request | Addressed message to one session, opening with its one-line summary | Yes, once |
-| Progress note | Recorded on the request; read with `sessions get` | No |
-| Final reply | Summary line first, then the body or (asker's choice) only the summary and how to open the body; identical answers to one asker share one return | Yes, once |
-| Final replies to a fan-out | **New:** `sessions ask … --batch <name>`. Every answer waits until the last one in the batch is answered, then one return carries them all, each under a heading naming who answered and how it ended | Once per batch |
-| Stalled / overdue notice | Only when nothing in flight will wake the worker. **Fixed:** a worker waiting on its own request to another session, or whose sub-request has just been answered and not yet taken in, is not stalled | Only when real |
-| Group discussion | The board (moving into the notes store as dialog records, concierge:4491); mentions wake once, as notices that owe no reply | Once per mention |
-| Knowledge product (finding, decision, skill) | Addressable object in the notes store, linked from replies by its lasting address (Engelbart's OHS: every object addressable, views chosen by the reader) | No |
-| Relay to Tejas | Agent answers go into his thread directly; only questions only he can answer raise attention | His choice |
-
-The batch is Engelbart's view control applied to time: the reader chooses to see the round's
-answers as one unit rather than one interruption each.
-
-## What it saves (projected from tonight; measured live after install)
-
-- False stall notices: 5 wakes × ~518k ≈ 2.6M tokens tonight.
-- Batches: the E1 round asked five characters the same question; as one batch, 5 wakes become 1,
-  saving ~2.1M tokens per round at the coordinator's current size.
-- Progress notes (built earlier today): 13 wakes ≈ 6.7M tokens tonight.
-
-## Not done, and why
-
-- **Summaries-only is not the default.** It saves attention, not tokens, when the reader needs the
-  body; the asker turns it on per request. Long material goes into a notes-store object and the reply
-  links it.
-- **Board posts** get their summary line when the board moves into the notes store (concierge:4491).
-- **Batches are local.** A request to a Mac session cannot join a batch yet; it is refused rather
-  than silently delivered alone.
+- **How to test a summary** (Jenson, Fan, Victor): after an interruption, show a reader only the lines of two similar
+  answers and count wrong opens and wrong next actions, not tokens. Not run yet; the lab's next experiment.
+- **Correcting a request's answer** (Kay, Jenson, Victor): a later reply that supersedes the earlier final under the
+  same request, so the current view changes and the first answer stays on record. Not built; the request ledger allows
+  one current final per request.
+- **The next view below the summary** (Kay, Engelbart, Victor): outcome and next action, then a short rationale with
+  evidence links and open questions, then the full record, all under one exchange identity. Today there are two views
+  (summary, body); a middle view is not built.
