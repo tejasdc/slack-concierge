@@ -1,0 +1,1 @@
+A message whose delivery cannot be confirmed keeps its identity for repair instead of retrying forever.
