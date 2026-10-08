@@ -840,8 +840,6 @@ export class SessionCommunicationCoordinator {
         captureId?:string;
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
-        /** Requests from one session that share a batch name return together, in one wake, once all are answered. */
-        batch?:string;
         /** One line saying what is asked, shown first to the worker and on the Lab page. */
         summary?:string;
         /** How the answer comes back: 'summary' wakes the asker with the answer's one-line summary only; the body is read with sessions get. */
@@ -916,7 +914,6 @@ export class SessionCommunicationCoordinator {
         }
         if(input.peer!==undefined) {
             if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
-            if(input.batch!==undefined)throw new Error('Batches are for sessions on this machine; ask a peer session on its own.');
             if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
@@ -941,12 +938,9 @@ export class SessionCommunicationCoordinator {
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        if(input.batch!==undefined&&(typeof input.batch!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(input.batch)))throw new Error('A batch name is letters, digits, dots, dashes and underscores.');
-        if(input.batch!==undefined&&input.thread!==undefined)throw new Error('A request for an Inbox thread answers into that thread; it cannot also join a batch.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
-            ...(input.batch?{batch:input.batch}:{}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
@@ -1596,6 +1590,17 @@ export class SessionCommunicationCoordinator {
             db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
             return;
         }
+        // A stall or overdue notice for a request that has since been answered is never delivered:
+        // on 2026-10-08 the coordinator read two "stalled" notices after the answers had arrived.
+        // Settlement is checked here, at delivery, not only when the notice was written.
+        if (event.kind === 'overdue' && this.row(request.request_id).outcome && !event.accepted_input_id) {
+            db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
+        // The answer withdraws any notice about this request that is admitted but not yet taken up.
+        if (event.kind === 'final')
+            for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
+                db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(notice.accepted_input_id);
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -1609,39 +1614,6 @@ export class SessionCommunicationCoordinator {
             // another event's return only follows that return's delivery state.
             if (current.accepted_input_id && current.accepted_input_id !== `return:${event.event_id}`) {
                 this.followReturn(current.event_id, current.accepted_input_id);
-                return;
-            }
-            // Requests asked as one batch return together: each answer waits until the last of its
-            // batch is answered, then one return carries them all, so a fan-out to five sessions wakes
-            // the asker once instead of five times. Every wake re-reads the asker's whole conversation
-            // (about 518k tokens per return for the lab coordinator, 2026-10-08).
-            const batch = event.kind === 'final' && !current.accepted_input_id ? JSON.parse(request.payload_json).batch as string | undefined : undefined;
-            if (batch) {
-                const members = db.query(`SELECT * FROM session_communication_requests WHERE source_session_id=? AND json_extract(payload_json,'$.batch')=?`)
-                    .all(request.source_session_id, batch) as RequestRow[];
-                // A member reported stalled no longer holds the others: they return, and its answer, if it comes, returns on its own.
-                if (members.some(member => !member.outcome && member.stalled_at_ms === null)) {
-                    db.query("UPDATE session_communication_events SET status='batched',error=NULL WHERE event_id=? AND status IS NOT 'batched'").run(event.event_id);
-                    return;
-                }
-                const answers = members.flatMap(member => db.query(`SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND accepted_input_id IS NULL
-                    AND superseded_by_event_id IS NULL ORDER BY rowid DESC LIMIT 1`).all(member.request_id) as EventRow[]);
-                recoverUnsentSteeredInput(`return:${event.event_id}`);
-                const existing = getAcceptedSessionInput(`return:${event.event_id}`);
-                const parts = answers.map(answer => {
-                    const words = JSON.parse(answer.payload_json);
-                    const asked = members.find(member => member.request_id === answer.request_id)!;
-                    return `## ${words.responding_session_id ?? `concierge:${asked.target_session_id}`} · request ${answer.request_id} · ${words.workDisposition ?? this.row(answer.request_id).outcome}\n\n${answerView(asked,words)}`;
-                });
-                // The return and the record of which answers it carries are written together, so a crash between them cannot start a second return.
-                const accepted = db.transaction(() => { const admitted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
-                    sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                    text:`Batch "${batch}": ${(()=>{const stalled=members.filter(member=>!member.outcome);return stalled.length?`${answers.length} answers below; still open after a stall: ${stalled.map(member=>`${member.request_id} (concierge:${member.target_session_id})`).join(', ')}, whose answer will return on its own if it comes.`:`all ${members.length} requests are answered (${answers.length} answers below).`;})()} This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${parts.join('\n\n')}`,
-                    ...(()=>{const files=answers.flatMap(answer=>JSON.parse(answer.payload_json).attachments??[]);return files.length?{attachments:files as string[]}:{};})()});
-                for (const answer of answers)
-                    db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(admitted.id, answer.event_id);
-                return admitted; })();
-                for (const answer of answers) this.followReturn(answer.event_id, accepted.id);
                 return;
             }
             const group = current.accepted_input_id ? { carriedBy: null, joining: [] as EventRow[] } : this.sameAnswerGroup(current, request.source_session_id);

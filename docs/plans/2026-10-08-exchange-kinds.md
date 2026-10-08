@@ -4,7 +4,17 @@ Status: built 2026-10-08 by the Concierge design session (concierge:3756), on Te
 relayed by the agent-ecology coordinator (request ce008d91; his words in agent-ecology
 docs/plans/2026-10-08-agent-science-organization.md, "On how agents should communicate"; R191).
 
-**Summary.** What costs an agent attention and allowance is mainly being woken, not long messages.
+**Correction, 2026-10-08 ~07:40 UTC.** Tejas rejected the batched answers built below: "Please update as soon
+as one agent you get there. What if one agent is like doing some minor work and an another agent is doing two hours
+of work? So you're gonna wait until that two hour agent is waiting … because you you want to bash your motherfucking
+answers" [decision: answers-delivered-when-they-arrive]. The batch option is removed before it installed; every answer
+goes to the asker when it arrives. Token cost is being measured separately (caching and context size, concierge:4508).
+He also named the real stall bug: "stalled" notices that reached the coordinator after the request was already
+answered (4dbdf666, 252ca20d). A notice is now checked against the request at delivery and dropped when answered, and
+an answer withdraws a notice not yet taken up. The design was not put to the lab's characters before it was built; it
+is now on the board (thread 20261008-which-communication-protocol-fits-which--d6cfc4).
+
+**Summary (as first written; batching since removed).** What costs an agent attention and allowance is mainly being woken, not long messages.
 Each wake re-reads the agent's whole conversation; for the lab coordinator that was about 518,000
 tokens per answer, against about 750 tokens for the answer itself. So the protocol changes cut wakes:
 progress notes no longer wake anyone (built earlier today); false "stalled" notices are gone; and a

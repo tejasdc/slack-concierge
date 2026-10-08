@@ -388,12 +388,13 @@ authorization or a change to the default rapid-iteration policy.
   at startup. An
   unclassified work answer is `undetermined` and holds dependents. Never infer
   success from `requestedEffect`.
-- **Wakes are the cost, so exchanges are shaped to avoid them** ([exchange kinds](docs/plans/2026-10-08-exchange-kinds.md)):
-  each wake re-reads the asker's whole conversation (~518k tokens for the lab coordinator, against ~620 for an
-  answer). `sessions ask --batch <name>` holds each answer (event status `batched`) until every request of that
-  batch from the same session is answered, then one return carries them all. A worker waiting on its own live
-  request, or on a sub-request answered but not yet taken in, is not stalled (`waitingOnLiveRequest`); the 15-minute
-  overdue check uses the same rule.
+- **Every answer reaches its asker the moment it arrives; nothing is held to batch answers** (Tejas, 2026-10-08:
+  "Please update as soon as one agent you get there. What if one agent is like doing some minor work and an another
+  agent is doing two hours of work?" [decision: answers-delivered-when-they-arrive]). A stall or overdue notice is checked
+  against the request at delivery and dropped when the request is already answered, and an answer withdraws a notice
+  about it not yet taken up. A worker waiting on its own sub-request or watch started after the request is not stalled
+  (`waitingOnDependency`). Every ask and final reply carries a one-line `--summary` shown first; `--answer-view
+  summary` lets the asker see only it. See [exchange kinds](docs/plans/2026-10-08-exchange-kinds.md).
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
