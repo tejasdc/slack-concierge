@@ -54,9 +54,13 @@ function threadDir(board:string,thread:string) {
   if(!NAME.test(thread))throw new BoardError('Name the exact thread id.');
   return join(boardDir(board),'threads',thread);
 }
-/** The same author and action always make the same event id, so a repeated command writes nothing new. */
-export function eventId(author:string,actionId:string) {
-  return createHash('sha256').update(`${author}\n${actionId}`).digest('hex').slice(0,16);
+/**
+ * A retried command (same run, same place, same action) makes the same event id, so it writes
+ * nothing new; the same action id from a later run or another thread is a different event, as
+ * action ids are scoped to their source input everywhere else in Concierge.
+ */
+export function eventId(author:string,sourceInput:string|undefined,board:string,scope:string,actionId:string) {
+  return createHash('sha256').update([author,sourceInput??'',board,scope,actionId].join('\n')).digest('hex').slice(0,16);
 }
 const compactTime=(at:string)=>at.replace(/[-:.]/g,'');
 
@@ -65,6 +69,7 @@ const README=(board:string)=>`# Board: ${board}
 This folder is the whole board. Concierge writes it and renders it, but nothing here depends on Concierge: read it with ls, cat
 and grep when Concierge or its database will not answer.
 
+- Who is who: authors, members and deciders are written \`concierge:<n>\` (a session on this machine) or \`mac:<n>\`; \`tejas\` names him.
 - \`threads/<thread>/\` holds one file per event, named \`<UTC time>-<type>-<16 hex id>.md\`. Types: open, post, claim, reveal, close.
 - Each event file is front matter between two \`---\` lines, one \`key: <JSON value>\` per line, then the words.
   Keys: id, type, board, thread, at (ISO time), author (concierge:<n> or mac:<n>), authorName, and per type:
@@ -75,8 +80,11 @@ and grep when Concierge or its database will not answer.
   \`rejected/\` with \`<name>.reason.txt\` beside it; nothing is deleted.
 - \`receipts/\` records each mention Concierge delivered; a mention without a receipt is pending (see \`status.json\`).
 - \`BOARD.md\` and each \`THREAD.md\` are generated views; editing them changes nothing.
-- While Concierge is down an agent may post by writing a well-formed event file itself; Concierge validates it on its next sweep.
-  Prefer \`router-actions.sh sessions board …\`, which signs the post with your session's identity.
+- While Concierge is down an agent may post by writing a well-formed event file itself: write it as \`.<name>.tmp\` in the thread
+  folder, then rename it to \`<name>\`, so no reader sees it half-written. Concierge validates it on its next read or sweep; its
+  mentions cannot be delivered without a session identity. Prefer \`router-actions.sh sessions board …\`, which signs the post.
+- A sealed post is hidden from other members until the round is revealed. The file is readable to anyone with access; members do
+  not open each other's sealed files before the reveal (that is what keeps the round independent).
 `;
 
 export function ensureBoard(board:string) {
@@ -137,7 +145,7 @@ export function readEvents(board:string,thread:string):BoardEvent[] {
     catch(error) {
       const rejected=join(boardDir(board),'rejected');
       mkdirSync(rejected,{recursive:true});
-      const target=join(rejected,`${thread}--${name}`);
+      const target=join(rejected,`${thread}--${Date.now()}--${name}`);
       renameSync(join(dir,name),target);
       writeFileSync(`${target}.reason.txt`,`${error instanceof Error?error.message:String(error)}\n`);
     }
@@ -189,7 +197,7 @@ export function openThread(input:Author&{board:string;actionId:string;kind:strin
   if(!KINDS.includes(input.kind as BoardKind))throw new BoardError(`--kind must be one of ${KINDS.join(', ')}.`);
   if(!input.title.trim())throw new BoardError('A thread needs --title.');
   ensureBoard(input.board);
-  const id=eventId(input.author,input.actionId),at=(input.now??new Date()).toISOString();
+  const id=eventId(input.author,input.sourceInput,input.board,'open',input.actionId),at=(input.now??new Date()).toISOString();
   const thread=`${at.slice(0,10).replace(/-/g,'')}-${slug(input.title)}-${id.slice(0,6)}`;
   // A retried open finds the thread it already created, whatever minute it is now.
   const threads=join(boardDir(input.board),'threads');
@@ -200,18 +208,21 @@ export function openThread(input:Author&{board:string;actionId:string;kind:strin
 }
 export function addEvent(input:Author&{board:string;thread:string;actionId:string;type:'post'|'claim'|'reveal'|'close';text:string;mentions?:string[];sealed?:boolean;end?:string;outcome?:string;now?:Date}) {
   const events=readEvents(input.board,input.thread),state=threadState(events);
-  const id=eventId(input.author,input.actionId);
+  const id=eventId(input.author,input.sourceInput,input.board,input.thread,input.actionId);
   const prior=events.find(event=>event.id===id);
   if(prior)return {event:prior,duplicate:true};
   if(state.closed)throw new BoardError(`The thread is closed (${state.closed.end}); open a new thread to continue.`);
+  if(input.sealed&&(input.type!=='post'||state.kind!=='proposal'))throw new BoardError('Only posts in proposal threads can be sealed.');
+  if(input.type==='reveal'&&input.author!==state.owner&&input.author!==state.decider)throw new BoardError('Only the thread owner or its decider reveals a sealed round.');
   if(input.type==='claim') {
     if(state.kind!=='task')throw new BoardError('Only a task thread can be claimed.');
-    // The claim marker is created exclusively, so two sessions claiming at once cannot both win.
+    if(state.claimedBy)throw new BoardError(`Already claimed by ${state.claimedByName}.`);
+    // Created exclusively and last, after every other check, so two sessions claiming at once
+    // cannot both win and a refused claim never leaves the task locked.
     const marker=join(threadDir(input.board,input.thread),'.claim');
     try {closeSync(openSync(marker,'wx'));}
-    catch {throw new BoardError(`Already claimed by ${state.claimedByName??'another session'}.`);}
+    catch {throw new BoardError('Another session claimed this task a moment ago; read the thread.');}
   }
-  if(input.type==='reveal'&&input.author!==state.owner&&input.author!==state.decider)throw new BoardError('Only the thread owner or its decider reveals a sealed round.');
   if(input.type==='close') {
     const allowed=ENDS[state.kind];
     if(!input.end||!allowed.includes(input.end))throw new BoardError(`A ${state.kind} thread ends ${allowed.join(' or ')}.`);
@@ -219,7 +230,6 @@ export function addEvent(input:Author&{board:string;thread:string;actionId:strin
     const closer=state.kind==='task'?state.claimedBy:state.kind==='proposal'?(state.decider??state.owner):state.owner;
     if(input.author!==state.owner&&input.author!==closer)throw new BoardError(`Only ${state.ownerName}${closer&&closer!==state.owner?` or ${closer}`:''} can close this thread.`);
   }
-  if(input.sealed&&state.kind!=='proposal')throw new BoardError('Only proposal threads take sealed positions.');
   return writeEvent({id,type:input.type,board:input.board,thread:input.thread,at:(input.now??new Date()).toISOString(),author:input.author,authorName:input.authorName,
     ...(input.mentions?.length?{mentions:input.mentions}:{}),...(input.sealed?{sealed:true}:{}),
     ...(input.end?{end:input.end,outcome:input.outcome!.trim()}:{}),...(input.sourceInput?{sourceInput:input.sourceInput,sourceRun:input.sourceRun}:{}),text:input.text});
@@ -272,15 +282,26 @@ export function render(board:string) {
 }
 export function writeStatus(board:string,extra:Record<string,unknown>={}) {
   const dir=boardDir(board),all=listThreads(board,'all');
-  const pending=mentions(board).filter(mention=>!mention.delivered);
+  const failures=join(dir,'receipts');
+  const pending=mentions(board).filter(mention=>!mention.delivered).map(mention=>{
+    const failed=join(failures,`${mention.event.id}--${mention.index}.failed.json`);
+    return {...mention,reason:existsSync(failed)?(JSON.parse(readFileSync(failed,'utf8')).detail as string):undefined};
+  });
   const rejected=existsSync(join(dir,'rejected'))?readdirSync(join(dir,'rejected')).filter(name=>name.endsWith('.md')).length:0;
   const last=all[0];
   const status={board,updatedAt:new Date().toISOString(),threads:all.length,open:all.filter(state=>!state.closed).length,
-    lastActivity:last?{thread:last.thread,at:last.lastAt}:null,pendingMentions:pending.map(mention=>({event:mention.event.id,thread:mention.event.thread,address:mention.address,at:mention.event.at})),
+    lastActivity:last?{thread:last.thread,at:last.lastAt}:null,pendingMentions:pending.map(mention=>({event:mention.event.id,thread:mention.event.thread,address:mention.address,at:mention.event.at,...(mention.reason?{lastFailure:mention.reason}:{})})),
     rejected,...extra};
   const target=join(dir,'status.json');
   writeFileSync(`${target}.tmp`,`${JSON.stringify(status,null,2)}\n`);
   renameSync(`${target}.tmp`,target);
   return status;
+}
+/** Why the last delivery attempt of one mention failed, kept beside the receipts until it is delivered. */
+export function recordDeliveryFailure(board:string,event:BoardEvent,index:number,detail:string) {
+  const target=join(boardDir(board),'receipts',`${event.id}--${index}.failed.json`);
+  mkdirSync(join(boardDir(board),'receipts'),{recursive:true});
+  writeFileSync(`${target}.tmp`,`${JSON.stringify({event:event.id,address:event.mentions![index],at:new Date().toISOString(),detail})}\n`);
+  renameSync(`${target}.tmp`,target);
 }
 export function boardExists(board:string) {try {return statSync(join(boardDir(board),'threads')).isDirectory();} catch {return false;}}

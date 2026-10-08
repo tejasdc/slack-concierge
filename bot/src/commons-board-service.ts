@@ -5,7 +5,7 @@
  */
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
-import {addEvent,BoardError,boardExists,commonsRoot,ensureBoard,listBoards,listThreads,mentions,openThread,readEvents,recordReceipt,render,threadState,visibleEvents,writeStatus,type BoardEvent} from './commons-board';
+import {addEvent,BoardError,boardExists,commonsRoot,ensureBoard,listBoards,listThreads,mentions,openThread,readEvents,recordDeliveryFailure,recordReceipt,render,threadState,visibleEvents,writeStatus,type BoardEvent} from './commons-board';
 import {getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
 import {resolveSessionAddress,sessionAddress} from './session-owner';
@@ -32,13 +32,30 @@ function authorOf(actor:BoardActor) {
   return {author:`concierge:${session.id}`,address:sessionAddress(session),authorName:title?`${title} (concierge:${session.id})`:`concierge:${session.id}`};
 }
 function readerOf(actor:BoardActor|null) {return actor?`concierge:${actor.session}`:null;}
+/**
+ * Members and deciders are compared with authors, which are written `concierge:<n>` (or `<peer>:<n>`),
+ * so every address a command names is turned into that form first; `tejas` names him.
+ */
+function identityOf(value:string) {
+  const name=value.trim();
+  if(name==='tejas'||/^[a-z][a-z0-9-]*:\d+$/.test(name))return name;
+  const slash=name.indexOf('/');
+  if(slash>0) {
+    let tuple:unknown;
+    try {tuple=JSON.parse(Buffer.from(name.slice(slash+1).replace(/^session:/,''),'base64url').toString());} catch {/* reported below */}
+    if(Array.isArray(tuple)&&Number.isSafeInteger(tuple[1]))return `${name.slice(0,slash)}:${tuple[1]}`;
+    throw new BoardError(`Not a session address: ${name}`);
+  }
+  return `concierge:${resolveSessionAddress(name).id}`;
+}
 
 function mentionText(event:BoardEvent,state:ReturnType<typeof threadState>) {
+  // A sealed position stays hidden until the reveal, in the notice as on the board.
+  const words=event.sealed?'(A sealed position: read the thread after the round is revealed.)':event.text.length>1500?`${event.text.slice(0,1500)}…`:event.text;
   return [`Board mention from ${event.authorName} on board "${event.board}", in the ${state.kind} thread "${state.title}" (${event.thread}).`,
-    '',event.text.length>1500?`${event.text.slice(0,1500)}…`:event.text,'',
+    '',words,'',
     `Read the thread: router-actions.sh sessions board read ${event.board} --thread ${event.thread} <source-flags>`,
     `Answer in it: router-actions.sh sessions board post ${event.board} --thread ${event.thread} <source-flags> --action-id <stable id> -- <your words>`,
-    `The raw thread is readable without Concierge: ${join(commonsRoot(),event.board,'threads',event.thread)}`,
     'This is a notice: it owes no sessions reply. Read it when your current work reaches a stopping point.'].join('\n');
 }
 
@@ -51,6 +68,9 @@ export async function deliverMentions(event:BoardEvent,delivery:BoardDelivery) {
     try {
       if(!event.sourceInput||!event.sourceRun)throw new BoardError('The post was written without a session identity, so Concierge cannot deliver its mentions; the mentioned session will see it on its next board read.');
       const text=mentionText(event,state),inputId=`board:${event.id}:${index}`;
+      // A Mac session cannot take a local admission, so it gets an informational request from the
+      // poster's live run, once, at post time; after that run ends a sweep cannot resend it, and
+      // status.json says so. The Mac agent answers it with a short reply or by posting.
       if(address.includes('/')) await delivery.askPeer({address,actionId:`board-${event.id}-${index}`,text,sourceInputId:event.sourceInput,sourceRunId:event.sourceRun});
       else {
         const session=resolveSessionAddress(address);
@@ -61,6 +81,7 @@ export async function deliverMentions(event:BoardEvent,delivery:BoardDelivery) {
     } catch(error) {
       const detail=error instanceof Error?error.message:String(error);
       log('warn','board_mention_undelivered',{board:event.board,thread:event.thread,event:event.id,address,detail});
+      try {recordDeliveryFailure(event.board,event,index,detail);} catch {/* the log line above still says it */}
       results.push({address,delivered:false,detail});
     }
   }
@@ -83,7 +104,11 @@ export function commitCommons(message:string) {
       await run(['add','-A'],20_000);
       // The board's words are agents' discussion, not instruction files; the machine's instruction hooks do not apply here.
       await run(['-c','core.hooksPath=/dev/null','commit','-q','--allow-empty-message','-m',message],20_000).catch(error=>{if(!String(error).includes('nothing to commit')&&!String(error).includes('exited 1'))throw error;});
-      await run(['push','-q'],30_000).catch(error=>log('warn','board_push_failed',{detail:String(error)}));
+      // Writes only ever add files, so a push refused because the origin moved rebases cleanly once.
+      await run(['push','-q'],30_000).catch(async()=>{
+        await run(['pull','-q','--rebase'],30_000);
+        await run(['push','-q'],30_000);
+      }).catch(error=>log('warn','board_push_failed',{detail:String(error)}));
     } catch(error) {log('warn','board_commit_failed',{detail:String(error)});}
   });
   return committing;
@@ -126,7 +151,8 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   let written:{event:BoardEvent;duplicate:boolean};
   if(input.verb==='thread') {
     if(!text.trim())throw new BoardError('Open a thread with its first words after --.');
-    written=openThread({...signed,board,actionId:input.action_id,kind:input.kind??'',title:input.title??'',text,members:input.members,decider:input.decider,mentions:input.mentions});
+    written=openThread({...signed,board,actionId:input.action_id,kind:input.kind??'',title:input.title??'',text,
+      members:input.members?.map(identityOf),decider:input.decider?identityOf(input.decider):undefined,mentions:input.mentions});
   } else {
     if(!input.thread)throw new BoardError(`board ${input.verb} needs --thread <thread id>.`);
     if(input.verb==='post'&&!text.trim())throw new BoardError('A post needs words after --.');
