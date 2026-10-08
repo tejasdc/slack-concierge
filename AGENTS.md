@@ -8,6 +8,10 @@ The coordinated responsiveness release follows the dependency checkpoints in
 [Deployment](docs/runbooks/DEPLOYMENT.md#coordinated-responsiveness-release-dependency-order):
 remote-box, server Concierge, Thinkering, then the Mac, with installed-revision evidence.
 
+Codex's App Server starts only under its native disabled-updater preference on both
+machines; installation and activation are separate, and a running listener is never
+restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
+
 ## Current delivery policy
 
 Tejas deprecated Slack in inputs `1789490232.840229` and `1789490293.092859` on

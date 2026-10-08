@@ -18,7 +18,7 @@ The daemon is detached from the Concierge process and may outlive a bot restart.
 - **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer checks for Codex releases.
 - **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
 - **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
-- **Built-in updater:** disabled by Codex's supported `updater.autoUpdateEnabled: false` in `/root/.codex/app-server-daemon/settings.json`, preserving the other settings. Both `daemon start` and `daemon bootstrap` otherwise launch an updater, even if the App Server is already running. The updater's fixed 60-second grace and lack of Concierge admission coordination do not satisfy the active-agent contract. An intentional CLI update may stage a new release without activating the loaded App Server.
+- **Built-in updater:** disabled by Codex's supported `updater.autoUpdateEnabled: false` in each machine's own `~/.codex/app-server-daemon/settings.json`, preserving the other settings. The server's normal release installer merges the preference before service restart; its systemd startup and in-process daemon-start path refuse to launch without it. The Mac installer merges it as the signed-in user before its daemon start, not in the later sudo hook step. Account-switch restarts also refuse if it is missing. Both `daemon start` and `daemon bootstrap` otherwise launch an updater, even if the App Server is already running. The updater's fixed 60-second grace and lack of Concierge admission coordination do not satisfy the active-agent contract. An intentional CLI update may stage a new release without activating the loaded App Server.
 
 Autonomous deployment repair and its independent review use this same installed
 standalone CLI as root with the normal `/root` configuration. Concierge does not
@@ -56,9 +56,9 @@ The restart is scheduled rather than random: it can occur on the first five-minu
 The 2026-10-08 incident showed that stopping an updater process alone is insufficient:
 the next ordinary service start launched another while the older App Server was still
 serving work. That updater forced the server down 60 seconds after requesting shutdown.
-Set the native disable preference before `daemon start`. Verify it with
+Normal Concierge installation merges the native disable preference before `daemon start` without replacing other settings. It refuses malformed settings instead of overwriting them; the server startup independently checks the result. Verify the server setting with
 `jq -e '.updater.autoUpdateEnabled == false' /root/.codex/app-server-daemon/settings.json`;
-a missing or malformed setting is not disabled. For an updater already running,
+a missing or malformed setting is not disabled. The Mac uses its own home, not root's; its `install-mac.sh` applies and checks the same preference before starting the daemon. These install checks do not stop an updater that is already running. For an updater already running,
 confirm its exact `pid-update-loop` PID and process group before stopping that PID only.
 Never stop the shared scope or signal a
 process group to contain the updater. `daemon --help` offers no updater-only command;

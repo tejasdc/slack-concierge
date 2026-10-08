@@ -11,6 +11,7 @@ import { releaseUsageHeldWork } from "./provider-usage";
 import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { MANAGED_CODEX } from "./codex-daemon-file-limit";
+import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
 import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
@@ -101,6 +102,11 @@ async function activateCodex(): Promise<ActivationReport> {
         ? "Signed in. This machine will start using the new account once Codex restarts here; it could not be checked for running work just now, so nothing was restarted."
         : `Signed in. ${running} Codex ${running === 1 ? "session is" : "sessions are"} still working on this machine, so it was left alone. It moves to the new account once that work finishes.`,
     };
+  }
+  if (!codexUpdaterDisabled()) {
+    log("error", "provider_activation_failed", { provider: "codex", reason: "automatic_updater_not_disabled" });
+    return { status: "failed", restartFailed: true,
+      detail: "Codex's automatic background update setting could not be confirmed, so its service was left running. Your sign-in is kept; nothing was switched." };
   }
   const restart = await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
   if (restart.code !== 0) {

@@ -30,14 +30,24 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] || { echo "No release hooks under: $release" >&2; exit 2; }
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
   bot="$release/control/bot"
+  updater_policy="$release/control/ensure-codex-updater-disabled.js"
   suffix=js
 else
-  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] || { echo "No Concierge hooks under: $bot" >&2; exit 2; }
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
+  updater_policy="$bot/scripts/ensure-codex-updater-disabled.ts"
   suffix=ts
 fi
 [ -d "$state" ] || { echo "No Concierge state directory: $state" >&2; exit 2; }
+
+# The server deploy runs this before restarting the service. Its daemon start must never
+# ensure Codex's autonomous updater, which can terminate an admitted provider turn.
+# This installer runs as root on the server; the Mac installer applies the same preference
+# as the console user before it invokes this script with sudo for machine-wide hooks.
+if [ "$(uname -s)" = Linux ]; then
+  "$bun" run "$updater_policy" /root/.codex/app-server-daemon/settings.json
+fi
 
 etc=${CODEX_SYSTEM_DIR:-/etc/codex}
 marker='# Managed by slack-concierge scripts/install-codex-stop-hook.sh.'

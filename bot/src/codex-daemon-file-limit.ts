@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "./log";
+import { codexUpdaterDisabled } from "./codex-updater-settings";
 
 const run = promisify(execFile);
 
@@ -27,6 +28,10 @@ let lastDaemonStartAt = 0;
 export function startCodexDaemonWhenAbsent(reason: string) {
   if (process.platform !== "linux" || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
   lastDaemonStartAt = Date.now();
+  if (!codexUpdaterDisabled()) {
+    log("error", "codex_daemon_start_failed", { reason, error: "Codex automatic App Server updates are not disabled." });
+    return;
+  }
   daemonStart = run("systemd-run", ["--scope", "--collect", "--quiet", "--description=Shared Codex App Server",
     MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 })
     .then(({ stdout }) => log("warn", "codex_daemon_started_when_absent", { reason, answer: stdout.trim().slice(0, 300) }))

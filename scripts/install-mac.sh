@@ -53,8 +53,11 @@ chmod 600 "$STATE/peer.token"
 
 (cd "$REPO/bot" && "$BUN" install --frozen-lockfile)
 # Same as remote-box's ExecStartPre: start the managed app-server daemon if it is not running.
-# The daemon and its updater loop keep the open-file limit of whoever started them, and the
-# updater restarts the App Server with its own. launchd gives this update job 256; the App Server
+# Apply the native updater preference as this user, never from the later sudo hook installer.
+# A daemon start otherwise ensures an updater even when the listener is already running.
+CODEX_DAEMON_SETTINGS="$HOME/.codex/app-server-daemon/settings.json"
+"$BUN" run "$REPO/bot/scripts/ensure-codex-updater-disabled.ts" "$CODEX_DAEMON_SETTINGS"
+# The daemon keeps the open-file limit of whoever started it. launchd gives this update job 256; the App Server
 # holds about eleven files per Codex conversation it has open (the observer opens every one), so
 # at ~20 conversations it failed with "Too many open files" (2026-09-25). Match the box's unit.
 ulimit -n 65536

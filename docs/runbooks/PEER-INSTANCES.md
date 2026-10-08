@@ -123,9 +123,19 @@ the managed standalone package `~/.codex/packages/standalone/current/codex` star
 installer, `curl -fsSL https://chatgpt.com/codex/install.sh | sh`; the installer refuses to
 start the daemon without it. `install-mac.sh` starts it and warns when
 `codex app-server daemon version` does not report `running`.
+Before that start, the installer preserves the current user's other Codex daemon settings
+while setting the native `updater.autoUpdateEnabled` preference to `false`. It does this
+before its separate sudo step for machine-wide agent hooks, so root's Codex home is not
+mistaken for the Mac user's. Missing settings are created privately; malformed settings
+stop the install rather than being replaced. Re-running the installer is a no-op for an
+already-disabled setting and does not restart a running App Server. The built-in updater
+is not a substitute for the admission-gated maintenance procedure in
+[Codex App Server Lifecycle](CODEX-APP-SERVER.md).
 
-The daemon keeps the open-file limit of the process that started it, and its updater loop
-restarts the App Server with the loop's own limit. launchd's default is 256, and the App Server
+The daemon keeps the open-file limit of the process that started it. An updater loop started
+before the native preference was installed retains its own limit and must be stopped by exact
+PID after confirming its identity; the installer does not signal it or the App Server.
+launchd's default is 256, and the App Server
 holds roughly eleven files for every Codex conversation it has open (a rollout, a writer lock and
 two helper processes' pipes), which Concierge's observer opens for every Codex session. On
 2026-09-25 the Mac's daemon, started by the unattended update job, reached 256 at about twenty
@@ -133,8 +143,9 @@ conversations and new Codex sessions failed with `Too many open files (os error 
 `install-mac.sh` now raises the limit to 65536 before `daemon start`, as the box's unit sets
 `LimitNOFILE`. `daemon start` leaves a running daemon alone, so a daemon started with the low
 limit is replaced by hand from a shell with the raised limit, when no Codex turn is running:
-`ulimit -n 65536; codex app-server daemon stop`, stop the `daemon pid-update-loop` process,
-then `codex app-server daemon start`, which starts both again. More than 256 open files on the
+`ulimit -n 65536; codex app-server daemon stop`, stop any old `daemon pid-update-loop` process
+by exact PID, then `codex app-server daemon start` under the disabled-updater setting.
+More than 256 open files on the
 App Server (`lsof -p <pid> | wc -l`) proves the new limit took.
 
 The `~/.codex` sync job (`rsync-workspace-icloud`) must exclude `app-server-daemon/`,
