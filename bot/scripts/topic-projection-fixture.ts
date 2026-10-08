@@ -6,32 +6,17 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
+import {runFixtureChild} from './fixture-child';
 
 /** Actual canonical mutations and a separate production projection worker, all under /tmp.
  * Called by the existing presentation release gate as well as directly for diagnosis. */
 export async function checkTopicProjectionLifecycle(mode='--child'){
  const root=await mkdtemp(join(tmpdir(),'concierge-topic-projection-'));
- const child=spawn(process.execPath,[import.meta.path,mode,root],{env:{...process.env,
+ try{return await runFixtureChild({command:process.execPath,args:[import.meta.path,mode,root],env:{...process.env,
   CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
-  CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,'capture')},stdio:['ignore','pipe','pipe'],detached:true});
- let output='',errors='';child.stdout.on('data',chunk=>{output=(output+chunk).slice(-8000);});child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-8000);});
- let timedOut=false;
- const stopOwnedGroup=()=>{if(!child.pid)return;try{process.kill(-child.pid,'SIGKILL');}catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')errors=(errors+String(error)).slice(-8000);}};
- // A worker started by the native owner inherits these pipes. Killing only its parent can leave
- // `close` pending forever, so a deadline must settle independently and stop the owned group.
- child.once('exit',stopOwnedGroup);
- child.once('error',error=>{errors=(errors+String(error)).slice(-8000);});
- const closed=new Promise<[number|null,NodeJS.Signals|null]>(resolve=>child.once('close',(code,signal)=>resolve([code,signal])));
- let timeout:ReturnType<typeof setTimeout>;
- const deadline=new Promise<null>(resolve=>{timeout=setTimeout(()=>{timedOut=true;stopOwnedGroup();resolve(null);},45_000);});
- try{const completion=await Promise.race([closed,deadline]);
-  if(!completion)throw new Error(`Topic projection lifecycle timed out after 45s (fixture pid=${child.pid}): ${errors}\n${output}`);
-  const [code,signal]=completion;
-  assert.equal(code,0,`Topic projection lifecycle failed (timeout=${timedOut}, signal=${signal}): ${errors}\n${output}`);
-  const result=output.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}}).find(row=>row.fixture===(mode==='--native-child'?'native-owner-projection-lifecycle':'topic-projection-lifecycle'));
-  assert.ok(result,'Topic lifecycle did not publish its checkpoints');return result;
- }
- finally{clearTimeout(timeout!);child.stdout.destroy();child.stderr.destroy();await rm(root,{recursive:true,force:true});}
+  CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,'capture')},deadlineMs:45_000,
+  fixture:mode==='--native-child'?'native-owner-projection-lifecycle':'topic-projection-lifecycle'});}
+ finally{await rm(root,{recursive:true,force:true});}
 }
 
 export const checkNativeOwnerProjectionLifecycle=()=>checkTopicProjectionLifecycle('--native-child');

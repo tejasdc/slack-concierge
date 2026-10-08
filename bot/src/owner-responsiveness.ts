@@ -128,12 +128,12 @@ function openNotice(now: number, blocked: number, longest: number): void {
   }
   const busiest = [...byRoute].sort((a, b) => b[1].ms - a[1].ms).slice(0, 3)
     .map(([name, entry]) => `${name} (${entry.count} slow, ${Math.round(entry.ms / 1000)} seconds in all)`);
-  // Requests explain a freeze only when they account for a real share of it; otherwise the time
-  // went to Concierge's own background work and naming a page would point the wrong way.
+  // Handler clocks start after dispatch and overlap background work. They describe impact,
+  // not the cause of a loop stall or the time a request waited before its handler began.
   const slowTotal = [...byRoute.values()].reduce((sum, entry) => sum + entry.ms, 0);
   const what = busiest.length && slowTotal >= blocked / 4
-    ? `The slowest things it was doing: ${busiest.join("; ")}.`
-    : "Pages were not the cause: most of that time went to Concierge's own background work, with nothing waiting on it.";
+    ? `These pages were slow: ${busiest.join("; ")}. What stopped Concierge is not yet known; this report goes to the repair agent.`
+    : "What stopped Concierge is not yet known; this report goes to the repair agent.";
   const text = `Concierge stopped answering for ${Math.round(blocked / 1000)} seconds of the last five minutes`
     + ` (the longest single freeze was ${Math.round(longest / 1000)} seconds), from ${noticeTime(db, episodeStartedAt ?? now)}.`
     + ` Pages, messages and agents' commands all waited during that time. ${what}`

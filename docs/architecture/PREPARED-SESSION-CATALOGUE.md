@@ -97,3 +97,13 @@ restore the full-read fallback when an older consumer refuses: update that consu
 `topic-growth-fixtures.ts` exercises each registered topic reader at 100, 1,000 and
 10,000 topics under its storage budget. Canonical writes and action validation remain
 with the existing owner; a prepared preview never grants permission for an action.
+
+The presentation release gate runs its queue-claim and projection-lifecycle fixtures in
+isolated scratch state. Both use one child-process owner with an unchanged 15-second or
+45-second deadline, respectively. The owner retains bounded stdout, stderr and recent
+phase names, records explicit success or reports exit code, signal, spawn failure or deadline,
+and stops the fixture's
+process group. It settles after a short output drain even if a descendant inherited a
+pipe. A missing final checkpoint is a named failure, not an empty assertion. These
+diagnostics identify where a fixture stopped; they do not by themselves identify why
+the operating system or another process killed it.
