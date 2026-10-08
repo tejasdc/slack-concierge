@@ -27,6 +27,7 @@ import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resum
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
+import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn} from './state';
@@ -137,6 +138,7 @@ export async function startSessionRuntime() {
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
     onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
+  const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!,self:peering.self??'local',cloud:()=>peers?.peerClientOrNull('cloud')??null});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
   const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();queue.wake();});
@@ -145,7 +147,7 @@ export async function startSessionRuntime() {
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

@@ -334,6 +334,7 @@ import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {startBackgroundJobWatch} from './background-waits';
+import {startUpdateWaitWatch} from './update-wait-notices';
 import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
@@ -3911,6 +3912,7 @@ async function reconcilePriorInstanceTurns() {
 // forecast check, which is what turns a number on a screen into a warning before the wall.
 startProviderUsageWatch({ stopped: () => draining, onReading: () => { wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
+const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!, self: peering.self ?? 'local', cloud: () => sessionPeers?.peerClientOrNull('cloud') ?? null});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
 watchAuthHeldCredentials();
 
@@ -3988,6 +3990,7 @@ async function drainAndStop(signal: string) {
     });
   }
   stopBackgroundJobWatch();
+  stopUpdateWaitWatch();
   stopWatchWorker();
   serviceOnline = false;
   try {

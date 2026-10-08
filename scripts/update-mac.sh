@@ -34,7 +34,13 @@ main() {
   git merge-base --is-ancestor HEAD "$candidate" || { echo "Refusing: this checkout has commits main does not; nothing changed." >&2; exit 2; }
   echo "== $(date -u +%FT%TZ) installing $(git log --oneline -1 "$candidate"); checking for running work"
   # Look first without holding anything, so a busy Mac is never made to wait for an update.
-  if ! quiet; then echo "   work is running here that would not survive the restart; the automatic update tries again at the next interval"; exit 0; fi
+  if ! quiet; then
+    # Concierge reads this to tell the agents it waits for, and Tejas, once it has waited 15 minutes.
+    # The wait began at the first busy check, whatever main has moved to since.
+    waiting_since=$(sed -n 's/.*"since":\([0-9]*\).*/\1/p' "$STATE/update-waiting.json" 2>/dev/null || true)
+    printf '{"candidate":"%s","since":%s}\n' "$candidate" "${waiting_since:-$(date +%s)}" > "$STATE/update-waiting.json.tmp" && mv "$STATE/update-waiting.json.tmp" "$STATE/update-waiting.json"
+    echo "   work is running here that would not survive the restart; the automatic update tries again at the next interval"; exit 0
+  fi
   claim=$(drain claim --owner-pid $$) || { echo "   another update holds the gate: $claim"; exit 0; }
   token=$(printf '%s' "$claim" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
   if ! quiet "$token"; then
@@ -55,6 +61,7 @@ main() {
   if ! drain adoptable-check --candidate-contract "$contracts/candidate.json" --running-contract "$contracts/running.json" --no-rollback; then
     echo "   the update cannot take back agents running here; nothing changed"; exit 0
   fi
+  rm -f "$STATE/update-waiting.json"
   git merge --ff-only --quiet "$candidate"
   [ "$(git rev-parse HEAD)" = "$candidate" ] || { echo "Refusing: the checkout is not at the checked revision." >&2; exit 2; }
   echo "== at $(git log --oneline -1)"
