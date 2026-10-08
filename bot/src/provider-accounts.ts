@@ -1,7 +1,8 @@
+import { claudeKeychainHasLogin } from "./claude-keychain";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { log } from "./log";
 // Type-only in the other direction, so this is a one-way dependency at runtime.
 import { storedProviderAccountLabels } from "./provider-account-usage";
@@ -242,7 +243,11 @@ function installedAccounts(provider: ProviderKey): { id: string; path: string }[
       // A dotted name is a sign-in still in progress, not an account he has.
       .filter(name => !name.startsWith("."))
       .map(name => ({ id: name, path: homeCredential(provider, join(root, name)) }))
-      .filter(entry => entry.id.length > 0 && existsSync(entry.path))
+      // A Mac keeps a Claude home's login in the Keychain under that folder's name, not in a file;
+      // counting only the file hid every Mac Claude home, so the Mac never chose between accounts
+      // and a newly signed-in one never appeared in Accounts (2026-10-08).
+      .filter(entry => entry.id.length > 0 && (existsSync(entry.path)
+        || (provider === "claude-code" && claudeKeychainHasLogin(join(root, entry.id)))))
       // A Claude credential names no account, so a home we cannot put an address to is not
       // offered: switching to an unnamed credential is how he was nearly moved onto the wrong
       // account on 2026-09-22. This box holds exactly such a leftover — `.claude-accounts/second`,
@@ -382,7 +387,8 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
         label: recorded ?? account?.label ?? id,
         detail: account?.detail ?? null,
         current,
-        signedIn: holdsLogin(provider, credentials),
+        // A Mac home's login is in the Keychain: present there counts as held, as a file does here.
+        signedIn: credentials === null && provider === "claude-code" && claudeKeychainHasLogin(dirname(path)) ? true : holdsLogin(provider, credentials),
       };
     })
     .sort((left, right) => left.label.localeCompare(right.label));
