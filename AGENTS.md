@@ -571,7 +571,11 @@ authorization or a change to the default rapid-iteration policy.
   information — never less than its operation receipt already resolves.
 - Archive discovery retains exact source bytes through the source capability before
   materializing a returned catalogue candidate. Pure index searches do not copy archives;
-  changed or unavailable candidates remain explicit coverage omissions.
+  changed or unavailable candidates remain explicit coverage omissions. The retention proof
+  is one page of Thinkering's prepared history for that exact version (`retainArchiveSource`),
+  never a `context` read: context re-reads and serializes the whole snapshot on every search,
+  and a 289 MB transcript cost 5.8 s and 120 MB per candidate, making one search take 10.2 s
+  (supervisor incident 708b0814, 2026-10-08).
 - Source history is cited evidence. Verify exact source/version/branch/event membership.
   Catalogue projections distinguish unbound imported `historical-evidence` from
   conversations; discovery never promotes evidence into active work. Reconstructed
