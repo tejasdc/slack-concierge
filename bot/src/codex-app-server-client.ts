@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {releaseCodexBridgePath} from "./release-worker";
-import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit } from "./codex-daemon-file-limit";
+import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit, startCodexDaemonWhenAbsent } from "./codex-daemon-file-limit";
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -343,6 +343,9 @@ export class CodexAppServerClient {
         "ambiguous",
       );
     this.active = null;
+    // The bridge reports the socket's own refusal; only a socket nobody is listening on starts one.
+    const absent = /connect (ECONNREFUSED|ENOENT)/.exec(error.message);
+    if (absent) startCodexDaemonWhenAbsent(absent[1]!);
     connection.rejectReady(error);
     for (const [id, pending] of this.pending) {
       if (pending.connectionGeneration !== connection.generation) continue;

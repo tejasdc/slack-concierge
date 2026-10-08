@@ -10,6 +10,7 @@ import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
+import { MANAGED_CODEX } from "./codex-daemon-file-limit";
 import { RETRY_POLICIES } from "./retry-policies";
 import { withRetry } from "./retry-core";
 import { CLAUDE_AGENT_HOOK_SETTINGS } from "./claude-code";
@@ -53,8 +54,7 @@ export function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource
   return released;
 }
 
-export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim()
-  || (process.platform==='darwin'?join(homedir(),'.local','bin','codex'):'/root/.codex/packages/standalone/current/codex');
+export { MANAGED_CODEX };
 
 /**
  * Codex turns still executing. Restarting under them would cut work that is
