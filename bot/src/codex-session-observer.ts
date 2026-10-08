@@ -100,6 +100,10 @@ export class CodexSessionObserver {
 
   private async subscribeCurrentBindings(connection: CodexAppServerClientLike, generation: number) {
     for (const binding of listUniqueCodexSessionBindings()) {
+      // The sweep resumes every bound conversation one at a time, about a minute in all; a
+      // shutdown waited for it to finish, so each of 2026-10-07's back-to-back update restarts
+      // took 60–94 s to stop while his threads showed errors.
+      if (this.stopped) return false;
       if (await connection.connect() !== generation) return false;
       try {
         await connection.request("thread/resume", {
