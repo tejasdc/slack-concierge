@@ -61,7 +61,7 @@ try {
     const artifact = required("--artifact");
     const release = manager.verify(artifact);
     const lastKnownGood = getLastKnownGoodRelease();
-    const intent = recordDeploymentReleaseActivationIntent(runId, release.artifact_digest);
+    const intent = recordDeploymentReleaseActivationIntent(runId, release.artifact_digest, process.argv.includes("--allow-supersede"));
     if ("supersededCommit" in intent) {
       finish(0, { status: "superseded", desired_commit: intent.supersededCommit });
     }

@@ -132,10 +132,12 @@ checkout_deployment_commit() {
 }
 
 candidate_advanced() {
-  local latest
+  local reading latest
   [ -n "$DEPLOY_RUN_ID" ] || return 1
-  latest=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
-    --run-id "$DEPLOY_RUN_ID" | jq -er '.desired_commit') || return 1
+  reading=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
+    --run-id "$DEPLOY_RUN_ID") || return 1
+  [ "$(printf '%s' "$reading" | jq -r '.activated')" = false ] || return 1
+  latest=$(printf '%s' "$reading" | jq -er '.desired_commit') || return 1
   [ "$latest" != "$DEPLOYED_COMMIT" ] || return 1
   CANDIDATE_SUPERSEDED=1
   return 0
@@ -658,7 +660,7 @@ prepare_candidate_release() {
     return "$status"
   fi
   output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
-    --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH")
+    --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH" --allow-supersede)
   printf '%s\n' "$output"
   if [ "$(printf '%s\n' "$output" | jq -er '.status')" = superseded ]; then
     CANDIDATE_SUPERSEDED=1

@@ -112,11 +112,10 @@ try {
 
   if (command === "desired") {
     const run = getDeploymentRun(requiredOption("--run-id"));
-    if (!run || !run.desired_commit || run.activation_state !== null
-      || !["draining", "updating"].includes(run.status)) {
-      throw new Error("The deployment run has no unactivated desired commit.");
-    }
-    finish(0, { desired_commit: run.desired_commit });
+    // A read: repair retries and resumed runs read it too, so it never refuses a run that has
+    // already been activated; only an unactivated run is ever moved to a newer commit.
+    if (!run || !run.desired_commit) throw new Error("The deployment run has no desired commit.");
+    finish(0, { desired_commit: run.desired_commit, activated: run.activation_state !== null });
   }
 
   if (command === "operator-request") {

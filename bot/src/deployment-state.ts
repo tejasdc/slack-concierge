@@ -914,13 +914,16 @@ export function recordDeploymentReleaseActivated(runId: string, artifactDigest: 
   })();
 }
 
-export function recordDeploymentReleaseActivationIntent(runId: string, artifactDigest: string) {
+// `allowSupersede` is passed only by an ordinary update's runner: a newer accepted push then moves the
+// run to rebuild instead of activating a stale candidate. Recovery and repair activate exactly the
+// release they were given and never take this path.
+export function recordDeploymentReleaseActivationIntent(runId: string, artifactDigest: string, allowSupersede = false) {
   return writeDeploymentTransaction(() => {
     const release = getDeploymentRelease(artifactDigest);
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
     const run = getDeploymentRun(runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw new Error("Deployment run is not active.");
-    if (run.repair_state !== "retrying" && run.desired_commit && run.desired_commit !== release.git_commit) {
+    if (allowSupersede && run.repair_state === null && run.desired_commit && run.desired_commit !== release.git_commit) {
       if (run.activation_state !== null) throw new Error("An activated deployment cannot change candidates.");
       return { supersededCommit: run.desired_commit };
     }
