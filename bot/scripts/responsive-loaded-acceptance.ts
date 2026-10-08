@@ -33,9 +33,10 @@ async function probe(mode:"pre"|"measure",configPath:string){
   const [{HostedClaudeCodeTransport},{ClaudeOutputAccumulator},{SessionOwner},{createNativeSession},{retainHumanCommand}]=await Promise.all([
     import("../src/execution-host-client"),import("../src/claude-code"),import("../src/session-owner"),import("../src/session-inputs"),
     import("../src/human-command-state")]);
-  const session=createNativeSession("claude-code",{title:"Loaded acceptance",cwd:fixture.root,project:"slack-concierge"});
   const {db}=await import('../src/state');
-  db.transaction(()=>{for(let index=1;index<fixture.catalogueSize;index++)createNativeSession("claude-code",{
+  const existing=db.query('SELECT id FROM sessions ORDER BY id LIMIT 1').get() as {id:number}|null;
+  const session=existing??createNativeSession("claude-code",{title:"Loaded acceptance",cwd:fixture.root,project:"slack-concierge"});
+  if(!existing)db.transaction(()=>{for(let index=1;index<fixture.catalogueSize;index++)createNativeSession("claude-code",{
     title:`Unrelated fixture ${index}`,cwd:fixture.root,project:"slack-concierge"});})();
   const owner=new SessionOwner({wake:()=>{},steer:()=>false,stop:async()=>false,available:()=>true,
     history:async()=>({messages:[{id:"fixture-message",role:"assistant",content:"prepared",tool:null,phase:null}],nextCursor:null})},fixture.root);
@@ -74,9 +75,19 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(replayEnded!==fixture.ids.length)throw new Error(`Only ${replayEnded}/6 hosts replayed`);
   const replayDone=performance.now();
   console.log(JSON.stringify({kind:"stage",name:"replay_done",ms:Math.round(replayDone-adoptionStarted)}));
-  const browserBoundary=process.env.THINKERING_ACCEPTANCE_REPO?
-    (await import('./responsive-browser-boundary')).startBrowserBoundary(owner,session.id,process.env.THINKERING_ACCEPTANCE_REPO):null;
-  if(browserBoundary)await browserBoundary.ready;
+  let beginBrowser!:()=>void,finishBrowser!:()=>void;
+  const browserStart=new Promise<void>(resolve=>{beginBrowser=resolve;});
+  const browserFinished=new Promise<void>(resolve=>{finishBrowser=resolve;});
+  if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1'){
+   const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:request=>{
+    const path=new URL(request.url).pathname;
+    if(path==='/fixture/start'){beginBrowser();return Response.json({ok:true});}
+    if(path==='/fixture/finish'){finishBrowser();return Response.json({ok:true});}
+    return owner.handle(request).then(response=>response??new Response('Not found',{status:404}));
+   }});
+   console.log(JSON.stringify({kind:'owner_ready',port:server.port,pid:process.pid,sessionId:session.id}));
+   await browserStart;
+  }
   for(const gate of fixture.gates)await writeFile(gate,"continue");
   const baseUrl=`http://127.0.0.1/sessions/v1/sessions/concierge%3A${session.id}`;
   const read=async(kind:"page"|"history",url:string)=>{
@@ -98,10 +109,10 @@ async function probe(mode:"pre"|"measure",configPath:string){
   for(let index=0;index<40;index++){
     await read("page",catalogueUrl);
     await read("history",`${baseUrl}/history?limit=20`);
-    lastAction=`loaded-${index}`;
+    lastAction=`loaded-${process.pid}-${index}`;
     const body={clientActionId:lastAction,text:`Synthetic input ${index}`,delivery:"queue"};
     const custodyStart=performance.now();
-    const retained=retainHumanCommand({version:1,clientId:"loaded-client",sessionId:`concierge:${session.id}`,
+    const retained=retainHumanCommand({version:1,clientId:`loaded-client-${process.pid}`,sessionId:`concierge:${session.id}`,
       sequence:index+1,actionId:lastAction,door:"web",method:"POST",path:`/sessions/v1/sessions/concierge%3A${session.id}/inputs`,body});
     delays.custody.push(performance.now()-custodyStart);
     if(retained.status!=="pending")throw new Error("Human command custody was not retained");
@@ -110,14 +121,14 @@ async function probe(mode:"pre"|"measure",configPath:string){
     await pause(10);
   }
   console.log(JSON.stringify({kind:"stage",name:"interaction_done",count:40,ms:Math.round(performance.now()-start)}));
-  const repeated=retainHumanCommand({version:1,clientId:"loaded-client",sessionId:`concierge:${session.id}`,
+  const repeated=retainHumanCommand({version:1,clientId:`loaded-client-${process.pid}`,sessionId:`concierge:${session.id}`,
     sequence:40,actionId:lastAction,door:"web",method:"POST",
     path:`/sessions/v1/sessions/concierge%3A${session.id}/inputs`,
     body:{clientActionId:lastAction,text:"Synthetic input 39",delivery:"queue"}});
   if(repeated.action_id!==lastAction)throw new Error("Duplicate custody changed action identity");
   const duplicate=await send(lastAction,"Synthetic input 39");
   if(JSON.stringify(accepted)!==JSON.stringify(duplicate))throw new Error("Duplicate client action changed acceptance");
-  const browser=browserBoundary?await browserBoundary.finished:null;
+  if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1')await browserFinished;
   const hostResults=await Promise.allSettled(pending);
   const hostFailure=hostResults.find(result=>result.status==='rejected');
   if(hostFailure?.status==='rejected')throw hostFailure.reason;
@@ -131,7 +142,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     page:summary(delays.page),history:summary(delays.history),send:summary(delays.send),custody:summary(delays.custody),
     loopLag:summary(lag),peakRssBytes:peak.rss,peakHeapBytes:peak.heap,swapBytes:swap,
     cpuUserMs:cpu.user/1000,cpuSystemMs:cpu.system/1000,duplicateAccepted:true,catalogueSize:fixture.catalogueSize,
-    historySource:'synthetic provider page',browserClosureTested:!!browser,browser}));
+    historySource:'synthetic provider page'}));
   projector.kill('SIGTERM');
   await pause(30); // flush the result; the owner monitor's interval otherwise keeps this fixture alive
   process.exit(0);
@@ -150,12 +161,21 @@ const [gate,session]=process.argv.slice(2);
 const frame=(index:number)=>JSON.stringify({type:'assistant',session_id:session,message:{model:'synthetic',content:[{type:'text',text:'x'.repeat(3900)+index}]}})+'\\n';
 for(let i=0;i<2000;i++)process.stdout.write(frame(i));
 while(!existsSync(gate))await Bun.sleep(20);
-for(let i=2000;i<2450;i++){process.stdout.write(frame(i));await Bun.sleep(2);}
+for(let i=2000;i<2450;i++){process.stdout.write(frame(i));await Bun.sleep(20);}
 process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'complete',is_error:false})+'\\n');`);
   const ids=Array.from({length:6},(_,index)=>`loaded-${index}`);
   const directories=ids.map(id=>join(root,"exec",id));
   const gates=directories.map(directory=>join(directory,"continue"));
   const hosts=[] as ReturnType<typeof spawn>[];
+  const coordinators=[] as ReturnType<typeof spawn>[];
+  const coordinatorMemory=new Map<number,{pid:number;peakRssBytes:number;peakSwapBytes:number}>();
+  const sampleCoordinator=async(child:ReturnType<typeof spawn>)=>{
+   if(!child.pid)return;const status=await readFile(`/proc/${child.pid}/status`,'utf8').catch(()=>'');if(!status)return;
+   const old=coordinatorMemory.get(child.pid);
+   coordinatorMemory.set(child.pid,{pid:child.pid,peakRssBytes:Math.max(old?.peakRssBytes??0,Number(status.match(/^VmHWM:\s*(\d+)/m)?.[1]??0)*1024),
+    peakSwapBytes:Math.max(old?.peakSwapBytes??0,Number(status.match(/^VmSwap:\s*(\d+)/m)?.[1]??0)*1024)});
+  };
+  const sampling=setInterval(()=>{for(const child of coordinators)void sampleCoordinator(child);},200);
   try {
     for(let index=0;index<ids.length;index++){
       const directory=directories[index]!;await mkdir(directory,{recursive:true,mode:0o700});
@@ -180,13 +200,62 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
     while(!firstOutput.includes('"kind":"pre_attached"')&&Date.now()<attachedBy&&first.exitCode===null)await pause(25);
     if(!firstOutput.includes('"kind":"pre_attached"'))throw new Error("Predecessor did not attach all hosts");
     first.kill("SIGKILL");await new Promise(resolve=>first.once("exit",resolve));
-    const measured=spawn(process.execPath,["run",import.meta.path,"--probe","measure",configPath],{env:environment,stdio:["ignore","pipe","pipe"]});
     let output="",errors="";
-    measured.stdout.on("data",chunk=>{output+=chunk.toString();});
-    measured.stderr.on("data",chunk=>{errors+=chunk.toString();});
+    let currentUrl='';
+    const externalBrowser=!!process.env.THINKERING_ACCEPTANCE_REPO;
+    const startMeasured=()=>{
+     const child=spawn(process.execPath,["run",import.meta.path,"--probe","measure",configPath],{
+      env:{...environment,...(externalBrowser?{CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER:'1'}:{})},stdio:["ignore","pipe","pipe"]});
+     coordinators.push(child);let localOutput='',partial='',readyRow:any=null;
+     child.stdout.on('data',chunk=>{const value=chunk.toString();output+=value;localOutput=(localOutput+value).slice(-1000);
+      const lines=(partial+value).split('\n');partial=lines.pop()??'';
+      for(const line of lines){try{const row=JSON.parse(line);if(row.kind==='owner_ready')readyRow=row;}catch{/* Structured output may share a stream with diagnostics. */}}
+     });
+     child.stderr.on('data',chunk=>{errors+=chunk.toString();});
+     const ready=async()=>{
+      const deadline=Date.now()+30_000;
+      while(Date.now()<deadline){
+       const row=readyRow;
+       if(row){currentUrl=`http://127.0.0.1:${row.port}`;return row;}
+       if(child.exitCode!==null||child.signalCode!==null)throw new Error(`Owner exited before readiness: ${errors.slice(-4000)} ${localOutput.slice(-1000)}`);
+       await pause(20);
+      }
+      throw new Error('Owner readiness timed out');
+     };
+     return {child,ready};
+    };
+    let measured=startMeasured();let browser:any=null,restart:any=null;
+    if(externalBrowser){
+     const initial=await measured.ready();
+     // Capture ingress and the web adapter outlive the coordinator, just as their
+     // separately supervised production owners do. Only scratch paths enter this process.
+     Object.assign(process.env,environment);
+     const {startBrowserBoundary}=await import('./responsive-browser-boundary');
+     const boundary=startBrowserBoundary({handle:async request=>{
+      const url=new URL(request.url);return fetch(currentUrl+url.pathname+url.search,{method:request.method,
+       headers:request.headers,...(request.method==='POST'?{body:await request.text()}:{}),signal:request.signal});
+     }},initial.sessionId,process.env.THINKERING_ACCEPTANCE_REPO!,{
+      startLoad:async()=>{await fetch(currentUrl+'/fixture/start',{method:'POST'});},
+      restartOwner:async()=>{
+       const prior=measured.child,priorPid=prior.pid;
+       await sampleCoordinator(prior);
+       const journalBytesAtKill=await Promise.all(directories.map(directory=>stat(join(directory,'journal')).then(file=>file.size)));
+       if(!journalBytesAtKill.some((size,index)=>size>journals[index]!))throw new Error('No live host output preceded the restart');
+       const gone=new Promise(resolve=>prior.once('exit',resolve));prior.kill('SIGKILL');await gone;
+       measured=startMeasured();const resumed=await measured.ready();
+       await fetch(currentUrl+'/fixture/start',{method:'POST'});
+       if(resumed.pid===priorPid||resumed.sessionId!==initial.sessionId)throw new Error('Coordinator restart did not preserve session identity');
+       restart={beforePid:priorPid,afterPid:resumed.pid,sessionId:resumed.sessionId,signal:'SIGKILL',journalBytesAtKill};
+       return restart;
+      },
+     });
+     browser=await boundary.finished;
+     await fetch(currentUrl+'/fixture/finish',{method:'POST'});
+    }
     const exit=await new Promise<number|null>((resolve,reject)=>{
-      const timer=setTimeout(()=>{measured.kill("SIGKILL");reject(new Error(`Loaded coordinator timed out: ${output.slice(-2200)} ${errors.slice(-1000)}`));},60_000);
-      measured.once("exit",code=>{clearTimeout(timer);resolve(code);});
+      if(measured.child.exitCode!==null){resolve(measured.child.exitCode);return;}
+      const timer=setTimeout(()=>{measured.child.kill("SIGKILL");reject(new Error(`Loaded coordinator timed out: ${output.slice(-2200)} ${errors.slice(-1000)}`));},60_000);
+      measured.child.once("exit",code=>{clearTimeout(timer);resolve(code);});
     });
     if(exit!==0)throw new Error(`Loaded coordinator exited ${exit}: ${errors.slice(-6000)}\n${output.slice(-3000)}`);
     const observed=output.split("\n").filter(Boolean).map(line=>{try{return JSON.parse(line);}catch{return null;}});
@@ -197,16 +266,22 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
         return [route,{durationMs:summary(rows.map(row=>row.duration_ms)),dbCalls:summary(rows.map(row=>row.db_calls)),
           maxReturnedRows:Math.max(...rows.map(row=>row.db_rows)),maxResultValueBytes:Math.max(...rows.map(row=>row.db_result_bytes))}];}));
     const finalJournals=await Promise.all(directories.map(directory=>stat(join(directory,"journal")).then(file=>file.size)));
+    if(restart&&!finalJournals.some((size,index)=>size>restart.journalBytesAtKill[index]))throw new Error('Host output did not continue after loaded restart');
     const hostRssAtEnd=await Promise.all(hosts.map(async host=>{
       const status=await readFile(`/proc/${host.pid}/status`,"utf8").catch(()=>"");
       return Number(status.match(/^VmRSS:\s*(\d+)/m)?.[1]||0)*1024;
     }));
-    const report={...result,predecessorPid:JSON.parse(firstOutput.trim()).pid,hostPids:hosts.map(host=>host.pid),
+    const report={...result,coordinatorMemory:[...coordinatorMemory.values()],timingScope:restart?'replacement coordinator, with route work from both processes':'single measured coordinator',browser,browserClosureTested:!!browser,restartWhileBrowserClosed:restart,predecessorPid:JSON.parse(firstOutput.trim()).pid,hostPids:hosts.map(host=>host.pid),
       initialJournalBytes:journals,finalJournalBytes:finalJournals,
       liveBytes:finalJournals.reduce((sum,size,index)=>sum+size-journals[index]!,0),hostRssAtEnd,
-      routeWork,queueAgeMs:null,providerObservationMs:null,browserPaintMs:result.browser?.paintMs??null,isolatedState:true};
+      routeWork,queueAgeMs:null,providerObservationMs:browser?.providerObservation?.observedMs??null,browserPaintMs:browser?.paintMs??null,isolatedState:true};
     console.log(JSON.stringify(report));
   } finally {
+    clearInterval(sampling);
+    await Promise.all(coordinators.map(child=>new Promise<void>(resolve=>{
+     if(child.exitCode!==null||child.signalCode!==null){resolve();return;}
+     child.once('exit',()=>resolve());child.kill('SIGKILL');
+    })));
     // Hosts own separate provider process groups. Let their shutdown handler end those
     // first; killing only the host would leave a waiting synthetic provider behind.
     await Promise.all(hosts.map(host=>new Promise<void>(resolve=>{
@@ -219,4 +294,4 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
 }
 
 if(process.argv[2]==="--probe")await probe(process.argv[3] as "pre"|"measure",process.argv[4]!);
-else await main();
+else {await main();process.exit(0);}

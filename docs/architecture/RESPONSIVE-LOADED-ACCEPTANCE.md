@@ -27,27 +27,55 @@ existing Vite and Playwright dependencies):
 CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 THINKERING_ACCEPTANCE_REPO=/path/to/thinkering bun run bot/scripts/responsive-loaded-acceptance.ts --sessions=1000
 ```
 
-This launches Chromium against the real SessionComposer, device send outbox, browser
-command custody and session-resource storage modules. A fixture gateway connects those
-modules to the actual capture queue request handler, HumanCommandWorker and SessionOwner.
-The composer submits while the six adopted hosts emit live output. Before transfer to the
-owner, the check asserts server custody, closes the tab, opens another in the same browser
-context, and refuses its view refresh. The saved view and pending original message remain.
-It then releases delivery and verifies one exact accepted ledger input, unchanged action
-and sequence, removal from IndexedDB, and disappearance of the waiting row. It records
-time to paint the pending fixture row after the real composer send, not cold-page paint.
-The final screenshot is retained in `tmp/reviews/loaded-browser-boundary.png`.
+This launches Chromium against the shipping App, WorkspaceRouter, conversation controller,
+history/cache, composer and command outbox. The shipping Fastify `registerSessionOwnerRoutes`
+and `SessionOwnerClient` connect it to the actual capture queue handler, HumanCommandWorker
+and a separately running SessionOwner. Authentication supplies a synthetic approved-device
+identity; it does not use or test production cookies. Workspace replication is disabled in
+this fresh synthetic browser profile. The PWA update registration is stubbed, not notification
+navigation, conversation storage or message custody.
+
+After the first normal visit, the composer sends while six adopted hosts emit live output.
+The test asserts server custody before owner acceptance, closes the tab, SIGKILLs that owner,
+and starts another owner against the same scratch state. The new owner adopts the same six
+hosts. Journal sizes must prove live output both before and after the kill. Capture ingress
+and the web proxy stay alive. The browser reopens with all owner GET reads deliberately
+refused: its own previously saved history, composer and exact pending message must appear.
+No test-written cache or pending-message DOM is supplied. Restoring reads and releasing
+delivery must produce one exact accepted ledger input with the same action and sequence,
+then remove the retained browser command. The real notification handler receives a synthetic
+service-worker delivery and must locate the exact history message inside the viewport.
+
+Provider observation is a separate, named boundary: fixture-controlled admission starts the
+shipping `runClaudeCodeTurn` and `SubprocessClaudeCodeTransport` against a generated executable.
+That process records the exact received bytes, emits an unrelated echo (which must not count),
+then the matching native echo. Exactly one acknowledgement must occur after the matching echo.
+This proves wire observation, not normal queue scheduling or external provider inference.
+
+The report separately names pending-message frame time, cold full-App load (including Vite
+development compilation), cached reopen, notification location and provider observation.
+These one-run timings are not a production-browser SLO distribution. Request distributions
+and event-loop timings after the second restart belong to the replacement process; route
+work aggregates both owners. Kernel memory high-water marks are sampled per owner PID,
+including immediately before killing the first owner. Screenshots are retained in
+`tmp/reviews/loaded-offline-reopen.png` and `loaded-whole-conversation.png`.
 
 This check found a real wire mismatch: command claims sent camelCase process identity
 while the capture API requires snake_case identity. The message correctly retained custody
 but could never transfer. The worker's claim encoding must be fixed before this check passes.
 
+The whole-App check also exposed an offline recovery defect hidden by the earlier small
+composer fixture: normal selected views were no longer persisted or hydrated after moving
+the catalogue to compact cards. Messages remained durable but reopening during an outage
+hid the conversation and composer. The corrected browser retains at most 64 selected views
+and a separate validated forty-card cached window, with no fabricated delta base. Fresh
+network answers win over asynchronous device restoration.
+
 The provider history callback remains synthetic; its timings do not prove native provider
-history performance. This does not exercise the production authenticated web proxy, the
-complete conversation/cache controller, provider pickup, late peer returns, a second owner
-process crash after browser custody, or Safari/iOS. Those require separate observations.
-The browser report explicitly retains those limits. A transport pause alone is never
-reported as browser closure.
+history performance. Normal queue admission, upstream provider response time, passkey/session
+authentication, production asset loading, Safari/iOS and native notification delivery remain
+outside this fixture. Late peer return is covered by the separate restart fixture below,
+not by the loaded browser journey. A transport pause alone is never reported as tab closure.
 
 `responsive-restart-acceptance.ts` separately exercises a real owner-process death after
 canonical acceptance but before delivery acknowledgement. The capture process stays alive;
