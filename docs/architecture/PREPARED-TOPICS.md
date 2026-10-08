@@ -72,3 +72,20 @@ item. Finalize the item digest only after questions, requests **and history** ha
 written; finalizing before history made every real topic mutation throw and prevented
 the shared projection checkpoint from advancing (Oct 8, 2026). Static reader growth
 fixtures alone did not exercise this source-to-projection boundary.
+# Preparation failure visibility
+
+Fast cached responses do not prove current prepared content. The existing worker emits
+`presentation_worker_health` numeric observations at most once per ten seconds from its
+ordinary work loop and successful batch yields. It records generation, applied and target
+sequence, completed batch progress, last progress time and consecutive failed passes.
+A lease renewal never counts as progress. A completed pass resets the failure count;
+partial progress does not erase repeated failures. Database observation failure emits
+`available:false` without source text, identifiers or exception contents.
+
+Remote-box's existing minute collector consumes these inherited journal records. It
+distinguishes caught-up/idle, progressing catch-up, three consecutive failed passes,
+pending work without a completed batch for two minutes, and missing/stale observations.
+The latter is unknown, never healthy. Findings join the existing external degradation
+incident and its exclusive investigator/terminal repair handoff. There is no additional
+worker scheduler, incident store or human health thread. See remote-box
+`docs/observability.md` for upload, dashboard and recovery evidence.

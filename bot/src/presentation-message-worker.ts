@@ -1,3 +1,4 @@
+import {PresentationWorkerObservation} from "./presentation-worker-observation";
 import {Database} from 'bun:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
 import {realpathSync} from 'node:fs';
@@ -114,6 +115,8 @@ const withoutHeader=(text:string)=>{
 const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready FROM presentation_message_meta WHERE singleton=1')
   .get() as {generation:number;event_watermark:number;source_head:number;ready:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
+const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
+async function yieldProgress(delay=0){observation.advance();await Bun.sleep(delay);}
 const insert=prepared.query(`INSERT INTO presentation_messages(generation,session_id,root_input_id,topic_id,event_sequence,message_id,input_id,created_at,entry_kind)
   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET
   root_input_id=excluded.root_input_id,topic_id=excluded.topic_id,message_id=excluded.message_id,
@@ -205,7 +208,7 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
         }
       })();
       after=rows.at(-1)!.sequence;
-      await Bun.sleep(0);
+      await yieldProgress();
     }
   }
   return changedRoots;
@@ -224,7 +227,7 @@ async function relocateRoot(generation:number,root:string){
         .run(topic,generation,row.sequence);
     })();
     after=rows.at(-1)!.sequence;
-    await Bun.sleep(0);
+    await yieldProgress();
   }
 }
 let rebuilding=false;
@@ -260,7 +263,7 @@ async function rebuild() {
         for(const row of page.topicEvents){insertTopicEvent.run(generation,row.topicId,row.sequence,row.sessionId,row.eventId);topics.writeEvent(generation,row.sequence);}
         for(const row of page.ownerMessages)writeOwnerVersion(generation,row);
       })();
-      await Bun.sleep(0);
+      await yieldProgress();
     }
     after=eventHead;
     let inputAfter=0;
@@ -271,7 +274,7 @@ async function rebuild() {
       prepared.transaction(()=>{keepLease();for(const row of rows)writeInput(row.id);})();
       prepared.transaction(()=>{keepLease();receipts.rebuildPage(generation,inputAfter,20);})();
       inputAfter=rows.at(-1)!.rowid;
-      await Bun.sleep(5);
+      await yieldProgress(5);
     }
     let sessionAfter=0;
     while(true){
@@ -281,21 +284,21 @@ async function rebuild() {
         cards.rebuildPage(generation,sessionAfter,50);
         for(const row of rows)labRequests.rebuildSession(generation,row.id);})();
       sessionAfter=rows.at(-1)!.id;
-      await Bun.sleep(5);
+      await yieldProgress(5);
     }
     let requestAfter='';
     while(true){
       const page=prepared.transaction(()=>{keepLease();return labRequests.rebuildPage(generation,requestAfter,20);})();
       requestAfter=page.lastId;
       if(!page.hasMore)break;
-      await Bun.sleep(0);
+      await yieldProgress();
     }
     let rootAfter='';
     while(true){
       const page=prepared.transaction(()=>{keepLease();return topics.rebuildRootsPage(generation,rootAfter,100);})();
       rootAfter=page.lastRoot;
       if(!page.hasMore)break;
-      await Bun.sleep(0);
+      await yieldProgress();
     }
     const inboxes=source.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id")
       .all() as {id:number}[];
@@ -305,10 +308,10 @@ async function rebuild() {
         const page=prepared.transaction(()=>{keepLease();return topics.rebuildPage(generation,inbox.id,topicAfter,20);})();
         topicAfter=page.lastId;
         if(!page.hasMore)break;
-        await Bun.sleep(0);
+        await yieldProgress();
       }
       prepared.transaction(()=>{keepLease();topics.updateSorting(topics.context(generation,inbox.id));})();
-      await Bun.sleep(0);
+      await yieldProgress();
     }
     prepared.transaction(()=>{
       keepLease();
@@ -370,7 +373,7 @@ async function catchUp() {
     const page=sourceMessagePage(source,eventAfter,eventHead,250,resolveRoot);
     eventAfter=page.nextSequence;newRows.push(...page.messages);newTopicEvents.push(...page.topicEvents);newOwnerMessages.push(...page.ownerMessages);
     if(!page.hasMore)break;
-    await Bun.sleep(0);
+    await yieldProgress();
   }
   eventAfter=eventHead;
   for(const row of newRows)changedRoots.add(row.root);
@@ -429,9 +432,9 @@ async function catchUp() {
   while(true){
     const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20);})();
     if(!drained.hasMore)break;
-    await Bun.sleep(0);
+    await yieldProgress();
   }
-  while(prepared.transaction(()=>{keepLease();return labRequests.drain(current.generation);})())await Bun.sleep(0);
+  while(prepared.transaction(()=>{keepLease();return labRequests.drain(current.generation);})())await yieldProgress();
   prepared.transaction(()=>{
     keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
@@ -446,6 +449,7 @@ async function catchUp() {
 let checkedDisplay=false,lastTopicCollection=0;
 while(true){
   try {if(claimLease()){
+    observation.emit();
     if(!checkedDisplay){
       const current=meta();
       const missing=current.ready&&prepared.query(`SELECT 1 FROM presentation_messages message
@@ -455,9 +459,9 @@ while(true){
       if(missing)prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
       checkedDisplay=true;
     }
-    await catchUp();
+    await catchUp();observation.succeeded();
   }}
-  catch(error){console.error(JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
+  catch(error){observation.failed();console.error(JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.
   await Bun.sleep(100);
