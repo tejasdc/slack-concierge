@@ -74,6 +74,9 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(replayEnded!==fixture.ids.length)throw new Error(`Only ${replayEnded}/6 hosts replayed`);
   const replayDone=performance.now();
   console.log(JSON.stringify({kind:"stage",name:"replay_done",ms:Math.round(replayDone-adoptionStarted)}));
+  const browserBoundary=process.env.THINKERING_ACCEPTANCE_REPO?
+    (await import('./responsive-browser-boundary')).startBrowserBoundary(owner,session.id,process.env.THINKERING_ACCEPTANCE_REPO):null;
+  if(browserBoundary)await browserBoundary.ready;
   for(const gate of fixture.gates)await writeFile(gate,"continue");
   const baseUrl=`http://127.0.0.1/sessions/v1/sessions/concierge%3A${session.id}`;
   const read=async(kind:"page"|"history",url:string)=>{
@@ -114,6 +117,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(repeated.action_id!==lastAction)throw new Error("Duplicate custody changed action identity");
   const duplicate=await send(lastAction,"Synthetic input 39");
   if(JSON.stringify(accepted)!==JSON.stringify(duplicate))throw new Error("Duplicate client action changed acceptance");
+  const browser=browserBoundary?await browserBoundary.finished:null;
   const hostResults=await Promise.allSettled(pending);
   const hostFailure=hostResults.find(result=>result.status==='rejected');
   if(hostFailure?.status==='rejected')throw hostFailure.reason;
@@ -127,7 +131,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     page:summary(delays.page),history:summary(delays.history),send:summary(delays.send),custody:summary(delays.custody),
     loopLag:summary(lag),peakRssBytes:peak.rss,peakHeapBytes:peak.heap,swapBytes:swap,
     cpuUserMs:cpu.user/1000,cpuSystemMs:cpu.system/1000,duplicateAccepted:true,catalogueSize:fixture.catalogueSize,
-    historySource:'synthetic provider page',browserClosureTested:false}));
+    historySource:'synthetic provider page',browserClosureTested:!!browser,browser}));
   projector.kill('SIGTERM');
   await pause(30); // flush the result; the owner monitor's interval otherwise keeps this fixture alive
   process.exit(0);
@@ -184,7 +188,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
       const timer=setTimeout(()=>{measured.kill("SIGKILL");reject(new Error(`Loaded coordinator timed out: ${output.slice(-2200)} ${errors.slice(-1000)}`));},60_000);
       measured.once("exit",code=>{clearTimeout(timer);resolve(code);});
     });
-    if(exit!==0)throw new Error(`Loaded coordinator exited ${exit}: ${errors.slice(-1500)}`);
+    if(exit!==0)throw new Error(`Loaded coordinator exited ${exit}: ${errors.slice(-6000)}\n${output.slice(-3000)}`);
     const observed=output.split("\n").filter(Boolean).map(line=>{try{return JSON.parse(line);}catch{return null;}});
     const result=observed.find(row=>row?.kind==="result");
     if(!result)throw new Error(`No measured result: ${output.slice(-1500)}`);
@@ -200,7 +204,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
     const report={...result,predecessorPid:JSON.parse(firstOutput.trim()).pid,hostPids:hosts.map(host=>host.pid),
       initialJournalBytes:journals,finalJournalBytes:finalJournals,
       liveBytes:finalJournals.reduce((sum,size,index)=>sum+size-journals[index]!,0),hostRssAtEnd,
-      routeWork,queueAgeMs:null,providerObservationMs:null,browserPaintMs:null,isolatedState:true};
+      routeWork,queueAgeMs:null,providerObservationMs:null,browserPaintMs:result.browser?.paintMs??null,isolatedState:true};
     console.log(JSON.stringify(report));
   } finally {
     // Hosts own separate provider process groups. Let their shutdown handler end those
