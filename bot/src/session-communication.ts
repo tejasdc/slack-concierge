@@ -561,7 +561,10 @@ export class SessionCommunicationCoordinator {
      * until 2026-10-01 ("Request receipts could not be loaded." on his phone).
      */
     find(requestId:string) {
-        if (this.local(requestId)) return this.receipt(this.row(requestId));
+        // A receipt reads the conversation's outcome, result, events and execution, never its target
+        // session's view; building that view for each of the Inbox's 232 open requests on every
+        // two-second poll held the owner for seconds at a time on 2026-10-07.
+        if (this.local(requestId)) return this.receipt(this.row(requestId), false);
         if (this.dependencies.peers?.owns(requestId)) return this.dependencies.peers.inspect(requestId);
         if (this.dependencies.peers?.hasDelivery(requestId)) return this.dependencies.peers.inspectDelivery(requestId);
         return null;
@@ -589,7 +592,7 @@ export class SessionCommunicationCoordinator {
             tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`concierge:${row.source_session_id}`});
         return this.receipt(this.row(row.request_id));
     }
-    private receipt(row: RequestRow) {
+    private receipt(row: RequestRow, withTarget = true) {
         const binding = this.binding(row);
         const execution = binding?.turn_id ? db.query('SELECT status,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
         const steering = binding?.input_kind === 'steering' ? binding.steering_id
@@ -599,7 +602,7 @@ export class SessionCommunicationCoordinator {
         return { request_id: row.request_id, status: legacyPending ? 'uncertain' : row.status,
             ...(legacyPending ? {error:'Legacy delivery requires owner reconciliation; no request or return has been replayed.'} : {}), outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
             target_address:sessionAddress(getSessionById(row.target_session_id)!),
-            target:this.dependencies.owner?.view(getSessionById(row.target_session_id)!),
+            ...(withTarget ? { target: this.dependencies.owner?.view(getSessionById(row.target_session_id)!) } : {}),
             target_session_id: `concierge:${row.target_session_id}`, target_input_id:row.target_input_id,
             operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
             routed_request_id: row.routed_request_id, target_turn_id: row.target_turn_id,

@@ -202,7 +202,8 @@ authorization or a change to the default rapid-iteration policy.
   truth or reopen a neighboring message when an exact target is unavailable.
 - Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
   "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
-  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy.
+  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy;
+  it is stopped when Concierge exits and killed by the kernel if Concierge is killed (`setpriv --pdeathsig`).
   Every passage is credited to the session that wrote it and keyed by author plus exact words: a
   request counts toward the session that received it, a reply and its returned copy (including a
   Mac session's reply that exists here only as a return) are one passage of the replier. Titles of
@@ -649,7 +650,10 @@ authorization or a change to the default rapid-iteration policy.
   Provider accounts surface, it defers while any Codex turn is running, and it is issued
   by the bot so it inherits `concierge-bot.service`'s `LimitNOFILE`. A daemon started from
   an interactive shell inherits that shell's 1024 and exhausts it re-opening observer
-  subscriptions, which is why this restart must not be done over SSH. This does not permit
+  subscriptions, which is why this restart must not be done over SSH. Any `codex` command in an SSH
+  login can be the one that starts a stopped daemon, so Concierge also raises the daemon's soft
+  open-file limit to its hard limit every time it connects (`codex-daemon-file-limit.ts`); one such
+  daemon ran out at 1,024 and failed the 2026-10-07 7:24 PM update restart. This does not permit
   an agent to restart the App Server for any other reason.
   That surface covers every instance, not only the one serving the page: the auth routes
   take a `machine`, and a call for the peer is forwarded over the existing peer channel to

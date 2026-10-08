@@ -34,8 +34,17 @@ const firstSeen = new Map<string, number>();
 const reported = new Set<string>();
 const reportedUnhandled = new Set<string>();
 const loggedUnhandled = new Set<string>();
+/**
+ * Both scans read every settled result, and the communication wake runs many times a second
+ * under load; nothing here can be reported before a ten-minute grace, so once a minute is enough.
+ * On 2026-10-07 the audit was a tenth of the owner's busy time while Tejas's replies waited.
+ */
+const AUDIT_EVERY_MS = 60 * 1000;
+let auditedAt = -Infinity;
 
 export function auditUndeliveredReturns(now = Date.now()) {
+    if (now - auditedAt < AUDIT_EVERY_MS) return;
+    auditedAt = now;
     const rows = [
         ...(db.query(UNDELIVERED('session_communication_events', 'session_communication_requests', 'AND r.source_input_id IS NOT NULL')).all() as any[]).map(row => ({ ...row, peer: null })),
         ...(db.query(UNDELIVERED('session_peer_events', 'session_peer_requests', '')).all() as any[]).map(row => ({ ...row, peer: true })),
@@ -60,6 +69,12 @@ export function auditUndeliveredReturns(now = Date.now()) {
         if (seenInputs.has(row.accepted_input_id)) { reportedUnhandled.add(row.event_id); continue; }
         seenInputs.add(row.accepted_input_id);
         if (reportedUnhandled.has(row.event_id)) continue;
+        // Already reported in an earlier process, by hand before reminders existed or by its recorded
+        // question since: every restart used to log the whole history again as fresh errors.
+        if (row.created_at_ms < REMINDERS_SINCE_MS
+            || db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`return_unhandled:${row.event_id}`)) {
+            reportedUnhandled.add(row.event_id); continue;
+        }
         // Reported, never replayed: the result stays in the ledger for its requester's
         // own next run, because a failed handling is not permission to send it again.
         if (!loggedUnhandled.has(row.event_id)) log('error', 'session_return_unhandled', { event_id: row.event_id, request_id: row.request_id, status: row.status,

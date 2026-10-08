@@ -59,7 +59,9 @@ class EmbeddingEngine {
   /** An engine left on the port by an earlier Concierge process is used rather than fought: a second one could not bind and would exit in a loop. */
   private async spawnOrAdopt():Promise<void> {
     if(await this.healthy()){log('info','meaning_engine_adopted',{port:PORT});return;}
-    const child=spawn('nice',['-n','10',SERVER,'-m',MODEL,'--embedding','--host','127.0.0.1','--port',String(PORT),'-c','8192','-b','2048','-ub','2048','-np','4','-t','4','--device','none','--log-disable'],{stdio:'ignore'});
+    // The engine dies with Concierge: stopped on exit below, and killed by the kernel if Concierge
+    // is killed outright, so an update restart never finds a leftover engine (2026-10-07).
+    const child=spawn('nice',['-n','10','setpriv','--pdeathsig','KILL',SERVER,'-m',MODEL,'--embedding','--host','127.0.0.1','--port',String(PORT),'-c','8192','-b','2048','-ub','2048','-np','4','-t','4','--device','none','--log-disable'],{stdio:'ignore'});
     this.child=child;
     child.on('exit',code=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_exited',{code});}});
     child.on('error',error=>{if(this.child===child){this.child=null;this.ready=null;log('warn','meaning_engine_failed',{error:error.message});}});
@@ -294,6 +296,8 @@ export class MeaningIndex {
 let shared:MeaningIndex|null=null;
 export function startMeaningIndex(stateDir:string,titleOf:(sessionId:number)=>string|null){
   if(shared)return shared;
-  shared=new MeaningIndex(`${stateDir}/meaning-index.db`,titleOf);shared.start();return shared;
+  shared=new MeaningIndex(`${stateDir}/meaning-index.db`,titleOf);shared.start();
+  process.once('exit',()=>{try{shared?.stop();}catch{}});
+  return shared;
 }
 export function meaningIndex(){return shared;}

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { raiseCodexDaemonFileLimit } from "./codex-daemon-file-limit";
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -180,6 +181,7 @@ export class CodexAppServerClient {
 
   private createConnection(): ActiveConnection {
     const generation = ++this.generation;
+    void raiseCodexDaemonFileLimit();
     const bridgePath = this.options.bridgePath
       || new URL("./codex-app-server-bridge.mjs", import.meta.url).pathname;
     const child = spawn(this.nodeExecutable, [bridgePath, this.socketPath], {
