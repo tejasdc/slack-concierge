@@ -3743,6 +3743,7 @@ async function reconcilePriorInstanceTurns() {
   const recoveryOutcome = await reconcileRecoverableTurns({
     client: app.client,
     instanceId,
+    activeTurnIds: activeTurnDispatch.activeTurns,
     isOwnerAlive: isProcessIdentityAlive,
     services: {
       deliverNativeResult:result=>sessionExecutionHost.deliverResult(result),
@@ -3946,7 +3947,7 @@ setInterval(() => { if (!draining) void refreshClaudeAccount(); }, USAGE_REFRESH
 setInterval(() => {
   if (draining) return;
   try {
-    const swept = sweepGhostRunningTurns(instanceId);
+    const swept = sweepGhostRunningTurns(instanceId, activeTurnDispatch.activeTurns);
     if (swept > 0) {
       log("warn", "ghost_running_turns_swept", { count: swept, scope: "watchdog", max_age_ms: GHOST_TURN_INTERRUPT_AGE_MS });
       sessionTurnQueue?.wake();

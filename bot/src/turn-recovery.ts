@@ -112,9 +112,12 @@ export const GHOST_TURN_INTERRUPT_AGE_MS = 120_000;
  * Returns the number of turns interrupted. Each interrupt uses the shared
  * `interruptOrphanedTurn` transaction so triggers fire and the sessions move back to idle.
  */
-export function sweepGhostRunningTurns(instanceId: string, maxAgeMs = GHOST_TURN_INTERRUPT_AGE_MS): number {
+export function sweepGhostRunningTurns(instanceId: string, activeTurnIds: readonly number[], maxAgeMs = GHOST_TURN_INTERRUPT_AGE_MS): number {
   let interrupted = 0;
   for (const turn of listGhostRunningTurnsForOwner(instanceId, maxAgeMs)) {
+    // Forks, ChatGPT and direct children have no execution-host row. The local runner is
+    // authoritative while it owns the turn, including preparation before host admission.
+    if (activeTurnIds.includes(turn.id)) continue;
     const reason = `Coordinator held this turn running without producing an execution host record for ${Math.round(maxAgeMs / 1000)} s; interrupted so the session's queued work can dispatch. The input is preserved in history.`;
     if (interruptOrphanedTurn(turn.id, instanceId, reason)) {
       interrupted += 1;
@@ -128,10 +131,11 @@ export async function reconcileRecoverableTurns(input: {
   nativeOnly?: boolean;
   client: any;
   instanceId: string;
+  activeTurnIds: readonly number[];
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   services: TurnRecoveryServices;
 }): Promise<"done" | "stopped"> {
-  const sweptGhosts = sweepGhostRunningTurns(input.instanceId);
+  const sweptGhosts = sweepGhostRunningTurns(input.instanceId, input.activeTurnIds);
   if (sweptGhosts > 0) log("warn", "ghost_running_turns_swept", { count: sweptGhosts, scope: "startup" });
   for (const turn of listRecoverableTurns()) {
     if (input.isOwnerAlive({

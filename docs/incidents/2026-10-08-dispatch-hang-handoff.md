@@ -1,6 +1,6 @@
 # 2026-10-08 — Dispatch is silently broken. Handoff report.
 
-## Receiving investigation: confirmed cause (19:20 UTC)
+## Receiving investigation: confirmed cause
 
 The claim did not reach dispatch because it returned null after committing its update.
 The production `presentation_change_turns_update` trigger inserts two journal records.
@@ -19,6 +19,28 @@ as the original handoff, not current conclusions.
 
 References: https://www.sqlite.org/c3ref/changes.html and
 https://bun.com/reference/bun/sqlite/Changes.
+
+## Recovery evidence
+
+The normal deployment owner installed `b0a2e31` successfully at approximately 19:19 UTC.
+Marked outside-agent requests exercised two existing verification sessions: request
+`6569ce49-6828-49dd-b00c-80d6022a11b1` to Claude (turn 5644) and
+`91d939ce-32e7-4612-935b-b6c3a5cfb2a5` to Codex (turn 5645). Both were admitted,
+acknowledged by the provider, completed, and returned the requested explicit final replies
+through the owner. The Codex daemon was not restarted. All previously silent trace points
+fired; those temporary logs can now be removed in favor of existing lifecycle events.
+
+The incident watchdog also had a reachable false-interruption path: native fork, ChatGPT,
+direct-child and pre-host preparation work may be active without an execution-host record.
+Its age uses original enqueue time. The sweep now excludes the runtime's active-turn registry;
+the false claims from this incident never entered that registry and remain detectable.
+
+Post-repair queue inspection found only three future scheduled turns and four old archived
+turns. Of today's 34 interrupted turns, 33 have no admission intent, provider start or
+execution record; one has provider admission and must not be replayed. The Inbox owner was
+given a source-preserving recovery request (`89536875-70b9-46d0-b62b-d896e383a4ce`) for its
+15 retained interrupted captures, to distinguish real requests from diagnostic probes and
+route only unhandled user work. This recovery is in progress, not yet a completion claim.
 
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not

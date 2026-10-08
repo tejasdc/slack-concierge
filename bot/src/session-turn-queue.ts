@@ -45,13 +45,10 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
           }
 
           this.activeTurnIds.add(claim.turn_id);
-          console.log(JSON.stringify({ts:new Date().toISOString(),level:"warn",event:"queue_dispatch_trace",step:"before_run",turn_id:(claim as any).turn_id,turn_kind:(claim as any).turn_kind,run_type:typeof this.options.run}));
           let execution: Promise<unknown>;
           try {
             execution = this.options.run(claim);
-            console.log(JSON.stringify({ts:new Date().toISOString(),level:"warn",event:"queue_dispatch_trace",step:"after_run_returned",turn_id:(claim as any).turn_id,is_promise:execution instanceof Promise,execution_type:typeof execution}));
           } catch (error) {
-            console.log(JSON.stringify({ts:new Date().toISOString(),level:"error",event:"queue_dispatch_trace",step:"run_threw",turn_id:(claim as any).turn_id,error:String(error)}));
             execution = Promise.reject(error);
           }
           void execution
