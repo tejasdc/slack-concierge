@@ -15,7 +15,7 @@ Requests: Inbox `990224b8` (replacing `d7ee9b03`), then `bd1137da` (this revisio
 
 What changed from §5 below:
 - **Removed:** the `--fit` requirement and its refusal (§5.4), and compaction count as any trigger or
-  router-visible signal. Compactions stay recorded as a raw fact only.
+  router-visible signal. The count, and the startup pass that read conversation files to fill it, were then removed entirely, since nothing used them.
 - **Kept:** recorded context and topics (§5.1), the router's `workload` view with `forTopic` (§5.2,
   now `holds` plus the other open topics, no `needsFit`), the stored topic thread on requests, and
   `--consult` (§5.5).

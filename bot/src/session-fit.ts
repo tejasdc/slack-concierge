@@ -1,8 +1,6 @@
-import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { db, type SessionRow } from './state';
 import { getAcceptedSessionInput, sessionInputProvenance, sessionMetadata } from './session-inputs';
-import { claudeConfigDir, locateClaudeTranscript } from './claude-transcript-watch';
 import { log } from './log';
 import { takesManySubjects } from './session-roles';
 
@@ -26,36 +24,36 @@ db.run(`CREATE TABLE IF NOT EXISTS session_workload (
   session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   context_tokens INTEGER,
   context_window INTEGER,
-  compactions INTEGER NOT NULL DEFAULT 0,
-  compactions_before INTEGER,
-  last_compaction_at_ms INTEGER,
   measured_at_ms INTEGER,
   since_ms INTEGER NOT NULL
 )`);
+// Compaction counts were recorded for a fit signal Tejas rejected (2026-10-07); nothing reads them.
+for (const column of ['compactions', 'compactions_before', 'last_compaction_at_ms'])
+  if (db.query("SELECT 1 FROM pragma_table_info('session_workload') WHERE name=?").get(column))
+    db.run(`ALTER TABLE session_workload DROP COLUMN ${column}`);
 // The thread a request's topic is read through: its own thread, else the Inbox thread of the human
 // message its work started from. Stored at send time so the rule and "holds" use one derivation;
 // joined to topics on read because topics are re-placed and merged. '' means none.
 if (!(db.query("SELECT 1 FROM pragma_table_info('session_communication_requests') WHERE name='topic_root_input_id'").get()))
   db.run('ALTER TABLE session_communication_requests ADD COLUMN topic_root_input_id TEXT');
 
-type WorkloadRow = { session_id: number; context_tokens: number | null; context_window: number | null; compactions: number;
-  compactions_before: number | null; last_compaction_at_ms: number | null; measured_at_ms: number | null; since_ms: number };
+type WorkloadRow = { session_id: number; context_tokens: number | null; context_window: number | null; measured_at_ms: number | null; since_ms: number };
 
 
-const upsert = db.query(`INSERT INTO session_workload(session_id,context_tokens,context_window,compactions,last_compaction_at_ms,measured_at_ms,since_ms)
-  VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+const upsert = db.query(`INSERT INTO session_workload(session_id,context_tokens,context_window,measured_at_ms,since_ms)
+  VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
   context_tokens=coalesce(excluded.context_tokens,context_tokens), context_window=coalesce(excluded.context_window,context_window),
-  compactions=compactions+excluded.compactions, last_compaction_at_ms=coalesce(excluded.last_compaction_at_ms,last_compaction_at_ms),
   measured_at_ms=excluded.measured_at_ms`);
 
-function write(sessionIds: number[], measured: { contextTokens?: number | null; contextWindow?: number | null; compactions?: number; lastCompactionAtMs?: number | null }) {
+type Measured = { contextTokens?: number | null; contextWindow?: number | null };
+
+function write(sessionIds: number[], measured: Measured) {
   const now = Date.now();
-  for (const id of sessionIds)
-    upsert.run(id, measured.contextTokens ?? null, measured.contextWindow ?? null, measured.compactions ?? 0, measured.lastCompactionAtMs ?? null, now, now);
+  for (const id of sessionIds) upsert.run(id, measured.contextTokens ?? null, measured.contextWindow ?? null, now, now);
 }
 
-/** Claude, as its events pass through the owner: a compaction when it happens, context at each result. */
-export function recordClaudeWorkload(sessionUuid: string | null | undefined, measured: { contextTokens?: number | null; contextWindow?: number | null; compactions?: number; lastCompactionAtMs?: number | null }) {
+/** Claude, as its results pass through the owner: the conversation's latest context. */
+export function recordClaudeWorkload(sessionUuid: string | null | undefined, measured: Measured) {
   if (!sessionUuid) return;
   try {
     const ids = (db.query(`SELECT id FROM sessions WHERE provider_id='claude-code' AND agent_session_uuid=?`).all(sessionUuid) as { id: number }[]).map(row => row.id);
@@ -63,71 +61,19 @@ export function recordClaudeWorkload(sessionUuid: string | null | undefined, mea
   } catch (error) { log('warn', 'session_workload_record_failed', { provider: 'claude-code', error: error instanceof Error ? error.message : String(error) }); }
 }
 
-/** Codex, from the observer: compactions as they happen, context when Codex reports token usage. */
-export function recordCodexWorkload(sessionId: number, measured: { contextTokens?: number | null; contextWindow?: number | null; compactions?: number }) {
-  try { write([sessionId], { ...measured, lastCompactionAtMs: measured.compactions ? Date.now() : null }); }
+/** Codex, from the observer: context when Codex reports token usage. */
+export function recordCodexWorkload(sessionId: number, measured: Measured) {
+  try { write([sessionId], measured); }
   catch (error) { log('warn', 'session_workload_record_failed', { provider: 'codex', error: error instanceof Error ? error.message : String(error) }); }
-}
-
-// --- Backfill: sessions that worked before recording existed, counted once from their own record. ---
-
-const CHUNK = 4 * 1024 * 1024;
-const TAIL = 2 * 1024 * 1024;
-const BOUNDARY = Buffer.from('"subtype":"compact_boundary"');
-
-/** Byte search for compaction rows, JSON-parsing only those rows; context from the transcript's tail. */
-async function claudeTranscriptLoad(path: string, beforeMs: number, stopped: () => boolean) {
-  const file = await open(path, 'r');
-  try {
-    const size = (await file.stat()).size;
-    let compactions = 0, lastCompactionAtMs: number | null = null, carry = Buffer.alloc(0);
-    const buffer = Buffer.alloc(CHUNK);
-    for (let offset = 0; offset < size; ) {
-      if (stopped()) return null;
-      const { bytesRead } = await file.read(buffer, 0, Math.min(CHUNK, size - offset), offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-      const data = Buffer.concat([carry, buffer.subarray(0, bytesRead)]);
-      let at = data.indexOf(BOUNDARY), consumed = 0;
-      while (at !== -1) {
-        const start = data.lastIndexOf(10, at) + 1, end = data.indexOf(10, at);
-        if (end === -1) break;
-        try { const row = JSON.parse(data.toString('utf8', start, end)); const atMs = Date.parse(row.timestamp); if (row.type === 'system' && atMs < beforeMs) { compactions++; lastCompactionAtMs = atMs; } } catch {}
-        consumed = end + 1;
-        at = data.indexOf(BOUNDARY, consumed);
-      }
-      const lastLine = data.lastIndexOf(10);
-      carry = Buffer.from(data.subarray(Math.max(consumed, lastLine + 1)));
-      await new Promise(resolve => setImmediate(resolve));
-    }
-    const tailStart = Math.max(0, size - TAIL), tail = Buffer.alloc(size - tailStart);
-    await file.read(tail, 0, tail.length, tailStart);
-    let contextTokens: number | null = null;
-    const lines = tail.toString('utf8').split('\n');
-    for (let index = lines.length - 1; index >= 0 && contextTokens === null; index--) {
-      const line = lines[index]!;
-      if (!line.includes('"usage"') || !line.includes('"assistant"')) continue;
-      try {
-        const row = JSON.parse(line), usage = row.type === 'assistant' && !row.isSidechain ? row.message?.usage : null;
-        const tokens = usage ? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : 0;
-        if (tokens) contextTokens = tokens;
-      } catch {}
-      if (line.includes('"compact_boundary"')) break;
-    }
-    return { compactions, lastCompactionAtMs, contextTokens };
-  } finally { await file.close(); }
 }
 
 const BACKFILL_DAYS = 14;
 
 /**
- * Once per start: sessions active in the last two weeks whose earlier history is not yet counted get
- * it from their own record — Claude's transcript (read one at a time, yielding between chunks) or the
- * Codex compaction events the owner holds. Only compactions before the row's live recording began are
- * counted, into their own field, so a turn that finishes first never hides the history. Requests sent
- * before topics were stored on them get their topic thread filled the same way.
+ * Once per start: requests sent before topics were stored on them get their topic thread filled from
+ * the ledger alone, so "which topics a session handles" covers them too.
  */
-export async function backfillSessionWorkload(stopped: () => boolean) {
+export async function backfillRequestTopics(stopped: () => boolean) {
   const started = Date.now();
   let requests = 0;
   for (const row of db.query(`SELECT request_id, thread_root_input_id AS root, source_input_id AS source FROM session_communication_requests
@@ -136,33 +82,7 @@ export async function backfillSessionWorkload(stopped: () => boolean) {
     db.query('UPDATE session_communication_requests SET topic_root_input_id=? WHERE request_id=?').run(topicRootFor(row.root, row.source) ?? '', row.request_id);
     if (++requests % 100 === 0) await new Promise(resolve => setImmediate(resolve));
   }
-  const since = new Date(started - BACKFILL_DAYS * 86_400_000).toISOString().replace('T', ' ').slice(0, 19);
-  const sessions = (db.query(`SELECT s.* FROM sessions s LEFT JOIN session_workload w ON w.session_id=s.id
-    WHERE w.compactions_before IS NULL AND s.agent_session_uuid IS NOT NULL AND s.provider_id IN ('claude-code','codex')
-      AND coalesce(s.last_turn_at,s.created_at) >= ? ORDER BY s.id DESC`).all(since) as SessionRow[]).filter(session => !takesManySubjects(session));
-  let counted = 0;
-  for (const session of sessions) {
-    if (stopped()) return;
-    db.query('INSERT OR IGNORE INTO session_workload(session_id,measured_at_ms,since_ms) VALUES(?,?,?)').run(session.id, Date.now(), Date.now());
-    const beforeMs = workloadRow(session.id)!.since_ms;
-    let load: { compactions: number; lastCompactionAtMs: number | null; contextTokens: number | null } | null = null;
-    try {
-      if (session.provider_id === 'claude-code') {
-        const path = await locateClaudeTranscript(claudeConfigDir(), session.agent_session_uuid!);
-        load = path ? await claudeTranscriptLoad(path, beforeMs, stopped) : { compactions: 0, lastCompactionAtMs: null, contextTokens: null };
-      } else {
-        const turns = db.query(`SELECT coalesce(json_extract(payload_json,'$.providerTurnId'),event_id) AS turn, max(created_at) AS at FROM session_owner_events
-          WHERE session_id=? AND kind='provider-activity' AND json_extract(payload_json,'$.activity')='compaction' AND created_at < ? GROUP BY 1`)
-          .all(session.id, new Date(beforeMs).toISOString().replace('T', ' ').slice(0, 19)) as { turn: string; at: string }[];
-        load = { compactions: turns.length, lastCompactionAtMs: turns.length ? Math.max(...turns.map(row => Date.parse(`${row.at.replace(' ', 'T')}Z`) || 0)) : null, contextTokens: null };
-      }
-    } catch (error) { log('warn', 'session_workload_backfill_failed', { sessionId: session.id, error: error instanceof Error ? error.message : String(error) }); }
-    if (!load) continue;
-    db.query(`UPDATE session_workload SET compactions_before=?, last_compaction_at_ms=coalesce(last_compaction_at_ms,?),
-      context_tokens=coalesce(context_tokens,?) WHERE session_id=?`).run(load.compactions, load.lastCompactionAtMs, load.contextTokens, session.id);
-    counted++;
-  }
-  log('info', 'session_workload_backfilled', { sessions: counted, requests, durationMs: Date.now() - started });
+  if (requests) log('info', 'request_topics_backfilled', { requests, durationMs: Date.now() - started });
 }
 
 // --- Topics a session holds, and what a request is about. ---
@@ -227,11 +147,7 @@ function workloadRow(sessionId: number) {
   return db.query('SELECT * FROM session_workload WHERE session_id=?').get(sessionId) as WorkloadRow | null;
 }
 
-/**
- * The facts beside a candidate in search and context; computed per returned session, never in view().
- * Compactions are recorded but not shown: one job can compact several times, so a count says nothing
- * about fit (Tejas, 2026-10-07).
- */
+/** The facts beside a candidate in search and context; computed per returned session, never in view(). */
 export function sessionWorkload(session: SessionRow, execution: unknown, topic: string | null) {
   const row = workloadRow(session.id), held = heldTopics(session.id);
   execution ??= db.query("SELECT 1 FROM turns WHERE session_id=? AND status='running' LIMIT 1").get(session.id) ? 'running' : 'idle';

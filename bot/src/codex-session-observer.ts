@@ -25,7 +25,6 @@ function wait(milliseconds: number) {
 
 export class CodexSessionObserver {
   private stopped = false;
-  private readonly countedCompactions = new Set<string>();
   private connectionLoop: Promise<void> | null = null;
   private notificationLoop: Promise<void> = Promise.resolve();
   private readonly stoppedSignal: Promise<void>;
@@ -221,12 +220,6 @@ export class CodexSessionObserver {
       if (event.method === "thread/compacted"
         || event.method === "item/started" && event.params.item?.type === "contextCompaction") {
         const binding = getUniqueCodexSessionBinding(threadId)!;
-        // Both notifications can describe one compaction; count it once per turn.
-        const compactionKey = `${threadId}:${event.params.turnId ?? ""}`;
-        if (!event.params.turnId || !this.countedCompactions.has(compactionKey)) {
-          if (event.params.turnId) this.countedCompactions.add(compactionKey);
-          recordCodexWorkload(binding.session_id, { compactions: 1 });
-        }
         recordSessionEvent({ eventId: `provider-compaction:${randomUUID()}`, sessionId: binding.session_id,
           kind: "provider-activity", payload: { providerThreadUuid: threadId,
             providerTurnId: event.params.turnId ?? null, activity: "compaction", source: event.method } });

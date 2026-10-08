@@ -11,10 +11,9 @@ receives it judges whether it fits and may hand it back [decision: router-decide
 | Fact | Written by | When |
 | --- | --- | --- |
 | Context in use and window | `claude-code.ts` (main-thread `assistant` usage; `result.modelUsage[*].contextWindow`); `codex-session-observer.ts` (`thread/tokenUsage/updated`) | each result / each Codex report |
-| Compactions (raw fact; not shown to the router and not a fit signal) | `claude-code.ts` on `compact_boundary`; the Codex observer once per turn; `backfillSessionWorkload` for earlier history (`compactions_before`) | as they happen; backfill once a minute after start |
 | A request's topic thread | `ask()` stores `topic_root_input_id`: its Inbox thread, else the thread of the human message its work started from | at send |
 
-Table `session_workload`, one row per session. Nothing is computed from a transcript on a read.
+Table `session_workload`, one row per session. Nothing is computed from a transcript, and nothing counts compactions: Tejas rejected them as a signal [decision: receiving-session-judges-fit], and the count and its startup file scan were removed. `backfillRequestTopics` fills older requests' topic thread from the ledger once a minute after start.
 
 ## What the router sees
 

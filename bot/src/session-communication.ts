@@ -19,7 +19,7 @@ import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
-import { backfillSessionWorkload, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
+import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -1545,8 +1545,8 @@ export class SessionCommunicationCoordinator {
     }
     start() { if (!this.stopped)
         return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start();
-        // Routing facts for sessions that worked before they were recorded; off every read path.
-        const backfill = setTimeout(() => void backfillSessionWorkload(() => this.stopped).catch(error => log('warn', 'session_workload_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000); backfill.unref?.(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+        // Topics for requests sent before topics were stored on them; off every read path.
+        const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000); backfill.unref?.(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
     async idle() { do {
         await Promise.resolve();
         await Promise.all([...this.tasks.values()]);
