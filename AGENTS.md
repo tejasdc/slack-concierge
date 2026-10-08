@@ -106,6 +106,10 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Claude history pages use an off-owner SDK import and an indexed derived snapshot, then merge
+  owner-retained live messages by exact identity. Cold history states that it is indexing;
+  raw transcript changes without corresponding retained events trigger a background rebuild.
+  See [provider history index](docs/architecture/PROVIDER-HISTORY-INDEX.md).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
   private `tejasdc` repository before retaining a peer setup order; `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never

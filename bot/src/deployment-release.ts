@@ -56,6 +56,7 @@ const APPLICATION_FILES = [
   "bot/src/index.js",
   "bot/src/presentation-message-worker.js",
   "bot/src/presentation-search-read.js",
+  "bot/src/provider-history-worker.js",
   "bot/src/codex-app-server-bridge.mjs",
   "bot/scripts/rename-exchange.py",
 ];
@@ -281,6 +282,7 @@ export class TrustedRootReleaseManager {
       await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src/index.js"));
       await this.services.build(join(sourceRoot, "bot/src/presentation-message-worker.ts"), join(outputRoot, "bot/src/presentation-message-worker.js"));
       await this.services.build(join(sourceRoot, "bot/src/presentation-search-read.ts"), join(outputRoot, "bot/src/presentation-search-read.js"));
+      await this.services.build(join(sourceRoot, "bot/src/provider-history-worker.ts"), join(outputRoot, "bot/src/provider-history-worker.js"));
       await this.services.build(
         join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
         join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
