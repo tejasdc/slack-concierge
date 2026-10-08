@@ -15,6 +15,35 @@ require `Authorization: Bearer <token>` with the bytes of the shared token file.
 Unix socket keeps working without a token. Holding the token is equivalent to root
 access to the socket; Tailscale limits who can reach the port.
 
+## Bounded offline catalogue
+
+Peer discovery caches prepared session cards, not full conversation views. The existing
+peer wake checks for changes at most once a minute while active; it adds no idle timer.
+Bootstrap reads the Everyday and Lab windows through the presentation API, at most one
+40-card page per space per invocation. Continuations use the existing wake mechanism.
+After the windows finish, changes since their original watermark reconcile concurrent
+updates before the cache is considered complete. Ordinary refreshes then read only deltas.
+
+Each page and its checkpoint commit in one ledger transaction. Restart resumes the saved
+page. A generation reset keeps old cached sessions addressable while the new snapshot and
+its changes arrive, then retires stale entries in 40-row batches. Cache rows and deletion
+markers retain source revisions so a late page cannot overwrite newer state or resurrect a
+deleted session. Unknown coverage and failed requests remain incomplete in peer inventory;
+sleeping peers keep the existing offline behavior rather than raising a new notice.
+Shutdown cancels catalogue requests and fences their results before committing anything.
+
+Cards preserve exact session address, provider thread identity, workflow identity and a
+separate registered-project basename. The display path can be shortened without losing
+the project used for resurrection. An incomplete basename is explicitly refused rather
+than treated as an executable destination. Existing full cached rows remain readable during
+the migration; the old whole-catalogue endpoint is never a refresh fallback.
+
+The pure protocol fixture is `bot/tests/peer-catalogue-sync.test.ts`: it exercises real
+prepared-window and delta readers against isolated databases, including restart, offline
+recovery, generation resets, moves, deletion, late/aborted responses and oversized pages.
+This is fixture evidence; two-machine acceptance still requires installing the compatible
+presentation protocol on both peers and observing a refresh, sleep and wake on the real pair.
+
 ## Install or update the Mac instance
 
 ```sh

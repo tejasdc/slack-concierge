@@ -106,6 +106,8 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+  Peer discovery uses durable prepared-card pages and deltas, never a full-view refresh;
+  see [bounded offline catalogue](docs/runbooks/PEER-INSTANCES.md#bounded-offline-catalogue).
 - Claude history pages use an off-owner SDK import and an indexed derived snapshot, then merge
   owner-retained live messages by exact identity. Cold history states that it is indexing;
   raw transcript changes without corresponding retained events trigger a background rebuild.

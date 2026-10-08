@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import {initializePeerCatalogueSchema} from './peer-catalogue-sync';
 import {initializePresentationChanges} from './presentation-changes';
 
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -429,6 +430,7 @@ export function initializeSessionOwnerSchema(db: Database) {
       // Same supersession as session_communication_events: a peer recipient's late explicit final
       // replaces an inferred one and returns in its own right.
       add('session_peer_events','superseded_by_event_id','superseded_by_event_id TEXT');
+      initializePeerCatalogueSchema(db);
       // The worker's machine reminds and detects a stall (it owns the worker session); the origin
       // records the stalled notice it returned to the requester.
       add('session_peer_deliveries','reminded_at_ms','reminded_at_ms INTEGER');

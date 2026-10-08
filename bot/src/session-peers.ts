@@ -2,6 +2,7 @@ import {createHash,timingSafeEqual,randomUUID} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
+import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
 import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
@@ -56,11 +57,12 @@ export class PeerError extends Error {
 class PeerReplyContractError extends Error {}
 export class PeerClient {
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
-  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000,trackAvailability=true):Promise<T> {
+  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000,trackAvailability=true,signal?:AbortSignal):Promise<T> {
     let response:Response;
     try {
-      response=await fetch(this.url+path,{method,signal:AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+      response=await fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     } catch(error) {
+      if(signal?.aborted)throw error;
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
       // flickered awake and asleep in his bag and produced one notice and one "running again"
       // per flicker (2026-09-27). Work waiting on it reports to its requester instead.
@@ -123,7 +125,7 @@ export class SessionPeers {
   private readonly unreachable=new Map<string,number>();
   constructor(private readonly dependencies:Dependencies){this.now=dependencies.now??Date.now;}
   get self(){return this.dependencies.self;}
-  inventory(){return {self:this.self,peers:[...this.dependencies.clients.values()].map(client=>({name:client.name,url:client.url,lastUnreachableAt:this.unreachable.get(client.name)??null}))};}
+  inventory(){return {self:this.self,peers:[...this.dependencies.clients.values()].map(client=>({name:client.name,url:client.url,lastUnreachableAt:this.unreachable.get(client.name)??null,catalogue:this.catalogueSync.status(client.name)}))};}
   async inventoryWithReachability() {
     return {self:this.self,peers:await Promise.all([...this.dependencies.clients.values()].map(async client=>{
       try {const status=await client.request('GET','/sessions/v1/status',undefined,5_000);return {name:client.name,url:client.url,reachable:true,status};}
@@ -142,6 +144,8 @@ export class SessionPeers {
   offline(peer:string){const at=this.unreachable.get(peer);return at!==undefined&&this.now()-at<OFFLINE_MS;}
   availability(peer:string,state:'live'|'archived-only'=this.offline(peer)?'archived-only':'live'){return this.offline(peer)?{state:'archived-only' as const,reachable:false,note:offlineNote(peer)}:{state,reachable:true,note:null};}
   private readonly catalogueRefreshedAt=new Map<string,number>();
+  private readonly catalogueSync=new PeerCatalogueSync(db,()=>this.now());
+  private readonly catalogueTasks=new Map<string,{promise:Promise<void>;controller:AbortController}>();
   /** Retain what a peer said about its sessions, so they stay addressable while it is offline. */
   remember(peer:string,views:unknown[]) {
     const now=this.now();
@@ -150,6 +154,7 @@ export class SessionPeers {
         const item=view as any;
         if(!item||typeof item!=='object'||typeof item.id!=='string'||typeof item.address!=='string')continue;
         const remote=item.id.startsWith(`${peer}:`)?`concierge:${item.id.slice(peer.length+1)}`:item.id;
+        if(db.query('SELECT 1 FROM session_peer_catalogue_tombstones WHERE peer=? AND remote_session_id=?').get(peer,remote))continue;
         const address=item.address.startsWith(`${peer}/`)?item.address.slice(peer.length+1):item.address;
         if(!/^concierge:[1-9][0-9]*$/.test(remote)||!/^session:/.test(address))continue;
         db.query(`INSERT INTO session_peer_catalogue(peer,remote_session_id,address,runtime_thread_id,view_json,updated_at_ms) VALUES(?,?,?,?,?,?)
@@ -159,13 +164,25 @@ export class SessionPeers {
     })();
   }
   async refreshCatalogue(peer:string) {
+    const active=this.catalogueTasks.get(peer);if(active)return active.promise;
     const client=this.dependencies.clients.get(peer);
-    if(!client||this.now()-(this.catalogueRefreshedAt.get(peer)??0)<OFFLINE_MS)return;
-    try {
-      const value=await client.request<{sessions:unknown[]}>('GET','/sessions/v1/sessions',undefined,10_000);
-      this.remember(peer,(this.qualify(peer,value) as any).sessions??[]);
-      this.catalogueRefreshedAt.set(peer,this.now());this.unreachable.delete(peer);
-    } catch(error) {this.note(peer,error);}
+    const lastAttempt=this.catalogueRefreshedAt.get(peer);
+    if(!client||lastAttempt!==undefined&&this.now()-lastAttempt<OFFLINE_MS)return;
+    this.catalogueRefreshedAt.set(peer,this.now());
+    const controller=new AbortController();let more=false;
+    const promise=(async()=>{
+      try{
+        const result=await this.catalogueSync.refresh(peer,(path,signal)=>client.request('GET',path,undefined,10_000,true,signal),controller.signal);
+        if(!controller.signal.aborted){more=result.more;this.unreachable.delete(peer);}
+      }catch(error){
+        if(!controller.signal.aborted){this.note(peer,error);log('warn','session_peer_catalogue_refresh_failed',{peer,...errorFields(error)});}
+      }finally{
+        this.catalogueTasks.delete(peer);
+        if(more&&!controller.signal.aborted){this.catalogueRefreshedAt.delete(peer);this.wake();}
+      }
+    })();
+    this.catalogueTasks.set(peer,{promise,controller});
+    return promise;
   }
   private cachedView(peer:string,remote:string):any|null {
     const row=db.query('SELECT * FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(peer,remote) as CatalogueRow|null;
@@ -348,7 +365,8 @@ export class SessionPeers {
     if(existing)return {sessionId:existing.id,reused:true};
     const archived=this.archivedTranscript(peer,threadId);
     if(!archived)throw new SessionOwnerError(`${peer}'s transcript for this session has not reached this instance's archive yet (it is pushed every few minutes); try again shortly or wait for ${peer}.`,409,'ARCHIVE_NOT_YET_SYNCED');
-    const projectName=typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
+    if(view.projectNameTruncated||view.projectTruncated&&typeof view.projectName!=='string')throw new SessionOwnerError('The exact project identity has not reached this instance yet. Refresh this peer before resurrecting the session.',409,'PEER_PROJECT_IDENTITY_INCOMPLETE');
+    const projectName=typeof view.projectName==='string'?view.projectName:typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
     const project=projectName?sessionProject(options.defaultCwd,projectName):null;
     if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
     // Place the transcript where the provider's own resume finds it for this cwd.
@@ -873,9 +891,8 @@ export class SessionPeers {
       } else {
         if(typeof input.address!=='string')throw new SessionOwnerError('Choose an exact session address or a provider for a new session.');
         const target=resolveSessionAddress(input.address);
-        const view=owner.view(target);
         if(sessionMetadata(target).interactionPolicy==='consultation-only'&&effect==='work')throw new SessionOwnerError('This session accepts consultation only — information, no actions.',409);
-        if(!view.capabilities.send)throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
+        if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
           payload:{text:input.text,...(attachments.length?{attachments}:{}),...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
@@ -1158,5 +1175,5 @@ export class SessionPeers {
     }
     for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
   }
-  async stop(){this.stopped=true;this.disarm?.();this.disarm=null;await Promise.allSettled([...this.tasks.values()]);}
+  async stop(){this.stopped=true;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
 }

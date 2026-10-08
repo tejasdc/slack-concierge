@@ -1,3 +1,4 @@
+import {basename} from 'node:path';
 import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
 import {savedStartAt} from './saved-start-time';
@@ -8,7 +9,7 @@ type SourceSession={id:number;provider_id:string;status:string;native_metadata_j
 type Labels={title:string;summary:string;project:string|null};
 type SourceChange={sequence:number;source_table?:string;row_key?:string;session_id?:number|null;target_session_id?:number|null};
 export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;summary:string;summaryTruncated:boolean;
-  project:string|null;projectTruncated:boolean;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
+  project:string|null;projectTruncated:boolean;projectName:string|null;projectNameTruncated:boolean;provider:string;origin:string;catalogueKind:'conversation'|'historical-evidence';
   address:string;bindingGeneration:number;runtimeThreadId:string|null;workflowId:string|null;purpose:string;mode:string;
   createdAt:string;updatedAt:string;archived:boolean;suspended:boolean;pinned:boolean;saved:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
@@ -131,10 +132,11 @@ export class PreparedSessionCards {
     const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
     const timed=active??latest;
+    const projectName=labels.project?preview(basename(labels.project.replace(/\/+$/,'')),255):null;
     const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
       runtimeThreadId:session.agent_session_uuid,workflowId:typeof meta.workflowId==='string'?meta.workflowId:null,
       purpose:meta.purpose??'chat',mode:meta.purpose??'chat',title:title.text,titleTruncated:title.truncated,
-      summary:summary.text,summaryTruncated:summary.truncated,project:project?.text??null,projectTruncated:project?.truncated??false,
+      summary:summary.text,summaryTruncated:summary.truncated,project:project?.text??null,projectTruncated:project?.truncated??false,projectName:projectName?.text??null,projectNameTruncated:projectName?.truncated??false,
       provider:session.provider_id,origin,catalogueKind:origin==='imported'&&!meta.nativeBinding?'historical-evidence':'conversation',
       createdAt:iso(session.created_at),updatedAt:iso(session.last_turn_at??session.created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,
@@ -242,11 +244,11 @@ export function readPreparedSessionChanges(database:Database,cursor:string,space
     ORDER BY change_id LIMIT ?`).all(meta.generation,space,position.h,head,pageLimit+1) as ChangeRow[];
   const rows=[...new Map([...before,...after].map(row=>[row.change_id,row])).values()]
     .sort((a,b)=>a.change_id-b.change_id).slice(0,pageLimit+1);
-  const changes=[] as {revision:number;id:string;before:SessionCard|null;after:SessionCard|null}[];let bytes=0;
+  const changes=[] as {revision:number;sourceSequence:number;id:string;before:SessionCard|null;after:SessionCard|null}[];let bytes=0;
   for(const row of rows.slice(0,pageLimit)){
     const size=Buffer.byteLength(row.before_json??'')+Buffer.byteLength(row.after_json??'');
     if(bytes+size>MAX_BYTES)break;
-    changes.push({revision:row.change_id,id:`concierge:${row.session_id}`,
+    changes.push({revision:row.change_id,sourceSequence:row.source_sequence,id:`concierge:${row.session_id}`,
       before:row.before_json?{...JSON.parse(row.before_json),revision:row.before_revision}:null,
       after:row.after_json?{...JSON.parse(row.after_json),revision:row.source_sequence}:null});bytes+=size;
   }
