@@ -42,6 +42,31 @@ given a source-preserving recovery request (`89536875-70b9-46d0-b62b-d896e383a4c
 15 retained interrupted captures, to distinguish real requests from diagnostic probes and
 route only unhandled user work. This recovery is in progress, not yet a completion claim.
 
+### Final acceptance and retained-request recovery
+
+The follow-up `0dfd959` installed successfully at 19:24 UTC. Six existing execution hosts were
+adopted across the coordinator restart with the same host/provider PIDs. A new marked request
+`9b3d776e-7d81-49e8-a5f6-7c78012c7bdf` then completed with `DISPATCH_FINAL_OK`. The Thinkering
+session-view routes report both original verification sessions as completed. A post-install
+query found zero aged running turns without provider admission or a matching execution record.
+
+The Inbox's recovery request completed: 12 original human captures had never been routed;
+they are now retained in six topics and sent to the corresponding owners. All six primary
+recipient turns crossed provider admission; some had already completed when checked. This
+proves restored routing, not completion of every underlying feature request. The original
+interrupted turns remain immutable. Two diagnostic probes and one obsolete agent incident
+message were excluded. Future schedules were left at their chosen times.
+
+An explicit custody follow-up (`21e61618-7827-493e-9d41-ff9f4a5bea39`) also completed. Both
+update screenshots were forwarded separately; the other five grouped secondary captures
+contain text only, and their exact retained captures were additionally forwarded to the same
+owners as informational supplements under the existing topics. No new tasks were created.
+
+The report's hot Codex process is a separate unresolved resource observation: it still uses
+approximately one CPU core, but completed a post-repair native turn without a daemon restart.
+No evidence links that load to the dispatch failure. The isolated Grafana worker error at
+19:19:19 did not repeat in the checked interval; all nine alert delivery rows were delivered.
+
 This is a handoff report. The agent working the issue (Claude Opus 4.7, 1M
 context) is handing off to the next engineer or agent because it could not
 identify the root cause after extensive investigation and is unwilling to make
