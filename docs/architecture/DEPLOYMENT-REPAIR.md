@@ -76,6 +76,19 @@ provenance refuse before the live pointer changes. The receipt is printed as
 `candidate_application_checked` in the detached deploy log with application and artifact
 identity; the already sealed artifact is never edited to append a test receipt.
 
+The Codex app-server bridge is also sealed as an application file at
+`bot/src/codex-app-server-bridge.mjs`. A history worker lives under `control/application/`,
+so resolving the bridge beside that worker points at a nonexistent file. Both the owner
+and its history worker resolve the bridge from the immutable application root. The
+isolated `bot/scripts/sealed-codex-history-bridge.ts` check builds a real candidate,
+runs its bundled history worker on scratch state with a deliberately absent Codex socket,
+and proves that the bridge executes before the expected socket error. The 2026-10-08
+installed release had the bridge file but missed this path, so Codex history pages failed
+even though the candidate's file-set verification passed. The preactivation application
+check also resolves the bridge from the bundled worker entry and executes the sealed
+bridge against an absent scratch socket. Other provider history workers
+use declared worker paths; Claude history has no equivalent sibling bridge executable.
+
 New builders also run the gate before sealing. Both old and new verifiers retain the
 manifest-owned file-set rule, so adding application workers does not invalidate an older
 rollback artifact. The independent speech worker starts through the **application** current

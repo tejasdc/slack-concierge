@@ -118,6 +118,8 @@ authorization or a change to the default rapid-iteration policy.
   raw transcript changes without corresponding retained events trigger a background rebuild.
   See [provider history index](docs/architecture/PROVIDER-HISTORY-INDEX.md).
   Provider history page projection runs in a separate worker from the accepting owner loop.
+  That worker resolves the Codex bridge from its sealed application artifact, not beside the
+  worker bundle; the sealed-bridge check is in [deployment repair](docs/architecture/DEPLOYMENT-REPAIR.md#application-workers-and-the-first-upgraded-builder).
   Long history messages are page previews with an exact, digest-checked one-read selected-message
   detail; source, message and accepted-input identity remain attached to the preview.
   See the [history wire contract](docs/contracts/session-owner-v1.md).

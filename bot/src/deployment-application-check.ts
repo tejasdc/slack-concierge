@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {TrustedRootReleaseManager,type ReleaseManifest} from './deployment-release';
+import {releaseCodexBridgePath} from './release-worker';
 
 /** Runs in the candidate's existing preactivation command, including when an older control
  * built it. The Git archive is verified against the seal before executing isolated fixtures. */
@@ -22,6 +23,17 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   const declaration=existsSync(declarationPath)?JSON.parse(readFileSync(declarationPath,'utf8')):{};
   verifyApplicationProvenance(manifest,declaration.applicationBundles??[]);
   if(!(declaration.applicationBundles?.length))return {status:'legacy-application',git_commit:manifest.git_commit};
+  const historyWorker='control/application/provider-history-page-worker.js';
+  if(declaration.applicationBundles.includes(historyWorker)){
+   const bridge=join(artifact,'bot/src/codex-app-server-bridge.mjs');
+   if(releaseCodexBridgePath(join(artifact,historyWorker))!==bridge)
+    throw new Error('Sealed history worker cannot resolve its Codex bridge.');
+   const absentSocket=join(scratch,'missing-codex-app-server.sock');
+   const bridgeCheck=spawnSync('/usr/bin/node',[bridge,absentSocket],{cwd:artifact,encoding:'utf8',timeout:5_000});
+   if(bridgeCheck.error||bridgeCheck.status!==1||!bridgeCheck.stdout.includes('"type":"disconnect"')||
+      bridgeCheck.stderr.includes('MODULE_NOT_FOUND'))
+    throw new Error(`Sealed Codex bridge cannot execute: ${(bridgeCheck.stderr||bridgeCheck.error?.message||'unknown').slice(0,500)}`);
+  }
   const gate=join(scratch,'bot/scripts/presentation-release-check.ts');
   if(!existsSync(gate))throw new Error('Candidate application is missing its presentation release check.');
   const checked=spawnSync(process.execPath,[gate],{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,

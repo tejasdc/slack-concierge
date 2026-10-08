@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {releaseCodexBridgePath} from "./release-worker";
 import { moveCodexDaemonToOwnScope, raiseCodexDaemonFileLimit } from "./codex-daemon-file-limit";
 
 const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
@@ -183,8 +184,7 @@ export class CodexAppServerClient {
     const generation = ++this.generation;
     void raiseCodexDaemonFileLimit();
     void moveCodexDaemonToOwnScope();
-    const bridgePath = this.options.bridgePath
-      || new URL("./codex-app-server-bridge.mjs", import.meta.url).pathname;
+    const bridgePath = this.options.bridgePath || releaseCodexBridgePath();
     const child = spawn(this.nodeExecutable, [bridgePath, this.socketPath], {
       stdio: ["pipe", "pipe", "pipe"],
     });
