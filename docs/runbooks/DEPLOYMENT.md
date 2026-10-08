@@ -8,7 +8,12 @@ commit differs from the immutable last-known-good release. The detached runner
 waits for active provider and capture work, fetches the recorded pushed commit
 into `/var/lib/slack-concierge-deployment/source`, installs the frozen dependency
 graph, activates an immutable candidate, restarts Concierge, and proves the
-exact runtime before success. Only the deployment system writes that source.
+exact runtime before success. Descendant pushes accepted before the durable
+activation intent advance that same run's target. If its prepared candidate is
+then stale, the runner fetches and rebuilds the new head under the same drain
+gate before activating; only pushes accepted after activation intent need a
+later run. The waiting update's notes cover the full current target range.
+Only the deployment system writes that source.
 Its readers create it when it is missing, with the same `git clone --no-checkout`
 of `CONCIERGE_DEPLOY_ORIGIN` that `deploy.sh` makes: the bot's minute-by-minute
 check for a new version (`ensureDeploymentSource` in `deployment-source.ts`) and the
@@ -21,8 +26,8 @@ The agent checkout under `/root/workspace` is never an update input. A terminall
 failed candidate stays blocked until a later signed push advances the desired
 state or the existing repair owner resolves it. There is no checkout cleanliness
 poll or automatic retry based on agent work in a shared checkout.
-Startup resumes already accepted durable work but deliberately does not scan Git
-history for pushes received while Concierge was offline.
+Startup resumes accepted work and compares the fetched main head with desired
+state, so a push missed while Concierge was offline can start an update.
 
 `node_modules` is always an untracked local installation, whether it is a directory
 or a worktree symlink. The repository ignore rule deliberately has no trailing slash

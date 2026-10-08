@@ -61,7 +61,10 @@ try {
     const artifact = required("--artifact");
     const release = manager.verify(artifact);
     const lastKnownGood = getLastKnownGoodRelease();
-    recordDeploymentReleaseActivationIntent(runId, release.artifact_digest);
+    const intent = recordDeploymentReleaseActivationIntent(runId, release.artifact_digest);
+    if ("supersededCommit" in intent) {
+      finish(0, { status: "superseded", desired_commit: intent.supersededCommit });
+    }
     if (lastKnownGood) {
       try {
         registerDeploymentTurnReactionTargets(

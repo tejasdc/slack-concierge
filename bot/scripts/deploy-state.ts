@@ -110,6 +110,15 @@ try {
       desired_commit: run.desired_commit });
   }
 
+  if (command === "desired") {
+    const run = getDeploymentRun(requiredOption("--run-id"));
+    if (!run || !run.desired_commit || run.activation_state !== null
+      || !["draining", "updating"].includes(run.status)) {
+      throw new Error("The deployment run has no unactivated desired commit.");
+    }
+    finish(0, { desired_commit: run.desired_commit });
+  }
+
   if (command === "operator-request") {
     const result = requestOperatorDeployment();
     finish(0, {
@@ -223,7 +232,7 @@ try {
     finish(incident ? 0 : 1, incident || { status: "error", error: "deployment repair incident not found" });
   }
 
-  throw new Error("usage: deploy-state.ts <request|operator-request|claim|phase|succeed|fail|show|repair-begin|repair-claim|repair-show> [options]");
+  throw new Error("usage: deploy-state.ts <request|operator-request|claim|desired|phase|succeed|fail|show|repair-begin|repair-claim|repair-show> [options]");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

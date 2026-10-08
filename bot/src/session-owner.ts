@@ -1018,12 +1018,13 @@ export class SessionOwner {
         jobs:(wait?.jobs??[]).map(job=>({description:job.description,ageMs:job.ageMs,
           told:job.told60?60:job.toldFirst?STILL_WAITING_MINUTES:null}))}];
     });
-    const commit=run.desired_commit??run.candidate_commit;
+    const commit=run.activation_state
+      ? run.candidate_commit??run.desired_commit
+      : run.desired_commit??run.candidate_commit;
     // He is told what every change in the update does, including the commit subject when its
     // sentence is missing; no change is exempt for being invisible on a screen (2026-09-23).
     const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],subjects:[]};
-    // An update installs what was pushed when it started; what was pushed since installs in the next
-    // one. The line names those too, so a short list never reads as all that is coming (2026-10-08).
+    // Only commits accepted after activation need another update.
     const newest=getDeploymentDesiredState('concierge')?.desired_commit??null;
     const queued=commit&&newest&&newest!==commit?pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
     return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};

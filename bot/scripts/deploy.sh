@@ -62,6 +62,7 @@ DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
 CANDIDATE_ARTIFACT_PATH=""
 CANDIDATE_ARTIFACT_DIGEST=""
+CANDIDATE_SUPERSEDED=0
 DRAIN_TOKEN=""
 DEPLOY_DRAIN_WAKE=0
 DEPLOY_WAIT_PID=""
@@ -116,6 +117,10 @@ ensure_deployment_source() {
 checkout_deployment_commit() {
   local target
   git -C "$REPO" fetch origin main
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    DEPLOY_DESIRED_COMMIT=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
+      --run-id "$DEPLOY_RUN_ID" | jq -er '.desired_commit')
+  fi
   target=${DEPLOY_DESIRED_COMMIT:-$(git -C "$REPO" rev-parse origin/main)}
   [[ "$target" =~ ^[0-9a-f]{40}$ ]] || { echo "DEPLOY FAILED: desired commit is invalid." >&2; return 1; }
   git -C "$REPO" merge-base --is-ancestor "$target" origin/main || {
@@ -124,6 +129,23 @@ checkout_deployment_commit() {
   git -C "$REPO" checkout --detach --force "$target"
   [ "$(git -C "$REPO" rev-parse HEAD)" = "$target" ] || return 1
   DEPLOYED_COMMIT=$target
+}
+
+candidate_advanced() {
+  local latest
+  [ -n "$DEPLOY_RUN_ID" ] || return 1
+  latest=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
+    --run-id "$DEPLOY_RUN_ID" | jq -er '.desired_commit') || return 1
+  [ "$latest" != "$DEPLOYED_COMMIT" ] || return 1
+  CANDIDATE_SUPERSEDED=1
+  return 0
+}
+
+install_candidate_dependencies() {
+  if (cd "$REPO/bot" && "$BUN_BIN" install --backend=copyfile --frozen-lockfile --production); then
+    return 0
+  fi
+  candidate_advanced
 }
 
 validate_bootstrap_handoff() {
@@ -595,6 +617,7 @@ prepare_candidate_release() {
   set -e
   printf '%s\n' "$output"
   if [ "$status" -ne 0 ]; then
+    if candidate_advanced; then return 0; fi
     detail=$(printf '%s\n' "$output" | jq -c '{status,error}' 2>/dev/null || printf '%s' "$output")
     detail=${detail:0:1200}
     DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared. Candidate preparation reported: $detail"
@@ -617,6 +640,7 @@ prepare_candidate_release() {
   fi
   if [ "$status" -ne 0 ] || [ -z "$running_artifact" ] || [ -z "$rollback_artifact" ]; then
     set -e
+    if candidate_advanced; then return 0; fi
     DEPLOY_FAILURE_REASON="The installed and last-known-good releases could not be identified, so the candidate's compatibility with agents already running could not be proven."
     PREFLIGHT_REFUSED=1
     return 1
@@ -627,13 +651,18 @@ prepare_candidate_release() {
   set -e
   printf '%s\n' "$output"
   if [ "$status" -ne 0 ]; then
+    if candidate_advanced; then return 0; fi
     DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output:0:600}"
     # Nothing was activated: the running release stays exactly as it is (no restore, no restart).
     PREFLIGHT_REFUSED=1
     return "$status"
   fi
-  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
-    --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
+    --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH")
+  printf '%s\n' "$output"
+  if [ "$(printf '%s\n' "$output" | jq -er '.status')" = superseded ]; then
+    CANDIDATE_SUPERSEDED=1
+  fi
 }
 
 promote_candidate_release() {
@@ -901,7 +930,7 @@ deploy() {
   echo "=== install frozen production dependencies ==="
   CURRENT_DEPLOY_STAGE=dependency-install
   DEPLOY_FAILURE_REASON="The frozen production dependency graph could not be installed."
-  (cd "$REPO/bot" && "$BUN_BIN" install --backend=copyfile --frozen-lockfile --production)
+  install_candidate_dependencies
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
     echo "=== back up and migrate additive deployment-repair state ==="
@@ -929,7 +958,20 @@ deploy() {
     echo "=== prepare and activate immutable candidate release ==="
     CURRENT_DEPLOY_STAGE=candidate-activation
     DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared or activated."
-    prepare_candidate_release
+    if [ "$CANDIDATE_SUPERSEDED" != "1" ]; then prepare_candidate_release; fi
+    while [ "$CANDIDATE_SUPERSEDED" = "1" ]; do
+      echo "=== newer pushed main arrived before activation; rebuild candidate ==="
+      CANDIDATE_SUPERSEDED=0
+      CURRENT_DEPLOY_STAGE=git-update
+      DEPLOY_FAILURE_REASON="The newer pushed commit could not be fetched and selected."
+      checkout_deployment_commit
+      CURRENT_DEPLOY_STAGE=dependency-install
+      DEPLOY_FAILURE_REASON="The newer commit's frozen dependencies could not be installed."
+      install_candidate_dependencies
+      CURRENT_DEPLOY_STAGE=candidate-activation
+      DEPLOY_FAILURE_REASON="The newer immutable candidate could not be prepared or activated."
+      if [ "$CANDIDATE_SUPERSEDED" != "1" ]; then prepare_candidate_release; fi
+    done
     DEPLOY_FAILURE_REASON="The candidate release's service units could not be installed."
     CONTROL_SYSTEMD_DIR="$CANDIDATE_ARTIFACT_PATH/control/systemd"
     install_systemd_units

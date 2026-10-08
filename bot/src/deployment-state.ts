@@ -783,6 +783,16 @@ export function observeDeploymentDesiredCommit(input: {
             updated_at=CURRENT_TIMESTAMP
         WHERE target=?`)
         .run(desiredCommit, input.githubDeliveryId, target);
+      const active = getActiveDeploymentRun(target);
+      if (active && active.activation_state === null && active.repair_state === null) {
+        db.query(`UPDATE deployment_runs SET desired_commit=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=? AND activation_state IS NULL`).run(desiredCommit, active.id);
+        appendRunEvent(active.id, "desired_commit_advanced", {
+          from: active.desired_commit,
+          to: desiredCommit,
+          github_delivery_id: input.githubDeliveryId,
+        });
+      }
       return { state: getDeploymentDesiredState(target)!, reason: "advanced" as const };
     }
     if (input.isAncestor(desiredCommit, current.desired_commit)) {
@@ -910,6 +920,10 @@ export function recordDeploymentReleaseActivationIntent(runId: string, artifactD
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
     const run = getDeploymentRun(runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw new Error("Deployment run is not active.");
+    if (run.repair_state !== "retrying" && run.desired_commit && run.desired_commit !== release.git_commit) {
+      if (run.activation_state !== null) throw new Error("An activated deployment cannot change candidates.");
+      return { supersededCommit: run.desired_commit };
+    }
     db.query(`UPDATE deployment_runs
       SET candidate_artifact_digest=?, candidate_commit=?, activation_state='intended',
           updated_at=CURRENT_TIMESTAMP WHERE id=?`)
