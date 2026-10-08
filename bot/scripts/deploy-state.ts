@@ -114,8 +114,9 @@ try {
     const run = getDeploymentRun(requiredOption("--run-id"));
     // A read: repair retries and resumed runs read it too, so it never refuses a run that has
     // already been activated; only an unactivated run is ever moved to a newer commit.
-    if (!run || !run.desired_commit) throw new Error("The deployment run has no desired commit.");
-    finish(0, { desired_commit: run.desired_commit, activated: run.activation_state !== null });
+    // An operator-requested run starts without one and installs fetched main instead.
+    if (!run) throw new Error("The deployment run does not exist.");
+    finish(0, { desired_commit: run.desired_commit ?? null, activated: run.activation_state !== null });
   }
 
   if (command === "operator-request") {

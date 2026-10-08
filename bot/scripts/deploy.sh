@@ -118,8 +118,10 @@ checkout_deployment_commit() {
   local target
   git -C "$REPO" fetch origin main
   if [ -n "$DEPLOY_RUN_ID" ]; then
-    DEPLOY_DESIRED_COMMIT=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
-      --run-id "$DEPLOY_RUN_ID" | jq -er '.desired_commit')
+    local recorded
+    recorded=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
+      --run-id "$DEPLOY_RUN_ID" | jq -r '.desired_commit // empty')
+    [ -z "$recorded" ] || DEPLOY_DESIRED_COMMIT=$recorded
   fi
   target=${DEPLOY_DESIRED_COMMIT:-$(git -C "$REPO" rev-parse origin/main)}
   [[ "$target" =~ ^[0-9a-f]{40}$ ]] || { echo "DEPLOY FAILED: desired commit is invalid." >&2; return 1; }
@@ -137,7 +139,8 @@ candidate_advanced() {
   reading=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" desired \
     --run-id "$DEPLOY_RUN_ID") || return 1
   [ "$(printf '%s' "$reading" | jq -r '.activated')" = false ] || return 1
-  latest=$(printf '%s' "$reading" | jq -er '.desired_commit') || return 1
+  latest=$(printf '%s' "$reading" | jq -r '.desired_commit // empty')
+  [ -n "$latest" ] || return 1
   [ "$latest" != "$DEPLOYED_COMMIT" ] || return 1
   CANDIDATE_SUPERSEDED=1
   return 0
