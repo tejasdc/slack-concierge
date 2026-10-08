@@ -16,7 +16,7 @@ import { log } from './log';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
@@ -1713,8 +1713,8 @@ export class SessionCommunicationCoordinator {
                 : turn?.status === 'done' && this.recipientStillWorking(request, ['running']);
             // A Concierge update holds new starts and yields running work for a few minutes. Work
             // waiting only for that is not stalled, so look again after the update instead.
-            // A recipient waiting on its own request to another session is working through it, not stalled.
-            if (healthy || updateDraining() || waitingOnLiveRequest(request.target_session_id)) {
+            // A recipient waiting on its own request to another session, or on a watch, is working through it, not stalled.
+            if (healthy || updateDraining() || waitingOnDependency(request.target_session_id)) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 continue;

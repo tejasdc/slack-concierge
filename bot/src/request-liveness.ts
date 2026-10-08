@@ -62,12 +62,18 @@ export function waitingOnLiveRequest(sessionId: number): boolean {
             WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId);
 }
 
+/** The worker ended its turn waiting on something that will wake it: its own live request, or a watch it registered (watches.ts). */
+export function waitingOnDependency(sessionId: number): boolean {
+    return !!db.query("SELECT 1 FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') LIMIT 1").get(sessionId)
+        || waitingOnLiveRequest(sessionId);
+}
+
 /** Whether something already in the system will wake this worker again. */
 export function workerWillWake(owner: SessionOwner, sessionId: number): boolean {
     const session = getSessionById(sessionId);
     if (!session) return false;
     if (['running', 'queued'].includes(owner.view(session).execution)) return true;
-    return waitingOnLiveRequest(sessionId);
+    return waitingOnDependency(sessionId);
 }
 
 export type StrandedStep =
