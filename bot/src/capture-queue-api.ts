@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, UnknownCommandTarget, claimHumanCommand, commandStatus, prepareHumanCommand, retainHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { CommandIdentityConflict, claimHumanCommand, commandStatus, prepareHumanCommand, retainHumanCommand, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -79,7 +79,7 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
   const path=requiredString(command.path,"path",500);
   const sequence=requiredNonnegativeInteger(command.sequence,"sequence");
   const payload=command.body;
-  if(command.version!==1||method!=="POST"||!commandPath.test(path)||!payload||typeof payload!=="object"||Array.isArray(payload)
+  if(command.version!==1||sequence<1||method!=="POST"||!commandPath.test(path)||!payload||typeof payload!=="object"||Array.isArray(payload)
     ||(payload as Record<string,unknown>).clientActionId!==actionId||!/^[-a-z0-9:]{8,128}$/i.test(clientId)
     ||!(/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(sessionId)||sessionId==="workspace")) {
     throw new Error("Invalid human command envelope.");
@@ -128,7 +128,6 @@ export function createCaptureQueueRequestHandler(
         return jsonResponse(202,commandReply(retained.action_id)!);
       } catch(error) {
         if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:"command_identity_conflict"});
-        if(error instanceof UnknownCommandTarget)return jsonResponse(409,{error:"command_target_not_retained"});
         log("warn","human_command_custody_refused",errorFields(error));
         return jsonResponse(400,{error:"invalid_command_envelope"});
       }
@@ -137,7 +136,7 @@ export function createCaptureQueueRequestHandler(
       try {
         const body=await requestBody(request);
         const claimId=requiredString(body.claimId,"claimId",128);
-        const claimed=claimHumanCommand(claimId);
+        const claimed=claimHumanCommand(claimId,processOwner(body.owner),requiredString(body.workerId,'workerId',128));
         return claimed?jsonResponse(200,{command:{version:1,clientId:claimed.client_id,sessionId:claimed.session_id,door:claimed.door,
           sequence:claimed.sequence,actionId:claimed.action_id,method:claimed.method,path:claimed.path,
           body:JSON.parse(claimed.body_json)},prepared:claimed.prepared_json?JSON.parse(claimed.prepared_json):null,

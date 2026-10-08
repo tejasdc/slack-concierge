@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { log, errorFields } from "./log";
 import type { HumanCommand } from "./human-command-state";
+import {currentProcessIdentity} from './runtime-identity';
 
 export type CommandDelivery = Readonly<{status:number;value:unknown}>;
 
@@ -39,6 +40,8 @@ export class HumanCommandWorker {
   private active:Promise<void>|null=null;
   private nextPollMs=250;
   private queueFailures=0;
+  private readonly workerId=randomUUID();
+  private readonly owner=currentProcessIdentity();
   constructor(private readonly options:Readonly<{
     queueUrl:string;queueToken:string;
     prepare:(command:HumanCommand)=>Promise<CommandDelivery>;
@@ -65,7 +68,7 @@ export class HumanCommandWorker {
     while(this.running){
       const claimId=randomUUID();
       let claimed:Response;
-      try{claimed=await this.queue("/commands/claim",{claimId});}
+      try{claimed=await this.queue("/commands/claim",{claimId,owner:this.owner,workerId:this.workerId});}
       catch(error){
         this.queueFailures++;
         this.nextPollMs=Math.min(30_000,500*Math.pow(2,Math.min(this.queueFailures,6)));

@@ -1,8 +1,8 @@
 # Human command intake
 
-The browser writes a command with its stable action ID and per-client/session sequence to local
-storage before its first network attempt. Thinkering's signed-in route checks the same body schema
-as before, names the human's sign-in door, and sends the unchanged method, owner path and body to
+The browser writes a command with its stable action ID and per-client/session sequence in one
+IndexedDB transaction before its first network attempt. Thinkering's signed-in route names the
+human's sign-in door and sends the unchanged method, owner path and body to
 the independent capture ingress using its existing server-held Thinkering capture credential.
 Ingress commits the command in its separate WAL database with `synchronous=FULL` before returning
 `custody:server`. That receipt says only that the server holds the bytes. The public route never
@@ -15,7 +15,9 @@ prepared body before any owner attempt. The worker then asks the capability sock
 those bytes to the canonical session owner. If Thinkering or Concierge is down, the command stays
 pending; if an owner answer is lost, the worker retries with the same action ID and prepared body.
 The owner alone accepts, refuses, deduplicates and orders the effect. Terminal owner status and
-response return to ingress, where the browser can poll by action ID after a reload. Browser cards
+response return to ingress, where the browser can poll by action ID after a reload. Semantic
+validation happens after custody, so an invalid command occupies its terminal stream position
+instead of leaving a missing predecessor. Browser cards
 distinguish device custody, server custody, and owner acceptance.
 
 A terminal preparation refusal names that stage and is not presented as an owner refusal. A
@@ -27,11 +29,18 @@ The queue accepts only POST owner commands from the authenticated Thinkering gat
 owner-route allowlist; it accepts no arbitrary URL or provider command. Duplicate action IDs with
 different bytes, or duplicate stream sequence slots, are refused. Predecessor commands in one
 client/session stream must settle before the next is delivered; a terminal refusal releases that
-stream. Exact-run Stop and cancel-by-action bypass predecessor order. Cancel-by-action must name a
-target retained in that same stream. When it arrives while the target is still pending in ingress,
+stream. Sequence slots start at one; a missing earlier network arrival holds later ordinary
+commands. Exact-run Stop and cancel-by-action bypass predecessor order. When cancellation arrives
+while its exact session/action target is still pending in ingress,
 one transaction freezes the target transport row and retains the cancellation command. The owner
 records the cancellation intent under the exact session/action identity; it does not fabricate a
 receipt for a target it has not accepted.
+
+Delivery claims carry the worker's process identity (boot, PID and process start) and worker ID.
+An ingress restart preserves a living worker's claim. A replacement worker recovers a dead
+coordinator's claim even when ingress never restarted; one sequential worker may reclaim its own
+unconfirmed exchange. Every claim has a fresh fence, so an old exchange cannot settle a newer
+claim. Recovery retains the prepared bytes and canonical action ID.
 
 The existing app gateway remains a dependency after custody for metadata preparation and owner
 forwarding. A Thinkering outage does not remove ingress custody, but no owner acceptance happens
