@@ -410,7 +410,12 @@ export class SessionExecutionHost {
     log('info','codex_account_move_started',{reason:'in_use_account_spent'});
     const result=await this.putCodexAccountInUse(target.source).catch(error=>({status:'failed' as const,detail:String((error as Error)?.message??error)}));
     if(result.status==='completed')log('info','codex_account_moved',{released:'resumedTurnIds' in result?result.resumedTurnIds?.length??0:0});
-    else {this.codexMoveFailedAt.set(target.label,Date.now());log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});}
+    else {
+      // Only an account that would not sign in waits before it is tried again; a failure of the
+      // machine's own (an unmanaged Codex service) is retried next minute, once that is repaired.
+      if((result as {needsSignIn?:boolean}).needsSignIn)this.codexMoveFailedAt.set(target.label,Date.now());
+      log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
+    }
   }
   async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop()]);}
   private capabilities(session:SessionRow) {
