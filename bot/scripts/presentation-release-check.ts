@@ -4,8 +4,10 @@ import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
 import {checkReaderRefusals} from './presentation-contract-fixture';
 import {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle} from './topic-projection-fixture';
 import {checkDispatchClaim} from './dispatch-claim-fixture';
+import {checkLedgerConstructors} from './ledger-constructor-check';
 
 const root=resolve(import.meta.dir,'..');
+const ledgerConstructors=checkLedgerConstructors(root);
 const scanner=new Bun.Transpiler({loader:'ts'});
 const visited=new Set<string>();
 function readOnlyDependency(file:string){
@@ -50,4 +52,4 @@ for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   await fixture();
   results.push({reader:name,fixture:contract.fixture,durationMs:Math.round(performance.now()-started)});
 }
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,topicProjection,nativeOwnerProjection,dispatchClaim,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,readers:results}));

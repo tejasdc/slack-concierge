@@ -7,7 +7,13 @@ turn report three changes, so the queue committed it as running but returned no 
 adapter preserves journal triggers, transaction ownership and insert identity while making
 existing exact-one lease checks valid. Standalone writers that open the canonical ledger,
 including service notices, project registration and deployment controls, use the same adapter;
-the release lint refuses an unwrapped writable canonical-ledger opening.
+the release check refuses every new writable `bun:sqlite` constructor unless it is directly
+wrapped by `ledgerWriteResults` or matches one registered non-ledger/isolated-fixture
+constructor expression in its exact file. It recognizes imported constructor aliases and checks the candidate application
+before sealing; the preactivation application check also verifies a distinct control-source
+commit. The registry is in `bot/scripts/ledger-constructor-check.ts`. The check is static:
+it does not prove the runtime value of an exception's destination variable, so review any
+change to an exception's path provenance with its registration.
 Telemetry stays separate from this write-result contract. See the October 8 dispatch incident.
 The presentation release gate runs `dispatch-claim-fixture.ts` against an isolated canonical
 ledger with the real journal triggers: a raw Bun update demonstrates the inflated count,

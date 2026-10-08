@@ -143,6 +143,8 @@ authorization or a change to the default rapid-iteration policy.
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.
   Its scratch subprocesses share bounded lifetime and phase diagnostics; see the same catalogue document.
+  The candidate gate also parses every SQLite constructor before activation; direct ledger
+  write counts and exact non-ledger exceptions are owned by the [storage boundary](docs/architecture/STORAGE-OBSERVATION.md).
 - Project setup, release reads, deployment checks and execution supervision yield while external commands run;
   operation sequencing and ambiguous launch custody remain with their existing owners.
   See [accepting-owner external waits](docs/architecture/ACCEPTING-OWNER-EXTERNAL-WAITS.md).

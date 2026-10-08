@@ -73,12 +73,12 @@ a correction. A previous passing candidate is not proof that a later candidate p
 
 | Invariant | Owner and enforcement | Evidence / limit |
 | --- | --- | --- |
-| One claimed item means one direct ledger row, not trigger side effects | Ledger write-result adapter uses SQLite direct `changes()`; release gate exercises a real canonical claim and single dispatch | Installed earlier; marked Claude/Codex dispatch and replies in the dispatch incident record. Textual constructor lint still has a variable-name gap under review. |
+| One claimed item means one direct ledger row, not trigger side effects | Ledger write-result adapter uses SQLite direct `changes()`; release gate exercises a real canonical claim and single dispatch | Adapter installed earlier; marked Claude/Codex dispatch and replies in the dispatch incident record. New source replaces the path-name lint with parsed constructor checks before activation, including renamed imports, template expressions and explicit readonly options. Exact derived/fixture exceptions remain reviewed authority. |
 | Claimed work is not proof of executing work | Execution ledger, provider acknowledgement and runtime registry; same-owner sweep separates provably unadmitted work, explicit Stop and uncertain effects | Earlier recovery requeued safe work without replaying admitted effects. Detection is delayed by the existing age/sweep thresholds. |
 | An accepted input retains its identity until its owner settles it | Capture ingress custody and owner FIFO; retries preserve the action identity | Earlier lost routing recovered to six recipient topics. Admission is not proof their feature work finished. Phone microphone failures before bytes exist belong to device capture. |
 | Updating the coordinator cannot silently replace the agent provider | Separate supervised execution lifetimes; exact adoption proof and protocol compatibility; provider update preference and admission gate before activation | Managed Codex daemon confirmed since 21:08 UTC; no restart performed by this investigation. |
 | A slow external command does not occupy the accepting event loop | Existing project/deployment/execution owners await child processes; per-project and per-repository sequencing retained; unknown launch remains unknown | New source; scratch 600 ms waits overlapped independent status replies in 43–60 ms. Live acceptance owed. |
-| Every release-check child has one explicit terminal outcome and an owned lifetime | Shared release fixture process boundary, retaining signals, deadline state, bounded output and phase checkpoints | Correction in progress; do not raise deadlines or bypass the canonical dispatch check. |
+| Every release-check child has one explicit terminal outcome and an owned lifetime | Shared release fixture process boundary, retaining signals, deadline state, bounded output and phase checkpoints | New source passes scratch signal/deadline/spawn/descendant-pipe checks and the real presentation gate. Deadlines and the canonical dispatch assertion remain unchanged. |
 | A responsiveness alert can be investigated without treating request timings as total latency | Existing loop probe gains bounded ledger call/transaction occupancy and one slow caller | New source; commit/rollback included, no SQL or values logged. Other database connections remain outside this measurement. |
 | Diagnostic work has a stable source and bounded cost | Read-only pinned SQLite snapshot, size/time bounds, atomic non-replacing output | Scratch verification only. Still competes for disk; ordinary shell copies remain possible outside this entrance. |
 | Slowness alone does not demand human intervention | Existing outside supervisor pages on actual outage or explicit human-only need, and routes degradation to the standing repair agent | Remote-box `f35ad72` installed and checked by owner 4534; real main-loop fixtures distinguish slow from down. |
@@ -101,3 +101,36 @@ Complete source integration and independent review, normal Git-triggered deploym
 revision proof, real owner route/agent roundtrip, and fresh lag/request measurements. Preserve
 the failed update record and verify the update banner clears only after a successful install.
 Do not describe scratch fixtures, a pushed commit, or a healthy old release as completion.
+
+### Integrated source checks and later contention
+
+The combined package build passed with dependency auto-install disabled. All eight bundles
+and existing release/growth checks passed. A delayed-command scratch probe returned unrelated
+status requests in 42–50 ms while each external command waited 600 ms; same-project operations
+completed sequentially at 651 and 1,262 ms. Definite refusal and uncertain launch stayed distinct.
+The release-only TypeScript parser is pinned; ordinary drain-status execution does not load it.
+
+The pre-install 23:35–23:45 window recorded 35 pauses totaling 13.899 s (1.39 s/minute),
+maximum 1.603 s, and 670 completed handlers, none above two seconds. This improvement occurred
+before this patch and must not be credited to it. At 23:44, real owner ping/status/releases
+reads returned HTTP 200 in 0.2 / 30.5 / 174.6 ms on the local socket; those are not phone timings.
+
+A one-second process I/O delta at about 23:49 showed Thinkering writing 26.88 MB/s. Its archive
+worker had already reached ready at 23:46:32. Session 3757 independently sampled 7.09 MB/s on
+the archive indexing thread and found only search database/WAL changes among its open SQLite
+files. Eight live sources changed in eight seconds; 13 MB and 58 MB transcripts appended only
+3.9 KB and 6.7 KB. Installed indexing rereads each changed source and deletes/reinserts its full
+evidence, including full-text terms. This is confirmed write amplification, not a proven unchanged
+file loop or proof that it caused every Concierge pause. A failed read also replaces prior evidence
+with empty results, without retaining enough exception detail to classify the cause.
+
+Request `03412704-843a-43ea-a2ee-288b0b3d3bca` assigns its existing owner, session 3757, the
+complete Thinkering correction: work proportional to appends, preserved branch/message identity,
+and last verified evidence retained with explicit stale coverage on temporary read failure. The
+owner must ship and measure it; no competing implementation exists here. This work remains open
+under Tejas's widened task and must not be hidden by completing only the Concierge patch.
+
+The screenshot's background-work label was also checked. Session 4081 had an answering execution
+host for the same run, live provider PID 407190, no exit and no journal error; its catalogue named
+one remaining implementation job. An earlier answer plus a still-running background job is not
+by itself another ghost-turn incident. This check proves live custody, not progress of that job.

@@ -62,7 +62,8 @@ try{
  // application-source provenance is refused even if every file exists.
  const missing={...prepared.manifest,files:{...prepared.manifest.files}};delete missing.files[paths[0]!];
  assert.throws(()=>verifyApplicationProvenance(missing,paths),/missing/);
- assert.throws(()=>verifyApplicationProvenance({...prepared.manifest,control_git_commit:'a'.repeat(40)},paths),/provenance/);
+ assert.throws(()=>verifyApplicationProvenance({...prepared.manifest,control_git_commit:'a'.repeat(40),
+  application_bundle_source_digest:'0'.repeat(64)},paths),/provenance/);
  assert.doesNotThrow(()=>verifyApplicationProvenance({...prepared.manifest,control_git_commit:'a'.repeat(40),
   application_bundle_source_digest:prepared.manifest.source_tree_digest},paths));
  // New builder verifies older sealed artifacts and emits application provenance itself.

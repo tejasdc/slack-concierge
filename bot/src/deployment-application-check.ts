@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -19,6 +19,23 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
  try{
   const extracted=Bun.spawnSync({cmd:['/usr/bin/tar','-xf','-','-C',scratch],stdin:archive.stdout,stdout:'pipe',stderr:'pipe'});
   if(extracted.exitCode!==0)throw new Error('Candidate application archive could not be extracted.');
+  // The same frozen candidate dependencies used by preparation must be visible to the
+  // candidate source gate here. The extracted archive alone contains no node_modules.
+  const dependencies=realpathSync(join(repositoryRoot,'bot/node_modules'));
+  symlinkSync(dependencies,join(scratch,'bot/node_modules'),'dir');
+  if(manifest.control_git_commit!==manifest.git_commit){
+   const controlArchive=Bun.spawnSync({cmd:['/usr/bin/git','-C',repositoryRoot,'archive','--format=tar',manifest.control_git_commit],stdout:'pipe',stderr:'pipe'});
+   if(controlArchive.exitCode!==0||createHash('sha256').update(controlArchive.stdout).digest('hex')!==manifest.control_source_tree_digest)
+    throw new Error('Candidate control archive does not match its sealed source.');
+   const controlRoot=join(scratch,'control-source');
+   mkdirSync(controlRoot);
+   const controlExtracted=Bun.spawnSync({cmd:['/usr/bin/tar','-xf','-','-C',controlRoot],stdin:controlArchive.stdout,stdout:'pipe',stderr:'pipe'});
+   if(controlExtracted.exitCode!==0)throw new Error('Candidate control archive could not be extracted.');
+   symlinkSync(dependencies,join(controlRoot,'bot/node_modules'),'dir');
+   const check=spawnSync(process.execPath,[join(controlRoot,'bot/scripts/ledger-constructor-check.ts'),join(controlRoot,'bot')],
+    {cwd:join(controlRoot,'bot'),encoding:'utf8',timeout:15_000,env:{...process.env,BUN_INSTALL_AUTO:'disable'}});
+   if(check.error||check.status!==0)throw new Error(`Candidate control SQLite constructor check failed: ${(check.stderr||check.error?.message||'unknown').slice(0,1500)}`);
+  }
   const declarationPath=join(scratch,'bot/src/deployment-artifact-files.json');
   const declaration=existsSync(declarationPath)?JSON.parse(readFileSync(declarationPath,'utf8')):{};
   verifyApplicationProvenance(manifest,declaration.applicationBundles??[]);
@@ -37,7 +54,7 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   const gate=join(scratch,'bot/scripts/presentation-release-check.ts');
   if(!existsSync(gate))throw new Error('Candidate application is missing its presentation release check.');
   const checked=spawnSync(process.execPath,[gate],{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,
-   env:{...process.env,CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
+   env:{...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
     CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')}});
   if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${(checked.stderr||checked.error?.message||'unknown').slice(0,1500)}`);
   const result=JSON.parse(checked.stdout.trim().split('\n').at(-1)??'null');

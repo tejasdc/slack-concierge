@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { RETRY_POLICIES } from '../src/retry-policies';
+import { checkLedgerConstructors } from './ledger-constructor-check';
 
 const root = join(import.meta.dir, '..');
 // These are queue notifications after a durable state change, rather than a new attempt
@@ -90,25 +91,8 @@ for (const [name, policy] of Object.entries(RETRY_POLICIES)) {
     errors.push(`retry-policies.ts: ${name} must have finite attempt, age, delay, and jitter bounds`);
 }
 
-// Standalone writers do not import state-database (it initializes the live schema). Their
-// canonical ledger handles must still normalize trigger-inflated Bun write counts.
-const ledgerFiles = [...files];
-walk(join(root, 'scripts'), ledgerFiles);
-for (const path of ledgerFiles) {
-  const name = relative(root, path);
-  if (/fixture|growth|check-presentation-worker|release-application-compatibility/.test(name)
-    || name === 'src/capture-state.ts' || name === 'scripts/capture-drain-status.ts') continue;
-  const source = readFileSync(path, 'utf8');
-  const publishesNotice = /\bpublishProviderFreeNotice\s*\(/.test(source);
-  for (const match of source.matchAll(/\bnew\s+Database\s*\(/g)) {
-    const end = source.indexOf(';', match.index);
-    const opening = source.slice(match.index, end < 0 ? match.index + 300 : end);
-    if (!publishesNotice && !/(?:state\.db|\bstateDbPath\b|\bstatePath\b|\bledgerPath\b)/.test(opening)) continue;
-    if (/\breadonly\s*:\s*true\b/.test(opening)) continue;
-    if (!/ledgerWriteResults\(\s*$/.test(source.slice(0, match.index)))
-      errors.push(`${name}: writable canonical ledger connection must use ledgerWriteResults`);
-  }
-}
+try { checkLedgerConstructors(root); }
+catch (error) { errors.push(String(error)); }
 if (errors.length) {
   for (const error of errors) console.error(`retry-architecture: ${error}`);
   process.exit(1);
