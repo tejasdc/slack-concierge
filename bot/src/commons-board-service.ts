@@ -164,8 +164,10 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     written=addEvent({...signed,board,thread:input.thread,actionId:input.action_id,type:input.verb,text,mentions:input.mentions,sealed:input.sealed,end:input.end,outcome:input.outcome});
   }
   ensureBoard(board);
-  const status=render(board);
+  render(board);
   const delivered=written.event.mentions?.length?await deliverMentions(written.event,delivery):[];
+  // Written after delivery, so the status a supervisor reads never lists a mention that was just delivered.
+  const status=writeStatus(board);
   if(!written.duplicate)void commitCommons(`${written.event.type} ${board}/${written.event.thread} by ${who.author}`);
   return {board,thread:written.event.thread,event:written.event.id,duplicate:written.duplicate,mentions:delivered,
     state:threadState(readEvents(board,written.event.thread)),status,file:join(commonsRoot(),board,'threads',written.event.thread)};
