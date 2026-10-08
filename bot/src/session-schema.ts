@@ -111,6 +111,10 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE UNIQUE INDEX IF NOT EXISTS steering_accepted_input ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);
+        -- Which requests a recipient turn holds is asked for every open request on every
+        -- communication wake; scanning the requests' large rows made it a third of the owner's busy
+        -- time on 2026-10-07. With this the lookup seeks from the turn's inputs to their requests.
+        CREATE INDEX IF NOT EXISTS session_communication_requests_target_input ON session_communication_requests(target_input_id) WHERE target_input_id IS NOT NULL;
         -- Every per-session read of inputs (a session's receipts, its resurrection record, the
         -- Inbox's human replies) seeks by session; without this the catalogue's per-imported-
         -- session lookup scanned 10,787 rows 651 times and took 3.9 s per read (2026-09-25).
