@@ -11,7 +11,9 @@ function fixture(count:number){
   source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
     agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
-      saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER);
+      saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
+      saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
+      saved_repeat_ms INTEGER,saved_sequence INTEGER);
     CREATE INDEX turns_session_latest ON turns(session_id,id DESC);
     CREATE INDEX turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
     CREATE INDEX turns_session_queued ON turns(session_id,id DESC) WHERE status='queued';
@@ -150,7 +152,9 @@ function visibleCardFacts(){
   assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',running:true});
   assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
   assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
-  assert.deepEqual(card.savedWork,{kind:'scheduled',status:'queued',startsAt:'2026-10-09T00:00:00.000Z'});
+  assert.equal(card.savedWork.turnId,7,'the card must carry the exact control identity beyond the first saved-work page');
+  assert.equal(card.savedWork.kind,'scheduled');assert.equal(card.savedWork.status,'queued');
+  assert.equal(card.savedWork.startsAt,'2026-10-09T00:00:00.000Z');
   source.query("UPDATE turns SET dispatch_failure_class='backoff' WHERE id=7").run();
   cards.apply(1,[{sequence:2,source_table:'turns',row_key:'7',session_id:1}]);
   assert.equal(read().savedWork.startsAt,null,'provider retry timing must not be advertised as a chosen start time');

@@ -16,7 +16,8 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
   interactionPolicy:'standard'|'consultation-only';account:string|null;accountTruncated:boolean;
   timing:{startedAt:string|null;running:boolean}|null;
-  savedWork:{kind:'scheduled'|'banked';status:string;startsAt:string|null}|null;
+  savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;startsAt:string|null;savedAt:string|null;
+    expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
   turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;revision?:number}>;
 type CardRow={generation:number;session_id:number;sort_ms:number;space:SessionSpace;needs_attention:number|null;
   card_json:string;revision:number};
@@ -111,9 +112,11 @@ export class PreparedSessionCards {
       {id:number;status:string;started_at:string|null}|null;
     const active=this.source.query("SELECT id,started_at FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1")
       .get(sessionId) as {id:number;started_at:string|null}|null;
-    const saved=this.source.query(`SELECT saved_kind,status,dispatch_failure_class,dispatch_next_attempt_ms FROM turns
+    const saved=this.source.query(`SELECT id,saved_kind,status,dispatch_failure_class,dispatch_next_attempt_ms,
+      saved_at_ms,saved_expires_at_ms,saved_account,saved_window,saved_repeat_ms,saved_sequence FROM turns
       WHERE session_id=? AND saved_kind IS NOT NULL AND status='queued' ORDER BY id DESC LIMIT 1`).get(sessionId) as
-      {saved_kind:'scheduled'|'banked';status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null}|null;
+      {id:number;saved_kind:'scheduled'|'banked';status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;
+       saved_at_ms:number|null;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null}|null;
     const queued=(this.source.query("SELECT COUNT(*) AS n FROM turns WHERE session_id=? AND status='queued'").get(sessionId) as {n:number}).n;
     const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid
       ?meta.codexLifecycle:null;
@@ -146,7 +149,10 @@ export class PreparedSessionCards {
       account:account?.text??null,accountTruncated:account?.truncated??false,
       timing:external?{startedAt:external.startedAt??null,running:external.state==='running'}:
         timed?{startedAt:timed.started_at?iso(timed.started_at):null,running:!!active}:null,
-      savedWork:saved?{kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved)}:null,
+      savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved),
+        savedAt:saved.saved_at_ms?new Date(saved.saved_at_ms).toISOString():null,
+        expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
+        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,sequence:saved.saved_sequence}:null,
       model:typeof meta.model==='string'?preview(meta.model,120).text:null,
       reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null,
       turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'
