@@ -1,17 +1,8 @@
-import {existsSync} from 'node:fs';
-import {dirname,join} from 'node:path';
 import {Worker} from 'node:worker_threads';
+import {releaseWorkerPath} from './release-worker';
 
 type Work={operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
-
-function workerPath(){
-  const adjacent=join(dirname(process.argv[1]||''),'provider-history-page-worker.js');
-  if(existsSync(adjacent))return adjacent;
-  const source=join(import.meta.dir,'provider-history-page-worker.ts');
-  if(existsSync(source))return source;
-  throw new Error('HISTORY_PAGE_WORKER_UNAVAILABLE');
-}
 
 /** One persistent worker keeps the cold Claude import alive between requests. */
 export class ProviderHistoryPageClient {
@@ -20,7 +11,7 @@ export class ProviderHistoryPageClient {
   private pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private ensure(){
     if(this.worker)return this.worker;
-    const worker=new Worker(workerPath());
+    const worker=new Worker(releaseWorkerPath('provider-history-page-worker'));
     worker.unref();
     worker.on('message',(reply:Reply)=>{
       const item=this.pending.get(reply.id);if(!item)return;

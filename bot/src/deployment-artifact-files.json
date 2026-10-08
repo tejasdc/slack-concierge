@@ -32,6 +32,7 @@
     "control/application/presentation-search-read.js": "bot/src/presentation-search-read.ts",
     "control/application/provider-history-worker.js": "bot/src/provider-history-worker.ts",
     "control/application/provider-history-sync-worker.js": "bot/src/provider-history-sync-worker.ts",
+    "control/application/provider-history-page-worker.js": "bot/src/provider-history-page-worker.ts",
     "control/application/speech-job-worker.js": "bot/src/speech-job-worker.ts"
   },
   "controlFiles": {
@@ -61,6 +62,7 @@
     "control/application/presentation-search-read.js",
     "control/application/provider-history-worker.js",
     "control/application/provider-history-sync-worker.js",
+    "control/application/provider-history-page-worker.js",
     "control/application/speech-job-worker.js"
   ]
 }
