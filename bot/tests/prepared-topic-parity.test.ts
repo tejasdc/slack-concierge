@@ -3,6 +3,8 @@ import {Database} from 'bun:sqlite';
 import {db} from '../src/state';
 import {readTopic,listTopics,invalidateTopicRoots} from '../src/session-topics';
 import {topicContext,preparedTopicValue} from '../src/prepared-topic-values';
+import {preparedInboxDisplay} from '../src/presentation-inbox-display';
+import {observedDatabase,observeStorageOperation} from '../src/storage-observation';
 import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChunk,readPreparedQuestions,readPreparedTopicOverview,readPreparedTopicItems} from '../src/prepared-topics';
 
 test('prepared topic preserves canonical question, request, attention, and work values',()=>{
@@ -20,7 +22,8 @@ test('prepared topic preserves canonical question, request, attention, and work 
  const prepared=new Database(':memory:');
  prepared.exec(`CREATE TABLE presentation_messages(generation INTEGER,event_sequence INTEGER,topic_id TEXT,root_input_id TEXT,message_id TEXT,created_at TEXT,entry_kind TEXT);
   CREATE INDEX pm_topic ON presentation_messages(generation,topic_id,event_sequence DESC);
-  CREATE TABLE presentation_topic_events(generation INTEGER,topic_id TEXT,event_sequence INTEGER);`);
+  CREATE TABLE presentation_topic_events(generation INTEGER,topic_id TEXT,event_sequence INTEGER);
+  CREATE TABLE presentation_message_display(generation INTEGER,event_sequence INTEGER,display_json TEXT);`);
  db.query('INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
   .run('root-one',session,'fixture','root-one','input','human',JSON.stringify({text:'The question'}),'{}',at);
  db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)').run('root-one','fixture-topic');
@@ -31,6 +34,10 @@ test('prepared topic preserves canonical question, request, attention, and work 
   .run('post-one',session,'root-one','post',JSON.stringify({text:longText}),'2026-10-08T00:00:01.000Z').lastInsertRowid);
  prepared.query('INSERT INTO presentation_messages VALUES(?,?,?,?,?,?,?)').run(1,accepted,'fixture-topic','root-one','root-one',at,'other');
  prepared.query('INSERT INTO presentation_messages VALUES(?,?,?,?,?,?,?)').run(1,post,'fixture-topic','root-one','post-one','2026-10-08T00:00:01.000Z','post');
+ for(const [sequence,id] of [[accepted,'root-one'],[post,'post-one']] as const){
+  const display=preparedInboxDisplay(db,session,sequence,id)!;
+  prepared.query('INSERT INTO presentation_message_display VALUES(?,?,?)').run(1,sequence,JSON.stringify(display.preview));
+ }
  db.query('INSERT INTO inbox_questions(question_id,topic_id,state,kind,context,brief_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
   .run('read-answer','fixture-topic','open','reading','ready',JSON.stringify({...brief,reads:['post-one']}),at,at);
  invalidateTopicRoots();
@@ -44,17 +51,36 @@ test('prepared topic preserves canonical question, request, attention, and work 
  expect(readPreparedQuestions(prepared,{state:'open',canonicalHead:7}).questions?.map((q:any)=>q.id)).toEqual(['ready']);
  const detail=readPreparedTopic(prepared,'fixture-topic',7);
  let raw='';for(let chunk=0;;chunk++){const part=readPreparedTopicChunk(prepared,detail.detailRef!.hash,chunk)!;raw+=part.text;if(chunk+1===part.count)break;}
- expect(JSON.parse(raw)).toEqual(canonicalDetail);
+ expect(JSON.parse(raw).collections).toBe('paged');
+ expect(JSON.parse(raw).questions).toEqual([]);
+ expect(JSON.parse(raw).requests).toEqual([]);
  expect(Buffer.byteLength(readPreparedTopicChunk(prepared,detail.detailRef!.hash,0)!.text)).toBeLessThanOrEqual(16384);
  expect(detail.detailRef).not.toBeNull();
  const overview=readPreparedTopicOverview(prepared,'fixture-topic',7);
  expect(overview.questionCounts).toEqual({open:1,reading:1,checking:1,deferred:1,history:1});
  expect(overview.questions.map((q:any)=>q.id)).toEqual(['ready']);
  const reading=readPreparedTopicItems(prepared,{topicId:'fixture-topic',kind:'questions',filter:'reading',canonicalHead:7});
- expect(reading.items[0].detailRef.hash).toMatch(/^[a-f0-9]{64}$/);
+ expect(reading.items[0].reads[0].detailRef).toEqual({sessionId:`concierge:${session}`,messageId:'post-one'});
+ expect(reading.items[0].reads[0].text.length).toBeLessThan(longText.length);
  expect(Buffer.byteLength(JSON.stringify(reading))).toBeLessThan(8192);
  expect(readPreparedQuestions(prepared,{state:'history',canonicalHead:7}).questionCounts).toEqual(overview.questionCounts);
  expect(readPreparedTopics(prepared,{query:'precise',canonicalHead:7}).topics[0].id).toBe('fixture-topic');
  expect(readPreparedTopics(prepared,{query:'A',canonicalHead:7}).topics[0].id).toBe('fixture-topic');
+ // The same long answer can be referenced by many historical reading items. Preparing
+ // those items must never make one full answer copy per question.
+ const hugeText='A retained eight megabyte answer. '.repeat(260000);
+ db.query('UPDATE session_owner_events SET payload_json=? WHERE event_id=?').run(JSON.stringify({text:hugeText}),'post-one');
+ const updatedDisplay=preparedInboxDisplay(db,session,post,'post-one')!;
+ prepared.query('UPDATE presentation_message_display SET display_json=? WHERE event_sequence=?').run(JSON.stringify(updatedDisplay.preview),post);
+ const insert=db.query('INSERT INTO inbox_questions(question_id,topic_id,state,kind,context,brief_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)');
+ db.transaction(()=>{for(let i=0;i<1000;i++)insert.run(`historical-${i}`,'fixture-topic','read','reading','ready',JSON.stringify({...brief,reads:['post-one']}),at,at);})();
+ const boundedStore=new PreparedTopics(observedDatabase(db),observedDatabase(prepared));
+ const context=boundedStore.context(1,session);let bytes=0,calls=0;
+ observeStorageOperation('topic-streaming-growth',()=>boundedStore.write(context,'fixture-topic'),work=>{bytes=work.db_result_bytes;calls=work.db_calls;});
+ expect(calls).toBeGreaterThan(1000);
+ expect(bytes).toBeLessThan(16*1024*1024);
+ expect(readPreparedTopicOverview(prepared,'fixture-topic',7).questionCounts.history).toBe(1001);
+ expect(Buffer.byteLength(JSON.stringify(readPreparedTopicOverview(prepared,'fixture-topic',7)))).toBeLessThan(32*1024);
+ console.log(JSON.stringify({fixture:'1000-reading-items-one-8MB-answer',db_result_bytes:bytes,db_calls:calls}));
  prepared.close();
 });

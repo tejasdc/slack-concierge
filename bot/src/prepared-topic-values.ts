@@ -8,7 +8,7 @@ const iso=(value:string|null|undefined)=>!value?null:value.includes('T')?value:v
 const parse=(value:string|null|undefined,fallback:any=null)=>{try{return value?JSON.parse(value):fallback;}catch{return fallback;}};
 const open=(state:string)=>OPEN_QUESTION_STATES.some(item=>item===state);
 const relaySince='2026-09-23T05:30:00.000Z';
-export type TopicContext={source:Database;prepared:Database;generation:number;sessionId:number;
+export type TopicContext={source:Database;prepared:Database;generation:number;sessionId:number;boundedReads?:boolean;
   root:ReturnType<typeof inboxRootResolver>;humanReplies:Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>;
   queued:{inputId:string;root:string|null;position:number}[];
   dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[];
@@ -56,8 +56,16 @@ export function topicContext(source:Database,prepared:Database,generation:number
  return {source,prepared,generation,sessionId,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
 }
 
-function messageById(context:TopicContext,id:string):{content:string;at:string;root:string|null}|null{
+function messageById(context:TopicContext,id:string):{content:string;at:string;root:string|null;detailRef?:unknown;contentCoverage?:unknown}|null{
  const {source,sessionId,root}=context;
+ if(context.boundedReads){
+  const row=context.prepared.query(`SELECT m.root_input_id,d.display_json FROM presentation_messages m
+   JOIN presentation_message_display d ON d.generation=m.generation AND d.event_sequence=m.event_sequence
+   WHERE m.generation=? AND m.message_id=? ORDER BY m.event_sequence LIMIT 1`).get(context.generation,id) as {root_input_id:string;display_json:string}|null;
+  if(!row)return null;
+  const value=JSON.parse(row.display_json);
+  return {content:value.content,at:value.createdAt,root:row.root_input_id,...(value.detailRef?{detailRef:value.detailRef,contentCoverage:value.contentCoverage}:{})};
+ }
  const row=(source.query(`SELECT e.kind,e.event_id,e.input_id,e.created_at,e.payload_json,t.agent_text,i.payload_json AS input_json
   FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id LEFT JOIN session_inputs i ON i.id=e.input_id
   WHERE e.session_id=? AND e.event_id=? AND e.kind IN ('post','result') ORDER BY e.sequence LIMIT 1`).get(sessionId,id)
@@ -71,6 +79,8 @@ function messageById(context:TopicContext,id:string):{content:string;at:string;r
  const message=display.detailJson?JSON.parse(display.detailJson):display.preview;
  return {content:message.content,at:message.createdAt,root:root(sessionId,id)};
 }
+const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>>)=>({messageId:id,text:message.content,at:message.at,
+ ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
 
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
  if(question.kind!=='reading')return [];
@@ -78,26 +88,32 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
  for(const id of question.sources??[])roots.add(root(sessionId,id)??id);
  const named=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown)=>typeof id==='string'&&!!id.trim()):[];
  if(named.length)return named.flatMap((id:string)=>{const message=messageById(context,id);
-  return message&&message.content.trim()&&message.root&&roots.has(message.root)?[{messageId:id,text:message.content,at:message.at}]:[];});
+  return message&&(message.content.trim()||message.detailRef)&&message.root&&roots.has(message.root)?[readingValue(id,message)]:[];});
  const turn=question.legacyNeedEventId?(source.query('SELECT turn_id FROM session_owner_events WHERE event_id=?').get(question.legacyNeedEventId) as {turn_id:number|null}|null)?.turn_id:null;
  const turnId=turn??(question.owner?.runId?(source.query('SELECT id FROM turns WHERE native_run_id=?').get(question.owner.runId) as {id:number}|null)?.id:null);
  if(turnId!==null&&turnId!==undefined){
-  const posts=source.query(`SELECT event_id,input_id,created_at,json_extract(payload_json,'$.text') AS text
+  const posts=source.query(`SELECT event_id,input_id,created_at,${context.boundedReads?"''":"json_extract(payload_json,'$.text')"} AS text
     FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as any[];
-  const here=posts.filter(post=>!!post.input_id&&roots.has(post.input_id)&&String(post.text??'').trim());
-  if(here.length)return here.map(post=>({messageId:post.event_id,text:String(post.text),at:iso(post.created_at)!}));
-  const result=source.query(`SELECT e.event_id,e.input_id,e.created_at,COALESCE(json_extract(e.payload_json,'$.text'),t.agent_text,'') AS text
+  const here=posts.filter(post=>!!post.input_id&&roots.has(post.input_id));
+  const values=here.flatMap(post=>{
+   const message=context.boundedReads?messageById(context,post.event_id):{content:String(post.text??''),at:iso(post.created_at)!,root:post.input_id};
+   return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];
+  });
+  if(values.length)return values;
+  const result=source.query(`SELECT e.event_id,e.input_id,e.created_at,${context.boundedReads?"''":"COALESCE(json_extract(e.payload_json,'$.text'),t.agent_text,'')"} AS text
     FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id
     WHERE e.session_id=? AND e.turn_id=? AND e.kind='result' LIMIT 1`).get(sessionId,turnId) as any;
-  if(result&&String(result.text).trim()&&result.input_id&&roots.has(root(sessionId,result.input_id)??''))
-   return [{messageId:result.event_id,text:String(result.text),at:iso(result.created_at)!}];
+  if(result&&result.input_id&&roots.has(root(sessionId,result.input_id)??'')){
+   const message=context.boundedReads?messageById(context,result.event_id):{content:String(result.text??''),at:iso(result.created_at)!,root:result.input_id};
+   if(message&&(message.content.trim()||message.detailRef))return [readingValue(result.event_id,message)];
+  }
  }
  const notices=[] as {messageId:string;text:string;at:string}[];
  for(const id of question.sources??[]){
   const input=source.query('SELECT scope FROM session_inputs WHERE id=?').get(id) as {scope:string}|null;
   if(input?.scope!=='service:provider-free-notice'||!roots.has(root(sessionId,id)??id))continue;
   const message=messageById(context,id);
-  if(message?.content.trim())notices.push({messageId:id,text:message.content,at:message.at});
+  if(message&&(message.content.trim()||message.detailRef))notices.push(readingValue(id,message));
  }
  return notices;
 }
@@ -108,12 +124,22 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   replaces:row.replaces,replacedBy:row.replaced_by,answer:parse(row.answer_json),recovered:!!row.recovered,
   legacyNeedEventId:row.legacy_need_event_id,kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
   generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
- const reading=context.source.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at')
-  .all(question.topicId,question.id) as any[];
+ const reading=[context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='exposed' AND revision=? LIMIT 1")
+  .get(question.topicId,question.id,question.revision),
+  context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
+  .get(question.topicId,question.id)].filter(Boolean);
  return questionDisplay({...question,questionId:question.id},replies,reading,readsFor(context,question,new Set(roots)));
 }
 
-export function preparedTopicValue(context:TopicContext,topicId:string){
+export type TopicItemSink={question:(value:any)=>void;request:(value:any)=>void};
+function* topicRows(source:Database,table:'inbox_questions'|'inbox_requests',topicId:string){
+ const key=table==='inbox_questions'?'question_id':'request_id';let after='';
+ while(true){const rows=source.query(`SELECT * FROM ${table} WHERE topic_id=? AND ${key}>? ORDER BY ${key} LIMIT 50`).all(topicId,after) as any[];
+  for(const row of rows)yield row;
+  if(rows.length<50)return;after=rows.at(-1)[key];
+ }
+}
+export function preparedTopicValue(context:TopicContext,topicId:string,sink?:TopicItemSink){
  const {source,prepared,generation,sessionId}=context;
  const row=source.query('SELECT * FROM inbox_topics WHERE topic_id=?').get(topicId) as any;
  if(!row)return null;
@@ -122,37 +148,56 @@ export function preparedTopicValue(context:TopicContext,topicId:string){
   aliases:parse(row.aliases_json,[]),revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,
   closure:parse(row.closure_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
  const replies=roots.flatMap(root=>context.humanReplies.get(root)??[]).sort((a,b)=>b.at.localeCompare(a.at));
- const questionRows=source.query('SELECT * FROM inbox_questions WHERE topic_id=? ORDER BY created_at,question_id').all(topicId) as any[];
- const questions=questionRows.map(question=>questionValue(context,question,roots,replies));
- const requestRows=source.query('SELECT * FROM inbox_requests WHERE topic_id=? ORDER BY created_at,request_id').all(topicId) as any[];
- const requests=requestRows.map(request=>({requestId:request.request_id,topicId:request.topic_id,title:request.title,brief:request.brief,
-  state:request.state,disposition:request.disposition,revision:request.revision,sources:parse(request.sources_json,[]),
-  dispatches:parse(request.dispatches_json,[]),closure:parse(request.closure_json),createdAt:iso(request.created_at)!,updatedAt:iso(request.updated_at)!}));
- const latest=prepared.query(`SELECT event_sequence AS sequence,created_at AS at FROM presentation_messages
-   WHERE generation=? AND topic_id=? ORDER BY event_sequence DESC LIMIT 1`).get(generation,topicId) as {sequence:number;at:string}|null;
- const lastSequence=latest?.sequence??0;
- const newestAt=prepared.query(`SELECT MAX(created_at) AS at FROM presentation_messages WHERE generation=? AND topic_id=?`).get(generation,topicId) as {at:string|null};
- const lastAt=iso(newestAt.at)??topic.createdAt;
- const needing=questions.filter(awaitingHim).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
- const reading=questions.filter(toReadByHim).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+ const questions:any[]=[],requests:any[]=[],questionCounts={open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0};
+ const needItems:any[]=[],readItems:any[]=[];
  const item=(question:any)=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision,
   kind:question.kind,owner:question.owner?.sessionId??null,outcome:question.kind==='reading'?'response':'needs_you'});
- const needItems=needing.map(item),readItems=reading.map(item);
+ const retainOldest=(items:any[],question:any)=>{items.push(item(question));items.sort((a,b)=>a.at.localeCompare(b.at));if(sink&&items.length>3)items.length=3;};
+ for(const row of topicRows(source,'inbox_questions',topicId)){
+  const question=questionValue(context,row,roots,replies);sink?.question(question);
+  if(awaitingHim(question)){questionCounts.open++;retainOldest(needItems,question);}
+  if(toReadByHim(question)){questionCounts.reading++;retainOldest(readItems,question);}
+  if(preparingForHim(question))questionCounts.checking++;
+  if(question.state==='deferred')questionCounts.deferred++;
+  if(['answered','declined','withdrawn','superseded','read','expired'].includes(question.state))questionCounts.history++;
+  if(!sink)questions.push(question);
+  else if(open(question.state)||question.state==='deferred')questions.push({id:question.id,state:question.state,owner:question.owner,
+   brief:{decision:question.brief?.decision},sources:question.sources});
+ }
+ for(const request of topicRows(source,'inbox_requests',topicId)){
+  const value={requestId:request.request_id,topicId:request.topic_id,title:request.title,brief:request.brief,
+  state:request.state,disposition:request.disposition,revision:request.revision,sources:parse(request.sources_json,[]),
+  dispatches:parse(request.dispatches_json,[]),closure:parse(request.closure_json),createdAt:iso(request.created_at)!,updatedAt:iso(request.updated_at)!};
+  sink?.request(requestView(context,value));
+  if(value.state==='open')requestCounts.open++;else if(value.state==='closed')requestCounts.closed++;
+  if(!sink)requests.push(value);
+  else if(value.state==='open')requests.push({requestId:value.requestId,title:value.title,state:value.state,sources:value.sources,dispatches:value.dispatches});
+ }
+ if(!sink){questions.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));requests.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.requestId.localeCompare(b.requestId));}
+ let lastSequence=0,lastAt=topic.createdAt;
+ let foundEntry=false;
+ for(const root of roots){
+  const latest=prepared.query(`SELECT event_sequence AS sequence,created_at AS at FROM presentation_messages
+   WHERE generation=? AND root_input_id=? ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string}|null;
+  if(!latest)continue;
+  lastSequence=Math.max(lastSequence,latest.sequence);
+  const at=iso(latest.at)!;if(!foundEntry||at>lastAt)lastAt=at;foundEntry=true;
+ }
  const work=topicWorkValue(context,topic,roots);
  const summary={id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
   revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
   lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
   closedAt:topic.state==='closed'&&topic.closure?.kind!=='merged'?topic.closure?.at??topic.updatedAt:null,
-  needsYou:{count:needItems.length,oldestAt:needItems[0]?.at??null,items:needItems},
-  toRead:{count:readItems.length,oldestAt:readItems[0]?.at??null,items:readItems},
-  questions:{open:needItems.length,checking:questions.filter(preparingForHim).length,deferred:questions.filter(question=>question.state==='deferred').length},
-  requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},work};
+  needsYou:{count:questionCounts.open,oldestAt:needItems[0]?.at??null,items:needItems},
+  toRead:{count:questionCounts.reading,oldestAt:readItems[0]?.at??null,items:readItems},
+  questions:{open:questionCounts.open,checking:questionCounts.checking,deferred:questionCounts.deferred},requests:requestCounts,work,
+  ...(sink&&(questionCounts.open>3||questionCounts.reading>3)?{coverage:{complete:false,code:'topic_attention_preview'}}:{})};
  const replyTargets=replyTargetsValue(context,topic,roots,requests,questions);
  const detail={topic:{...summary,closure:topic.closure,history:topicHistory(context,topicId)},
-  requests:requests.map(request=>requestView(context,request)),questions,
+  requests:sink?[]:requests.map(request=>requestView(context,request)),questions:sink?[]:questions,
   focus:context.focus?.topicId===topicId?context.focus:null,work,replyTargets};
  const band=summary.needsYou.count||summary.toRead.count?0:work.kind!=='idle'?1:summary.unread?2:3;
- return {sessionId,topicId,summary,detail,band,search:[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase(),
+ return {sessionId,topicId,summary,detail,questionCounts,requestCount:requestCounts.open+requestCounts.closed,band,search:[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase(),
   recency:topic.state==='closed'?String(summary.closedAt??lastAt):String(lastAt)};
 }
 
@@ -248,9 +293,10 @@ function topicHistory(context:TopicContext,topicId:string){
  const rows=context.prepared.query(`SELECT event_sequence AS sequence FROM presentation_topic_events
   WHERE generation=? AND topic_id=? ORDER BY event_sequence DESC LIMIT 20`).all(context.generation,topicId) as {sequence:number}[];
  return rows.map(row=>{
-  const event=context.source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(row.sequence) as any;
+  const event=context.source.query(`SELECT created_at,json_extract(payload_json,'$.change') AS change,
+   json_extract(payload_json,'$.by') AS by_json,json_extract(payload_json,'$.reason') AS reason
+   FROM session_owner_events WHERE sequence=?`).get(row.sequence) as any;
   if(!event)return null;
-  const payload=parse(event.payload_json,{});
-  return {change:payload.change,at:iso(event.created_at),by:payload.by??null,reason:payload.reason??null};
+  return {change:event.change,at:iso(event.created_at),by:parse(event.by_json),reason:event.reason??null};
  }).filter(Boolean);
 }

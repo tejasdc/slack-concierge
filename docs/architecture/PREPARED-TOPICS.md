@@ -13,19 +13,46 @@ canonical mutable owner into the worker.
 
 Interactive reads use indexed keysets, at most twenty rows, and explicit source coverage.
 Lists retain exact counts and expose a detail reference when their value needs a preview.
-Full topic/question values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
+Large individual values are retained as SHA-256-addressed, sixteen-KiB UTF-8 chunks.
 Clients must verify the concatenated digest before displaying a complete value. A newer
 generation invalidates old list cursors; source lag is indexing, never an empty complete list.
 The change feed carries both sides of each update and a null after-value for deletion.
+It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
+walks finite batches, removes superseded generations and unreferenced chunks, and never
+deletes canonical records. A removed detail reference requires refreshing its owning item.
 
-This source commit is not an activated route. Remaining integration requirements: source
-writer coverage, generation lifecycle/chunk retention, incremental root facts, exact topic
-search, question grouping/client continuation, and route contracts. Do not activate the
-reader before these are completed in the integrated responsiveness release.
+Each changed topic streams question/request rows through item callbacks instead of building
+one full detail object. Historical reading items use the existing bounded message preview
+and exact message detail reference; one eight-MB answer referenced by a thousand questions
+does not become a thousand eight-MB copies. The remaining arrays contain topic roots and
+currently actionable ownership facts, not historical reading bodies. The worker still visits
+that topic's item metadata when its dependencies change; this is not a claim of constant
+background CPU per topic. Reverse dependency indexes keep unrelated token events out of it.
+
+The overview returns exact per-filter question totals plus one selected-filter page, request
+count and a request page. Additional pages are explicit. Requests may also be paged by their
+source input for cards beside a visible conversation entry. Global question pages retain
+topic groups and exact filter counts. Inbox attention uses those prepared facts and indexed
+maximum generation; incomplete coverage returns unknown attention, never false.
+
+Whole-topic detail is metadata only (`collections: 'paged'`), suitable for an explicit Manage
+action needing complete roots; it does not eagerly copy all requests/questions. Large item,
+reply-target and reading detail references are fetched only on explicit expansion.
+Topic search reads bounded substring postings (including single-character queries), with an
+explicit continuation. Its order is indexed search order, not the Open list's priority order.
+Management entries use the shared sentence formatter on selected scalar source fields;
+their interactive display never parses a raw declaration containing all its questions.
+
+This source work is not an activated route. Integration owns worker invocation, source
+writer coverage, generation activation, client continuation and route contracts. A worker
+must rebuild when `isReady(generation)` is false, call `writeEvent` for each management event,
+drain pending topic dependencies before checkpointing, and run `collectPage` on idle cycles.
 
 Checks: `CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622 bun test
 tests/prepared-topic-parity.test.ts` uses the mandatory isolated-state preload. The fixture
-compares actual canonical and prepared detail/summary values, including a long reading.
+compares actual canonical and prepared detail/summary values, including a long reading,
+then exercises streaming preparation of a thousand historical reading references to one
+eight-MB answer (about two MB total database result bytes, not eight GB of copied text).
 `bun run scripts/topic-growth-fixtures.ts` checks indexed deep pagination at 100, 1,000 and
-10,000 topics, explicit stale coverage, deletion changes and generation resets. These are
+10,000 topics under actual read budgets, explicit stale coverage, deletion changes and generation resets. These are
 local fixture results, not live product acceptance.

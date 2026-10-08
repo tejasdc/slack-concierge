@@ -3,11 +3,12 @@ import {createHash} from 'node:crypto';
 import {preparedTopicValue,topicContext,type TopicContext} from './prepared-topic-values';
 import {inboxRootResolver} from './presentation-message-source';
 import {gram,shortTokens} from './prepared-search';
+import {topicEventDisplay} from './topic-event-display';
 
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
 const orderKey=(band:number,at:string,id:string)=>`${band}:${String(9999999999999-Date.parse(at)).padStart(13,'0')}:${id}`;
-type Meta={generation:number;source_head:number;ready:number};
+type Meta={generation:number;source_head:number;ready:number;retained_after:number};
 const json=(value:unknown)=>JSON.stringify(value);
 const cursor=(value:unknown)=>Buffer.from(json(value)).toString('base64url');
 const decode=(value:string)=>{try{return JSON.parse(Buffer.from(value,'base64url').toString());}catch{return null;}};
@@ -20,9 +21,19 @@ const questionSet=(q:any,state:string)=>state==='open'?q.waiting&&q.kind==='deci
  * Complete values are retained as immutable chunks, so a large reading item cannot turn a
  * list query into a large response or silently lose its text. */
 export class PreparedTopics {
+ private retainedBy:{generation:number;owner:string}|null=null;
+ private collectAfter='';
  constructor(private source:Database,private prepared:Database){
+  const columns=prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[];
+  if(columns.length&&!columns.some(column=>column.name==='retained_after')){
+   // These are disposable projections, never source ledger tables or message indexes.
+   for(const table of ['presentation_topic_search','presentation_topic_short','presentation_topics_meta','presentation_topics',
+    'presentation_topic_roots','presentation_topic_sorting','presentation_topic_chunks','presentation_topic_changes',
+    'presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_dirty',
+    'presentation_topic_sorting_dirty','presentation_topic_request_links','presentation_question_counts'])prepared.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
   prepared.exec(`CREATE TABLE IF NOT EXISTS presentation_topics_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-   generation INTEGER NOT NULL DEFAULT 0,source_head INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0);
+   generation INTEGER NOT NULL DEFAULT 0,source_head INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0,retained_after INTEGER NOT NULL DEFAULT 0);
    INSERT OR IGNORE INTO presentation_topics_meta(singleton) VALUES(1);
    CREATE TABLE IF NOT EXISTS presentation_topic_roots(generation INTEGER NOT NULL,root_id TEXT NOT NULL,topic_id TEXT,
     session_id INTEGER NOT NULL,sequence INTEGER NOT NULL,at TEXT NOT NULL,text TEXT NOT NULL,unfiled INTEGER NOT NULL,
@@ -46,8 +57,12 @@ export class PreparedTopics {
    CREATE INDEX IF NOT EXISTS presentation_topics_background ON presentation_topics(generation,background,sort_key);
    CREATE TABLE IF NOT EXISTS presentation_topic_chunks(hash TEXT NOT NULL,chunk INTEGER NOT NULL,text TEXT NOT NULL,
     count INTEGER NOT NULL,PRIMARY KEY(hash,chunk));
+   CREATE TABLE IF NOT EXISTS presentation_topic_blobs(hash TEXT PRIMARY KEY);
+   CREATE TABLE IF NOT EXISTS presentation_topic_chunk_refs(generation INTEGER NOT NULL,owner TEXT NOT NULL,hash TEXT NOT NULL,
+    PRIMARY KEY(generation,owner,hash));
+   CREATE INDEX IF NOT EXISTS presentation_topic_chunk_ref_hash ON presentation_topic_chunk_refs(hash);
    CREATE TABLE IF NOT EXISTS presentation_topic_changes(sequence INTEGER PRIMARY KEY AUTOINCREMENT,generation INTEGER NOT NULL,
-    topic_id TEXT NOT NULL,before_json TEXT,after_json TEXT);
+    topic_id TEXT NOT NULL,before_json TEXT,after_json TEXT,created_ms INTEGER NOT NULL DEFAULT(unixepoch()*1000));
    CREATE INDEX IF NOT EXISTS presentation_topic_changes_page ON presentation_topic_changes(generation,sequence);
    CREATE VIRTUAL TABLE IF NOT EXISTS presentation_topic_search USING fts5(text,tokenize='trigram');
    CREATE VIRTUAL TABLE IF NOT EXISTS presentation_topic_short USING fts5(tokens,detail=none);
@@ -72,11 +87,34 @@ export class PreparedTopics {
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topic_question_topic_page ON presentation_topic_questions(generation,topic_id,selected,created_at DESC,question_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_request_links(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,input_id TEXT NOT NULL,request_id TEXT NOT NULL,
     PRIMARY KEY(generation,topic_id,input_id,request_id));`);
+  prepared.exec('CREATE TABLE IF NOT EXISTS presentation_topic_event_display(generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,PRIMARY KEY(generation,event_sequence))');
+  prepared.exec(`CREATE TABLE IF NOT EXISTS presentation_inbox_attention(generation INTEGER NOT NULL,scope TEXT NOT NULL,event_id TEXT NOT NULL,
+   topic_id TEXT,need_generation INTEGER NOT NULL,order_key TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(generation,scope,event_id));
+   CREATE INDEX IF NOT EXISTS presentation_inbox_attention_page ON presentation_inbox_attention(generation,scope,order_key);
+   CREATE INDEX IF NOT EXISTS presentation_inbox_attention_max ON presentation_inbox_attention(generation,scope,need_generation DESC);
+   CREATE INDEX IF NOT EXISTS presentation_inbox_attention_topic ON presentation_inbox_attention(generation,topic_id);
+   CREATE TABLE IF NOT EXISTS presentation_inbox_attention_counts(generation INTEGER NOT NULL,scope TEXT NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(generation,scope));
+   CREATE TRIGGER IF NOT EXISTS presentation_inbox_attention_added AFTER INSERT ON presentation_inbox_attention BEGIN
+    INSERT INTO presentation_inbox_attention_counts VALUES(new.generation,new.scope,1) ON CONFLICT(generation,scope) DO UPDATE SET count=count+1; END;
+   CREATE TRIGGER IF NOT EXISTS presentation_inbox_attention_removed AFTER DELETE ON presentation_inbox_attention BEGIN
+    UPDATE presentation_inbox_attention_counts SET count=count-1 WHERE generation=old.generation AND scope=old.scope; END;`);
+ }
+ isReady(generation:number){const current=meta(this.prepared);return !!current.ready&&current.generation===generation;}
+ writeEvent(generation:number,sequence:number){
+  const value=topicEventDisplay(this.source,sequence);if(!value)return;
+  this.retainedBy={generation,owner:`event:${sequence}`};
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(generation,this.retainedBy.owner);
+  const display=Buffer.byteLength(json(value))<=4096?value:{...value,content:preview(value.content,800),
+   topicEvent:{change:value.topicEvent.change,by:null,reason:preview(value.topicEvent.reason??'',400),revision:value.topicEvent.revision},
+   detailRef:this.retain(value),contentCoverage:{complete:false,code:'topic_event_preview'}};
+  this.prepared.query('INSERT OR REPLACE INTO presentation_topic_event_display VALUES(?,?,?)').run(generation,sequence,json(display));
  }
  beginRebuild(generation:number){
   for(const table of ['presentation_topic_search','presentation_topic_short'])this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM presentation_topics WHERE generation=?)`).run(generation);
   for(const table of ['presentation_topics','presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_dirty'])this.prepared.query(`DELETE FROM ${table} WHERE generation=?`).run(generation);
   this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=?').run(generation);
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=?').run(generation);
+  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=?').run(generation);
  }
  context(generation:number,sessionId:number){return topicContext(this.source,this.prepared,generation,sessionId);}
  rebuildRootsPage(generation:number,after='',limit=100){
@@ -141,8 +179,13 @@ export class PreparedTopics {
    .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,row.created_at.includes('T')?row.created_at:row.created_at.replace(' ','T')+'Z',text.trim().slice(0,120),topic?0:1);
  }
  updateSorting(context:TopicContext){
+  this.retainedBy={generation:context.generation,owner:`sorting:${context.sessionId}`};
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(context.generation,this.retainedBy.owner);
   const row=this.source.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(context.sessionId) as {native_metadata_json:string};
   const needs=JSON.parse(row.native_metadata_json||'{}').needs??[];
+  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=? AND scope=?').run(context.generation,`unfiled:${context.sessionId}`);
+  for(const need of needs)if(!this.source.query('SELECT 1 FROM inbox_questions WHERE legacy_need_event_id=? LIMIT 1').get(need.eventId))
+   this.writeAttention(context.generation,`unfiled:${context.sessionId}`,null,need);
   const attention=needs.filter((need:any)=>!this.source.query('SELECT 1 FROM inbox_questions WHERE legacy_need_event_id=? LIMIT 1').get(need.eventId))
    .map((need:any)=>{const root=context.root(context.sessionId,need.inputId)??need.inputId;
     const topic=this.source.query('SELECT t.topic_id,t.title FROM inbox_topic_roots r JOIN inbox_topics t ON t.topic_id=r.topic_id WHERE r.root_input_id=?').get(root) as any;
@@ -161,26 +204,58 @@ export class PreparedTopics {
   return {lastId:rows[Math.min(limit,rows.length)-1]?.topic_id??after,hasMore:rows.length>limit};
  }
  write(context:TopicContext,topicId:string){
-  const value=preparedTopicValue(context,topicId),generation=context.generation;
+  const generation=context.generation;
+  this.retainedBy={generation,owner:`topic:${topicId}`};
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(generation,this.retainedBy.owner);
   const previous=this.prepared.query('SELECT summary_json,detail_hash FROM presentation_topics WHERE generation=? AND topic_id=?')
    .get(generation,topicId) as {summary_json:string;detail_hash:string}|null;
   this.prepared.query('DELETE FROM presentation_topic_questions WHERE generation=? AND topic_id=?').run(generation,topicId);
   this.prepared.query('DELETE FROM presentation_topic_items WHERE generation=? AND topic_id=?').run(generation,topicId);
   this.prepared.query('DELETE FROM presentation_topic_dependencies WHERE generation=? AND topic_id=?').run(generation,topicId);
   this.prepared.query('DELETE FROM presentation_topic_request_links WHERE generation=? AND topic_id=?').run(generation,topicId);
+  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=? AND topic_id=?').run(generation,topicId);
+  const depend=(kind:string,key:string)=>this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dependencies VALUES(?,?,?,?)').run(generation,kind,key,topicId);
+  const itemDigest=createHash('sha256');
+  const writeItem=(item:any,kind:string,index?:number)=>{
+   const id=String(item.id??index),key=kind==='history'?String(index).padStart(8,'0'):`${item.createdAt}:${id}`;
+   const compact=this.compactItem(item,kind);itemDigest.update(json(item));
+   this.prepared.query('INSERT INTO presentation_topic_items VALUES(?,?,?,?,?,?)').run(generation,topicId,kind,id,key,json(compact));
+   return compact;
+  };
+  const value=preparedTopicValue({...context,boundedReads:true},topicId,{
+   question:question=>{
+    const compact=writeItem(question,'questions');
+    if(question.owner?.sessionId)depend('session',question.owner.sessionId);
+    if(question.waiting)this.writeAttention(generation,'questions',topicId,{inputId:question.sources[0]??topicId,
+     outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',generation:question.generation??0,
+     at:question.createdAt,runId:question.owner?.runId??'',eventId:question.id,...(question.reads.length?{reads:question.reads}:{})});
+    for(const selected of ['open','reading','checking','deferred','history'])if(questionSet(question,selected))
+     this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?)')
+      .run(generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(0,question.createdAt,question.id));
+   },
+   request:request=>{
+    writeItem(request,'requests');
+    for(const dispatch of request.dispatches){
+     depend('request',String(dispatch.requestId));
+     if(dispatch.targetSessionId)depend('session',dispatch.targetSessionId.replace(/^([\w-]+):concierge:/,'$1:'));
+     if(dispatch.sourceInputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(generation,topicId,dispatch.sourceInputId,request.id);
+    }
+    for(const source of request.sources)if(source.inputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(generation,topicId,source.inputId,request.id);
+   }
+  });
   if(!value){
    for(const table of ['presentation_topic_search','presentation_topic_short'])this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM presentation_topics WHERE generation=? AND topic_id=?)`).run(generation,topicId);
    this.prepared.query('DELETE FROM presentation_topics WHERE generation=? AND topic_id=?').run(generation,topicId);
    if(previous)this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,NULL)').run(generation,topicId,previous.summary_json);
    return;}
-  const ref=this.retain(value.detail);
+  const ref=this.retain({...value.detail,collections:'paged',itemsRevision:itemDigest.digest('hex')});
   const summary=this.compact(value.summary,ref);
   const replyTargets=Buffer.byteLength(json(value.detail.replyTargets))<=4096?value.detail.replyTargets:
    {router:value.detail.replyTargets.router,default:value.detail.replyTargets.default,choices:[],detailRef:this.retain(value.detail.replyTargets),coverage:{complete:false,code:'reply_targets_preview'}};
   const focus=value.detail.focus&&Buffer.byteLength(json(value.detail.focus))>2048?
    {topicId,runId:value.detail.focus.runId,summary:preview(value.detail.focus.summary??''),detailRef:this.retain(value.detail.focus)}:value.detail.focus;
-  const questionCounts=Object.fromEntries(['open','reading','checking','deferred','history'].map(state=>[state,value.detail.questions.filter(q=>questionSet(q,state)).length]));
-  const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.detail.requests.length};
+  const questionCounts=value.questionCounts;
+  const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.requestCount};
    this.prepared.query(`INSERT INTO presentation_topics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(generation,topic_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state,
     background=excluded.background,band=excluded.band,recency=excluded.recency,closed_recency=excluded.closed_recency,
@@ -190,29 +265,11 @@ export class PreparedTopics {
     value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
     orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
     json(replyTargets),json(overview));
-  const depend=(kind:string,key:string)=>this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dependencies VALUES(?,?,?,?)').run(generation,kind,key,topicId);
   for(const root of value.summary.roots)depend('root',root);
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
-  for(const question of value.detail.questions)if(question.owner?.sessionId)depend('session',question.owner.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
-  for(const request of value.detail.requests){
-   for(const dispatch of request.dispatches){
-    depend('request',String(dispatch.requestId));
-    if(dispatch.targetSessionId)depend('session',dispatch.targetSessionId.replace(/^([\w-]+):concierge:/,'$1:'));
-    if(dispatch.sourceInputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)')
-     .run(generation,topicId,dispatch.sourceInputId,request.id);
-   }
-   for(const source of request.sources)if(source.inputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)')
-    .run(generation,topicId,source.inputId,request.id);
-  }
-  for(const [kind,items] of [['requests',value.detail.requests],['questions',value.detail.questions],['history',value.detail.topic.history]] as const){
-   for(let index=0;index<items.length;index++){
-    const item=items[index] as any,id=String(item.id??index),key=kind==='history'?String(index).padStart(8,'0'):`${item.createdAt}:${id}`;
-    const compact=this.compactItem(item,kind);
-    this.prepared.query('INSERT INTO presentation_topic_items VALUES(?,?,?,?,?,?)').run(generation,topicId,kind,id,key,json(compact));
-   }
-  }
+  value.detail.topic.history.forEach((item,index)=>writeItem(item,'history',index));
   const searchId=(this.prepared.query('SELECT rowid AS id FROM presentation_topics WHERE generation=? AND topic_id=?').get(generation,topicId) as {id:number}).id;
   this.prepared.query('DELETE FROM presentation_topic_search WHERE rowid=?').run(searchId);
   this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(searchId);
@@ -221,12 +278,7 @@ export class PreparedTopics {
   if(previous?.summary_json!==json(summary)||previous?.detail_hash!==ref.hash)
    this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,?)')
     .run(generation,topicId,previous?.summary_json??null,json(summary));
-  for(const question of value.detail.questions)for(const selected of ['open','reading','checking','deferred','history'])if(questionSet(question,selected)){
-   const questionRef=this.retain(question);
-   const compact=this.compactItem(question,'questions');
-   this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?)')
-    .run(generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(0,question.createdAt,question.id));
-  }
+
  }
  private compactItem(item:any,kind:string):any{
   if(Buffer.byteLength(json(item))<=4096)return item;
@@ -237,15 +289,54 @@ export class PreparedTopics {
   if(kind==='requests')return {...common,title:preview(item.title??''),brief:preview(item.brief??''),disposition:item.disposition,dispatches:[],sources:[]};
   return {change:item.change,at:item.at,reason:preview(item.reason??''),detailRef,coverage:{complete:false,code:'topic_item_preview'}};
  }
+ private writeAttention(generation:number,scope:string,topicId:string|null,need:any){
+  const value=Buffer.byteLength(json(need))<=4096?need:{...need,question:preview(need.question??''),reads:[],
+   detailRef:this.retain(need),coverage:{complete:false,code:'attention_preview'}};
+  this.prepared.query('INSERT INTO presentation_inbox_attention VALUES(?,?,?,?,?,?,?)')
+   .run(generation,scope,need.eventId,topicId,need.generation??0,`${String(need.generation??0).padStart(16,'0')}:${need.eventId}`,json(value));
+ }
  activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1 WHERE singleton=1').run(generation,sourceHead);}
  checkpoint(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET source_head=? WHERE singleton=1 AND generation=?').run(sourceHead,generation);}
  private retain(value:unknown){
   const text=json(value),hash=createHash('sha256').update(text).digest('hex');
+  if(!this.retainedBy)throw new Error('Topic detail has no retaining projection');
+  this.prepared.query('INSERT OR IGNORE INTO presentation_topic_blobs VALUES(?)').run(hash);
+  this.prepared.query('INSERT OR IGNORE INTO presentation_topic_chunk_refs VALUES(?,?,?)').run(this.retainedBy.generation,this.retainedBy.owner,hash);
   const pieces:string[]=[];let part='',bytes=0;
   for(const char of text){const size=Buffer.byteLength(char);if(bytes+size>CHUNK_BYTES){pieces.push(part);part='';bytes=0;}part+=char;bytes+=size;}
   if(part)pieces.push(part);
   for(let i=0;i<pieces.length;i++)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_chunks VALUES(?,?,?,?)').run(hash,i,pieces[i],pieces.length);
   return {hash,chunks:pieces.length,bytes:Buffer.byteLength(text)};
+ }
+ /** Rebuildable bytes live only while a current projection references them. Old revision
+  * cursors get an explicit reset after seven days; canonical history is never deleted. */
+ collectPage(now=Date.now()){
+  const current=meta(this.prepared);
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE rowid IN (SELECT rowid FROM presentation_topic_chunk_refs WHERE generation<? LIMIT 100)').run(current.generation);
+  const oldTopics=this.prepared.query('SELECT rowid AS id FROM presentation_topics WHERE generation<? LIMIT 100').all(current.generation) as {id:number}[];
+  for(const {id} of oldTopics){
+   this.prepared.query('DELETE FROM presentation_topic_search WHERE rowid=?').run(id);
+   this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(id);
+   this.prepared.query('DELETE FROM presentation_topics WHERE rowid=?').run(id);
+  }
+  for(const table of ['presentation_topic_items','presentation_topic_questions','presentation_topic_dependencies','presentation_topic_dirty',
+   'presentation_topic_sorting_dirty','presentation_topic_request_links','presentation_topic_roots','presentation_topic_sorting','presentation_question_counts','presentation_topic_event_display',
+   'presentation_inbox_attention','presentation_inbox_attention_counts'])
+   this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE generation<? LIMIT 100)`).run(current.generation);
+  const blobs=this.prepared.query('SELECT hash FROM presentation_topic_blobs WHERE hash>? ORDER BY hash LIMIT 100').all(this.collectAfter) as {hash:string}[];
+  for(const {hash} of blobs)if(!this.prepared.query('SELECT 1 FROM presentation_topic_chunk_refs WHERE hash=? LIMIT 1').get(hash)){
+   this.prepared.query('DELETE FROM presentation_topic_chunks WHERE hash=?').run(hash);
+   this.prepared.query('DELETE FROM presentation_topic_blobs WHERE hash=?').run(hash);
+  }
+  this.collectAfter=blobs.length===100?blobs.at(-1)!.hash:'';
+  const changes=this.prepared.query('SELECT sequence,generation,created_ms FROM presentation_topic_changes ORDER BY sequence LIMIT 100').all() as {sequence:number;generation:number;created_ms:number}[];
+  let retained=current.retained_after;
+  for(const change of changes){
+   if(change.generation===current.generation&&change.created_ms>=now-7*24*60*60*1000)break;
+   this.prepared.query('DELETE FROM presentation_topic_changes WHERE sequence=?').run(change.sequence);
+   if(change.generation===current.generation)retained=Math.max(retained,change.sequence);
+  }
+  this.prepared.query('UPDATE presentation_topics_meta SET retained_after=? WHERE singleton=1').run(retained);
  }
  private compact(summary:any,detailRef:unknown){
   if(Buffer.byteLength(json(summary))<=4096)return {...summary,detailRef};
@@ -256,7 +347,7 @@ export class PreparedTopics {
  }
 }
 
-function meta(db:Database){return db.query('SELECT generation,source_head,ready FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
+function meta(db:Database){return db.query('SELECT generation,source_head,ready,retained_after FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
 function coverage(current:Meta,head:number){return {complete:!!current.ready&&current.source_head>=head,
  code:!current.ready||current.source_head<head?'presentation_indexing':null,appliedSequence:current.source_head};}
 function reset(current:Meta){return {topics:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};}
@@ -304,7 +395,7 @@ function searchPreparedTopics(db:Database,options:{state:State;query:string;curs
 }
 export function readPreparedTopicChanges(db:Database,after:string,canonicalHead:number,limit=20){
  const current=meta(db),old=decode(after);
- if(!old||old.g!==current.generation||!Number.isSafeInteger(old.sequence)||old.sequence<0)return {...reset(current),changes:[]};
+ if(!old||old.g!==current.generation||!Number.isSafeInteger(old.sequence)||old.sequence<current.retained_after)return {...reset(current),changes:[]};
  const rows=db.query('SELECT sequence,topic_id,before_json,after_json FROM presentation_topic_changes WHERE generation=? AND sequence>? ORDER BY sequence LIMIT ?')
   .all(current.generation,old.sequence,Math.min(PAGE,Math.max(1,limit))+1) as any[];
  const page=rows.slice(0,Math.min(PAGE,Math.max(1,limit))),next=cursor({g:current.generation,sequence:page.at(-1)?.sequence??old.sequence});
@@ -323,6 +414,15 @@ export function readPreparedTopicResolution(db:Database,messageId:string,canonic
   .get(current.generation,messageId) as {root:string;topic_id:string|null}|null;
  const topic=message?.topic_id?readPreparedTopic(db,message.topic_id,canonicalHead).topic:null;
  return {topic,root:message?.root??null,coverage:coverage(current,canonicalHead)};
+}
+export function readPreparedTopicEvents(db:Database,sequences:readonly number[]){
+ if(sequences.length>20)throw new Error('Topic event page must contain at most twenty entries');
+ const current=meta(db);
+ return sequences.map(sequence=>{
+  const row=db.query('SELECT display_json FROM presentation_topic_event_display WHERE generation=? AND event_sequence=?')
+   .get(current.generation,sequence) as {display_json:string}|null;
+  return row?JSON.parse(row.display_json):null;
+ });
 }
 export function readPreparedTopicItems(db:Database,options:{topicId:string;kind:'requests'|'questions'|'history';filter?:string;inputId?:string;cursor?:string|null;limit?:number;canonicalHead:number}){
  const current=meta(db),limit=Math.min(PAGE,Math.max(1,options.limit??PAGE)),old=options.cursor?decode(options.cursor):null;
@@ -360,6 +460,23 @@ export function readPreparedTopicOverview(db:Database,topicId:string,canonicalHe
 export function readPreparedTopicChunk(db:Database,hash:string,chunk:number){
  if(!/^[a-f0-9]{64}$/.test(hash)||!Number.isSafeInteger(chunk)||chunk<0)throw new Error('Invalid topic detail reference');
  return db.query('SELECT text,count FROM presentation_topic_chunks WHERE hash=? AND chunk=?').get(hash,chunk) as {text:string;count:number}|null;
+}
+export function readPreparedInboxAttention(db:Database,sessionId:number,canonicalHead:number,after:string|null=null,limit=20){
+ const current=meta(db),old=after?decode(after):null,size=Math.min(PAGE,Math.max(1,limit)),scope=`unfiled:${sessionId}`;
+ if(after&&(!old||old.g!==current.generation||old.sessionId!==sessionId||typeof old.key!=='string'))
+  return {needs:[],needsAttention:null,total:null,maxGeneration:null,nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};
+ const rows=db.query(`SELECT order_key,value_json FROM (
+  SELECT * FROM (SELECT order_key,value_json FROM presentation_inbox_attention WHERE generation=? AND scope='questions' AND order_key>? ORDER BY order_key LIMIT ?)
+  UNION ALL SELECT * FROM (SELECT order_key,value_json FROM presentation_inbox_attention WHERE generation=? AND scope=? AND order_key>? ORDER BY order_key LIMIT ?)
+  ) ORDER BY order_key LIMIT ?`).all(current.generation,old?.key??'',size+1,current.generation,scope,old?.key??'',size+1,size+1) as {order_key:string;value_json:string}[];
+ let total=0,maxGeneration=0;
+ for(const name of ['questions',scope]){
+  total+=(db.query('SELECT count FROM presentation_inbox_attention_counts WHERE generation=? AND scope=?').get(current.generation,name) as {count:number}|null)?.count??0;
+  maxGeneration=Math.max(maxGeneration,(db.query('SELECT need_generation FROM presentation_inbox_attention WHERE generation=? AND scope=? ORDER BY need_generation DESC LIMIT 1').get(current.generation,name) as {need_generation:number}|null)?.need_generation??0);
+ }
+ const page=rows.slice(0,size),last=page.at(-1),covered=coverage(current,canonicalHead);
+ return {needs:page.map(row=>JSON.parse(row.value_json)),needsAttention:covered.complete?total>0:null,total,maxGeneration,
+  nextCursor:rows.length>size&&last?cursor({g:current.generation,sessionId,key:last.order_key}):null,coverage:covered};
 }
 export function readPreparedQuestions(db:Database,options:{state:string;cursor?:string|null;limit?:number;canonicalHead:number}){
  const current=meta(db),selected=options.state,limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));

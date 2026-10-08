@@ -1,3 +1,4 @@
+import {topicEventSentence} from './topic-event-display';
 import {questionDisplay} from './topic-display-rules';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
@@ -940,32 +941,6 @@ export function readTopic(topicId:string,limit:number|null=null) {
     entries:topicEntries(topicId,null,limit)};
 }
 
-function topicEventSentence(payload:any):string {
-  const title=payload.topic?.title??payload.title??'this thread';
-  switch(payload.change) {
-    case 'created':return `Filed under ${title}.`;
-    case 'placed':return `Added ${payload.roots?.length??0} message${(payload.roots?.length??0)===1?'':'s'} to ${title}.`;
-    case 'renamed':return `Renamed from ${payload.previousTitle} to ${title}${payload.reason?` because ${payload.reason}`:''}.`;
-    case 'summary':return `Now: ${payload.topic?.summary??''}`;
-    case 'merged':return `Merged ${payload.mergedTopic?.title??'another thread'} into ${title}.`;
-    case 'closed':return `Closed: ${payload.reason??''}${payload.scope?` (${payload.scope})`:''}`;
-    case 'reopened':return `Reopened: ${payload.reason??''}`;
-    case 'forwarded':return `Your reply went straight to ${payload.to?.title??'the agent working on this'}.`;
-    case 'set_aside':return `Set aside: ${payload.topic?.setAside?.reason??''}`;
-    case 'resumed':return 'Picked back up.';
-    case 'added':return `Request added: ${payload.request?.title??''}`;
-    case 'amended':return `Request changed: ${payload.reason??payload.request?.title??''}`;
-    case 'linked':return `Work linked to ${payload.request?.title??'this request'}.`;
-    case 'request_closed':return `Request ${payload.request?.title??''} closed as ${payload.request?.disposition??''}: ${payload.reason??''}`;
-    case 'request_reopened':return `Request ${payload.request?.title??''} reopened: ${payload.reason??''}`;
-    case 'reconciled':return `Questions updated (${payload.questions?.length??0}).`;
-    case 'settled':return `Question settled as ${payload.questions?.[0]?.state??''}${payload.reason?`: ${payload.reason}`:''}`;
-    case 'filed':return `Filed here: ${payload.questions?.[0]?.brief?.decision??''}`;
-    case 'recovered':return `${payload.questions?.length??0} earlier attention ${(payload.questions?.length??0)===1?'entry':'entries'} filed as questions${payload.reason?` (${payload.reason})`:''}.`;
-    case 'recorded':return `Your answer was recorded against ${payload.mappings?.length??0} question${(payload.mappings?.length??0)===1?'':'s'}.`;
-    default:return payload.change??'Updated.';
-  }
-}
 /** Entries: this topic's Inbox messages plus its management events, in owner sequence order. */
 export function topicEntries(topicId:string,cursor:string|null=null,limit:number|null=null) {
   const session=inboxOrThrow();
