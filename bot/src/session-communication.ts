@@ -114,6 +114,25 @@ const files = (value: unknown): AttachedFile[] => {
     return value as AttachedFile[];
 };
 /** Durable conversations admitted only by the common native session owner. */
+/** A one-line summary: what an exchange says, shown before its body. */
+export function oneLineSummary(value:unknown):string {
+    const line=typeof value==='string'?value.trim():'';
+    if(!line||line.includes('\n')||line.length>200)throw new Error('--summary is one line of at most 200 characters saying what this says.');
+    return line;
+}
+/**
+ * What the asker is woken with: the answer's summary first, then its body, or only the summary and how
+ * to open the body when the asker chose --answer-view summary (Engelbart's view control: the reader
+ * picks the level of detail). Opening a body costs the asker another model call, so summaries-only is
+ * the asker's choice per request, never imposed.
+ */
+export function answerView(request:{request_id:string;payload_json:string},answer:{text?:string;summary?:string}) {
+    const summary=answer.summary?`Summary: ${answer.summary}`:null;
+    if(summary&&JSON.parse(request.payload_json).answerView==='summary')
+        return `${summary}\nFull answer: router-actions.sh sessions get ${request.request_id} <source-flags>`;
+    return summary?`${summary}\n\n${answer.text??''}`:answer.text??'';
+}
+
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
     private readonly again = new Set<string>();
@@ -823,6 +842,10 @@ export class SessionCommunicationCoordinator {
         requestedEffect?:'informational'|'work';
         /** Requests from one session that share a batch name return together, in one wake, once all are answered. */
         batch?:string;
+        /** One line saying what is asked, shown first to the worker and on the Lab page. */
+        summary?:string;
+        /** How the answer comes back: 'summary' wakes the asker with the answer's one-line summary only; the body is read with sessions get. */
+        answer_view?:'summary'|'full';
         peer?:string;
         /** What only the peer machine can do for this work; required to create a session there. */
         machine_need?:string;
@@ -916,11 +939,14 @@ export class SessionCommunicationCoordinator {
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
+        if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
+        if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
         if(input.batch!==undefined&&(typeof input.batch!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(input.batch)))throw new Error('A batch name is letters, digits, dots, dashes and underscores.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.batch?{batch:input.batch}:{}),
+            ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -974,7 +1000,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -1112,9 +1138,12 @@ export class SessionCommunicationCoordinator {
         all_done?:boolean;
         /** The receiving session's push-back: not-my-subject or too-loaded, with a failed disposition. */
         hand_back?:string;
+        /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
+        summary?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
+        if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
@@ -1211,6 +1240,7 @@ export class SessionCommunicationCoordinator {
             ? this.retainAttachments(actor.inputId ?? this.peerActor(actor).inputId, input.action_id, 'reply-file', input)
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
+            ...(input.summary?{summary:input.summary}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
             ...(input.hand_back?{handBack:input.hand_back}:{}) };
@@ -1599,7 +1629,7 @@ export class SessionCommunicationCoordinator {
                 const parts = answers.map(answer => {
                     const words = JSON.parse(answer.payload_json);
                     const asked = members.find(member => member.request_id === answer.request_id)!;
-                    return `## ${words.responding_session_id ?? `concierge:${asked.target_session_id}`} · request ${answer.request_id} · ${words.workDisposition ?? this.row(answer.request_id).outcome}\n\n${words.text}`;
+                    return `## ${words.responding_session_id ?? `concierge:${asked.target_session_id}`} · request ${answer.request_id} · ${words.workDisposition ?? this.row(answer.request_id).outcome}\n\n${answerView(asked,words)}`;
                 });
                 const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',
                     sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
@@ -1623,7 +1653,7 @@ export class SessionCommunicationCoordinator {
             const existing = getAcceptedSessionInput(`return:${event.event_id}`);
             const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length > 1 ? `requests ${requestIds.join(', ')} (one answer closing all of them)` : `request ${request.request_id}`}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length > 1 ? `requests ${requestIds.join(', ')} (one answer closing all of them)` : `request ${request.request_id}`}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${answerView(request,payload)}\n\n${JSON.stringify({...payload,text:undefined,summary:undefined})}`,
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
             for (const joined of group.joining)

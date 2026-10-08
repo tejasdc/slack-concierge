@@ -129,8 +129,8 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
 export type OwedRequest = { request_id: string; requester: string; requested_effect: string; command: string };
 export function replyCommand(requestId: string, requestedEffect: string) {
     return requestedEffect === 'work'
-        ? `sessions reply ${requestId} --work-disposition completed|failed|needs_decision -- <result>`
-        : `sessions reply ${requestId} -- <answer>`;
+        ? `sessions reply ${requestId} --work-disposition completed|failed|needs_decision --summary "<one line>" -- <result>`
+        : `sessions reply ${requestId} --summary "<one line>" -- <answer>`;
 }
 
 /**

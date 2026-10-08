@@ -11,6 +11,17 @@ progress notes no longer wake anyone (built earlier today); false "stalled" noti
 question sent to several sessions can come back as one batch, in one wake. Long knowledge belongs in
 addressable products in the notes store (concierge:4491), linked from a short reply, not pasted.
 
+## Summary first, for agents and for him (added after the coordinator's review)
+
+Every request and every final reply now carries a one-line summary (`--summary`, required by the
+router; a request or final reply without one is refused with the reason). The reader sees it first:
+the worker's request opens with it, the asker's return opens with it, a batch return lists each answer
+under its responder with its summary first, and the Lab page reads it from the owner (`summary`,
+`answerSummary`, with `summaryWritten:false` when an older exchange has only its first line). The
+asker chooses the view per request (Engelbart's view control): `--answer-view summary` wakes it with
+the summary and the command that opens the body (`sessions get`); the default shows the body after
+the summary, because opening a body later costs one more full re-read.
+
 ## Measured on tonight's real traffic (2026-10-07 20:00 to 2026-10-08 07:30 UTC)
 
 The coordinator (concierge:4168, Claude Opus) sent 92 requests. What came back:
@@ -36,9 +47,9 @@ removes wakes instead.
 
 | Kind | Protocol | Wakes the reader? |
 | --- | --- | --- |
-| Work or information request | Plain message to one session (needs the full ask) | Yes, once |
+| Work or information request | Addressed message to one session, opening with its one-line summary | Yes, once |
 | Progress note | Recorded on the request; read with `sessions get` | No |
-| Final reply | One return per answer; identical answers to one asker share one return | Yes, once |
+| Final reply | Summary line first, then the body or (asker's choice) only the summary and how to open the body; identical answers to one asker share one return | Yes, once |
 | Final replies to a fan-out | **New:** `sessions ask … --batch <name>`. Every answer waits until the last one in the batch is answered, then one return carries them all, each under a heading naming who answered and how it ended | Once per batch |
 | Stalled / overdue notice | Only when nothing in flight will wake the worker. **Fixed:** a worker waiting on its own request to another session, or whose sub-request has just been answered and not yet taken in, is not stalled | Only when real |
 | Group discussion | The board (moving into the notes store as dialog records, concierge:4491); mentions wake once, as notices that owe no reply | Once per mention |
@@ -57,8 +68,9 @@ answers as one unit rather than one interruption each.
 
 ## Not done, and why
 
-- **No forced summary field.** It would not save tokens (above), and a summary the reader must open
-  costs more. Replies should still lead with their answer; long material goes into a notes-store
-  object and the reply links it.
+- **Summaries-only is not the default.** It saves attention, not tokens, when the reader needs the
+  body; the asker turns it on per request. Long material goes into a notes-store object and the reply
+  links it.
+- **Board posts** get their summary line when the board moves into the notes store (concierge:4491).
 - **Batches are local.** A request to a Mac session cannot join a batch yet; it is refused rather
   than silently delivered alone.

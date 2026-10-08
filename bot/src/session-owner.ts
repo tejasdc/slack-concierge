@@ -752,12 +752,16 @@ export class SessionOwner {
       {request_id:string;source_session_id:number;target_session_id:number;status:string;outcome:string|null;payload_json:string;result_json:string|null;created_at_ms:number}[];
     const requests=rows.filter(row=>ids.has(row.source_session_id)||ids.has(row.target_session_id)).slice(0,limit).map(row=>{
       const payload=JSON.parse(row.payload_json),result=row.result_json?JSON.parse(row.result_json):null;
-      const ended=db.query("SELECT max(created_at_ms) AS at FROM session_communication_events WHERE request_id=? AND kind='final'").get(row.request_id) as {at:number|null};
+      const ended=db.query("SELECT created_at_ms AS at,payload_json FROM session_communication_events WHERE request_id=? AND kind='final' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {at:number;payload_json:string}|null;
+      const answered=ended?JSON.parse(ended.payload_json):null;
+      // One line first, the body behind it; a line the author did not write is the first line of the words, marked as such.
+      const line=(summary:unknown,text:string)=>typeof summary==='string'&&summary?{summary,summaryWritten:true}:{summary:text.trim().split('\n')[0]!.slice(0,200),summaryWritten:false};
       return {requestId:row.request_id,from:{id:`concierge:${row.source_session_id}`,title:title(row.source_session_id),lab:ids.has(row.source_session_id)},
         to:{id:`concierge:${row.target_session_id}`,title:title(row.target_session_id),lab:ids.has(row.target_session_id)},
-        effect:payload.requestedEffect??'informational',text:String(payload.text??'').slice(0,4000),
+        effect:payload.requestedEffect??'informational',...line(payload.summary,String(payload.text??'')),text:String(payload.text??'').slice(0,4000),
         state:row.outcome?'ended':'open',outcome:row.outcome,disposition:result?.workDisposition??null,answer:result?.text?String(result.text).slice(0,4000):null,
-        askedAt:new Date(row.created_at_ms).toISOString(),endedAt:ended?.at?new Date(ended.at).toISOString():null};
+        answerSummary:result?.text?line(answered?.summary,String(result.text)):null,
+        askedAt:new Date(row.created_at_ms).toISOString(),endedAt:ended?new Date(ended.at).toISOString():null};
     });
     return {sessions:sessions.map(row=>{const meta=sessionMetadata(row);return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,project:meta.cwd??null,provider:row.provider_id,archived:row.status==='archived',outcome:meta.outcome??'open'};}),requests};
   }
