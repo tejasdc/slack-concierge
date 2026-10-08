@@ -178,18 +178,35 @@ and no new Grafana worker failures since activation; a resolved alert was delive
 
 The same review found a live Mac updater and no native opt-out setting there. The receiving
 agent verified updater PID 27186's exact command and sent TERM only to that PID; managed
-daemon 28324 retained its original 15:15:28 start time. Normal-installation enforcement of
-the native preference is being added for both hosts; the server preference already survives
-ordinary service starts. Separately, the current server listener remains unmanaged. The
+daemon 28324 retained its original 15:15:28 start time. The third independent review accepted
+normal-installation enforcement of the native preference (`d96dbbd`). The server installed
+it at 20:26:40, PID 4179380; its startup check is active, `daemon start` returned
+`alreadyRunning`, and listener 4046925 was unchanged with no updater process. On the Mac,
+the clean checkout pulled the same revision through Git; its canonical settings helper
+applied the preference while preserving remote control. A normal `daemon start` returned
+`alreadyRunning` with managed daemon 28324 unchanged, and no updater remained. Neither
+check restarted provider work. Separately, the current server listener remains unmanaged. The
 repair owner confirmed account activation cannot manage it, but replacing it during active
-work is unsafe; no such replacement has occurred. The existing owner is evaluating whether
-the established generic admission drain can safely cover the one-time maintenance operation.
+work is unsafe; no such replacement has occurred. The existing repair owner checked the
+generic deployment drain as well: it offers no hold-only operator operation, and a normal
+deployment cannot replace this listener. Requests `22717427-8123-42f9-bb92-e73cbe07ada9`
+and `6bec39f3-eceb-42da-8e6c-3960e34d0281` retain that evidence. Account switching remains
+unavailable until safe managed replacement; no new maintenance controller was improvised.
 
 Archive discovery's fresh response still reports a stopped reader and 26 unindexed sources.
 The stopped-reader flag is runtime state, not merely the old 19:46:11 index timestamp.
 Search returns retained results with incomplete coverage. Source owner 3757 received this
-remaining investigation under request `19c16c30-6eae-46d0-8c79-f608957d0ab0`; no blind restart
-or competing source implementation was performed.
+remaining investigation under request `19c16c30-6eae-46d0-8c79-f608957d0ab0`. A bounded
+read-only investigation established that the 26 source errors represent 13 malformed
+September 16 transcripts present in two roots. The installed parser rejects each with
+`INVALID_SESSION_RECORD`; those failures are caught per file and do not prove the worker's
+exit cause. The exact installed worker reached ready and closed with code 0 in 146 ms in
+an empty scratch archive under the service's Node runtime. Thus missing modules and
+unconditional startup failure are excluded. Actual worker errors and exit codes are
+currently discarded, so the real-archive exit cause remains unknown. The explicit work
+handoff `b5278286-4ccd-4b02-9f45-00fee0dc9414` assigns the existing source owner diagnostic
+retention, causal repair and live index-progress verification. No original transcript was
+edited or deleted; no blind restart or competing source implementation was performed.
 
 ## Original handoff (historical, superseded by the investigation above)
 
