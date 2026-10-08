@@ -40,20 +40,33 @@ async function probe(mode:"pre"|"measure",configPath:string){
     title:`Unrelated fixture ${index}`,cwd:fixture.root,project:"slack-concierge"});})();
   const owner=new SessionOwner({wake:()=>{},steer:()=>false,stop:async()=>false,available:()=>true,
     history:async()=>({messages:[{id:"fixture-message",role:"assistant",content:"prepared",tool:null,phase:null}],nextCursor:null})},fixture.root);
+  let topicId:string|null=null;
   const projector=spawn('setpriv',['--pdeathsig','KILL',process.execPath,join(base,'bot/src/presentation-message-worker.ts')],{
     env:process.env,stdio:['ignore','ignore','pipe']});
   let projectorErrors='';projector.stderr.on('data',chunk=>{projectorErrors=(projectorErrors+String(chunk)).slice(-4000);});
   process.once('exit',()=>projector.kill('SIGKILL'));
   const catalogueUrl='http://127.0.0.1/sessions/v1/presentation/sessions/window?space=everyday&limit=20';
-  const readyBy=Date.now()+30_000;let preparedReady=false;
+  const readyBy=Date.now()+30_000;let preparedReady=false;let lastPage='unread';
   while(Date.now()<readyBy){
     if(projector.exitCode!==null)throw new Error(`Projector exited: ${projectorErrors}`);
     const response=await owner.handle(new Request(catalogueUrl));
     const page=await response?.json() as any;
+    lastPage=JSON.stringify({status:response?.status,coverage:page?.coverage,cards:page?.cards?.length,error:page?.error});
     if(response?.status===200&&page.coverage?.complete&&page.cards?.length===20){preparedReady=true;break;}
     await pause(25);
   }
-  if(!preparedReady)throw new Error(`Catalogue preparation did not finish: ${projectorErrors}`);
+  if(!preparedReady)throw new Error(`Catalogue preparation did not finish: ${lastPage}; sourceHead=${
+   (db.query('SELECT MAX(sequence) AS n FROM presentation_change_log').get() as {n:number}).n}; projector=${projectorErrors}`);
+  if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1'){
+   const capture=owner.acceptInboxCapture({source:{kind:'thinkering',id:'loaded-topic-root',recordedAt:'2026-10-08T00:00:00.000Z'},
+    text:'Synthetic root for encoded topic controls.',importOnly:true});
+   const topic=await owner.handle(new Request('http://fixture/sessions/v1/inbox/topics',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'loaded-topic-create',title:'Loaded topic',roots:[capture.operation.id]})}));
+   if(!topic?.ok)throw new Error('Could not prepare the loaded topic fixture: '+String(await topic?.text()));
+   const topicResult=await topic.json() as any;
+   topicId=String(topicResult.topic?.topicId??topicResult.topic?.id??topicResult.id??'');
+   if(!topicId.startsWith('topic:'))throw new Error('Topic fixture did not return a topic ID: '+JSON.stringify(topicResult));
+  }
   const delays={page:[] as number[],history:[] as number[],send:[] as number[],custody:[] as number[]};
   const lag:number[]=[];let lastTick=performance.now(),peak=memory(),events=0,replayEnded=0;
   const tick=setInterval(()=>{const now=performance.now();lag.push(Math.max(0,now-lastTick-50));lastTick=now;
@@ -85,7 +98,7 @@ async function probe(mode:"pre"|"measure",configPath:string){
     if(path==='/fixture/finish'){finishBrowser();return Response.json({ok:true});}
     return owner.handle(request).then(response=>response??new Response('Not found',{status:404}));
    }});
-   console.log(JSON.stringify({kind:'owner_ready',port:server.port,pid:process.pid,sessionId:session.id}));
+   console.log(JSON.stringify({kind:'owner_ready',port:server.port,pid:process.pid,sessionId:session.id,topicId}));
    await browserStart;
   }
   for(const gate of fixture.gates)await writeFile(gate,"continue");
@@ -166,6 +179,11 @@ async function main(){
   const catalogueSize=Number(process.argv.find(value=>value.startsWith('--sessions='))?.split('=')[1]??1000);
   if(!Number.isSafeInteger(catalogueSize)||catalogueSize<20||catalogueSize>10_000)throw new Error('Use --sessions=20..10000');
   const root=await mkdtemp(join(tmpdir(),"concierge-loaded-"));
+  if(process.env.THINKERING_ACCEPTANCE_REPO){
+   const inboxProject=join(root,'slack-inbox');
+   await mkdir(join(inboxProject,'.git'),{recursive:true});
+   await writeFile(join(inboxProject,'AGENTS.md'),'Synthetic Inbox project for isolated acceptance.\n');
+  }
   const environment={...process.env,CONCIERGE_STATE_DIR:root,CONCIERGE_CAPTURE_STATE_DIR:join(root,"capture"),
     CONCIERGE_TEST_MODE:"1",CONCIERGE_TEST_AUTHORIZATION:AUTH};
   const hostScript=join(base,"bot/scripts/execution-host.ts");
@@ -234,7 +252,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
        if(child.exitCode!==null||child.signalCode!==null)throw new Error(`Owner exited before readiness: ${errors.slice(-4000)} ${localOutput.slice(-1000)}`);
        await pause(20);
       }
-      throw new Error('Owner readiness timed out');
+      throw new Error('Owner readiness timed out: '+errors.slice(-4000)+' '+localOutput.slice(-1000));
      };
      return {child,ready};
     };
@@ -262,7 +280,7 @@ process.stdout.write(JSON.stringify({type:'result',session_id:session,result:'co
        restart={beforePid:priorPid,afterPid:resumed.pid,sessionId:resumed.sessionId,signal:'SIGKILL',journalBytesAtKill};
        return restart;
       },
-     });
+     },initial.topicId);
      browser=await boundary.finished;
      await fetch(currentUrl+'/fixture/finish',{method:'POST'});
     }

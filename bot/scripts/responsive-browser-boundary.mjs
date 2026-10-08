@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import assert from 'node:assert/strict';
 if(process.env.CONCIERGE_TEST_AUTHORIZATION!=='responsive-system-b1eed622')throw new Error('Scoped authorization required');
-const [repository,ownerPort,session,queueToken]=process.argv.slice(2),require=createRequire(join(repository,'package.json'));
+const [repository,ownerPort,session,queueToken,fixtureTopicId]=process.argv.slice(2),require=createRequire(join(repository,'package.json'));
 const {createServer}=await import(require.resolve('vite'));
 const {default:react}=await import(require.resolve('@vitejs/plugin-react'));
 const {chromium,expect}=require('@playwright/test');
@@ -19,9 +19,11 @@ import {WorkspaceService} from '/packages/application/src/workspace-service.ts';
 import {openBrowserWorkspaceRepository} from '/packages/adapters/src/browser-workspace.ts';
 import {createTextUpdate} from '/packages/adapters/src/workspace-text.ts';
 import '/apps/web/src/console.css';
-import {retainedBrowserCommands} from '/packages/adapters/src/browser-command-custody.ts';
+import {retainedBrowserCommands,retainBrowserCommand,forgetBrowserCommand,getBrowserCommand} from '/packages/adapters/src/browser-command-custody.ts';
+import {sessionClient} from '/packages/adapters/src/browser-session-client.ts';
+import {sendFromDevice,retryFromDevice} from '/apps/web/src/session-send-outbox.ts';
 import {readSessionResource} from '/apps/web/src/session-cache-storage.ts';
-window.fixture={retainedBrowserCommands,readSessionResource};
+window.fixture={retainedBrowserCommands,retainBrowserCommand,forgetBrowserCommand,getBrowserCommand,sessionClient,sendFromDevice,retryFromDevice,readSessionResource};
 const namespace='whole-loaded-acceptance';
 const repository=await openBrowserWorkspaceRepository({name:namespace,replication:null});
 const service=new WorkspaceService(repository,{id:()=>crypto.randomUUID(),now:()=>new Date().toISOString(),initialEditorUpdate:createTextUpdate});
@@ -104,6 +106,68 @@ try{
  await expect.poll(()=>page.evaluate(()=>fetch('/fixture/state').then(r=>r.json()).then(state=>state.providerObservation??state.providerFailure)),{timeout:10000}).toMatchObject({acknowledgements:1,exactText:true});
  await expect.poll(()=>page.evaluate(()=>window.fixture.retainedBrowserCommands())).toEqual([]);
  const after=await page.evaluate(()=>fetch('/fixture/state').then(r=>r.json()));assert.equal(after.actionId,before.server.actionId);assert.equal(after.accepted,1);
+ // Exercise the actual browser command adapter, signed-in proxy, capture ingress,
+ // private preparation gateway and owner for encoded topic controls.
+ const encodedTopicRequests=[];
+ page.on('request',request=>{if(request.url().includes('/inbox/topics/'))encodedTopicRequests.push(request.url());});
+ assert.ok(fixtureTopicId?.startsWith('topic:'));
+ for(const [actionId,action] of [['topic-read-encoded',{kind:'read',sequence:1}],
+  ['topic-close-encoded',{kind:'close',reason:'Fixture'}]]){
+  const result=await page.evaluate(async({actionId,action,fixtureTopicId})=>{
+   try{return await window.fixture.sessionClient.topicAction(fixtureTopicId,action,actionId);}
+   catch(error){return {status:error.status,code:error.code};}
+  },{actionId,action,fixtureTopicId});
+  assert.ok(result?.topic,JSON.stringify(result));
+  const custody=await page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()),actionId);
+  assert.equal(custody.status,'delivered');assert.equal(custody.decisionStage,'owner');
+ }
+ assert.ok(encodedTopicRequests.some(value=>value.includes(encodeURIComponent(fixtureTopicId))));
+ // The real queue's 1 MiB transport refusal must become a terminal slot before the
+ // next command in this same conversation. The later small message reaches the owner.
+ const oversizedId='browser-oversize-fixture',afterSizeId='browser-after-size-fixture';
+ const tooLarge=await page.evaluate(async({id,session})=>{
+  try{await window.fixture.sessionClient.submit({id,sessionId:'concierge:'+session,text:'x'.repeat(1_100_000),selection:undefined,intent:undefined,delivery:'queue'});return null;}
+  catch(error){return {status:error.status,code:error.code};}
+ },{id:oversizedId,session});
+ assert.equal(tooLarge?.status,413);
+ const sizeCustody=await page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()),oversizedId);
+ assert.equal(sizeCustody.status,'refused');assert.equal(sizeCustody.decisionStage,'preparation');
+ const afterSizeReceipt=await page.evaluate(async({id,session})=>window.fixture.sessionClient.submit({
+  id,sessionId:'concierge:'+session,text:'After the large command, this one arrived.',selection:undefined,intent:undefined,delivery:'queue'}),
+  {id:afterSizeId,session});
+ assert.ok(afterSizeReceipt);
+ const afterSizeAccepted=await page.evaluate(id=>fetch('/fixture/accepted?actionId='+id).then(r=>r.json()),afterSizeId);
+ assert.equal(afterSizeAccepted.accepted,1);
+ // The owner accepts this input, but a fixture drops its acknowledgement. After the
+ // browser reloads, Retry must rejoin its original action and the owner keeps one input.
+ const lostId='browser-lost-ack-fixture';
+ await page.evaluate(({id,session})=>{void window.fixture.sendFromDevice({id,sessionId:'concierge:'+session,
+  text:'Browser lost acknowledgement fixture.',selection:undefined,intent:undefined,delivery:'queue'}).catch(()=>{});},
+  {id:lostId,session});
+ await expect.poll(()=>page.evaluate(id=>fetch('/api/session-owner/commands/'+id).then(r=>r.json()).then(value=>value.status),lostId),{timeout:10000}).toBe('unconfirmed');
+ assert.equal((await page.evaluate(id=>window.fixture.getBrowserCommand(id),lostId)).halted,true);
+ await page.reload();await composer().waitFor();
+ assert.equal((await page.evaluate(id=>window.fixture.getBrowserCommand(id),lostId)).actionId,lostId);
+ await page.evaluate(id=>window.fixture.retryFromDevice(id),lostId);
+ await expect.poll(()=>page.evaluate(id=>fetch('/fixture/accepted?actionId='+id).then(r=>r.json()),lostId),{timeout:10000})
+  .toMatchObject({accepted:1,status:'delivered'});
+ await expect.poll(()=>page.evaluate(id=>window.fixture.getBrowserCommand(id),lostId)).toBeUndefined();
+ // An old workspace-stream action cannot be overtaken after an app update; a
+ // session action must still keep its own established per-session stream.
+ const migration=await page.evaluate(async session=>{
+  const db=await new Promise((resolve,reject)=>{const req=indexedDB.open('thinkering-human-commands');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+  const identity=await new Promise((resolve,reject)=>{const req=db.transaction('identity').objectStore('identity').get('client');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+  await new Promise((resolve,reject)=>{const tx=db.transaction(['commands','streams'],'readwrite');
+   tx.objectStore('commands').put({actionId:'legacy-workspace-fixture',clientId:identity.id,sessionId:'workspace',sequence:1,
+    path:'/inbox/topics/topic%3Aold/actions',body:{clientActionId:'legacy-workspace-fixture'}});
+   tx.objectStore('streams').put({key:identity.id+'\u0000workspace',sequence:1});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});
+  const topic=await window.fixture.retainBrowserCommand('/inbox/topics/topic%3Anew/actions',{clientActionId:'migration-topic'});
+  const sessionAction=await window.fixture.retainBrowserCommand('/sessions/concierge%3A'+session+'/actions',{clientActionId:'migration-session'});
+  await Promise.all(['legacy-workspace-fixture','migration-topic','migration-session'].map(id=>window.fixture.forgetBrowserCommand(id)));
+  db.close();return {topic:{stream:topic.sessionId,sequence:topic.sequence},session:{stream:sessionAction.sessionId,sequence:sessionAction.sequence}};
+ },session);
+ assert.deepEqual(migration.topic,{stream:'workspace',sequence:2});
+ assert.equal(migration.session.stream,'concierge:'+session);
  const notificationStarted=Date.now();
  const notificationHandled=await page.evaluate(async()=>{
   const channel=new MessageChannel();
@@ -138,5 +202,8 @@ try{
  assert.deepEqual(errors,[]);
  const directory=join(process.cwd(),'tmp/reviews');await mkdir(directory,{recursive:true});const screenshot=join(directory,'loaded-whole-conversation.png');await page.screenshot({path:screenshot,fullPage:true});
  console.log(JSON.stringify({kind:'browser-boundary',fullMessageEvidence,engine:'Chromium on Linux',paintMs,coldMs,warmCachedMs,notificationMs,notification:'synthetic service-worker delivery; actual notification routing and exact-message viewport',restart,tabClosure:true,cachedViewWhileRefreshUnavailable:true,stableActionAndSequence:true,acceptedExactlyOnce:true,serverCustodyBeforeClosure:true,screenshot,productionGateway:true,wholeConversationController:true,authentication:'synthetic approved-device identity',providerObservation:after.providerObservation,providerAdmission:'fixture starts actual adapter after owner acceptance; normal queue coordinator is not exercised'}));
-}catch(error){console.error(JSON.stringify({failure:String(error),page:await page.locator('body').innerText(),errors,commands:await page.evaluate(()=>window.fixture?.retainedBrowserCommands()),server:await page.evaluate(()=>fetch('/fixture/state').then(r=>r.json()))}));throw error;}
+}catch(error){console.error(JSON.stringify({failure:String(error),stack:error?.stack,
+ page:await page.locator('body').innerText().catch(()=>null),errors,
+ commands:await page.evaluate(()=>window.fixture?.retainedBrowserCommands()).catch(()=>null),
+ server:await page.evaluate(()=>fetch('/fixture/state').then(r=>r.json())).catch(()=>null)}));throw error;}
 finally{await browser.close();await server.close();ownerClient.close();await gateway.close();await loader.close();await rm(fixtureDirectory,{recursive:true,force:true});}

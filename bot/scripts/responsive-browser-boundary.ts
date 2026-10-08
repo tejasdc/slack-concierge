@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {createCaptureQueueRequestHandler} from '../src/capture-queue-api';
 import {HumanCommandWorker} from '../src/human-command-worker';
 import {commandStatus} from '../src/human-command-state';
+import {captureDb} from '../src/capture-state';
 import type {SessionOwner} from '../src/session-owner';
 import {db} from '../src/state';
 import {observeSyntheticProvider} from './responsive-provider-observation';
@@ -11,12 +12,13 @@ import {observeSyntheticProvider} from './responsive-provider-observation';
  * imports the shipping App and web proxy; this helper provides no alternate proxy. */
 export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId:number,thinkering:string,lifecycle?:{
  startLoad:()=>Promise<void>;restartOwner:()=>Promise<unknown>;
-}){
+},topicId?:string){
  if(process.env.CONCIERGE_TEST_AUTHORIZATION!=='responsive-system-b1eed622'||process.env.CONCIERGE_TEST_MODE!=='1')throw new Error('Isolated acceptance only');
  const token=crypto.randomUUID(),queue=createCaptureQueueRequestHandler({host:'127.0.0.1',port:0,token});
  let actionId:string|null=null,readyResolve!:()=>void;
  let providerObservation:unknown=null,providerFailure:string|null=null,providerRun:Promise<void>|null=null;
  let mutationGateway:string|null=null;
+ let lostAckOnce=true;
  const mutation=async(phase:string,body:unknown)=>{
   if(!mutationGateway)throw new Error('Shipping mutation adapter is not ready');
   const response=await fetch(mutationGateway+'/fixture/'+phase,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -27,10 +29,13 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
   fetch:((input:any,init:any)=>queue(new Request(input,init))) as typeof fetch,
   prepare:command=>mutation('prepare',command),
   deliver:async(command,prepared)=>{const response=await mutation('deliver',{command,prepared});
+   if(command.body.text==='Browser lost acknowledgement fixture.'&&lostAckOnce){
+    lostAckOnce=false;return {status:503,value:{error:'Fixture dropped the owner acknowledgement after acceptance.'}};
+   }
    if(response.status<300&&command.body.text==='Browser closure keeps these exact words.'&&!providerRun)
     providerRun=observeSyntheticProvider(command.body.text).then(value=>{providerObservation=value;},error=>{providerFailure=String(error);});
    return response;}});
- const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
+ const server=Bun.serve({hostname:'127.0.0.1',port:0,idleTimeout:60,fetch:async request=>{
   const url=new URL(request.url);
   if(url.pathname==='/fixture/gateway'){
    const body=await request.json() as {port:number};
@@ -45,14 +50,23 @@ export function startBrowserBoundary(owner:Pick<SessionOwner,'handle'>,sessionId
    const inputs=db.query("SELECT id,payload_json FROM session_inputs WHERE session_id=? AND json_extract(payload_json,'$.text')=?").all(sessionId,'Browser closure keeps these exact words.');
    return Response.json({actionId,custody:row?.status??null,sequence:row?.sequence??null,accepted:inputs.length,inputs,providerObservation,providerFailure});
   }
+  if(url.pathname==='/fixture/accepted'){
+   const actionId=url.searchParams.get('actionId')??'';
+   const accepted=db.query("SELECT COUNT(*) AS count FROM session_inputs WHERE action_id=?").get(actionId) as {count:number};
+   return Response.json({actionId,accepted:accepted.count,status:commandStatus(actionId)?.status??null});
+  }
   if(url.pathname.startsWith('/commands')){
-   if(request.method==='POST'&&url.pathname==='/commands')actionId=(await request.clone().json() as any).actionId;
-   return queue(request);
+   const command=request.method==='POST'&&url.pathname==='/commands'?await request.clone().json() as any:null;
+   if(command)actionId=command.actionId;
+   const response=await queue(request);
+   if(command?.body?.text==='Browser lost acknowledgement fixture.'&&response.status===202)
+    captureDb.query("UPDATE human_commands SET created_at=datetime('now','-3 minutes') WHERE action_id=?").run(command.actionId);
+   return response;
   }
   if(url.pathname.startsWith('/sessions/v1/'))return await owner.handle(request)??new Response('Not found',{status:404});
   return new Response('Not found',{status:404});
  }});
- const child=spawn('setpriv',['--pdeathsig','KILL','node',join(import.meta.dir,'responsive-browser-boundary.mjs'),thinkering,String(server.port),String(sessionId),token],{env:process.env,stdio:['ignore','pipe','pipe']});
+ const child=spawn('setpriv',['--pdeathsig','KILL','node',join(import.meta.dir,'responsive-browser-boundary.mjs'),thinkering,String(server.port),String(sessionId),token,topicId??''],{env:process.env,stdio:['ignore','pipe','pipe']});
  let output='',errors='';child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{errors=(errors+chunk).slice(-6000);});
  const finished=new Promise<any>((resolve,reject)=>{
   const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(new Error(`Browser fixture timed out: ${errors}`));},60_000);
