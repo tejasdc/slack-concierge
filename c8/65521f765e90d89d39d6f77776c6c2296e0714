@@ -1,0 +1,1 @@
+The load check now closes and reopens a real browser with a message waiting safely to send.
