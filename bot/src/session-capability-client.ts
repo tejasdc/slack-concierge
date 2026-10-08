@@ -78,6 +78,7 @@ export interface CapabilityMessage {
   attachments?: { id: string; name: string; contentType: string }[];
   richContent?: { version: 1; parts: Record<string, unknown>[] };
   source?: SourceEvidence;
+  contentDetail?: { digest: string; bytes: number; parts: number };
 }
 
 export interface ChatGptBinding {
@@ -252,9 +253,20 @@ function verifyHistory(value: { messages: CapabilityMessage[]; nextCursor: strin
     verify(isRecord(message) && nonempty(message.id) && nonempty(message.role) && typeof message.content === "string", "Invalid native history message.");
     if (pin) {
       verify(!!message.source, "Source history omitted its evidence pins.");
-      verifyEvidence(message.source, pin);
-      verify(message.source.eventId === message.id && message.source.role === message.role && message.source.text === message.content,
-        "Source history does not match its pinned evidence.");
+      if (message.contentDetail) {
+        const detail=message.contentDetail,evidence=message.source;
+        verify(isHash(detail.digest)&&Number.isSafeInteger(detail.bytes)&&detail.bytes>0
+          &&Number.isSafeInteger(detail.parts)&&detail.parts>0,
+          "Source preview omitted its exact full-body reference.");
+        verify(isRecord(evidence)&&evidence.sourceId===pin.sourceId&&evidence.sourceVersion===pin.sourceVersion
+          &&evidence.eventId===message.id&&evidence.role===message.role&&Number.isSafeInteger(evidence.ordinal)
+          &&evidence.ordinal>=0&&nonempty(evidence.locator)&&isHash(evidence.textHash)
+          &&evidence.text===undefined,"Source preview changed its pinned identity or carried duplicate text.");
+      } else {
+        verifyEvidence(message.source, pin);
+        verify(message.source.eventId === message.id && message.source.role === message.role && message.source.text === message.content,
+          "Source history does not match its pinned evidence.");
+      }
     }
   }
 }
@@ -371,6 +383,8 @@ export class SessionCapabilityClient {
     const evidence=value.message.source;
     verify(evidence?.sourceId===input.sourceId&&evidence.sourceVersion===input.sourceVersion
       &&evidence.eventId===input.messageId,'Exact source message pin changed.');
+    verifyEvidence(evidence,{sourceId:input.sourceId,sourceVersion:input.sourceVersion});
+    verify(evidence.text===value.message.content,'Exact source message words changed.');
     return value.message;
   }
 

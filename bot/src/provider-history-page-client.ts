@@ -42,11 +42,11 @@ export class ProviderHistoryPageClient {
     const worker=this.ensure(),id=this.nextId++;
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{
-        if(this.worker===worker)this.worker=null;
-        for(const [pendingId,item] of this.pending){clearTimeout(item.timer);
-          item.reject(new Error(pendingId===id?'HISTORY_PAGE_BUDGET_EXCEEDED':'HISTORY_PAGE_WORKER_RESTARTED'));
-          this.pending.delete(pendingId);}
-        worker.terminate().catch(()=>{});
+        const item=this.pending.get(id);if(!item)return;
+        this.pending.delete(id);
+        item.reject(new Error('HISTORY_PAGE_STILL_PREPARING'));
+        // An import already under way must finish and warm the worker. Killing it here
+        // would make every retry start the same expensive cold read from zero.
       },5000);
       timer.unref?.();
       this.pending.set(id,{resolve,reject,timer});
