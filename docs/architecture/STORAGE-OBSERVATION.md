@@ -36,6 +36,27 @@ scopes ignore later detached work; background work must establish its own explic
 An observation sink failure increments `storageObservationFailures()` and never replaces a
 successful command or its original failure. Callers expose this loss count in their telemetry.
 
+The accepting loop additionally enables `storage-interval.ts`. Each loop probe consumes one
+bounded interval of synchronous storage occupancy, including background calls, preparation,
+iterator advancement/finalization and transaction commit/rollback. Nested statements are counted
+but their duration is not added twice to occupancy. Transaction duration includes its callback's
+synchronous work; it is not a measurement of SQLite CPU alone. Other processes do not enable
+this collector. There are no result-size walks outside the existing request scope.
+
+`owner_event_loop_lag.storage` reports calls, transaction count, occupied milliseconds,
+observation failures and one slowest call of at least 25 ms. That call has a SQL fingerprint
+(or null for a transaction), duration and at most eight bounded caller frames. It contains no
+SQL, parameters or results. The interval resets even when the tick is fast. Caller detail is
+retained in the local journal only; the hosted collector retains its existing allowlisted lag
+fields. Compare occupancy with lag and process CPU, then use the exact installed bundle/caller
+to locate the operation. A high occupancy does not distinguish disk contention from expensive
+query execution by itself; the outside process/I/O evidence supplies that distinction.
+
+This closes the October 8 gap where 37 seconds of low-CPU blocking occurred with no slow
+completed requests. Request timers begin after dispatch and cannot measure waiting before a
+handler enters the loop. A read-only diagnostic copy also consumed live disk resources; see
+the incident record rather than interpreting "read-only" as "no performance effect".
+
 The release build runs `bot/scripts/storage-observation-check.ts`; it uses only its own in-memory
 database. It checks overlapping async scopes, query errors, byte semantics, transaction behavior,
 iterator finalization and sink failure, and reports large-result observation overhead. It never

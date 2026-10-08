@@ -135,6 +135,8 @@ authorization or a change to the default rapid-iteration policy.
   Prepared routes require a registered read contract and executable growth fixture; the build
   and deployment seal refuse missing coverage. Unknown owner GET routes also refuse by default;
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
+  Loop-lag records also attribute synchronous background storage and transaction finish time;
+  request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
   The same catalogue document owns the release gates.
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.

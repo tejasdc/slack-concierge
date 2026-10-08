@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
+import { observeSynchronousStorage } from './storage-interval';
 
 /** Result bytes are measured from values, without making a second JSON copy. They exclude
  * object overhead and wire encoding: response bytes and RSS are separate observations. */
@@ -85,10 +86,31 @@ function rowBytes(row: unknown): number {
  * Weak maps do not extend a prepared statement's lifetime. No per-query history is retained. */
 export function observedDatabase(database: Database): Database {
   const statements = new WeakMap<object, object>();
+  const transactions = new WeakMap<Function, Function>();
+  const fingerprintOf = (sql: string) => createHash('sha256').update(sql).digest('hex').slice(0, 16);
+  function transaction(raw: Function): Function {
+    const prior = transactions.get(raw);
+    if (prior) return prior;
+    const wrapped = function(this: unknown, ...args: any[]) {
+      return observeSynchronousStorage('transaction', null, () => Reflect.apply(raw, this, args));
+    };
+    transactions.set(raw, wrapped);
+    // Bun's variants are non-configurable properties: proxying those to different values
+    // violates JavaScript's proxy invariant. Copy their descriptors onto our callable instead.
+    for (const key of Reflect.ownKeys(raw)) {
+      if (['arguments', 'caller', 'prototype'].includes(String(key))) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(raw, key)!;
+      if (['default', 'deferred', 'immediate', 'exclusive'].includes(String(key)) && typeof descriptor.value === 'function')
+        descriptor.value = transaction(descriptor.value);
+      Object.defineProperty(wrapped, key, descriptor);
+    }
+    return wrapped;
+  }
   function statement(raw: any, sql: string): any {
     const prior = statements.get(raw);
     if (prior) return prior;
-    const fingerprint = createHash('sha256').update(sql).digest('hex').slice(0, 16);
+    const fingerprint = fingerprintOf(sql);
+    const measured = <T>(read: () => T): T => observeSynchronousStorage('statement', () => fingerprint, read);
     const record = (scope: Scope, started: number, result: any, method: string, failed: boolean, count = true) => {
       if (scope.closed) return;
       const elapsed = performance.now() - started;
@@ -115,34 +137,33 @@ export function observedDatabase(database: Database): Database {
       if (property === 'iterate') return (...args: any[]) => {
         const scope = scopes.getStore();
         if(scope&&!scope.closed)admitRead(sql,'iterate',scope.work);
-        const iterator = Reflect.apply(value, target, args);
-        if (!scope || scope.closed) return iterator;
+        const iterator = measured(() => Reflect.apply(value, target, args));
         let first = true;
         return new Proxy(iterator, { get(iter, key) {
           if (key === Symbol.iterator) return function() { return this; };
           const member = Reflect.get(iter, key, iter);
           if (typeof member !== 'function') return member;
-          if (key !== 'next') return member.bind(iter);
+          if (key !== 'next') return (...args: any[]) => measured(() => Reflect.apply(member, iter, args));
           return (...nextArgs: any[]) => {
             const started = performance.now();
             try {
-              const result = Reflect.apply(member, iter, nextArgs);
-              record(scope, started, result.done ? null : result.value, 'get', false, first);
+              const result = measured(() => Reflect.apply(member, iter, nextArgs));
+              if (scope && !scope.closed) record(scope, started, result.done ? null : result.value, 'get', false, first);
               first = false;
               return result;
-            } catch (error) { record(scope, started, null, 'get', true, first); first = false; throw error; }
+            } catch (error) { if (scope && !scope.closed) record(scope, started, null, 'get', true, first); first = false; throw error; }
           };
         }});
       };
       if (!['get', 'all', 'values', 'run'].includes(String(property))) return value.bind(target);
       return (...args: any[]) => {
         const scope = scopes.getStore();
-        if (!scope || scope.closed) return Reflect.apply(value, target, args);
+        if (!scope || scope.closed) return measured(() => Reflect.apply(value, target, args));
         admitRead(sql,String(property),scope.work);
         const started = performance.now();
         let result:any;
         try {
-          result = Reflect.apply(value, target, args);
+          result = measured(() => Reflect.apply(value, target, args));
         } catch (error) { record(scope, started, null, String(property), true); throw error; }
         record(scope,started,result,String(property),false);
         checkRead(scope.work);
@@ -155,14 +176,17 @@ export function observedDatabase(database: Database): Database {
   return new Proxy(database, { get(target, property) {
     const value = Reflect.get(target, property, target);
     if (property === 'query' || property === 'prepare')
-      return (sql: string, ...args: any[]) => statement(Reflect.apply(value, target, [sql, ...args]), sql);
+      return (sql: string, ...args: any[]) => statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql);
+    if (property === 'transaction')
+      return (...args: any[]) => transaction(Reflect.apply(value, target, args));
     if (property === 'exec' || property === 'run') return (...args: any[]) => {
       const scope = scopes.getStore();
-      if (!scope || scope.closed) return Reflect.apply(value, target, args);
+      const measured = () => observeSynchronousStorage('statement', () => fingerprintOf(String(args[0])), () => Reflect.apply(value, target, args));
+      if (!scope || scope.closed) return measured();
       admitRead(String(args[0]),String(property),scope.work);
       const started = performance.now();
       scope.work.db_calls++;
-      try { return Reflect.apply(value, target, args); }
+      try { return measured(); }
       catch (error) { scope.work.db_errors++; throw error; }
       finally { scope.work.db_duration_ms += performance.now() - started; }
     };

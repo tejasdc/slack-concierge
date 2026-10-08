@@ -11,6 +11,7 @@ import {log} from './log';
 import {searchPrepared} from './presentation-search-client';
 import {isTransientDatabaseError} from './database-retry';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
+import {startStorageIntervals,takeStorageInterval} from './storage-interval';
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
@@ -241,13 +242,15 @@ let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
 function startOwnerLoopMonitor() {
   if(ownerLoopMonitor)return;
   startOwnerResponsivenessWatch();
+  startStorageIntervals();
   let expected=performance.now()+250,cpu=process.cpuUsage();
   ownerLoopMonitor=setInterval(()=>{
     const now=performance.now(),lag=Math.round(now-expected),used=process.cpuUsage(cpu);
     expected=now+250;cpu=process.cpuUsage();
     // Processor time spent while the loop was held tells waiting (a lock, synchronous I/O: near
     // zero) from computing (close to the lag or above it) without a profiler, which may not run here.
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
+    const storage=takeStorageInterval();
+    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
   },250);
   ownerLoopMonitor.unref?.();
 }

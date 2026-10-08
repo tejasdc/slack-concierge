@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
 import { observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
 import { ledgerRows } from '../src/ledger-rows';
+import { startStorageIntervals, takeStorageInterval, observeSynchronousStorage } from '../src/storage-interval';
 
 // No application state import: the fixture owns its database and has no production path.
 const raw = new Database(':memory:');
@@ -63,6 +64,32 @@ try {
   const failures = storageObservationFailures();
   assert.equal(observeStorageOperation('sink-failure', () => 42, () => { throw new Error('sink down'); }), 42);
   assert.equal(storageObservationFailures(), failures + 1);
+
+  // The same observation boundary must see background calls and the transaction's finish,
+  // without an HTTP scope, without counting nested work twice, and without changing rollback.
+  startStorageIntervals();
+  const begin = performance.now();
+  db.transaction(() => {
+    db.query('SELECT id FROM facts WHERE id=1').get();
+    observeSynchronousStorage('statement', () => '0123456789abcdef', () => Bun.sleepSync(30));
+  }).immediate();
+  const wall = performance.now() - begin;
+  const occupied = takeStorageInterval();
+  assert.equal(occupied.transactions, 1);
+  assert.ok(occupied.occupied_ms >= 30 && occupied.occupied_ms <= wall + 1);
+  assert.equal(occupied.slowest?.kind, 'transaction');
+  assert.ok(occupied.slowest!.stack.length <= 8);
+  assert.equal(takeStorageInterval().calls, 0);
+  db.query('SELECT id FROM facts WHERE id=1').get();
+  assert.ok(takeStorageInterval().calls >= 1);
+  assert.throws(() => db.transaction(() => {
+    db.query('INSERT INTO facts VALUES (?, ?)').run(5, 'rollback');
+    throw failure;
+  }).exclusive(), error => error === failure);
+  assert.equal(db.query('SELECT id FROM facts WHERE id=5').get(), null);
+  takeStorageInterval();
+  assert.equal(observeSynchronousStorage('statement', () => { throw failure; }, () => { Bun.sleepSync(30); return 42; }), 42);
+  assert.equal(takeStorageInterval().observation_failures, 1);
 
   // Representative large content detects instrumentation that copies whole result payloads.
   const payload = 'x'.repeat(8 * 1024 * 1024);
