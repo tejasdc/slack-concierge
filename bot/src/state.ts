@@ -5083,11 +5083,18 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
     AND ((session.provider_id='claude-code' AND ?=1)
-      OR (session.provider_id='codex' AND ?=1))))`;
+      OR (session.provider_id='codex' AND ?=1))))
+  AND NOT (session.provider_id='codex' AND ?=1)`;
+
+// Set only while Codex's App Server is being restarted (provider-activation.ts): a Codex turn
+// claimed in that window would start on a server that is about to stop. In-process on purpose: the
+// restart runs in this process, and a restart of this process ends the hold with it.
+let codexAdmissionHeld=false;
+export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   return [nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
-    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0] as const;
+    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0,codexAdmissionHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {

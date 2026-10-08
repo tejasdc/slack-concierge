@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { mkdirSync, readFileSync, rmSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { authHeldInputCount, db, observeExecutionChanges, releaseAuthHeldWork } from "./state";
+import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
@@ -94,37 +94,101 @@ function run(command: string, args: string[], timeoutMs: number, environment:Nod
 }
 
 async function activateCodex(): Promise<ActivationReport> {
-  const running = runningCodexTurns();
-  if (running !== 0) {
-    return {
-      status: "deferred",
-      detail: running < 0
-        ? "Signed in. This machine will start using the new account once Codex restarts here; it could not be checked for running work just now, so nothing was restarted."
-        : `Signed in. ${running} Codex ${running === 1 ? "session is" : "sessions are"} still working on this machine, so it was left alone. It moves to the new account once that work finishes.`,
-    };
-  }
-  if (!codexUpdaterDisabled()) {
-    log("error", "provider_activation_failed", { provider: "codex", reason: "automatic_updater_not_disabled" });
-    return { status: "failed", restartFailed: true,
-      detail: "Codex's automatic background update setting could not be confirmed, so its service was left running. Your sign-in is kept; nothing was switched." };
-  }
-  const restart = await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
-  if (restart.code !== 0) {
-    // A listener started outside the daemon manager refuses restart; from Oct 4 to Oct 7, 2026
-    // that made every Codex switch fail while the page blamed the account's sign-in.
+  // New Codex work is held for the few seconds of the restart, and only then is running work
+  // counted: counting first left a window in which a turn could be claimed onto a server about to
+  // stop (outage review, 2026-10-08). Running work is never waited on here; the restart is
+  // deferred and retried when it finishes, so nothing queued is held while an agent works.
+  holdCodexAdmission(true);
+  try {
+    const running = runningCodexTurns();
+    if (running !== 0) {
+      return {
+        status: "deferred",
+        detail: running < 0
+          ? "Signed in. This machine will start using the new account once Codex restarts here; it could not be checked for running work just now, so nothing was restarted."
+          : `Signed in. ${running} Codex ${running === 1 ? "session is" : "sessions are"} still working on this machine, so it was left alone. It moves to the new account once that work finishes.`,
+      };
+    }
+    if (!codexUpdaterDisabled()) {
+      log("error", "provider_activation_failed", { provider: "codex", reason: "automatic_updater_not_disabled" });
+      return { status: "failed", restartFailed: true,
+        detail: "Codex's automatic background update setting could not be confirmed, so its service was left running. Your sign-in is kept; nothing was switched." };
+    }
+    const before = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
+    const unmanaged = before.code === 0 && before.output.includes("\"running\"") && !before.output.includes("\"backend\"");
+    // The replacement finds servers through /proc, so it runs only on the server; a Mac keeps the
+    // old answer below and its own installer's managed start.
+    if (unmanaged && process.platform !== "linux") {
+      log("error", "provider_activation_failed", { provider: "codex", unmanaged });
+      return { status: "failed", restartFailed: true,
+        detail: "Codex's background service on this machine was started outside its manager, so it could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
+    }
+    const restart = unmanaged ? await replaceUnmanagedServer() : await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
+    if (restart.code !== 0) {
+      log("error", "provider_activation_failed", { provider: "codex", exit_code: restart.code, unmanaged, output: restart.output.slice(0, 500) });
+      return { status: "failed", restartFailed: true,
+        detail: "Codex on this machine could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
+    }
     const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
-    const unmanaged = version.code === 0 && !version.output.includes("\"backend\"");
-    log(unmanaged ? "error" : "warn", "provider_activation_failed", { provider: "codex", exit_code: restart.code, unmanaged });
-    return { status: "failed", restartFailed: true, detail: unmanaged
-      ? "Codex's background service on this machine was started outside its manager, so it could not be restarted onto the new account. Your sign-in is kept; nothing was switched."
-      : "Codex on this machine could not be restarted onto the new account. Your sign-in is kept; nothing was switched." };
+    const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");
+    log("info", "provider_activation_applied", { provider: "codex", healthy, replaced_unmanaged: unmanaged });
+    return healthy
+      ? { status: "applied", detail: "Done. This machine is using the new account now." }
+      : { status: "failed", detail: "Signed in, and this machine restarted Codex, but Codex did not come back healthy here." };
+  } finally {
+    holdCodexAdmission(false);
   }
+}
+
+/** Processes started by `codex app-server --listen`: the server, never a client's `app-server proxy`. */
+function listeningAppServers(): number[] {
+  const found: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const args = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
+      if (args.includes("app-server") && args.includes("--listen")) found.push(Number(entry));
+    } catch { /* gone */ }
+  }
+  return found;
+}
+function childrenOf(pids: number[]): number[] {
+  const wanted = new Set(pids), found: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const parent = Number(readFileSync(`/proc/${entry}/stat`, "utf8").replace(/^.*\) /, "").split(" ")[1]);
+      if (wanted.has(parent)) found.push(Number(entry));
+    } catch { /* gone */ }
+  }
+  return found;
+}
+const alive = (pid: number) => existsSync(`/proc/${pid}`);
+
+/**
+ * A server started outside the daemon manager refuses `daemon restart` (from Oct 4 to Oct 7, 2026 that
+ * made every Codex switch fail), and on 2026-10-08 one was left running after Codex's own updater
+ * failed to bring its replacement up. Replacing it is the runbook's unmanaged-listener repair, done
+ * here only because no Codex turn is running and new ones are held: stop it, keep its old socket
+ * under a dated name, and start the managed server in its place.
+ */
+async function replaceUnmanagedServer(): Promise<{ code: number | null; output: string }> {
+  const servers = listeningAppServers();
+  const helpers = childrenOf(servers);
+  log("warn", "codex_unmanaged_server_replacing", { servers, helpers });
+  for (const pid of servers) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+  const deadline = Date.now() + 70_000;
+  while (servers.some(alive) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 500));
+  for (const pid of [...servers, ...helpers]) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  const socket = join(homedir(), ".codex", "app-server-control", "app-server-control.sock");
+  if (existsSync(socket)) renameSync(socket, `${socket}.stale-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+  return run(MANAGED_CODEX, ["app-server", "daemon", "start"], 90_000);
+}
+
+/** Whether the running Codex server was started outside its manager, so the next idle moment should replace it. */
+export async function codexServerUnmanaged(): Promise<boolean> {
   const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
-  const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");
-  log("info", "provider_activation_applied", { provider: "codex", healthy });
-  return healthy
-    ? { status: "applied", detail: "Done. This machine is using the new account now." }
-    : { status: "failed", detail: "Signed in, and this machine restarted Codex, but Codex did not come back healthy here." };
+  return version.code === 0 && version.output.includes("\"running\"") && !version.output.includes("\"backend\"");
 }
 
 /**
@@ -325,6 +389,13 @@ export function watchAuthHeldCredentials(): () => void {
     updateInterval();
     if(pendingCodexActivation && runningCodexTurns()===0)check('codex','turn_finished');
   });
+  // A server running outside its manager is replaced at the first moment no Codex turn runs,
+  // through the same deferred activation an account switch uses.
+  if(process.platform==='linux')void codexServerUnmanaged().then(unmanaged=>{
+    if(!unmanaged||stopped)return;
+    log('warn','codex_unmanaged_server_found',{});
+    pendingCodexActivation=true;check('codex','startup');
+  }).catch(()=>{});
   for(const provider of providers)check(provider,'startup');
   updateInterval();
   return ()=>{stopped=true;detach();if(interval)clearInterval(interval);

@@ -573,7 +573,8 @@ function turnsThatEndWithThisProcess() {
 
 // A run that gains independent custody (its host is now recorded) no longer ends with this
 // process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
-observeExecutionChanges(() => resolveDrainIfIdle());
+// The queue also re-reads admission here: a Codex restart releases its admission hold this way.
+observeExecutionChanges(() => { resolveDrainIfIdle(); sessionTurnQueue?.wake(); });
 
 function resolveDrainIfIdle() {
   // Checked first: execution changes call this often, and only a waiting shutdown needs the count.

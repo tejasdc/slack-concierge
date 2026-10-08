@@ -154,8 +154,13 @@ readiness wait. Five seconds later the Mac Codex app's SSH payload, which starts
   (`codex-daemon-file-limit.ts`) runs `daemon start` in a fresh scope, at most once per
   30 seconds, logging `codex_daemon_started_when_absent` or `codex_daemon_start_failed`.
 
-An unmanaged server that is already running is left alone: replacing it is a restart, which
-follows the repair section above once admission is idle.
+An unmanaged server that is already running is replaced by Concierge itself, with the repair
+section's steps, at the first moment no Codex turn is running (`replaceUnmanagedServer` in
+`provider-activation.ts`, scheduled at startup through the same deferred activation an account switch
+uses). Every Codex restart Concierge makes, a switch or this replacement, first holds new Codex
+admission (`holdCodexAdmission` in `state.ts`), then counts running Codex turns, and defers without
+restarting if any run; the hold lasts only the seconds of the restart, and queued work is never held
+while an agent is working. Server only: the replacement finds listeners through `/proc`.
 
 ## OAuth Token Revocation Triggers The Same Restart
 
