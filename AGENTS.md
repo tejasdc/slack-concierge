@@ -60,7 +60,10 @@ and mandatory review requirements in this repository and linked historical mater
   prove notice delivery or agent admission. See [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
 
 - Scheduled and banked work use the existing queued turn and wake timer. A saved item starts
-  in its own named session, so later inputs follow its FIFO. `saved_kind` and the saved rule
+  in its own named session. While it waits for its own time it is not in line: later inputs
+  to that session (returns, watch firings, messages) run past it, and when it comes due its
+  lower id still puts it first (`EARLIER_TURN_BLOCKS_SQL`; a repeating schedule's next firing
+  held the thread reader's watch for six hours on 2026-10-09). `saved_kind` and the saved rule
   survive provider requeues. A banked item waiting for its chosen time has no provider-retry
   mark, including after a safe pre-admission refusal; clearing usage or switching accounts
   cannot release it early. Its current kind has one durable home; converting banked work to a

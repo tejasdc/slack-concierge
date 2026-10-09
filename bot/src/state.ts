@@ -927,8 +927,13 @@ export const SETTLED_EXECUTION_SQL = `
 // carries the parked one as unconfirmed context (listInterruptedInputContext). Holding them
 // left a Mac request queued for five days behind a run the Mac's sleep had cut off (mac:69,
 // 2026-10-01 to 2026-10-06).
+// A saved item waiting for its own time (scheduled or banked, not started by hand) is not in
+// line: when it comes due it still goes first, by its lower id. Blocking on it held a repeating
+// schedule's session shut between firings: the thread reader's watch and a returned answer sat
+// queued for hours behind a firing due the next morning (2026-10-09).
 export const EARLIER_TURN_BLOCKS_SQL = `
-  (older.status='queued' OR (older.status='parked' AND older.turn_kind<>'native'))
+  ((older.status='queued' AND (older.saved_kind IS NULL OR older.saved_manual_start=1))
+    OR (older.status='parked' AND older.turn_kind<>'native'))
 `;
 
 const settleDependenciesSql = `
