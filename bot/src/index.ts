@@ -2,8 +2,8 @@ import { App, LogLevel } from "@slack/bolt";
 import { runStartupPhase } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
-import { startRoutedRequestApi, requestApiHandler } from "./routed-request-api";
-import { peerSettings, PeerClient, SessionPeers, startPeerListener } from "./session-peers";
+import { startRoutedRequestApi } from "./routed-request-api";
+import { peerSettings, PeerClient, SessionPeers } from "./session-peers";
 import {ProjectSetup} from './project-setup';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
@@ -460,7 +460,6 @@ const sessionPeers = peering.self ? new SessionPeers({self: peering.self, client
   },
   onError:error=>log('error','session_peer_failed',errorFields(error)),
   onWake:()=>projectSetup.wake(),hasPendingOperations:()=>projectSetup.hasPending()}) : undefined;
-let peerServer: ReturnType<typeof startPeerListener> | null = null;
 sessionCommunication = new SessionCommunicationCoordinator({
   get owner() {return sessionExecutionHost.owner;},
   ...(sessionPeers ? {peers: sessionPeers} : {}),
@@ -4045,7 +4044,6 @@ async function drainAndStop(signal: string) {
   // event-stream subscriber never ends its response, so the owner ends them first.
   sessionExecutionHost.owner.closeStreams();
   if (routedRequestServer) await routedRequestServer.stop(false);
-  if (peerServer) await peerServer.stop(false);
   await sessionCommunication?.stop();
   await routedRequests.stop();
   await sessionExecutionHost.stop();
@@ -4205,12 +4203,11 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           startRuntime: async () => {
             await runStartupPhase('slack_connection', () => app.start());
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner));
+            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null));
             sessionExecutionHost.markOwnerServing();
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
             startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);
             if (peering.listen) {
-              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner),onContact:()=>projectSetup.wake()});
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
             }
             sandboxSlackIdentity?.assertConnected();

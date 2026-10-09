@@ -9,8 +9,8 @@ import {SessionCommunicationCoordinator} from './session-communication';
 import {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {SessionTurnQueueCoordinator} from './session-turn-queue';
 import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity';
-import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
-import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
+import {startRoutedRequestApi} from './routed-request-api';
+import {peerSettings,PeerClient,SessionPeers} from './session-peers';
 import {ProjectSetup} from './project-setup';
 import {GHOST_TURN_INTERRUPT_AGE_MS,reconcileRecoverableTurns,sweepGhostRunningTurns} from './turn-recovery';
 import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
@@ -128,12 +128,11 @@ export async function startSessionRuntime() {
   await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
+  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null);
   host.markOwnerServing();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
-  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
-  if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
+  if(peering.listen)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
@@ -165,7 +164,6 @@ export async function startSessionRuntime() {
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}
     }
     await server.stop(true);
-    if(peerServer)await peerServer.stop(true);
   })();
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>void stop().then(()=>process.exit(0)));
   return {host,communication,server,stop};

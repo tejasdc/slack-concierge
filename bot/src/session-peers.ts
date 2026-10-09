@@ -1,4 +1,4 @@
-import {createHash,timingSafeEqual,randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
@@ -6,6 +6,7 @@ import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
 import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
+import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -61,7 +62,7 @@ export class PeerError extends Error {
 class PeerReplyContractError extends Error {}
 export class PeerClient {
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
-  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000,trackAvailability=true,signal?:AbortSignal):Promise<T> {
+  async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal):Promise<T> {
     let response:Response;
     try {
       response=await fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -84,21 +85,6 @@ export class PeerClient {
     if(trackAvailability)clearRetryBreaker(`peer:${this.name}`);
     return value as T;
   }
-}
-
-/** The owner API on a tailnet address; one shared token stands in for the socket's file mode. */
-export function startPeerListener(input:{hostname:string;port:number;token:string;fetch:(request:Request)=>Promise<Response>;onContact?:()=>void}) {
-  const expected=Buffer.from(input.token);
-  return Bun.serve({hostname:input.hostname,port:input.port,idleTimeout:0,
-    async fetch(request) {
-      const header=request.headers.get('authorization')??'';
-      const presented=Buffer.from(header.startsWith('Bearer ')?header.slice(7):'');
-      if(presented.length!==expected.length||!timingSafeEqual(presented,expected))return Response.json({error:{code:'PEER_UNAUTHORIZED',message:'A valid peer token is required.'}},{status:401});
-      input.onContact?.();
-      const url=new URL(request.url);
-      if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return Response.json({error:{code:'NOT_FOUND',message:'Only the session owner API is served to peers.'}},{status:404});
-      return input.fetch(request);
-    }});
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;

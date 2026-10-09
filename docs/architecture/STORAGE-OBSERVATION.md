@@ -77,6 +77,42 @@ external and array-buffer sizes. They do not walk the heap when it is already la
 external host observer owns process/swap/pressure evidence during a blocked event loop.
 # Interactive read refusal
 
+## Execution isolation
+
+The root request socket and authenticated peer listener belong to `foreground-gateway-worker`,
+not the canonical application's event loop. `foreground-boundary-check.ts` walks its import
+graph and refuses application storage, synchronous calls and direct console output. The shared
+bounded logger owns its separate sink-backpressure check. Startup socket cleanup is asynchronous
+and refuses a live listener; the gateway never takes a socket from another process.
+
+`native-read-routes.ts` assigns each registered GET to a readonly executor, genuinely live owner
+dependency or event stream. Two persistent read executors provide independent capacity when one
+reader blocks. A finite response owns its slot through body completion; event streams have a
+separate domain. The queue retains at most 64 read requests, and admission plus response share
+the existing 20-second read deadline. Cancellation/expiry retires only that readonly executor,
+so its still-running synchronous call cannot capture the next request. A command is forwarded
+once to the canonical backend and is never killed or replayed when its response is lost.
+
+The gateway generates `x-concierge-admission-id`. Delay records name the bounded route label,
+admission wait, header wait and occupied readers. A slow canonical dependency is distinct from
+read-capacity exhaustion. No request body, query string or credential belongs in those fields.
+The supervisor ping still executes in the canonical process and includes read capacity; a live
+gateway alone cannot make a blocked owner healthy.
+
+Only the canonical startup creates the Inbox, runs migrations, starts background coordinators
+or owns mutations. Read workers use physically readonly canonical connections. Account view
+assembly happens there; live sign-in ephemera and an explicit fresh check cross private typed
+ports to the credential owner, with unavailable state reported rather than invented. Thinkering's
+independent authenticated admission continues to use the existing durable human-command ingress
+([custody contract](HUMAN-COMMAND-INTAKE.md)); it is not another command queue.
+
+The gateway and readers are declared application artifacts, resolved inside the same sealed
+release. They end with the canonical process; Linux also enforces parent death in the kernel.
+The release fixture blocks a private synthetic executor and checks the other reader continues,
+then the composed acceptance exercises actual product routes and custody. It never pauses a
+production process. Shared disk failure or exhausted execution capacity can still delay all
+work; execution isolation does not manufacture durable storage availability.
+
 Every owner GET route must match `presentation-reader-contracts.ts` or an exact named route in
 `owner-get-policy.ts`; an unregistered route returns `READER_CONTRACT_REQUIRED` before invoking
 its handler. The exceptions are existing control/exact-object entrances and explicitly named

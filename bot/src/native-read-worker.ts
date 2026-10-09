@@ -2,7 +2,9 @@ import {chmodSync,lstatSync,readFileSync,unlinkSync} from 'node:fs';
 import {createConnection} from 'node:net';
 import {classifyNativeReadRoute,assertNativeReadRouteCoverage} from './native-read-routes';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
+import {logSinkCounters} from './log';
 import {log} from './log';
+import {observeStorageOperation,type StorageWork} from './storage-observation';
 
 if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
 const socket=process.env.CONCIERGE_READ_SOCKET;
@@ -47,6 +49,9 @@ const peers=peerSettings();
 const self=peers.self??process.env.CONCIERGE_PEER_NAME??'cloud';
 const peerCache=new Map<string,{view:Record<string,unknown>;at:number}>();
 const peerReads=new Map<string,Promise<Record<string,unknown>>>();
+// Keep all request costs as counters; one ordinary completion in 100 is enough
+// to retain examples without recreating the per-request journal write load.
+const requests={completed:0,failed:0,slow:0,totalDurationMs:0,maxDurationMs:0,logSampledOut:0};
 
 function failure(status:number,code:string,message:string){return Response.json({error:{code,message}},{status});}
 async function capped(response:Response,max:number):Promise<Response>{
@@ -144,16 +149,19 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const started=performance.now();
   const admissionId=request.headers.get('x-concierge-admission-id');
   const url=new URL(request.url);
-  if(request.method==='GET'&&url.pathname==='/internal/ready')return Response.json({ok:true,pid:process.pid});
+  if(request.method==='GET'&&url.pathname==='/internal/ready')return Response.json({ok:true,pid:process.pid,logging:logSinkCounters(),requests});
   if(request.method!=='GET')return failure(405,'METHOD_NOT_ALLOWED','Only GET reads are served here.');
   const route=classifyNativeReadRoute(request.method,url.pathname);
   if(!route||route.domain!=='read-worker')return failure(route?503:404,route?'READ_OWNER_REQUIRED':'READER_CONTRACT_REQUIRED',
     route?'This read belongs to the canonical owner.':'This read has no declared execution owner.');
   let response:Response;
+  let work:StorageWork|null=null;
   try{
-    if(route.source==='account')response=await authProviders(url);
-    else if(route.pattern==='/files')response=await remoteFile(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
-    else response=await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
+    response=await observeStorageOperation(route.pattern,async()=>{
+      if(route.source==='account')return authProviders(url);
+      if(route.pattern==='/files')return await remoteFile(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
+      return await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
+    },measured=>{work=measured;});
   }catch(error){
     if(error instanceof SessionOwnerError||error instanceof WorkspaceFileError)
       response=failure(error.status,error.code,error.message);
@@ -164,7 +172,16 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   response.headers.set('x-concierge-read-duration-ms',String(durationMs));
   response.headers.set('x-concierge-read-worker-pid',String(process.pid));
   if(admissionId)response.headers.set('x-concierge-admission-id',admissionId);
-  log('info','native_read_request_completed',{admission_id:admissionId,route:route.pattern,status:response.status,duration_ms:durationMs});
+  requests.completed++;
+  requests.totalDurationMs+=durationMs;
+  requests.maxDurationMs=Math.max(requests.maxDurationMs,durationMs);
+  if(response.status>=400)requests.failed++;
+  if(durationMs>=2000)requests.slow++;
+  if(response.status>=400||durationMs>=2000||requests.completed%100===0)
+    log(response.status>=400||durationMs>=2000?'warn':'info','native_read_request_completed',{
+      admission_id:admissionId,route:route.pattern,status:response.status,duration_ms:durationMs,...(work??{}),
+    });
+  else requests.logSampledOut++;
   return response;
 }});
 chmodSync(socket,0o600);

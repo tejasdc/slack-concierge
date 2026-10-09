@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import type { Action } from "./router-post";
 import { RETRY_POLICIES, type RetryPolicy } from "../src/retry-policies";
 import { nextRetry } from "../src/retry-core";
+import {OWNER_COMMAND_RESPONSE_MS} from '../src/owner-transport-policy';
 
 // Concierge restarts for a few seconds whenever it updates, and an agent's helper call can land
 // in that gap. Sending it once and giving up turned a routine update into a failed reply or a
@@ -13,7 +14,6 @@ import { nextRetry } from "../src/retry-core";
 //   everything there without one is a read; a GET reads. Project creation and sharing carry no
 //   identity, so after a possible delivery they are reported unconfirmed, never resent.
 // The same serialized body is resent every time; no attempt mints a new action id.
-const ATTEMPT_TIMEOUT_MS = 120_000;
 const NEVER_REACHED = new Set(["FailedToOpenSocket", "ECONNREFUSED", "ENOENT", "ConnectionRefused"]);
 
 export type OwnerUnconfirmed = { ok: false; status: 0; result: { ok: false; error: "owner_unconfirmed"; detail: string; attempts: number; retry: { path: string; action_id: string | null; resend_is_safe: boolean } } };
@@ -44,7 +44,7 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
     try {
       // The socket path is resolved per attempt: a restart may have replaced the directory link.
       const response = await fetch(`http://localhost${path}`, {
-        unix: socketPath(), signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
+        unix: socketPath(), signal: AbortSignal.timeout(OWNER_COMMAND_RESPONSE_MS),
         ...(serialized === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: serialized }),
       });
       const result: any = await response.json();

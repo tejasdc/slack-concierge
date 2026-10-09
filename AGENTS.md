@@ -141,9 +141,9 @@ authorization or a change to the default rapid-iteration policy.
   Prepared routes require a registered read contract and executable growth fixture; the build
   and deployment seal refuse missing coverage. Unknown owner GET routes also refuse by default;
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
-  Native GET routes have a storage-free execution manifest; isolated read executors reuse the
-  owner's projections on physically read-only connections while the canonical owner retains
-  commands and live control state. See [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
+  The root socket and peer listener use a storage-free gateway and readonly executors;
+  commands retain one canonical writer. Route classification and the accepting import graph
+  are release gates. See [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);

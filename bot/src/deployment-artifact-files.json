@@ -34,7 +34,9 @@
     "control/application/provider-history-worker.js": "bot/src/provider-history-worker.ts",
     "control/application/provider-history-sync-worker.js": "bot/src/provider-history-sync-worker.ts",
     "control/application/provider-history-page-worker.js": "bot/src/provider-history-page-worker.ts",
-    "control/application/speech-job-worker.js": "bot/src/speech-job-worker.ts"
+    "control/application/speech-job-worker.js": "bot/src/speech-job-worker.ts",
+    "control/application/foreground-gateway-worker.js": "bot/src/foreground-gateway-worker.ts",
+    "control/application/native-read-worker.js": "bot/src/native-read-worker.ts"
   },
   "controlFiles": {
     "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
@@ -64,6 +66,8 @@
     "control/application/provider-history-worker.js",
     "control/application/provider-history-sync-worker.js",
     "control/application/provider-history-page-worker.js",
-    "control/application/speech-job-worker.js"
+    "control/application/speech-job-worker.js",
+    "control/application/foreground-gateway-worker.js",
+    "control/application/native-read-worker.js"
   ]
 }

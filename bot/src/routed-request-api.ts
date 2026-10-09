@@ -1,50 +1,14 @@
-import { chmodSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
-import { createConnection } from "node:net";
+import {readFileSync} from "node:fs";
+import {chmod} from "node:fs/promises";
+import {removeUnboundSocket} from "./private-api-socket";
+import {startForegroundGatewayProcess,type ForegroundPeer} from "./foreground-gateway-supervisor";
 import { join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
 import {usageBreakdown} from './usage-breakdown';
-import {log} from './log';
 import {startPresentationWorker} from './presentation-worker-supervisor';
-
-// macOS has no /proc: the only proof that nothing listens on a leftover socket entry is
-// a refused connection to it. A connection that opens proves a live listener.
-function socketHasListener(path: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection(path);
-    socket.once("connect", () => { socket.destroy(); resolve(true); });
-    socket.once("error", error => {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ECONNREFUSED" || code === "ENOENT") resolve(false);
-      else reject(error);
-    });
-  });
-}
-
-async function removeUnboundSocket(path: string) {
-  let original;
-  try { original = lstatSync(path); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  if (!original.isSocket()) throw new Error("The request API path is not a socket; refusing to replace it.");
-  if (process.platform === "darwin") {
-    if (await socketHasListener(path)) throw new Error("The request API already has a live listener.");
-  } else {
-    // Bun's Unix connect errors conflate missing/refused endpoints. The Linux
-    // kernel retains a bound entry even before listen(), and removes it on close.
-    const boundPaths = readFileSync("/proc/net/unix", "utf8").split("\n")
-      .map(line => line.match(/^\S+(?:\s+\S+){6}\s+(.+)$/)?.[1]);
-    if (boundPaths.includes(path)) throw new Error("The request API already has a live listener.");
-  }
-  const current = lstatSync(path);
-  if (!current.isSocket() || current.dev !== original.dev || current.ino !== original.ino) {
-    throw new Error("The request API socket changed during startup; refusing to replace it.");
-  }
-  unlinkSync(path);
-}
+import {log,logSinkCounters} from './log';
 
 /** Routes shared by the root-only owner socket and the authenticated peer listener. */
 const startedAt=new Date().toISOString();
@@ -112,8 +76,12 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
   return async function fetch(request:Request):Promise<Response> {
     try {
       const url=new URL(request.url);
+      if(request.method==='GET'&&url.pathname==='/internal/auth-ephemera'&&owner)
+        return Response.json(owner.authEphemera());
+      if(request.method==='POST'&&url.pathname==='/internal/auth-refresh'&&owner)
+        return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
-        return Response.json({ok:true,pid:process.pid,startedAt,release});
+        return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters()});
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
         const input=await request.json() as any;
         if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
@@ -133,8 +101,8 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
   };
 }
 
-export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
-  const path = join(stateDir, "requests.sock");
+export async function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner,peer?:ForegroundPeer|null) {
+  const path = join(stateDir, "request-owner.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
   await removeUnboundSocket(path);
   const server = Bun.serve({
@@ -143,18 +111,29 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner),
   });
   let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
+  let stopGateway:((force?:boolean)=>Promise<void>)|undefined;
   try {
-    chmodSync(path, 0o600);
+    await chmod(path, 0o600);
+    // First-run creation belongs to the canonical writer, never to a GET reader.
+    try {owner?.inbox();}
+    catch(error) {
+      // A machine without the Inbox project can still serve its other sessions.
+      // It retains the same explicit unavailable capability as the old Inbox GET.
+      if((error as {code?:string}).code!=='PROJECT_UNAVAILABLE')throw error;
+      log('info','inbox_project_unavailable_at_startup');
+    }
     // Every accepting canonical owner serves prepared reads, regardless of its adapters.
     // Start only after the exclusive socket bind, so a refused second owner spawns nothing.
     if(owner)stopPresentation=startPresentationWorker();
+    stopGateway=await startForegroundGatewayProcess(stateDir,path,peer);
   } catch(error) {
     await server.stop(true);
+    await stopPresentation?.();
     throw error;
   }
   let stopping:Promise<void>|null=null;
   return {stop:(closeActiveConnections=false)=>stopping??=(async()=>{
-    try {await server.stop(closeActiveConnections);}
+    try {await stopGateway?.(closeActiveConnections);await server.stop(closeActiveConnections);}
     finally {await stopPresentation?.();}
   })()};
 }
