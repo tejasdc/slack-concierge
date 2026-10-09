@@ -31,7 +31,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {provenRunKinds,turnContinuesThroughRestart} from './execution-survival';
+import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {STILL_WAITING_MINUTES} from './request-liveness';
@@ -1083,6 +1083,7 @@ export class SessionOwner {
       if(!session)return [];
       const wait=turnBackgroundWait(turn.id);
       return [{sessionId:`concierge:${session.id}`,title:this.catalogueLabels(session).title,
+        reason:whyTurnHoldsUpdate(db,turn.id,proven),
         jobs:(wait?.jobs??[]).map(job=>({description:job.description,ageMs:job.ageMs,
           told:job.told60?60:job.toldFirst?STILL_WAITING_MINUTES:null}))}];
     });

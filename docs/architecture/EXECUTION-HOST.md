@@ -151,6 +151,26 @@ are command hooks in `--settings`, held by the unchanged process).
 - Concierge's Codex turns use `approvalPolicy: "never"`, so there are no approvals to reissue.
 - Not yet exercised on a live Codex turn: the server's Codex is signed out (2026-10-07).
 
+## ChatGPT runs
+
+- A ChatGPT turn never ran in a process here. Thinkering's ChatGPT capability (in the Thinkering
+  service, typing into remote-box's always-running Chrome) sends the message under the run id the
+  owner admitted, and keeps ChatGPT's answer under that id; Concierge only watches with `observe`.
+- Each send is recorded before it is made as an execution with supervisor `capability-host` (no
+  host, live at once). A Concierge restart leaves it running. The next coordinator takes it back at
+  startup like any execution and follows it (`follow` in `session-capability-client.ts`): it asks for
+  that run with `reconcile`, then observes from the first event, so messages already recorded are
+  matched by their event ids and nothing is typed again. A run still unfinished at takeover is
+  recorded as `adopted_live`.
+- This kind (`chatgpt/capability-host`) counts as surviving a restart by construction
+  (`CHATGPT_RUN_KIND`), without the observed proof below: the custody was never in this process,
+  and waiting for an observed takeover could never end, because every update waited for these runs
+  so none was ever taken over. Two ChatGPT Pro reviews held an update on 2026-10-09 while twelve
+  Claude and Codex runs carried on. A ChatGPT run sent before this change has no record and still
+  holds its update. New ChatGPT turns still wait for an install to finish before they start.
+- The update line names why each remaining session holds the update (`whyTurnHoldsUpdate`), so a
+  holder is never unexplained.
+
 ## Updates (design step 7)
 
 A running turn holds an update only if it would end with the coordinator. One rule, in

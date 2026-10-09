@@ -729,15 +729,24 @@ export class SessionExecutionHost {
           }
           // An adopted run's admission was retained when it started, and a Stop requested meanwhile
           // must still reach its process, so it is not re-checked here.
-          const admission=adoption?null:this.retainAdmission(claim,input,session,actual,attachments);
+          // A ChatGPT run taken back after a restart uses the admission its send was made under.
+          const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
+          const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
+          if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
           if(session.provider_id==='chatgpt'&&admission) {
             // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
             // service notices (cancellations, returns, reminders) are for agents and stop here.
             if(input.origin==='service')throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only the words of a person or an asking agent; a service notice is not sent.');
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
+            // The send and its answer live in Thinkering's ChatGPT capability, keyed by this run id;
+            // recording that custody before the send lets the next Concierge follow the run through an
+            // update instead of the update waiting for ChatGPT to finish (Tejas, 2026-10-09).
+            if(!adoption)retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'chatgpt',
+              directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
-              onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding})}).run(actual)
+              onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
+              ...(adoption?{follow:{onLive:()=>recordLiveAdoption(adoption.execution.execution_id)}}:{})}).run(actual)
               .catch(error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);

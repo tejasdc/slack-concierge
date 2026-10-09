@@ -703,7 +703,9 @@ authorization or a change to the default rapid-iteration policy.
   An update waits only for runs that would end with
   Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
-  update line). On the Mac each Claude host is its own launchd job started through the agent-host app. See
+  update line). A ChatGPT run is recorded as a `capability-host` execution before its send and followed by
+  its run id after a restart, so it never holds an update; the update line says why each remaining
+  session does (`whyTurnHoldsUpdate`). On the Mac each Claude host is its own launchd job started through the agent-host app. See
   [execution host](docs/architecture/EXECUTION-HOST.md). On Linux every execution host and the shared Codex App
   Server run in `agents.slice` (`agent-work-slice.ts`), whose 30 MB/s disk-write cap remote-box owns, because one
   agent's database copy froze the owner for 145 s on 2026-10-09; the owner stays outside it.

@@ -168,6 +168,10 @@ export interface ChatGptRunContext {
   onEvidence(evidence: CapabilityEvidence): void | Promise<void>;
   onNativeBinding?(binding: ChatGptBinding): void | Promise<void>;
   signal?: AbortSignal;
+  /** Taken back after a restart: the send already happened under this run id, so the run asks
+   * Thinkering's capability for it (reconcile, then observe from the start) and never sends again.
+   * `onLive` is called when the send was still unfinished at takeover. */
+  follow?: { onLive(): void };
 }
 
 export interface ChatGptReadRef { sessionId: string; bindingGeneration: number; binding: ChatGptBinding }
@@ -548,7 +552,9 @@ export class SessionCapabilityClient {
         && (input.interactionPolicy === undefined || input.interactionPolicy === "standard")
         && admission.inputId === run.inputId && admission.runId === run.runId && Number.isSafeInteger(admission.bindingGeneration)
         && admission.bindingGeneration > 0 && nonempty(admission.admittedAt), "ChatGPT requires an exact retained standard chat admission.");
-      verify(digest(input.prompt) === admission.promptHash && (input.model ?? null) === admission.model
+      // A followed run types nothing, so only a new send must match what was admitted; its own
+      // send created the conversation it is now bound to.
+      if (!context.follow) verify(digest(input.prompt) === admission.promptHash && (input.model ?? null) === admission.model
         && input.sessionUUID === (admission.nativeBinding?.sessionId ?? null), "Provider preparation no longer matches the owner's immutable admission.");
       if (admission.nativeBinding !== null) verifyBinding(admission.nativeBinding);
       verify(context.attachments.length === admission.attachments.length, "Provider attachment custody does not match admission.");
@@ -560,12 +566,15 @@ export class SessionCapabilityClient {
       }
       if (context.signal?.aborted) throw new SessionCapabilityError("CAPABILITY_OWNER_LOST", "The owner ended this admission before capability dispatch.", 409);
       mayHaveStarted = true;
-      const receipt = await this.start(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
-        model: admission.model, attachments: context.attachments, policy: admission.policy, nativeBinding: admission.nativeBinding }, context.signal);
+      const receipt = context.follow
+        ? await this.reconcile(run, context.signal)
+        : await this.start(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
+          model: admission.model, attachments: context.attachments, policy: admission.policy, nativeBinding: admission.nativeBinding }, context.signal);
       effectRecorded = true;
+      if (context.follow && (receipt.state === "recorded" || receipt.state === "running")) context.follow.onLive();
       terminalConfirmed = receipt.state === "failed" || receipt.state === "canceled" || receipt.state === "completed";
       if (binding !== null && receipt.nativeBinding !== null) verify(isDeepStrictEqual(binding, receipt.nativeBinding), "Provider receipt changed the admitted native binding.");
-      await context.onEvidence({ kind: "start", run, receipt });
+      await context.onEvidence({ kind: context.follow ? "reconcile" : "start", run, receipt });
       await acceptBinding(receipt.nativeBinding);
       if (receipt.acknowledgedAt !== null) input.onInputAcknowledged?.();
       if (receipt.result !== null) return await finish(receipt.result);

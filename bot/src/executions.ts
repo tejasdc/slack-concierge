@@ -64,8 +64,9 @@ export type ExecutionRow = {
 /** Recorded before the host is started, so a coordinator that dies mid-launch leaves evidence, never a second launch. */
 export function retainExecutionIntent(input: { executionId: string; turnId: number; dispatchAttempt: number; sessionId: number;
   provider: string; directory: string; processor: unknown; coordinatorInstanceId: string;
-  /** `codex-daemon`: the provider's own daemon holds the turn, so there is no host; it is live at once. */
-  supervisor?: "codex-daemon" }) {
+  /** `codex-daemon`: the provider's own daemon holds the turn, so there is no host; it is live at once.
+   * `capability-host`: Thinkering's ChatGPT capability holds the send and its answer; also live at once. */
+  supervisor?: "codex-daemon" | "capability-host" }) {
   const now = Date.now();
   db.query(`INSERT INTO executions (execution_id, turn_id, dispatch_attempt, session_id, provider, host_protocol, supervisor,
       directory, processor_json, state, coordinator_instance_id, created_at_ms, updated_at_ms)
@@ -154,6 +155,9 @@ async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
   if (execution.supervisor === "codex-daemon")
     return (db.query("SELECT agent_session_uuid FROM sessions WHERE id=?").get(execution.session_id) as { agent_session_uuid: string | null } | null)
       ?.agent_session_uuid ? "answering" : "gone";
+  // A ChatGPT send lives in Thinkering's capability, keyed by its run id from before the send: the
+  // next coordinator asks it for that exact run (reconcile, then observe), so it is always followable.
+  if (execution.supervisor === "capability-host") return "answering";
   // The same decision a live run makes when its connection breaks (hostCustody): the unit name is
   // derived from the execution id, so a launch that crashed before recording it is still checked.
   const custody = await hostCustody(execution.directory, execution.execution_id);
@@ -279,6 +283,7 @@ async function releaseSettledExecutions() {
  * the supervisor positively reports gone needs no socket to be let go of.
  */
 export async function releaseExecution(execution: ExecutionRow) {
+  if (execution.supervisor === "capability-host") { recordExecutionReleased(execution.execution_id); return; }
   if (execution.supervisor === "codex-daemon") {
     recordExecutionReleased(execution.execution_id);
     // The turn is settled: its conversation's filed helpers go, unless a later turn filed its own.
