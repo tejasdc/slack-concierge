@@ -268,6 +268,30 @@ export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessio
   recordSessionEvent({eventId:`topic-forward:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'topic',
     payload:{change:'forwarded',topicId:target.topicId,by:{kind:'human'},to,inputId:input.id}});
 }
+/**
+ * His forwarded thread reply says what the agent is doing with it, read from the request that
+ * carries it: delivered and waiting behind the agent's current work, held (sign-in, usage, a
+ * sleeping Mac), or being worked on. It used to say "waiting" from the moment he sent it until the
+ * agent's final answer, which thnkr.ing drew as "Queued" while the agent was visibly working on
+ * it (2026-10-09, his report from the thread "Inbox list: missing requests…"). The final answer
+ * still settles it through `postForwardedThreadAnswer`, and a settled receipt is never reopened.
+ * Called on every execution change, so it writes only when the receipt actually changes.
+ */
+export function followForwardedReply(inboxInputId:string,to:{sessionId:string;requestId:string;title?:string|null},progress:{working:boolean;hold:{code:string;message:string;clearsAt:string|null;automaticRetry:boolean}|null}) {
+  const row=db.query('SELECT receipt_json FROM session_inputs WHERE id=?').get(inboxInputId) as {receipt_json:string|null}|null;
+  const saved=row?.receipt_json?JSON.parse(row.receipt_json):null;
+  if(!saved?.forwardedTo||!['waiting','queued','running'].includes(saved.state))return;
+  const title=to.title??saved.forwardedTo.title??null;
+  const agent=title?`“${title}”`:'The agent';
+  const working=progress.working&&!progress.hold;
+  const receipt=JSON.stringify({state:working?'running':'queued',forwardedTo:{sessionId:to.sessionId,title,requestId:to.requestId},
+    statusDetail:progress.hold??(working
+      ?{code:'FORWARDED_WORKING',message:`${agent} is working on this.`,clearsAt:null,automaticRetry:true}
+      :{code:'FORWARDED_DELIVERED',message:`${agent} has this and reads it once it finishes what it is doing now.`,clearsAt:null,automaticRetry:true})});
+  if(receipt===row!.receipt_json)return;
+  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(receipt,inboxInputId);
+  log('info','inbox_reply_progress',{input_id:inboxInputId,request_id:to.requestId,stage:working?'working':progress.hold?progress.hold.code:'delivered'});
+}
 /** What the agent reads with his forwarded thread reply, on this server or on his Mac alike. */
 export function forwardedReplyFraming(requestId:string,text:string) {
   return `Session request ${requestId}: a reply Tejas wrote inside the thnkr.ing Inbox thread you are working on, addressed to you. These are his own words, not an agent's; the Inbox router is not in the middle. Requested effect: work within that thread's request. Answer him with sessions reply ${requestId} (--partial to say something before you finish; a final reply with --work-disposition completed|failed|needs_decision --summary "<one line>"), written for him (TL;DR first, product language): the owner posts each reply into that thread as your words. If his words settle a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;

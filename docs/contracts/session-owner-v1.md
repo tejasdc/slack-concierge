@@ -197,7 +197,12 @@ applies its default. A reply addressed to an agent is retained in the Inbox as h
 event `change:'forwarded'`), starts no router turn, and is carried to the agent as a communication
 request (action `forward:<input>`, payload `forwardedReply`); each of the agent's replies is posted
 into the thread as a `post` by that agent (`postedBy:'owner-forward'`, `postedBySession`), a stall
-as a service post, and the final settles the receipt. A `deliverTo` naming a session that is not a
+as a service post, and the final settles the receipt. Until then the receipt follows the request
+that carries it (`followForwardedReply`, on every execution change and every Mac poll): `queued`
+with `statusDetail.code` `FORWARDED_DELIVERED` while the agent has it behind other work, `running`
+with `FORWARDED_WORKING` once its run has it, or the agent's own hold (sign-in, usage,
+`PEER_ASLEEP`); thnkr.ing labels these Delivered, Working and Held. It used to stay `waiting`
+until the final, drawn as "Queued" while the agent was visibly working (2026-10-09). A `deliverTo` naming a session that is not a
 choice is 409 `REPLY_TARGET_UNKNOWN`.
 
 **An agent's answer to a work request the Inbox sent for a thread goes into that thread, not back to

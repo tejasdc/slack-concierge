@@ -40,6 +40,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
         :'The owner attempted to send this message, but acknowledgement and the linked turn outcome remain unconfirmed. Reconciliation is required before another send.',
       clearsAt:null,automaticRetry:false};
   }
+  // His thread reply carried to the agent: the owner writes where it stands (`followForwardedReply`).
+  if(saved.forwardedTo&&['waiting','queued','running'].includes(saved.state))return saved.statusDetail??null;
   if(saved.state==='failed'||state==='failed'||state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted'){
     const raw=saved.error?.message??saved.error??steering?.error??turn?.agent_text;
     const message=typeof raw==='string'?raw.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''):null;
@@ -57,7 +59,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   }
   if(state!=='queued'&&state!=='waiting')return null;
   if(steering&&['queued','sending'].includes(steering.status))return null;
-  if(saved.forwardedTo)return saved.statusDetail??null;
+  if(saved.forwardedTo)return null;
   if(!turn){
     const wait=input.request_id?context.requestWait(input.request_id,input.id):{after:false,held:null};
     if(wait.held)return {code:'WAITING_FOR_REQUESTER_DECISION',message:`This request is held for its requester's decision: the earlier request ${wait.held.requestId} it waits on ended ${wait.held.outcome.replace('_',' ')}. The requester can cancel it or ask again.`,clearsAt:null,automaticRetry:false};

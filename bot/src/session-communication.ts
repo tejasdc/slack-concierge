@@ -5,7 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
-import { forwardedReplyFraming } from './session-inbox';
+import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
@@ -1510,6 +1510,13 @@ ${CHATGPT_ASK_FOR_CONTEXT}`:input.text):`Session request ${id} from concierge:${
         if (routed.status === 'failed') {
             this.settle(request, 'failed', routed.error ?? 'The target could not receive this request.');
             return;
+        }
+        if (JSON.parse(request.payload_json).forwardedReply) {
+            const input = getAcceptedSessionInput(request.target_input_id)!;
+            const observed = readInputExecution(input);
+            const responder = getSessionById(request.target_session_id);
+            followForwardedReply(request.source_input_id, {sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id,title:responder?sessionMetadata(responder).title??null:null},
+                {working:!!observed.acknowledgedAt||['running','delivering'].includes(observed.turn?.status??''),hold:inputHold(input)});
         }
         if (!routed.turn_id)
             return;

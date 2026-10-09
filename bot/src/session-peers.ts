@@ -13,6 +13,7 @@ import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,ses
 import {log,errorFields} from './log';
 import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
+import {followForwardedReply} from './session-inbox';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
@@ -660,6 +661,9 @@ export class SessionPeers {
     db.query(`UPDATE session_peer_requests SET remote_status_json=?1,status=?2 WHERE request_id=?3 AND outcome IS NULL
       AND (status IS NOT ?2 OR remote_status_json IS NULL OR json_remove(remote_status_json,'$.observedAt') IS NOT json_remove(?1,'$.observedAt'))`)
       .run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
+    // His thread reply on a Mac agent says what that agent is doing with it, as a server agent's does.
+    if(JSON.parse(row.payload_json).forwardedReply)followForwardedReply(row.source_input_id,{sessionId:this.presentedSession(row.peer,row.remote_session_id),requestId:row.request_id},
+      {working:!!remote.execution?.acknowledged||['running','delivering'].includes(remote.execution?.status??''),hold:remote.hold??null});
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
     for(const reply of (remote.replies as any[])??[]){
