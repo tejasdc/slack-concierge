@@ -2521,8 +2521,9 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
-      // Which thread a piece of work served, so thnkr.ing's update list can link each change to it.
-      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[2]==='for-work'&&parts.length===3){
+      // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
+      // under inbox/topics/: every GET there is rewritten to the prepared thread reads above.
+      else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1){
         const session=url.searchParams.get('session'),input=url.searchParams.get('input');
         if((!session&&!input)||(session?.length??0)>200||(input?.length??0)>400)throw new SessionOwnerError('Name the session or the input the work was made in.');
         result=workThread(session,input);

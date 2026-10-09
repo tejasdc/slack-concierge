@@ -25,6 +25,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/runs/:id',purpose:'one exact run status',maxResponseBytes:MiB,kind:'control'},
  {path:'/requests/:id',purpose:'one exact addressed request and event set; needs paging',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/peers',purpose:'configured peer inventory',maxResponseBytes:MiB,kind:'control'},
+ {path:'/work-thread',purpose:'which Inbox thread one change was made for; two indexed lookups',maxResponseBytes:MiB,kind:'control'},
  {path:'/peers/operations/:id',purpose:'one exact peer project setup receipt',maxResponseBytes:MiB,kind:'control'},
  {path:'/peers/requests/:id',purpose:'one exact peer request status',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/peers/requests/:id/replies/:id',purpose:'one exact peer reply including retained files',maxResponseBytes:64*MiB,kind:'control'},
