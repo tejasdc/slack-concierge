@@ -1,4 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
+import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
@@ -837,8 +838,7 @@ function topicHistory(sessionId:number,topicId:string) {
     });
 }
 /** One agent a reply inside a thread can go to, and why; `owns` names the items (questions, their sources, returned answers) a reply to which goes to it by default. */
-export type ReplyTarget={sessionId:string;title:string|null;why:string;owns:string[]};
-export type ReplyTargets={router:string;default:string;choices:ReplyTarget[]};
+export type {ReplyTarget,ReplyTargets} from './reply-target-rules';
 /** The session whose returned answer, or mirrored post, a thread message is. */
 function spokenBySession(sessionId:number,messageId:string):string|null {
   if(messageId.startsWith('return:')) {
@@ -871,64 +871,21 @@ function spokenBySession(sessionId:number,messageId:string):string|null {
  */
 export function replyTargets(topicId:string,about:string|null=null,canSend:(session:SessionRow)=>boolean=session=>session.status!=='archived'&&!sessionMetadata(session).suspended):ReplyTargets {
   const session=inboxOrThrow();
-  const router=`concierge:${session.id}`;
-  const roots=topicRoots(topicId);
-  const choices=new Map<string,ReplyTarget>();
-  const add=(named:string|null|undefined,why:string,owns:string[]):string|null=>{
-    if(!named||named===router)return null;
-    // Older records spelt a peer session `mac:concierge:84`; the catalogue and the app say `mac:84`.
-    const sessionId=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
-    const local=localSessionNumber(sessionId);
-    let title:string|null;
-    if(local!==null){const row=getSessionById(local);if(!row||!canSend(row))return null;title=sessionMetadata(row).title??null;}
-    else {
+  return topicReplyTargets(db,{
+    router:`concierge:${session.id}`,inboxSessionId:session.id,roots:topicRoots(topicId),
+    requests:topicRequests(topicId) as any,
+    questions:topicQuestions(topicId).map(question=>({id:question.questionId,state:question.state,ownerSessionId:question.owner?.sessionId??null,decision:question.brief?.decision??null,sources:question.sources})),
+    workDispatches:workIndex(session.id).dispatches,
+    about,spokenBy:about?spokenBySession(session.id,about):null,
+    resolve:sessionId=>{
+      const local=localSessionNumber(sessionId);
+      if(local!==null){const row=getSessionById(local);return row&&canSend(row)?{title:sessionMetadata(row).title??null}:null;}
       // A session on his Mac is a choice exactly as a server session is [decision: mac-sessions-have-parity]:
-      // its name comes from the peer catalogue this owner keeps, and the peer path carries his reply,
-      // queued while the Mac sleeps. Only a session that machine has archived is left out.
+      // its name comes from the peer catalogue this owner keeps. Only one that machine archived is left out.
       const view=peerSessionView(sessionId);
-      if(!view||view.archived||view.archivedAt||view.status==='archived')return null;
-      title=view.title??null;
-    }
-    const existing=choices.get(sessionId);
-    if(existing){existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));return sessionId;}
-    choices.set(sessionId,{sessionId,title,why,owns:[...new Set(owns)]});
-    return sessionId;
-  };
-  // A dispatch counts while its request to the agent is still open; one that settled is finished
-  // work, and the router's own request bookkeeping can lag by weeks (five idle sessions still
-  // listed on "Action Button recording" on 2026-10-07), so a settled dispatch never catches his reply.
-  // A request the owner has already marked stalled is not work in progress either.
-  const stillOpen=(requestId:string)=>!!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId)
-    ||!!db.query('SELECT 1 FROM session_peer_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(requestId);
-  // Who is still at work here, which alone decides the default when nothing he replied to names one.
-  const working=new Set<string>();
-  const busy=(sessionId:string|null)=>{if(sessionId)working.add(sessionId);};
-  // What an agent sent back into this thread: each answer it returned is the message he replies under.
-  const returnsOf=(requestId:string)=>[
-    ...(db.query('SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND accepted_input_id IS NOT NULL').all(requestId) as {accepted_input_id:string}[]),
-    ...(db.query('SELECT accepted_input_id FROM session_peer_events WHERE request_id=? AND accepted_input_id IS NOT NULL').all(requestId) as {accepted_input_id:string}[]),
-  ].map(row=>row.accepted_input_id);
-  for(const request of topicRequests(topicId))for(const dispatch of request.dispatches as any[]){
-    const requestId=String(dispatch.requestId);
-    // Only open work owns the request's own messages: a settled dispatch never catches a reply to
-    // something else, because the router's request bookkeeping can lag by weeks (five idle sessions
-    // were still listed on "Action Button recording" on 2026-10-07). It stays a choice he can pick,
-    // and it owns the answers it sent back.
-    if(request.state==='open'&&stillOpen(requestId))busy(add(dispatch.targetSessionId,`working on “${request.title}”`,[...request.sources.map((source:any)=>source.inputId),...returnsOf(requestId)]));
-    else add(dispatch.targetSessionId,`worked on “${request.title}”`,returnsOf(requestId));
-  }
-  // Answers the owner posted straight into this thread name the agent that wrote them.
-  if(roots.length)for(const row of db.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session FROM session_owner_events
-    WHERE session_id=? AND kind='post' AND input_id IN (${roots.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.postedBy')='owner-forward'`).all(session.id,...roots) as {event_id:string;from_session:string|null}[])
-    add(row.from_session,'answered here',[row.event_id]);
-  for(const dispatch of workIndex(session.id).dispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
-  for(const question of topicQuestions(topicId))if(OPEN_QUESTION_STATES.includes(question.state)||question.state==='deferred')
-    busy(add(question.owner?.sessionId,question.brief?.decision?`asked you: ${question.brief.decision}`:'asked you a question here',[question.questionId,...question.sources]));
-  if(about){const spoke=spokenBySession(session.id,about);if(spoke)add(spoke,'answered here',[about]);}
-  const list=[...choices.values()];
-  const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
-  const atWork=list.filter(choice=>working.has(choice.sessionId));
-  return {router,default:owning?.sessionId??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
+      return view&&!view.archived&&!view.archivedAt&&view.status!=='archived'?{title:view.title??null}:null;
+    },
+  });
 }
 /** A session on another machine as the peer catalogue this owner keeps presents it (`mac:86` → its view), or null. */
 export function peerSessionView(sessionId:string):{id:string;title?:string|null;address?:string;status?:string;archived?:boolean;archivedAt?:string|null}|null {

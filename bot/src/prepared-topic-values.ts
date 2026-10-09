@@ -1,4 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
+import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -266,35 +267,23 @@ function requestView(context:TopicContext,request:any){
 }
 
 function replyTargetsValue(context:TopicContext,topic:any,roots:string[],requests:any[],questions:any[]){
- const {source,sessionId}=context,router=`concierge:${sessionId}`;
- const choices=new Map<string,{sessionId:string;title:string|null;why:string;owns:string[]}>();
- const add=(named:string|null|undefined,why:string,owns:string[])=>{
-  if(!named||named===router)return;
-  const id=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
-  const local=/^concierge:([1-9]\d*)$/.exec(id);
-  let title:string|null;
-  if(local){const row=source.query('SELECT status,native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as any;
-   if(!row||row.status==='archived'||parse(row.native_metadata_json,{})?.suspended)return;
-   title=parse(row.native_metadata_json,{})?.title??null;
-  }else{
+ const {source,sessionId}=context;
+ // The one rule (`reply-target-rules.ts`); this read only says what the thread holds and which
+ // sessions it can offer. Its own copy of the rule is how agents that had finished vanished here.
+ return topicReplyTargets(source,{
+  router:`concierge:${sessionId}`,inboxSessionId:sessionId,roots,requests,
+  questions:questions.map((question:any)=>({id:question.id,state:question.state,ownerSessionId:question.owner?.sessionId??null,decision:question.brief?.decision??null,sources:question.sources??[]})),
+  workDispatches:context.dispatches,
+  resolve:id=>{
+   const local=/^concierge:([1-9]\d*)$/.exec(id);
+   if(local){const row=source.query('SELECT status,native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as any;
+    if(!row||row.status==='archived'||parse(row.native_metadata_json,{})?.suspended)return null;
+    return {title:parse(row.native_metadata_json,{})?.title??null};}
    const row=source.query("SELECT view_json FROM session_peer_catalogue WHERE json_extract(view_json,'$.id')=?").get(id) as {view_json:string}|null;
-   const view=parse(row?.view_json);if(!view||view.archived||view.archivedAt||view.status==='archived')return;
-   title=view.title??null;
-  }
-  const existing=choices.get(id);
-  if(existing){existing.owns.push(...owns.filter(item=>!existing.owns.includes(item)));return;}
-  choices.set(id,{sessionId:id,title,why,owns:[...new Set(owns)]});
- };
- const stillOpen=(id:string)=>!!source.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(id)
-  ||!!source.query('SELECT 1 FROM session_peer_requests WHERE request_id=? AND outcome IS NULL AND stalled_at_ms IS NULL').get(id);
- for(const request of requests)if(request.state==='open')for(const dispatch of request.dispatches)
-  if(stillOpen(String(dispatch.requestId)))add(dispatch.targetSessionId,`working on “${request.title}”`,request.sources.map((item:any)=>item.inputId));
- for(const dispatch of context.dispatches)if(dispatch.root&&roots.includes(dispatch.root))add(dispatch.sessionId,'working on this thread now',[dispatch.root]);
- for(const question of questions)if(open(question.state)||question.state==='deferred')
-  add(question.owner?.sessionId,question.brief?.decision?`asked you: ${question.brief.decision}`:'asked you a question here',
-   [question.id,...question.sources]);
- const list=[...choices.values()];
- return {router,default:list.length===1?list[0]!.sessionId:router,choices:list};
+   const view=parse(row?.view_json);if(!view||view.archived||view.archivedAt||view.status==='archived')return null;
+   return {title:view.title??null};
+  },
+ });
 }
 
 function topicHistory(context:TopicContext,topicId:string){
