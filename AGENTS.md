@@ -230,6 +230,9 @@ authorization or a change to the default rapid-iteration policy.
   accepts work, keeping its input, request and event identity. Refusal is reserved for a
   session that genuinely cannot receive input, and for the deliberate human pinned
   `delivery:"steer"`. An acknowledged or ambiguous send is never re-enqueued.
+  Local and peer recovery yield between durable records, including startup restoration;
+  the existing coordinator owns the sweep, wake latch and stop boundary. See
+  [communication reconciliation](docs/architecture/SESSION-OWNER.md#requests-and-returns).
 - A follow-up to a running Claude session joins Claude Code's own streaming-input queue
   as a uuid-stamped message; it never interrupts the agent and has no per-message
   deadline while the turn is live. Stop is the only interrupt. Tejas approved this on

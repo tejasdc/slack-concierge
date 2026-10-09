@@ -1,6 +1,7 @@
 # October 8 evening stalls and failed release
 
-Status: diagnosis and source correction in progress; installation and acceptance remain owed.
+Status: first Concierge correction installed and exercised; archive correction and the newly
+measured background reconciliation correction remain open.
 Owner: Concierge session 4583. Human reports: `a95d3cc7-5f9e-4ae5-85ee-af2fe21c9a88`
 (23:09 UTC) and `08d1033c-afe1-4792-b794-4c744988827e` (23:30 UTC).
 
@@ -97,10 +98,67 @@ further storage work instead of another speculative tuning pass.
 
 ## Acceptance still owed
 
-Complete source integration and independent review, normal Git-triggered deployment, installed
-revision proof, real owner route/agent roundtrip, and fresh lag/request measurements. Preserve
-the failed update record and verify the update banner clears only after a successful install.
-Do not describe scratch fixtures, a pushed commit, or a healthy old release as completion.
+The initial Concierge corrections passed a targeted storage/snapshot review and primary Claude
+review (one default-import guard correction, then SHIP). The full build, real presentation gates
+and installed-builder compatibility check passed. Normal Git-triggered deployment `ba0f76a4`
+installed `c4f3154`; PID 727227 started at 2026-10-09 00:10:29.361 UTC. The original failed update
+had already been superseded by the successful 23:53 deployment of `19e75fb`.
+
+Marked native Claude request `b8202a73-cc7f-4d3a-9603-dcc24ad7506b` and Codex request
+`6bf37ee5-65fa-45db-b310-637f03ef4cc4` were acknowledged at 00:11:08, answered, and returned.
+Their operation receipts are completed with final return state `received`; their exact tokens
+also appear in the real history routes, including this investigator's history. The live status
+route reports no active or stuck deployment. Ping/status/releases/history returned HTTP 200.
+This is owner-route acceptance, not a measurement of phone network or rendering.
+
+The existing Codex daemon remained PID 92022 from 21:08 UTC. Startup explicitly adopted both
+live executions, including this investigator and the archive owner; no provider was restarted.
+The release's startup subscription sweep visited 275 retained Codex conversations. Its first
+minute recorded 2.404 s total lag, maximum 625 ms. The following five-minute window,
+00:11:30–00:16:30, recorded 10 lag ticks totaling 3.328 s (0.666 s/min), maximum 529 ms;
+215 completed handlers, all HTTP 2xx, none above two seconds (maximum 615 ms). Every lag tick
+carried the new storage attribution, with zero observation failures. The ten-minute pre-install
+23:55–00:05 window had 12.095 s total lag (1.210 s/min), maximum 1.040 s, and 144 completed
+handlers, none above two seconds. Different activity and durations prevent causal comparison.
+
+The new measurements exposed a remaining smaller pause: at 00:12:41, 398 ms lag coincided
+with 398 ms background storage occupancy, 3,363 observed calls and 102 transactions. No HTTP
+request was in flight. A slowest statement (129 ms) belonged to communication dispatch.
+The source schedules reconciliation over all unsettled requests/events in one microtask burst
+after execution changes; this is an unbounded synchronous fan-out. The total is not attributed
+solely to that one statement. Its correction must let incoming I/O run between independent
+records, without serializing unrelated requests behind a sleeping peer or losing a wake during
+a pass. It stays with the existing reconciliation owners and per-request serialization.
+
+The resulting correction replaces each bulk local/peer request, event, hold and audit sweep
+with a fixed-high-water keyset pass that yields to I/O between independently atomic records.
+A dirty wake latch preserves changes made during a pass; independent network tasks retain
+their per-request serialization and concurrency. Startup restoration also yields: source
+inspection confirmed that its former bulk migration ran after the root socket was bound.
+Stop waits the owned pass/tasks and preserves incomplete peer recovery rather than marking
+it complete. Per-request sibling and return lookups can still read multiple rows; this is
+inter-record fairness, not a constant-time storage guarantee.
+
+One unchanged isolated oracle against original `c4f3154` and the corrected source reconciled
+3,000 existing requests plus one accepted during the pass. Both retained identical settlement
+outcomes, but the original blocked its timer for 31,478.7 ms versus 28.9 ms in the correction.
+The old timer could not issue socket reads during that stall, so its 107.8 ms maximum issued
+request duration alone hides the problem. The final corrected run, extended with an exact
+stop-during-recovery check, had a 23.3 ms maximum timer gap and 60.5 ms maximum across 60 real
+scratch owner-socket reads. Completed replies stayed answered, progress stayed received,
+uncertain finals were not replayed, and stopped recovery made zero new peer calls while
+retaining its unfinished membership. The package build passed. This is synthetic causal
+evidence; installation and production acceptance of this correction remain owed.
+
+At a later read the unit used 1.161 GB (1.130 GB anonymous, 22.8 MB file cache), with no swap;
+the owner RSS was 312 MB. Children included the meaning engine and history/preparation workers.
+Unit memory and one process's RSS are different accounting scopes. A two-second Codex thread
+sample used only 50 ms CPU, despite `ps` showing 109% averaged across its three-hour lifetime;
+that historical average is not proof of a current busy loop.
+
+Complete the archive repair and background-sweep correction, then verify their installed
+behavior and fresh measurements. Do not describe these initial acceptance checks as completion
+of the whole widened task.
 
 ### Integrated source checks and later contention
 
