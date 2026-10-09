@@ -710,7 +710,7 @@ export class SessionExecutionHost {
           if(session.provider_id==='chatgpt'&&admission) {
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
-            return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments,
+            return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding})}).run(actual);
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
@@ -808,7 +808,11 @@ export class SessionExecutionHost {
     const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
     const admission={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
       admittedAt:saved.admission?.admittedAt??new Date().toISOString(),promptHash:createHash('sha256').update(actual.prompt).digest('hex'),model:actual.model??null,
-      attachments:attachments.map(({base64,...pin})=>pin),policy:metadata.interactionPolicy??'standard',nativeBinding:metadata.nativeBinding??null};
+      // A file's pin is its custody identity: id, name, type and digest. An audio transcript is the
+      // owner's own derived text, not part of the file, and Thinkering's ChatGPT capability refuses
+      // any field outside the pin, so every ChatGPT send with a file failed once transcripts were
+      // added to attachment rows (found 2026-10-09).
+      attachments:attachments.map(({base64,transcriptText,...pin})=>pin),policy:metadata.interactionPolicy??'standard',nativeBinding:metadata.nativeBinding??null};
     if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(admission))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission}),input.id);
     return admission;
