@@ -5,7 +5,9 @@ copy or edit project files on the service peer. A signed GitHub `push` webhook
 for `tejasdc/slack-concierge` `main` advances one durable desired-state record,
 and the event-driven worker creates at most one active deployment run when that
 commit differs from the immutable last-known-good release. The detached runner
-waits for active provider and capture work, fetches the recorded pushed commit
+waits for active provider and capture work (not for runs that carry on through a
+restart: hosted Claude runs, shared Codex turns and ChatGPT requests, see
+[execution host](../architecture/EXECUTION-HOST.md)), fetches the recorded pushed commit
 into `/var/lib/slack-concierge-deployment/source`, installs the frozen dependency
 graph, activates an immutable candidate, restarts Concierge, and proves the
 exact runtime before success. Descendant pushes accepted before the durable
