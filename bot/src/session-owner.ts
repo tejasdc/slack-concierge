@@ -1029,7 +1029,12 @@ export class SessionOwner {
       const current=hostScriptDigest(hostScriptPath(providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR));
       if(!current)return 0;
       // Runs launched before digests were recorded are judged by their script's content; releases are kept.
-      const rows=db.query("SELECT host_script,host_digest FROM executions WHERE state IN ('live','exited') AND host_script IS NOT NULL").all() as {host_script:string;host_digest:string|null}[];
+      // The state list is the `executions_open` partial index's own predicate, so this read walks that
+      // index (a handful of rows) instead of every row of the table and its processor record. An
+      // intended run has no host script until it is launched, so the rows are exactly those of live
+      // and exited alone. One whole-table scan here held the owner loop 1,887 ms on 2026-10-09 while
+      // agent workloads saturated the host.
+      const rows=db.query("SELECT host_script,host_digest FROM executions WHERE state IN ('intended','live','exited') AND host_script IS NOT NULL").all() as {host_script:string;host_digest:string|null}[];
       return rows.filter(row=>(row.host_digest??hostScriptDigest(row.host_script))!==current).length;
     } catch {return 0;}
   }
