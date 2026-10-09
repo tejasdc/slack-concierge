@@ -85,6 +85,11 @@ export class PreparedTopics {
    CREATE INDEX IF NOT EXISTS presentation_topic_dependencies_topic ON presentation_topic_dependencies(generation,topic_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_dirty(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,PRIMARY KEY(generation,topic_id));`);
   prepared.exec('CREATE TABLE IF NOT EXISTS presentation_topic_sorting_dirty(generation INTEGER NOT NULL,session_id INTEGER NOT NULL,PRIMARY KEY(generation,session_id))');
+  // Stored reply choices came from the prepared read's own copy of the rule until 2026-10-09; recompute each thread once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='one_reply_rule'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN one_reply_rule INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topic_question_topic_page ON presentation_topic_questions(generation,topic_id,selected,created_at DESC,question_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_request_links(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,input_id TEXT NOT NULL,request_id TEXT NOT NULL,
     PRIMARY KEY(generation,topic_id,input_id,request_id));`);
