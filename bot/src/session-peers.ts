@@ -17,6 +17,7 @@ import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
 import {noticeTime} from './provider-free-notice';
+import {answerNotice,requestLabel} from './session-notices';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 
 /**
@@ -782,7 +783,11 @@ export class SessionPeers {
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const existing=getAcceptedSessionInput(`return:${event.event_id}`);
     const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length>1?`requests ${requestIds.join(', ')} (one answer closing all of them)`:`request ${row.request_id}`} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+      text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+          const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
+        labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
+        body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,deliveryNote:payload.output?.delivery_note??null,
+        files:Array.isArray(payload.attachments)?payload.attachments.length:0,followUp:null}),
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
     for(const joined of group.joining)db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
@@ -1017,7 +1022,7 @@ export class SessionPeers {
     const row=this.delivery(requestId);
     db.query('UPDATE session_peer_deliveries SET closed_at_ms=coalesce(closed_at_ms,?) WHERE request_id=?').run(this.now(),requestId);
     if(!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
-      tellWorkerCanceled(this.dependencies.owner,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`${row.peer}/${row.origin_session_id}`});
+      tellWorkerCanceled(this.dependencies.owner,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
@@ -1107,7 +1112,7 @@ export class SessionPeers {
       this.unreachable.delete(row.peer);
       db.query('UPDATE session_peer_deliveries SET notified_fingerprint=?,closed_at_ms=CASE WHEN ? THEN ? ELSE closed_at_ms END WHERE request_id=?').run(fingerprint,answer?.outcome?1:0,this.now(),row.request_id);
       if(answer?.outcome==='canceled'&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))
-        tellWorkerCanceled(this.dependencies.owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`${row.peer}/${row.origin_session_id}`});
+        tellWorkerCanceled(this.dependencies.owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
     } catch(error) {
       this.note(row.peer,error);
       // The origin commits its request only after this instance accepted it, so a 404 within

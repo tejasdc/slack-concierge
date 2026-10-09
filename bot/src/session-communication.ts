@@ -19,6 +19,7 @@ import {boardCommand,type BoardActor,type BoardInput} from './commons-board-serv
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
+import { answerNotice, requestLabel, sessionLabel } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
@@ -762,7 +763,7 @@ export class SessionCommunicationCoordinator {
         })();
         // A worker already holding it is told to stop (the FIPA cancel reaches the participant).
         if(!row.outcome&&row.target_input_id&&this.row(row.request_id).outcome==='canceled')
-            tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`concierge:${row.source_session_id}`});
+            tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:sessionLabel(row.source_session_id)});
         return this.receipt(this.row(row.request_id));
     }
     private receipt(row: RequestRow, withTarget = true) {
@@ -1687,7 +1688,10 @@ ${CHATGPT_ASK_FOR_CONTEXT}`:input.text):`Session request ${id} from concierge:${
             const existing = getAcceptedSessionInput(`return:${event.event_id}`);
             const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length > 1 ? `requests ${requestIds.join(', ')} (one answer closing all of them)` : `request ${request.request_id}`}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${answerView(request,payload)}\n\n${JSON.stringify({...payload,text:undefined,summary:undefined})}`,
+                text:answerNotice({responder:sessionLabel(request.target_session_id),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
+                    kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
+                    deliveryNote:payload.output?.delivery_note??null,files:Array.isArray(payload.attachments)?payload.attachments.length:0,
+                    followUp:(()=>{const responder=getSessionById(request.target_session_id);return responder?sessionAddress(responder):null;})()}),
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
             for (const joined of group.joining)

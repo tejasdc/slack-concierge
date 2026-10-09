@@ -274,7 +274,7 @@ function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancel
     const text = `${headline}${late} It watched ${what}, registered ${iso(row.created_at_ms)} with a deadline of ${iso(row.deadline_ms)}. ${gapsText(gaps, row, resumedAt)}${
       settlement.observed && typeof (settlement.observed as any).outputTail === "string" && (settlement.observed as any).outputTail
         ? `\nLast output of the command (stdout and stderr):\n${(settlement.observed as any).outputTail}` : ""}
-This is a service notice from Concierge, not a request; no reply is owed.`;
+You do not need to reply to this.`;
     const result = db.query(`UPDATE watches SET state=?, terminal_event=?, terminal_at_ms=?, observation_json=?, message_text=?, gaps_json=?,
         last_observed_ms=?, delivery_state='pending', delivery_input_id=?, delivery_attempts=0, delivery_next_ms=NULL
       WHERE watch_id=? AND state IN ('accepted','observing')`)

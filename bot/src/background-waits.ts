@@ -72,7 +72,7 @@ export function noticeMissingBackgroundReport(turnId: number, task: BackgroundRe
   try {
     admitNotice({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
       sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
-      text: `Your background job “${task.description}” (${task.id}) ended with status ${task.status}, but Claude Code's report of it did not arrive. Read its output (TaskOutput ${task.id}, or the output file it named when it started) and carry on from it. This is a service notice, not a request; no reply is owed.` });
+      text: `Your background job “${task.description}” (${task.id}) ended with status ${task.status}, but Claude Code's report of it did not arrive. Read its output (TaskOutput ${task.id}, or the output file it named when it started) and carry on from it. You do not need to reply to this.` });
     log("info", "background_report_missing_notice_sent", { turn_id: turnId, task_id: task.id, status: task.status });
   } catch (error) {
     log("info", "background_report_missing_notice_skipped", { turn_id: turnId, task_id: task.id,
@@ -100,7 +100,7 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
           try {
             admit({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
               sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
-              text: `Your background job “${task.description}” has been running for ${Math.floor(age / 60_000)} minutes.${updateWaiting ? " A Concierge update is waiting for this run." : ""} Do you still intend to keep it running? If not, stop it now. This is a service notice, not a request; no reply is owed.` });
+              text: `Your background job “${task.description}” has been running for ${Math.floor(age / 60_000)} minutes.${updateWaiting ? " A Concierge update is waiting for this run." : ""} Do you still intend to keep it running? If not, stop it now. You do not need to reply to this.` });
             notices.add(id);
             noticeSentAt.set(id, now);
             db.query(`UPDATE background_job_status SET ${mark === 60 ? "told_60" : "told_30"}=1

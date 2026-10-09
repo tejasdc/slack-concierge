@@ -491,7 +491,7 @@ export function briefRunningSessions(admit: (input: {
       try {
         admit({ sessionId: run.session_id, inputId, origin: "service", sourceInputId: `budget:${episode}`,
           sourceRunId: nativeRunId(run.turn_id), requestId: inputId, delivery: "steer",
-          text: `${brief}\n\nThis is a service notice about the account, not a request and not new authority. No reply is owed.` });
+          text: `${brief}\n\nThis is about the account, not a request; you do not need to reply.` });
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
           turn_id: run.turn_id, window: tight.window, minutes_left: tight.minutesLeft });
       } catch (error) {

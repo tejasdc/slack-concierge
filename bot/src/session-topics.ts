@@ -1774,7 +1774,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId2)) {
         try {
           admit({sessionId:owner,inputId:inputId2,origin:'service',sourceInputId:`question-reminder:${question.questionId}:${stamp}`,sourceRunId:`question-reminder:${question.questionId}:${stamp}`,requestId:inputId2,
-            text:`Service notice: the question you asked Tejas, "${decision}" (${question.questionId}) in the Inbox thread "${topic.title}" (${topic.topicId}, root message ${inputId??'unknown'}), was set aside by him until ${question.deferUntil} and is back in front of him now. If anything in it expires (a one-time form link, a code), refresh it now and send the fresh words to the Inbox for that thread (sessions ask to the Inbox session with --thread ${inputId??'<root>'}), so what he opens works. This is a notice, not new authority; no reply is owed to this notice.`});
+            text:`The question you asked Tejas, "${decision}" (${question.questionId}) in the Inbox thread "${topic.title}" (${topic.topicId}, root message ${inputId??'unknown'}), was set aside by him until ${question.deferUntil} and is back in front of him now. If anything in it expires (a one-time form link, a code), refresh it now and send the fresh words to the Inbox for that thread (sessions ask to the Inbox session with --thread ${inputId??'<root>'}), so what he opens works. You do not need to reply to this.`});
         } catch { /* the reminder itself has gone out; the refresh is the owner session's to retry */ }
       }
     }

@@ -444,6 +444,11 @@ authorization or a change to the default rapid-iteration policy.
   unreturned after ten minutes. A run ended by his own Stop (a human `stop` operation naming that
   run, `stopped-by-tejas.ts`) settles as his stop: a quiet line in the Inbox thread it served, never
   a router turn or a notification; a cancellation without his Stop says so and asks for follow-up.
+  What Concierge writes into an agent's conversation is plain words (`session-notices.ts`): an answer
+  or cancellation names the request by its summary and the other session by its title, with no
+  request, event or session numbers and no "not new authorization" line, because the identity
+  header already carries the exact request, origin and authority; a number appears only where the
+  agent must type it (a robotic notice reached a ChatGPT chat on 2026-10-09).
   A partial reply is not a result and wakes nobody: it is recorded on
   the request and read with `sessions get`, because each wake re-read the asker's whole
   conversation (one lab session, ~860k tokens per note, four times for one note, 2026-10-08). Legacy `retained` rows stay as history; the Inbox's

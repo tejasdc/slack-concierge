@@ -1,4 +1,5 @@
 import { db, getSessionById } from './state';
+import { canceledNotice, requestLabel } from './session-notices';
 import { getAcceptedSessionInput } from './session-inputs';
 import type { SessionOwner } from './session-owner';
 
@@ -118,7 +119,7 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
     return owner.admit({
         sessionId: input.workerSessionId, inputId: `canceled:${input.requestId}`, origin: 'service',
         sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,
-        text: `Request ${input.requestId} from ${input.requester} was canceled by its requester. Stop work on it. No reply is owed, and a reply to it now would be refused. This is a system notice, not new authorization.`,
+        text: canceledNotice(requestLabel((db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(input.requestId) as { payload_json: string } | null)?.payload_json ?? '{}'), input.requester),
     });
 }
 

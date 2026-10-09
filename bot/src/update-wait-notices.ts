@@ -81,7 +81,7 @@ export function startUpdateWaitWatch(options: UpdateWaitWatchOptions): () => voi
         try {
           options.admit({ sessionId: run.sessionId, inputId: id, origin: "service", sourceInputId: id,
             sourceRunId: nativeRunId(run.turnId), requestId: id, delivery: "steer",
-            text: `A Concierge update has been waiting ${Math.floor(waited / 60_000)} minutes for this run to finish. It installs on its own once nothing running would be cut off by the restart; nothing will interrupt you, so carry on with real work. If this turn is only waiting (a sleep, a poll, a job you no longer need), end the turn instead and register a watch with router-actions.sh sessions watch, which wakes you when the thing happens and never holds an update. This is a service notice, not a request; no reply is owed.` });
+            text: `A Concierge update has been waiting ${Math.floor(waited / 60_000)} minutes for this run to finish. It installs on its own once nothing running would be cut off by the restart; nothing will interrupt you, so carry on with real work. If this turn is only waiting (a sleep, a poll, a job you no longer need), end the turn instead and register a watch with router-actions.sh sessions watch, which wakes you when the thing happens and never holds an update. You do not need to reply to this.` });
           log("info", "update_wait_agent_notice_sent", { wait: wait.key, turn_id: run.turnId, mark });
         } catch (error) {
           // The exact run may have ended between reading it and steering into it; nothing to tell then.
