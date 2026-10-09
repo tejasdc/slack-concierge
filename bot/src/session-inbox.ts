@@ -304,8 +304,8 @@ export function forwardedReplyFraming(requestId:string,text:string) {
  * back and I get notified from the agent's response, you're not the one who's receiving the
  * responses"). Server and Mac agents take this one road [decision: mac-sessions-have-parity];
  * nothing here wakes the router. One answer is one post: the post is keyed by the reply's event,
- * and the same agent's byte-identical words already posted in this thread within the hour (one
- * answer it gave to several requests) are not posted again. Returns the post that carries the
+ * and the same agent's byte-identical words already posted anywhere in this thread's topic within
+ * the hour (one answer it gave to several requests) are not posted, filed or notified again. Returns the post that carries the
  * answer, or null when the reply had nothing to show.
  */
 export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
@@ -315,9 +315,14 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
   db.transaction(()=>{
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId)){carriedBy=postId;}
     else if(text||answer.attachments.length) {
-      const same=!answer.stalled&&!answer.attachments.length?db.query(`SELECT event_id FROM session_owner_events WHERE input_id=? AND session_id=? AND kind='post'
+      // The thread is the topic, not the one capture this request named: the router sends several
+      // requests for one topic each under a different capture of it, and the one answer to all of
+      // them was posted, filed and notified once per capture (three times on 2026-10-09).
+      const same=!answer.stalled&&!answer.attachments.length?db.query(`SELECT event_id FROM session_owner_events
+          WHERE input_id IN (SELECT ? UNION SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=(SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?))
+          AND session_id=? AND kind='post'
           AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND created_at>=datetime('now','-1 hour') LIMIT 1`)
-        .get(answer.root,answer.inboxSessionId,answer.respondingSessionId,text) as {event_id:string}|null:null;
+        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text) as {event_id:string}|null:null;
       if(same)carriedBy=same.event_id;
       else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
