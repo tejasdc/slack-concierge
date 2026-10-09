@@ -442,6 +442,18 @@ export class SessionCapabilityClient {
     return value;
   }
 
+  private async observeAcrossRestart(run: CapabilityRunRef, after: string | null, signal?: AbortSignal) {
+    const until = Date.now() + 20 * 60_000;
+    for (let pause = 2_000; ; pause = Math.min(pause * 2, 30_000)) {
+      const outcome = await this.observe(run, after, signal).then(value => ({ value }), (error: unknown) => ({ error }));
+      if ("value" in outcome) return outcome.value;
+      const restarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
+        && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE");
+      if (!restarting || Date.now() + pause > until) throw outcome.error;
+      await new Promise(resolve => setTimeout(resolve, pause));
+    }
+  }
+
   async stop(run: CapabilityRunRef): Promise<never> {
     await this.post(providerPath + "stop", runRef(run));
     throw new SessionCapabilityError("CAPABILITY_PROTOCOL_ERROR", "ChatGPT cannot confirm native Stop with the current capability contract.");
@@ -566,7 +578,10 @@ export class SessionCapabilityClient {
       verify(["recorded", "running"].includes(receipt.state), "Terminal provider receipt omitted its native result.");
       input.onProgress?.({ type: "started" });
       while (true) {
-        const observation = await this.observe(run, cursor, context.signal);
+        // Thinkering restarts for every release, often while a Pro answer is still being written; its
+        // next process reads the acknowledged request on to its answer. Keep asking across that
+        // restart (up to 20 minutes) instead of reporting the answer lost (2026-10-09, 7:06 PM).
+        const observation = await this.observeAcrossRestart(run, cursor, context.signal);
         let observedBinding = binding;
         let observedTurn = turnId;
         const verifyIdentity = (identity: { sessionId: unknown; turnId: unknown; nativeBinding: unknown }) => {
