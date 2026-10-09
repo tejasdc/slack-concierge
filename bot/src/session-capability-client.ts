@@ -601,6 +601,11 @@ export class SessionCapabilityClient {
               verify(nonempty(identity.turnId) && (turnId === null || turnId === identity.turnId), "Provider identity changed its native turn.");
               turnId = identity.turnId;
               input.onProviderTurnStarted?.(turnId);
+              // The native turn id is ChatGPT's own copy of the sent message, which Thinkering reports
+              // only after reading it back: that is the acknowledgement. Checking only the start receipt
+              // missed every send that ChatGPT confirmed a few seconds later, so no successful answer
+              // ever settled its request (2026-10-09).
+              input.onInputAcknowledged?.();
             }
           } else if (event.kind === "message") {
             const message = event.payload.message as CapabilityMessage;
