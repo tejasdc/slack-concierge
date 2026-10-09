@@ -7,6 +7,10 @@ import {checkDispatchClaim} from './dispatch-claim-fixture';
 import {checkLedgerConstructors} from './ledger-constructor-check';
 
 const root=resolve(import.meta.dir,'..');
+// The deployment runner executes this candidate-owned check before sealing a release.
+const loggingGuard=Bun.spawnSync(['/usr/bin/python3',join(import.meta.dir,'bounded-logging-acceptance.py'),'--source-guard'],
+  {cwd:root});
+if(loggingGuard.exitCode!==0)throw new Error(`Logging source guard failed: ${loggingGuard.stderr.toString().slice(0,2000)}`);
 const ledgerConstructors=checkLedgerConstructors(root);
 const scanner=new Bun.Transpiler({loader:'ts'});
 const visited=new Set<string>();
