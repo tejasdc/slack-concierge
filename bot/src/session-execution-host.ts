@@ -17,7 +17,7 @@ import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
-import {CHATGPT_THINKING_LEVELS,PROVIDER_ALIASES} from './aliases';
+import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES} from './aliases';
 import {recordRepairNotice} from './repair-notices';
 
 /**
@@ -449,7 +449,7 @@ export class SessionExecutionHost {
   }
   async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
   private capabilities(session:SessionRow) {
-    if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS],attachments:['*/*']};
+    if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
     const models=[...new Set(Object.values(PROVIDER_ALIASES).filter(alias=>alias.provider===session.provider_id).flatMap(alias=>'model' in alias?[alias.model]:[]))];
     return {...provider?.capabilities,fork:provider?.capabilities?.fork===true&&!!provider.history,recover:true,models,attachments:restricted?[]:provider?['*/*']:[]};
@@ -726,6 +726,9 @@ export class SessionExecutionHost {
           // must still reach its process, so it is not re-checked here.
           const admission=adoption?null:this.retainAdmission(claim,input,session,actual,attachments);
           if(session.provider_id==='chatgpt'&&admission) {
+            // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
+            // service notices (cancellations, returns, reminders) are for agents and stop here.
+            if(input.origin==='service')throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only the words of a person or an asking agent; a service notice is not sent.');
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),

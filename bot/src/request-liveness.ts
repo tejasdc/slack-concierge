@@ -115,7 +115,9 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
     const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(target.turn_id) as { native_run_id: string | null } | null;
     if (!turn?.native_run_id) return null;
     const session = getSessionById(input.workerSessionId);
-    if (!session || !owner.canSend(session)) return null;
+    // ChatGPT is not an agent: a canceled request's answer is simply dropped, never announced into
+    // his ChatGPT conversation (Tejas saw this notice there on 2026-10-09).
+    if (!session || session.provider_id === 'chatgpt' || !owner.canSend(session)) return null;
     return owner.admit({
         sessionId: input.workerSessionId, inputId: `canceled:${input.requestId}`, origin: 'service',
         sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,

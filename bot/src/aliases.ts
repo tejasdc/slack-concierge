@@ -171,6 +171,18 @@ const REASONING_EFFORT_SYNONYMS: Record<string, ReasoningEffort> = {
 export const CHATGPT_THINKING_LEVELS = ["light", "medium", "high", "extra-high", "pro"] as const;
 export type ChatgptThinkingLevel = typeof CHATGPT_THINKING_LEVELS[number];
 export const DEFAULT_CHATGPT_THINKING: ChatgptThinkingLevel = "pro";
+// Tejas's own ChatGPT chats (asked for through the Inbox) run at Extra High on the newest model, in
+// his normal chat list; agents' chats run at Pro inside the "Agents" project. Tejas, 2026-10-09: "my
+// ... session should also definitely use the, the highest, extra high thinking levels. In the
+// latest model". The model value carries whose chat it is: "tejas:<level>" for his.
+export const DEFAULT_HIS_CHATGPT_THINKING: ChatgptThinkingLevel = "extra-high";
+export const HIS_CHATGPT_PREFIX = "tejas:";
+export function chatgptSessionModel(effort: string | null | undefined): string | null {
+  const his = effort?.startsWith(HIS_CHATGPT_PREFIX) ?? false;
+  const rest = his ? effort!.slice(HIS_CHATGPT_PREFIX.length) : effort;
+  const level = rest === undefined || rest === null || rest === "" ? (his ? DEFAULT_HIS_CHATGPT_THINKING : DEFAULT_CHATGPT_THINKING) : chatgptThinkingLevel(rest);
+  return level ? `${his ? HIS_CHATGPT_PREFIX : ""}${level}` : null;
+}
 export function chatgptThinkingLevel(input: string | null | undefined): ChatgptThinkingLevel | null {
   const value = input?.trim().toLowerCase().replace(/[\s_]+/g, "-");
   const level = value === "xhigh" || value === "extrahigh" ? "extra-high" : value;
