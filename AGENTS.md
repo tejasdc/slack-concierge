@@ -690,7 +690,9 @@ authorization or a change to the default rapid-iteration policy.
   Concierge: a kind of run stops holding updates once this machine has seen one of that kind alive
   at takeover and then finished (`execution-survival.ts`, one rule for the gate, the queue and the
   update line). On the Mac each Claude host is its own launchd job started through the agent-host app. See
-  [execution host](docs/architecture/EXECUTION-HOST.md).
+  [execution host](docs/architecture/EXECUTION-HOST.md). On Linux every execution host and the shared Codex App
+  Server run in `agents.slice` (`agent-work-slice.ts`), whose 30 MB/s disk-write cap remote-box owns, because one
+  agent's database copy froze the owner for 145 s on 2026-10-09; the owner stays outside it.
 - **An agent that must wait for a file, directory or command registers a watch and ends its turn**
   (`router-actions.sh sessions watch …`, `bot/src/watches.ts`): one polling worker per machine inside
   Concierge wakes the exact session once with a retained observation, records restarts and sleep as

@@ -273,3 +273,14 @@ preflight that refuses a candidate missing a protocol in use belongs to the depl
 `execution_host_attached` (mode, pids, replayed count), `execution_adopted`, `execution_host_unreachable`,
 `execution_host_protocol_unadoptable`, `execution_adoption_failed`, `execution_journal_unreadable`.
 `systemctl list-units 'concierge-exec-*'` lists live hosts.
+
+## Disk limit for agent work
+
+On Linux each execution host is launched into `agents.slice` (`bot/src/agent-work-slice.ts`), as is the
+shared Codex App Server when Concierge moves it into its own scope. remote-box's `systemd/agents.slice`
+caps the slice's writes to md2 at 30 MB/s in total. On 2026-10-09 an agent's `sqlite3 .backup` of a live
+database wrote 2.5 GB in 10 s and held the owner's ledger writes for up to 9.5 s each (145 s of loop stalls).
+md2 is software RAID, so proportional I/O weights do not apply and the limit is a hard cap. Measured live:
+1.2 GB written inside the slice at the cap left owner pauses at their usual level (two, the longest 0.56 s);
+uncapped at 60 MB/s the owner paused up to 0.86 s. Hosts already running when this shipped keep their old
+group until they end.

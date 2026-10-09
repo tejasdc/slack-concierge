@@ -3,6 +3,7 @@
  * the machine's own supervisor, and the connection that attaches to it, replays its record and
  * sends it commands. Protocol and states: docs/architecture/EXECUTION-HOST.md.
  */
+import { AGENT_WORK_SLICE } from "./agent-work-slice";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
@@ -235,7 +236,7 @@ export async function startHost(input: {
   const unit = executionUnit(input.executionId);
   if (process.platform === "linux") {
     const result = await supervisorCommand("systemd-run", [
-      `--unit=${unit}`, "--service-type=exec", "--collect", "--quiet",
+      `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group",
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "./log";
+import { AGENT_WORK_SLICE } from "./agent-work-slice";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 
 const run = promisify(execFile);
@@ -21,7 +22,7 @@ export function holdCodexDaemonAutoStart(held: boolean) { autoStartHeld = held; 
 /** `daemon start` in a scope of its own, as above, for a caller that needs its answer. */
 export async function startCodexDaemonInOwnScope(): Promise<{ code: number | null; output: string }> {
   try {
-    const { stdout, stderr } = await run("systemd-run", ["--scope", "--collect", "--quiet", "--description=Shared Codex App Server",
+    const { stdout, stderr } = await run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--description=Shared Codex App Server",
       MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 90_000 });
     return { code: 0, output: `${stdout}${stderr}` };
   } catch (error: any) {
@@ -75,7 +76,7 @@ export function startCodexDaemonWhenAbsent(reason: string) {
     log("error", "codex_daemon_start_failed", { reason, error: "Codex automatic App Server updates are not disabled." });
     return;
   }
-  daemonStart = run("systemd-run", ["--scope", "--collect", "--quiet", "--description=Shared Codex App Server",
+  daemonStart = run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--description=Shared Codex App Server",
     MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 })
     .then(({ stdout }) => log("warn", "codex_daemon_started_when_absent", { reason, answer: stdout.trim().slice(0, 300) }))
     .catch((error: unknown) => log("error", "codex_daemon_start_failed", { reason, error: error instanceof Error ? error.message : String(error) }))
@@ -105,7 +106,7 @@ export async function raiseCodexDaemonFileLimit() {
   }
 }
 
-const OWN_SCOPE = /^\/system\.slice\/codex-app-server(-\d+)?\.scope$/;
+const OWN_SCOPE = /^\/agents\.slice\/codex-app-server(-\d+)?\.scope$/;
 
 /**
  * systemd ends every process in a unit's cgroup when the unit stops, and a detached daemon stays in
@@ -126,7 +127,7 @@ export async function moveCodexDaemonToOwnScope() {
   const scope = `codex-app-server-${Math.min(...roots)}.scope`;
   try {
     await run("busctl", ["call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-      "StartTransientUnit", "ssa(sv)a(sa(sv))", scope, "fail", "3", "PIDs", "au", String(pids.length), ...pids.map(String),
+      "StartTransientUnit", "ssa(sv)a(sa(sv))", scope, "fail", "4", "Slice", "s", AGENT_WORK_SLICE, "PIDs", "au", String(pids.length), ...pids.map(String),
       "Description", "s", "Shared Codex App Server", "CollectMode", "s", "inactive-or-failed", "0"], { timeout: 5_000 });
   } catch (error) {
     // Connections open several at a time; another one may have just made this same move.
