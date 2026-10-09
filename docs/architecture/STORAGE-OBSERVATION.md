@@ -97,7 +97,10 @@ The gateway generates `x-concierge-admission-id`. Delay records name the bounded
 admission wait, header wait and occupied readers. A slow canonical dependency is distinct from
 read-capacity exhaustion. No request body, query string or credential belongs in those fields.
 The supervisor ping still executes in the canonical process and includes read capacity; a live
-gateway alone cannot make a blocked owner healthy.
+gateway alone cannot make a blocked owner healthy. Canonical request observations retain that
+same admission identity. Read workers count every completion, error, slow read and elapsed time;
+they log failures, reads of at least two seconds, and one in 100 ordinary completions. Their
+current-process counters and bounded logger counters appear in the ping's reader health records.
 
 Only the canonical startup creates the Inbox, runs migrations, starts background coordinators
 or owns mutations. Read workers use physically readonly canonical connections. Account view
@@ -112,6 +115,12 @@ The release fixture blocks a private synthetic executor and checks the other rea
 then the composed acceptance exercises actual product routes and custody. It never pauses a
 production process. Shared disk failure or exhausted execution capacity can still delay all
 work; execution isolation does not manufacture durable storage availability.
+
+The candidate-owned `presentation-release-check.ts` also runs the foreground import guard,
+bounded-output source guard and composed 35-second stall/custody fixture. Earlier installed
+builders already call this entrance before sealing, so the first upgraded release is checked.
+Independent lifecycle children have separate scratch state and run alongside growth checks
+inside the existing 90-second release envelope; each has bounded process-group cleanup.
 
 Every owner GET route must match `presentation-reader-contracts.ts` or an exact named route in
 `owner-get-policy.ts`; an unregistered route returns `READER_CONTRACT_REQUIRED` before invoking
@@ -130,7 +139,7 @@ returned value bytes. The encoded response has a separate byte budget. Refusal i
 expose misuse; they do not prove rows visited by SQLite, so release growth fixtures and query
 plans remain required. The registry's limits belong to the owner and are shared by consumers.
 
-Each request now records a normalized start and completion under one random request identity,
+Canonical requests record a normalized start and completion under one admission identity,
 including actual encoded JSON response bytes. A blocked or crashed request therefore leaves a
 start even when no completion can be logged. Concurrent calls to the same route retain separate
 in-flight identities. Streams retain separate lifetime/transport observations.

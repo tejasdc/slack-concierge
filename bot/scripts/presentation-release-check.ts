@@ -5,6 +5,10 @@ import {checkReaderRefusals} from './presentation-contract-fixture';
 import {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle} from './topic-projection-fixture';
 import {checkDispatchClaim} from './dispatch-claim-fixture';
 import {checkLedgerConstructors} from './ledger-constructor-check';
+import {runFixtureChild} from './fixture-child';
+// Older installed builders already execute this candidate-owned entrance.
+// A package-only check would not protect the first activation of these workers.
+import './foreground-boundary-check';
 
 const root=resolve(import.meta.dir,'..');
 // The deployment runner executes this candidate-owned check before sealing a release.
@@ -44,10 +48,15 @@ for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixt
 }
 const results=[];
 checkReaderRefusals();
-const topicProjection=await checkTopicProjectionLifecycle();
-const nativeOwnerProjection=await checkNativeOwnerProjectionLifecycle();
-const dispatchClaim=await checkDispatchClaim();
-for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
+// Each lifecycle owns a distinct scratch directory and child process group.
+// Run their independent waits alongside growth checks, within the existing
+// 90-second release envelope rather than extending the deployment deadline.
+const lifecycleChecks=Promise.allSettled([
+  checkTopicProjectionLifecycle(),checkNativeOwnerProjectionLifecycle(),checkDispatchClaim(),
+  runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'foreground-composed-fixture.ts')],
+    env:{...process.env},deadlineMs:80_000,fixture:'foreground-composed'}),
+]);
+try {for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   if(!contract.sourceTables.length||!contract.growth||!contract.maxRows||!contract.maxResponseBytes)
     throw new Error(`Incomplete presentation contract: ${name}`);
   const fixture=fixtures[contract.fixture];
@@ -55,5 +64,9 @@ for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   const started=performance.now();
   await fixture();
   results.push({reader:name,fixture:contract.fixture,durationMs:Math.round(performance.now()-started)});
-}
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,readers:results}));
+}} catch(error) {await lifecycleChecks;throw error;}
+const lifecycleResults=await lifecycleChecks;
+const failures=lifecycleResults.filter(result=>result.status==='rejected');
+if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
+const [topicProjection,nativeOwnerProjection,dispatchClaim,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
+console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));

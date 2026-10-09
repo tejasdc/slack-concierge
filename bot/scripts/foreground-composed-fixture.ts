@@ -24,9 +24,9 @@ const json=async(response:Response)=>({status:response.status,body:await respons
 
 async function ownerMode(root:string){
   const workspace=join(root,'workspace');
-  const [{SessionOwner},{createNativeSession},{requestApiHandler},{startPresentationWorker}]=await Promise.all([
+  const [{SessionOwner},{createNativeSession},{requestApiHandler},{releaseWorkerPath}]=await Promise.all([
     import('../src/session-owner'),import('../src/session-inputs'),import('../src/routed-request-api'),
-    import('../src/presentation-worker-supervisor')]);
+    import('../src/release-worker')]);
   const session=createNativeSession('claude-code',{title:'Composed foreground fixture',cwd:workspace});
   const ephemera=()=>({observedAtMs:Date.now(),checking:false,usageRefreshing:false,
     codexSignIn:'unknown' as const,accountFallback:{codex:null,'claude-code':null},
@@ -63,10 +63,19 @@ async function ownerMode(root:string){
     return route(request);
   }});
   await chmod(ownerSocket,0o600);
-  const stopPresentation=startPresentationWorker();
+  const projectionEntry=join(root,'projection-wrapper.ts');
+  await writeFile(projectionEntry,`process.on('disconnect',()=>process.exit(0));\n`+
+    `await import(${JSON.stringify(releaseWorkerPath('presentation-message-worker'))});\n`,{mode:0o600});
+  const projectionCommand=[process.execPath,projectionEntry];
+  const projection=Bun.spawn(process.platform==='linux'?['setpriv','--pdeathsig','KILL',...projectionCommand]:projectionCommand,
+    {env:process.env,stdin:'ignore',stdout:'inherit',stderr:'inherit',ipc:()=>{}});
   await writeFile(join(root,'owner-ready.json'),JSON.stringify({sessionId:`concierge:${session.id}`,topicId:topic,
     attachmentId:attachment,captureId:capture.operation.id,pid:process.pid}),{mode:0o600});
-  process.on('SIGTERM',()=>{void Promise.all([server.stop(true),stopPresentation()]).finally(()=>process.exit(0));});
+  let stopping=false;
+  const stop=()=>{if(stopping)return;stopping=true;
+    void (async()=>{await server.stop(true);projection.kill('SIGTERM');await projection.exited;})()
+      .finally(()=>process.exit(0));};
+  process.on('SIGTERM',stop);process.on('SIGINT',stop);process.on('disconnect',stop);
   await new Promise(()=>{});
 }
 
@@ -78,7 +87,9 @@ async function gatewayMode(root:string){
   const gateway=await startForegroundGateway({stateDir:root,ownerSocket:join(root,'request-owner.sock'),
     readWorkerEntry:join(root,'read-wrapper.ts'),peer:{hostname:'127.0.0.1',port:peerPort,token:peerToken}});
   await writeFile(join(root,'gateway-ready'),String(process.pid),{mode:0o600});
-  process.on('SIGTERM',()=>{void gateway.stop(true).finally(()=>process.exit(0));});
+  let stopping=false;
+  const stop=()=>{if(stopping)return;stopping=true;void gateway.stop(true).finally(()=>process.exit(0));};
+  process.on('SIGTERM',stop);process.on('SIGINT',stop);process.on('disconnect',stop);
   await new Promise(()=>{});
 }
 
@@ -105,8 +116,9 @@ async function main(){
   process.env.CONCIERGE_TEST_AUTHORIZATION=AUTH;
   const children:Array<ReturnType<typeof Bun.spawn>>=[];
   const spawn=(mode:string,extra:Record<string,string>={})=>{
-    const child=Bun.spawn([process.execPath,import.meta.path,mode,root],{env:{...fixtureEnv,...extra},
-      stdin:'ignore',stdout:'inherit',stderr:'inherit'});
+    const command=[process.execPath,import.meta.path,mode,root];
+    const child=Bun.spawn(process.platform==='linux'?['setpriv','--pdeathsig','KILL',...command]:command,
+      {env:{...fixtureEnv,...extra},stdin:'ignore',stdout:'inherit',stderr:'inherit',ipc:()=>{}});
     children.push(child);return child;
   };
   let queue:ReturnType<typeof Bun.serve>|null=null;
@@ -165,7 +177,7 @@ async function main(){
       sessionId:seeded.sessionId,topicId:seeded.topicId,attachmentId:seeded.attachmentId,
       threadsRoute:'/sessions/v1/presentation/topics',historyRoute:`/sessions/v1/sessions/${encodeURIComponent(seeded.sessionId)}/history`,
       controlUrl:`http://127.0.0.1:${control.port}`,controlTokenFile:captureTokenFile,peerPort}),{mode:0o600});
-    console.log(JSON.stringify({fixture:'foreground-composed',phase:'ready',configPath,pid:process.pid}));
+    console.error(JSON.stringify({fixture:'foreground-composed',phase:'ready',configPath,pid:process.pid}));
     if(process.argv.includes('--serve')){
       process.on('SIGTERM',()=>serveResolve(null));await serveDone;
     } else {

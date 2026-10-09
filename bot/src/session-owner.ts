@@ -2527,7 +2527,10 @@ export class SessionOwner {
     startOwnerLoopMonitor();
     const label=ownerRequestLabel(request.method,url.pathname);
     const started=performance.now();
-    const requestId=randomUUID();
+    // The accepting gateway overwrites this identity before forwarding. Keep it
+    // so a delayed request can be followed across the process boundary.
+    const admissionId=request.headers.get('x-concierge-admission-id');
+    const requestId=admissionId&&/^[0-9a-f-]{36}$/.test(admissionId)?admissionId:randomUUID();
     ownerRequestsInFlight.set(requestId,label);
     log('info','owner_request_started',{request_id:requestId,route:label});
     let status:number|null=null;

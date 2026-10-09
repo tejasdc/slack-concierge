@@ -28,9 +28,11 @@ status or fresh sign-in checks unavailable; it cannot hold an independent prepar
 history, or file read's event loop. A blocked read executor occupies only its own pool slot;
 the supervisor keeps another executor available and retires a timed-out one.
 
-Read completion logs include the route template, status, duration, and gateway admission ID,
-without path or query data. `/internal/ready` reports the child PID so the supervisor can
-reject an unrelated socket. Shutdown closes the listener and the history client.
+Failed and slow read completions, plus a one-percent ordinary sample, include the route template,
+status, duration, measured storage work and gateway admission ID without path or query data.
+Counters retain all completions, elapsed time and sampled-out logs. `/internal/ready` reports
+those counters, logger health and child PID so the supervisor can reject an unrelated socket.
+Shutdown closes the listener and the history client.
 
 The route classification is the executable manifest. Its `source` identifies prepared,
 canonical, provider, filesystem, account, or control reads; `domain` identifies the read
