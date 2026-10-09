@@ -446,6 +446,24 @@ export class SessionCapabilityClient {
     return value;
   }
 
+  /**
+   * Thinkering verifies every start against this owner's operation record. During Concierge's own
+   * restart the request API is not listening yet, so Thinkering refuses with
+   * SESSION_OWNER_UNAVAILABLE before sending anything; that refusal is waited out (up to two
+   * minutes), and the same run id makes a repeated start idempotent. Repair report, 7:26 PM
+   * 2026-10-09: such a start was marked permanently failed.
+   */
+  private async startWhenOwnerAnswers(run: CapabilityRunRef, providerInput: ChatGptProviderInput, signal?: AbortSignal) {
+    const until = Date.now() + 120_000;
+    for (let pause = 2_000; ; pause = Math.min(pause * 2, 20_000)) {
+      const outcome = await this.start(run, providerInput, signal).then(value => ({ value }), (error: unknown) => ({ error }));
+      if ("value" in outcome) return outcome.value;
+      const ownerStarting = outcome.error instanceof SessionCapabilityError && outcome.error.code === "SESSION_OWNER_UNAVAILABLE" && !signal?.aborted;
+      if (!ownerStarting || Date.now() + pause > until) throw outcome.error;
+      await new Promise(resolve => setTimeout(resolve, pause));
+    }
+  }
+
   private async observeAcrossRestart(run: CapabilityRunRef, after: string | null, signal?: AbortSignal) {
     const until = Date.now() + 20 * 60_000;
     for (let pause = 2_000; ; pause = Math.min(pause * 2, 30_000)) {
@@ -568,7 +586,7 @@ export class SessionCapabilityClient {
       mayHaveStarted = true;
       const receipt = context.follow
         ? await this.reconcile(run, context.signal)
-        : await this.start(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
+        : await this.startWhenOwnerAnswers(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
           model: admission.model, attachments: context.attachments, policy: admission.policy, nativeBinding: admission.nativeBinding }, context.signal);
       effectRecorded = true;
       if (context.follow && (receipt.state === "recorded" || receipt.state === "running")) context.follow.onLive();
