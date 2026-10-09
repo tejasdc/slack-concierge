@@ -452,7 +452,7 @@ export class SessionCapabilityClient {
       const outcome = await this.observe(run, after, signal).then(value => ({ value }), (error: unknown) => ({ error }));
       if ("value" in outcome) return outcome.value;
       const restarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
-        && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE");
+        && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE" || outcome.error.status === 503);
       if (!restarting || Date.now() + pause > until) throw outcome.error;
       await new Promise(resolve => setTimeout(resolve, pause));
     }
@@ -589,7 +589,8 @@ export class SessionCapabilityClient {
       while (true) {
         // Thinkering restarts for every release, often while a Pro answer is still being written; its
         // next process reads the acknowledged request on to its answer. Keep asking across that
-        // restart (up to 20 minutes) instead of reporting the answer lost (2026-10-09, 7:06 PM).
+        // restart (up to 20 minutes) instead of reporting the answer lost (2026-10-09, 7:06 PM). While
+        // Thinkering starts it answers a bare 503; that counts as restarting too (live check, 7:25 PM).
         const observation = await this.observeAcrossRestart(run, cursor, context.signal);
         let observedBinding = binding;
         let observedTurn = turnId;
