@@ -49,7 +49,9 @@ function checks(database: Database) {
 }
 
 const source = ledgerWriteResults(new Database(statePath));
-source.exec("PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(FULL)");
+// PASSIVE: a FULL checkpoint blocks the live service's writers while it waits for readers, and
+// VACUUM INTO copies a consistent snapshot whatever the WAL holds.
+source.exec("PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(PASSIVE)");
 checks(source);
 source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
 source.close();
@@ -63,9 +65,7 @@ try {
   await import("../src/state");
   await import("../src/deployment-state");
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
-  checks(migrationDatabase);
   migrationDatabase.exec("COMMIT");
-  console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));
 } catch (error) {
   try { migrationDatabase.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
@@ -78,3 +78,17 @@ try {
   }));
   process.exit(1);
 }
+
+// The whole-ledger integrity and foreign-key checks run after COMMIT, on a read transaction. Run
+// inside the writer reservation they held the live service's writer for 32 s at 18:28 on
+// 2026-10-09 (1.9 GB ledger): every owner write, heartbeats included, waited out its busy timeout
+// and failed. The schema change is additive, the same checks already passed on the source before
+// the backup, and a failure here stops the deployment with that backup named.
+try {
+  checks(migrationDatabase);
+} catch (error) {
+  console.error(JSON.stringify({ status: "migrated_check_failed", backup_path: backupPath,
+    error: error instanceof Error ? error.message : String(error) }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));

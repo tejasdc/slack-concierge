@@ -644,12 +644,17 @@ operator deployment.
 
 ## State migration and backups
 
-`bot/scripts/migrate-deployment-repair.ts` checkpoints SQLite, runs integrity
+`bot/scripts/migrate-deployment-repair.ts` checkpoints SQLite (PASSIVE), runs integrity
 checks, creates a `VACUUM INTO` backup under
-`/root/.local/state/concierge/backups/`, applies only additive columns/tables,
-and checks integrity and foreign keys again. On migration failure it rolls the
-schema transaction back in place, checks the same database inode again, and
-retains the untouched backup for operator recovery.
+`/root/.local/state/concierge/backups/`, applies only additive columns/tables
+inside one `BEGIN IMMEDIATE`, and after `COMMIT` checks integrity and foreign keys
+again on a read transaction. The writer reservation covers only the schema change:
+the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and, held inside
+the reservation, made every live owner write fail with `SQLITE_BUSY`; a FULL
+checkpoint likewise blocked writers. A post-commit check failure exits
+`migrated_check_failed` with the backup path, which stops the update. On migration
+failure it rolls the schema transaction back in place, checks the same database
+inode again, and retains the untouched backup for operator recovery.
 
 Machine backups remain owned by `/root/workspace/remote-box` and include
 `/root`, `/etc`, and `/var/lib`. To restore Concierge state:
