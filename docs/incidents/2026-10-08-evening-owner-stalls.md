@@ -1,7 +1,7 @@
 # October 8 evening stalls and failed release
 
-Status: first Concierge correction installed and exercised; archive correction and the newly
-measured background reconciliation correction remain open.
+Status: first Concierge correction and archive correction installed and exercised; the newly
+measured background reconciliation correction is reviewed, with installation and acceptance owed.
 Owner: Concierge session 4583. Human reports: `a95d3cc7-5f9e-4ae5-85ee-af2fe21c9a88`
 (23:09 UTC) and `08d1033c-afe1-4792-b794-4c744988827e` (23:30 UTC).
 
@@ -156,9 +156,8 @@ Unit memory and one process's RSS are different accounting scopes. A two-second 
 sample used only 50 ms CPU, despite `ps` showing 109% averaged across its three-hour lifetime;
 that historical average is not proof of a current busy loop.
 
-Complete the archive repair and background-sweep correction, then verify their installed
-behavior and fresh measurements. Do not describe these initial acceptance checks as completion
-of the whole widened task.
+Complete installation and acceptance of the background-sweep correction. Do not describe
+these initial acceptance checks as completion of the whole widened task.
 
 ### Integrated source checks and later contention
 
@@ -191,10 +190,51 @@ retain exact-file authority while removing database write amplification. Total r
 proportional to appends was an investigator-derived criterion, not a promised producer contract.
 The owner must ship and measure writes and remaining read/CPU cost; if the latter materially
 sustains owner stalls, source-authority integration remains necessary under this task.
-No competing implementation exists here. This work remains open
-under Tejas's widened task and must not be hidden by completing only the Concierge patch.
+No competing implementation exists here.
 
 The screenshot's background-work label was also checked. Session 4081 had an answering execution
 host for the same run, live provider PID 407190, no exit and no journal error; its catalogue named
 one remaining implementation job. An earlier answer plus a still-running background job is not
 by itself another ghost-turn incident. This check proves live custody, not progress of that job.
+
+### Archive correction installed and remaining read-cost assessment
+
+Session 3757 completed the delegated correction as Thinkering `832daa4`, activated through its
+normal release path at 2026-10-09 00:31:36 UTC; archive ready was 00:31:48.122. The service PID
+788656 and `/srv/thinkering/current` both identify that release. Its independent Claude review
+passed after an actual deletion-during-root-recovery race was corrected. A failed/partial read
+now keeps the prior verified evidence with stale coverage; unavailable roots do not silently
+prune history, while genuine deletion and explicit root removal still retire it.
+
+In a controlled 1,000-message append, the old code deleted 1,000 evidence and body rows and
+inserted 1,001 of each; the new code inserted one each and deleted none. One-message appends at
+100/1,000/5,000 records wrote 45–49 KB. Natural 15-second live windows went from 6.89–12.11 MB/s
+physical writes before to 0.057–0.567 MB/s after. The activity was not identical, so only the
+controlled row-mutation comparison attributes the reduction directly. Exact branch/message
+identity, frozen old pins, partial reads, replacements, root loss/return and deletion were
+exercised through the real watcher on private synthetic sources. Installed archive search and
+exact source-version/branch/event proof returned HTTP 200; ordinary global coverage retains its
+existing omissions instead of claiming completeness.
+
+Full-file verification still costs reads: after windows starting 00:32:37.860842 and
+00:33:46.610625 each lasted 15.05 s and read 701.27/222.91 MB logically, using 6.16/1.95 process
+CPU seconds. The investigator independently matched the owner journal to those exact windows:
+neither had a logged owner pause at or above 200 ms. Their 3/4 completed handlers had maxima
+1,000/3 ms respectively; the one-second search did not block the shared loop. Across
+00:32–00:37 the owner logged 1.007 s cumulative pauses (0.201 s/min), maximum 456 ms, and 19
+successful handlers, none over two seconds. The earlier 00:25–00:30 window had 1.139 s total,
+maximum 270 ms and 17 handlers. These small uncontrolled windows establish no broad latency
+causality or guarantee, but provide no evidence that the remaining full reads currently sustain
+the reported multi-second shared pauses.
+
+Retain exact file authority now. Replacing it with the existing owner message feed would cover
+retained live owner activity but lose independent/archive-only sessions, tool/branch evidence
+and exact provider-file pins without an explicit overlap contract. Full-read avoidance remains
+a worthwhile growth improvement if measurements show it matters; a compatible source-feed
+integration must preserve those coverage classes. Neither a longer debounce nor a memory cap
+supplies the missing append authority. No new source producer is justified by this evidence.
+
+Residual archive freshness is explicit: an individual failed read waits for a later file event
+or restart; failed root enumeration without a later root-return event can stay stale until
+restart. This correction prevents evidence loss; it does not claim every filesystem failure
+automatically heals, nor that memory usage fell.
