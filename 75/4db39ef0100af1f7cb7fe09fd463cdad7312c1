@@ -1,0 +1,1 @@
+When logging starts costing too much (filling the disk, flooding, or holding up the app), the repair agent now gets told and fixes it.
