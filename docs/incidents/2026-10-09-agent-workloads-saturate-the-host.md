@@ -60,6 +60,8 @@ results and an accepted Inbox capture) waiting on a saturated disk and CPU. Noth
 limits what an agent may run on this machine, and nothing gives the owner's loop priority over
 agent workloads. Options for the owning sessions, not applied here:
 
+- Applied 2026-10-09 by the repair agent: `CPUWeight=1000` on `concierge-bot.service` (this repository's
+  unit, installed with each release). `IOWeight` was not added because the disks use the `none` scheduler.
 - Scheduler weights: a higher `CPUWeight`/`IOWeight` on `concierge-bot.service` (remote-box) or a
   lower one on execution units (`execution-host-client.ts` launch properties). Hypothesis: keeps the
   owner responsive while agents stay unthrottled in aggregate; unmeasured.

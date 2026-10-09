@@ -22,6 +22,11 @@ RestartSec=5
 TimeoutStopSec=5min
 KillMode=mixed
 LimitNOFILE=1048576
+# Agents' execution hosts run beside the owner at the default weight of 100. On 2026-10-09 an
+# emulator and a six-browser screenshot pool took the CPU and the owner waited up to 2.7 s per tick.
+# This weight gives the owner ten shares to each run's one only while the CPU is contended.
+# IOWeight is left out: the disks use the none scheduler, which ignores it.
+CPUWeight=1000
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
 Environment=CONCIERGE_REPO=/var/lib/slack-concierge-deployment/source
