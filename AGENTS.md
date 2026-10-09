@@ -340,10 +340,7 @@ authorization or a change to the default rapid-iteration policy.
   sign-in|secret|device|ambiguous: permission, approval and design questions are refused
   [decision: act-then-tell]. A `completed` work reply needs `--all-done` and `--checked` or
   `--not-checked` [decision: agents-check-real-end-to-end-behavior]; when part of his request
-  was not done, the work is not completed. A `completed` reply and a `response` outcome also need `--why` (each
-  choice the answer reports: what, why, over what), folded in as "Why this way:", or `--no-choices`, kept on
-  the record and not shown; quiet completions need neither (Tejas, 2026-10-09: "Tell me why this was chosen";
-  [decision: rely-on-systems-not-good-intentions]). These are folded into the words the requester and he
+  was not done, the work is not completed. These are folded into the words the requester and he
   read, so every carrier (return, peer, digest) keeps them. An Inbox topic request closes
   `completed` only when its latest dispatch answered as done (earlier ones only block while running)
   and no question for it is open (`refuseUnfinishedCompletion`): on 2026-10-02 one closed over

@@ -114,39 +114,11 @@ const NOT_ALL_DONE =
   + 'routes the building), or reply --work-disposition failed saying what was not done. Ask him (needs_decision) only for something no agent can '
   + 'do: ' + Object.keys(ONLY_HE_CAN).join(', ') + '. A "done" that left out part of his request reached him twice in one week (2026-09-29, 2026-10-02).';
 
-/**
- * An answer he reads gives the reason for each choice it reports, because choices kept reaching
- * him without one. His words, 2026-10-09: "a lot of different choices, choices don't even have a
- * rational when you, when you give this response to me ... Tell me why this was chosen"; and on
- * 2026-09-25: "I don't know why and who is coming up with this design, and what it's based on".
- */
-const WHY_REQUIRED =
-  'An answer Tejas reads gives the reason for each choice it reports. Add --why "<each choice this answer reports or made on his behalf: '
-  + 'what was chosen, why, and what it was chosen over>", or --no-choices "<why this answer reports no design or approach choice>" '
-  + '(a fact lookup, a send that went exactly as he asked). His words: "a lot of different choices, choices don\'t even have a rational '
-  + 'when you, when you give this response to me ... Tell me why this was chosen". Before choosing a design on his behalf, load the '
-  + 'interface-decisions skill; its taste profile says what he wants and why.';
-
-/**
- * The reasons line under an answer he reads: `--why` is shown as "Why this way:"; `--no-choices`
- * is kept on the record but shows nothing, because he does not want words about nothing.
- */
-export function reasonsFor(input: { why?: string; noChoices?: string }): { line: string | null; noChoices: string | null } {
-  const why = input.why?.trim() ?? '', noChoices = input.noChoices?.trim() ?? '';
-  if (why && noChoices) throw new Error('Give either --why or --no-choices, not both.');
-  if (!why && !noChoices) throw new Error(WHY_REQUIRED);
-  return { line: why ? `Why this way: ${why}` : null, noChoices: noChoices ? noChoices.slice(0, 2000) : null };
-}
-
-/**
- * Completed work as it will be read: the answer, why each choice was made, then what was checked
- * live (or why nothing was). A quiet completion is not read by him, so it owes no reasons.
- */
-export function completionWithCheck(input: { text: string; checked?: string; notChecked?: string; allDone?: boolean; why?: string; noChoices?: string; quiet?: boolean }): string {
+/** Completed work as it will be read: the answer, then what was checked live (or why nothing was). */
+export function completionWithCheck(input: { text: string; checked?: string; notChecked?: string; allDone?: boolean }): string {
   if (input.allDone !== true) throw new Error(NOT_ALL_DONE);
   const checked = input.checked?.trim() ?? '', notChecked = input.notChecked?.trim() ?? '';
   if (checked && notChecked) throw new Error('Give either --checked or --not-checked, not both.');
   if (!checked && !notChecked) throw new Error(CHECK_REQUIRED);
-  const reasons = input.quiet && !input.why?.trim() && !input.noChoices?.trim() ? null : reasonsFor(input).line;
-  return `${input.text.trim()}\n\n${reasons ? `${reasons}\n` : ''}${checked ? `Checked on the real system: ${checked}` : `Not checked live: ${notChecked}`}`;
+  return `${input.text.trim()}\n\n${checked ? `Checked on the real system: ${checked}` : `Not checked live: ${notChecked}`}`;
 }
