@@ -138,7 +138,9 @@ export function answerView(request:{request_id:string;payload_json:string},answe
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
     private readonly again = new Set<string>();
-    private scheduled = false;
+    private reconciliation: Promise<void> | null = null;
+    private reconciliationDirty = false;
+    private startupReconciled = false;
     private stopped = true;
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
@@ -1725,14 +1727,11 @@ export class SessionCommunicationCoordinator {
      * the sender learned nothing until the generic overdue note. One note per request, as its
      * overdue note, so the thirty-minute one does not repeat it.
      */
-    private inspectProviderHolds() {
+    private inspectProviderHold(request: RequestRow) {
         const now = this.now();
-        for (const request of db.query(`SELECT r.* FROM session_communication_requests r
-            JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
-            WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued'`).all() as RequestRow[]) {
             const input = getAcceptedSessionInput(request.target_input_id!);
             const hold = input ? inputHold(input) : null;
-            if (!hold) continue;
+            if (!hold) return;
             const text = heldRequestNotice(request.request_id, `concierge:${request.target_session_id}`, hold);
             db.transaction(() => {
                 const current = this.row(request.request_id);
@@ -1740,12 +1739,10 @@ export class SessionCommunicationCoordinator {
                 this.event(request, 'overdue', { text, health: `held: ${hold.code}`, held: hold.code });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
-        }
     }
-    inspectOverdue() {
+    private inspectOverdueRequest(request: RequestRow) {
         const now = this.now();
-        for (const request of db.query(`SELECT * FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as RequestRow[]) {
-            if (!request.source_input_id || !request.target_input_id) continue;
+            if (!request.source_input_id || !request.target_input_id) return;
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
             // Work in progress under a live owner is not a stall. Wait another interval rather
@@ -1758,7 +1755,7 @@ export class SessionCommunicationCoordinator {
             if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms, false))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
-                continue;
+                return;
             }
             const held = turn ? null : this.heldPrerequisite(request);
             const health = held ? `held for your decision, because prerequisite ${held.request_id} ended ${held.outcome}; cancel this request or ask again without it`
@@ -1778,35 +1775,85 @@ export class SessionCommunicationCoordinator {
                     this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
+    }
+    /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
+    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void, ...args: (number | string)[]) {
+        const query = db.query(sql);
+        const highWater = (db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as { value: number | null }).value ?? 0;
+        let cursor = 0;
+        while (!this.stopped) {
+            const row = query.get(...args, highWater, cursor) as (T & { reconciliation_rowid: number }) | null;
+            if (!row) return;
+            cursor = row.reconciliation_rowid;
+            visit(row);
+            await new Promise<void>(resolve => setImmediate(resolve));
+        }
+    }
+    private async scanExternalRequests() {
+        const query = db.query(`SELECT rowid AS reconciliation_rowid,* FROM session_external_requests
+            WHERE outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=?
+              AND rowid<=? AND (created_at_ms>? OR (created_at_ms=? AND rowid>?))
+            ORDER BY created_at_ms,rowid LIMIT 1`);
+        const highWater = (db.query('SELECT max(rowid) AS value FROM session_external_requests').get() as { value: number | null }).value ?? 0;
+        let createdAt = REMINDERS_SINCE_MS, cursor = 0;
+        while (!this.stopped) {
+            const row = query.get(REMINDERS_SINCE_MS, highWater, createdAt, createdAt, cursor) as (ExternalRequestRow & { reconciliation_rowid: number }) | null;
+            if (!row) return;
+            createdAt = row.created_at_ms;
+            cursor = row.reconciliation_rowid;
+            this.chaseExternalStranded(row);
+            await new Promise<void>(resolve => setImmediate(resolve));
+        }
+    }
+    private async reconcile() {
+        let startedPeers = false;
+        if (!this.startupReconciled) {
+            if (!await releaseLateRetainedReturns(() => this.stopped)) return;
+            if (this.stopped) return;
+            this.startupReconciled = true;
+            this.dependencies.peers?.start();
+            // Topic backfill followed retained-return restoration before this sweep yielded.
+            const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000);
+            backfill.unref?.();
+            startedPeers = true;
+        }
+        while (this.reconciliationDirty && !this.stopped) {
+            this.reconciliationDirty = false;
+            if (!startedPeers) this.dependencies.peers?.wake();
+            startedPeers = false;
+            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
+                JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
+                WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
+                ORDER BY r.rowid LIMIT 1`, request => this.inspectProviderHold(request));
+            await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+                WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+                request => this.inspectOverdueRequest(request), this.now());
+            if (this.stopped) break;
+            await auditUndeliveredReturns(this.now(), () => this.stopped);
+            await this.scanExternalRequests();
+            await this.scanRows<RequestRow>('session_communication_requests','SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+                request => this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id))));
+            await this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+                event => this.schedule(`event:${event.event_id}`, () => this.deliver(event)));
+            if (!this.stopped) this.arm();
         }
     }
     wake() {
-        if (this.stopped || this.scheduled)
-            return;
-        this.scheduled = true;
-        queueMicrotask(() => {
-            this.scheduled = false;
-            if (this.stopped)
-                return;
-            try {
-                this.dependencies.peers?.wake();
-                this.inspectProviderHolds();
-                this.inspectOverdue();
-                auditUndeliveredReturns(this.now());
-                for(const request of db.query('SELECT * FROM session_external_requests WHERE outcome IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY created_at_ms')
-                    .all(REMINDERS_SINCE_MS) as ExternalRequestRow[])this.chaseExternalStranded(request);
-                for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
-                    this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
-                for (const event of db.query("SELECT * FROM session_communication_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as EventRow[])
-                    this.schedule(`event:${event.event_id}`, () => this.deliver(event));
-                this.arm();
-            }
-            catch (error) {
+        if (this.stopped) return;
+        this.reconciliationDirty = true;
+        if (this.reconciliation) return;
+        this.reconciliation = new Promise<void>(resolve => setImmediate(resolve))
+            .then(() => this.reconcile())
+            .catch(error => {
+                this.reconciliationDirty = false;
                 this.disarm?.();
                 this.disarm = null;
                 this.dependencies.onError(error);
-            }
-        });
+            })
+            .finally(() => {
+                this.reconciliation = null;
+                if (this.reconciliationDirty && !this.stopped) this.wake();
+            });
     }
     private schedule(key: string, work: () => Promise<void>) {
         if (this.tasks.has(key)) {
@@ -1840,13 +1887,14 @@ export class SessionCommunicationCoordinator {
             this.disarm = () => clearTimeout(timer);
         }
     }
-    start() { if (!this.stopped)
-        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start();
-        // Topics for requests sent before topics were stored on them; off every read path.
-        const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000); backfill.unref?.(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+    start() { if (!this.stopped) return;
+        this.stopped = false; this.startupReconciled = false;
+        this.detach = observeExecutionChanges(() => this.wake());
+        this.wake();
+    }
     async idle() { do {
-        await Promise.resolve();
+        await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
-    } while (this.tasks.size || this.scheduled); }
-    async stop() { this.stopped = true; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; await Promise.allSettled([...this.tasks.values()]); await this.dependencies.peers?.stop(); }
+    } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
+    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await this.dependencies.peers?.stop(); }
 }

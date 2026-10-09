@@ -120,7 +120,8 @@ export const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(
 export class SessionPeers {
   private readonly tasks=new Map<string,Promise<void>>();
   private readonly again=new Set<string>();
-  private scheduled=false;
+  private reconciliation:Promise<void>|null=null;
+  private reconciliationDirty=false;
   private stopped=true;
   private disarm:(()=>void)|null=null;
   private readonly now:()=>number;
@@ -840,8 +841,7 @@ export class SessionPeers {
     return true;
   }
   /** A request the peer holds and will not start soon tells its sender now, as a local one does. */
-  private inspectHolds() {
-    for(const row of db.query("SELECT * FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL").all() as PeerRequestRow[]) {
+  private inspectHold(row:PeerRequestRow) {
       const hold=JSON.parse(row.remote_status_json!).hold;
       const text=heldRequestNotice(row.request_id,`${this.presentedSession(row.peer,row.remote_session_id)} on ${row.peer}`,hold);
       db.transaction(()=>{
@@ -849,15 +849,13 @@ export class SessionPeers {
         this.event(row,'overdue',{text,health:`held: ${hold.code}`,held:hold.code});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
-    }
   }
-  private inspectOverdue() {
+  private inspectOverdueRequest(row:PeerRequestRow) {
     const now=this.now();
-    for(const row of db.query(`SELECT * FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as PeerRequestRow[]) {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       // A peer mid-update holds its work for a few minutes; that is waiting, not a stall.
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking||remote?.updating===true;
-      if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
+      if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);return;}
       const asleep=row.status==='queued_offline'||this.unreachable.has(row.peer);
       if(asleep){
         // The machine being asleep is not a notice to Tejas; the agent that asked decides whether
@@ -867,7 +865,7 @@ export class SessionPeers {
           this.event(row,'overdue',{text:`Request ${row.request_id} is waiting on ${row.peer}, which has not answered for ${STILL_WAITING_MINUTES} minutes; it is probably asleep or offline. ${row.status==='queued_offline'?'The request has not reached it yet and will be delivered':'Its status will be read again'} automatically when ${row.peer} is back; nothing is lost or re-sent. Tejas was not told. If this work matters to him before ${row.peer} wakes, ask him (for example, to open the laptop); otherwise no action is needed.`,health:`${row.peer} unreachable`});
           db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
         })();
-        continue;
+        return;
       }
       const health=remote?.execution?.stopped?'deliberately stopped'
         :remote?.execution?.status==='done'?`${this.presentedSession(row.peer,row.remote_session_id)} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
@@ -877,7 +875,6 @@ export class SessionPeers {
         this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
       })();
-    }
   }
 
   // ---- target side: a request a peer delivered to this instance ----
@@ -1124,31 +1121,49 @@ export class SessionPeers {
   }
 
   // ---- scheduling, shared with the coordinator's wake ----
+  private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void,...args:(number|string)[]) {
+    const query=db.query(sql);
+    const highWater=(db.query(`SELECT max(rowid) AS value FROM ${table}`).get() as {value:number|null}).value??0;
+    let cursor=0;
+    while(!this.stopped){
+      const row=query.get(...args,highWater,cursor) as (T&{reconciliation_rowid:number})|null;
+      if(!row)return;
+      cursor=row.reconciliation_rowid;
+      visit(row);
+      await new Promise<void>(resolve=>setImmediate(resolve));
+    }
+  }
+  private async reconcile() {
+    while(this.reconciliationDirty&&!this.stopped){
+      this.reconciliationDirty=false;
+      // Catalogue refreshes have their own task owner and bounded interval.
+      for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
+      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+        row=>this.closeStranded(row));
+      await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+        row=>this.inspectHold(row));
+      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+        row=>this.inspectOverdueRequest(row),this.now());
+      if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
+      await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
+        row=>this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id))));
+      await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+        event=>this.schedule(`event:${event.event_id}`,()=>this.deliver(event)));
+      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
+          OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending')) AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+        row=>this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id))));
+      if(!this.stopped)this.arm();
+    }
+  }
   wake() {
-    if(this.stopped||this.scheduled)return;
+    if(this.stopped)return;
+    this.reconciliationDirty=true;
+    if(this.reconciliation)return;
     this.dependencies.onWake?.();
-    this.scheduled=true;
-    queueMicrotask(()=>{
-      this.scheduled=false;
-      if(this.stopped)return;
-      try {
-        // Keep each peer's catalogue fresh while this instance is active, at most once a minute,
-        // so its sessions stay addressable when it later goes offline.
-        for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
-        for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])this.closeStranded(row);
-        this.inspectHolds();
-        this.inspectOverdue();
-        if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
-        for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])
-          this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id)));
-        for(const event of db.query("SELECT * FROM session_peer_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as PeerEventRow[])
-          this.schedule(`event:${event.event_id}`,()=>this.deliver(event));
-        for(const row of db.query(`SELECT * FROM session_peer_deliveries WHERE closed_at_ms IS NULL
-            OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending') ORDER BY rowid`).all() as DeliveryRow[])
-          this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
-        this.arm();
-      } catch(error) {this.disarm?.();this.disarm=null;this.dependencies.onError(error);}
-    });
+    this.reconciliation=new Promise<void>(resolve=>setImmediate(resolve))
+      .then(()=>this.reconcile())
+      .catch(error=>{this.reconciliationDirty=false;this.disarm?.();this.disarm=null;this.dependencies.onError(error);})
+      .finally(()=>{this.reconciliation=null;if(this.reconciliationDirty&&!this.stopped)this.wake();});
   }
   private schedule(key:string,work:()=>Promise<void>) {
     if(this.tasks.has(key)){this.again.add(key);return;}
@@ -1183,7 +1198,14 @@ export class SessionPeers {
   private async recoverDiscardedReplies() {
     const since=this.now()-14*24*60*60*1000;
     const failed=new Set<string>();
-    for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NOT NULL AND created_at_ms>=? ORDER BY rowid').all(since) as PeerRequestRow[]) {
+    const highWater=(db.query('SELECT max(rowid) AS value FROM session_peer_requests').get() as {value:number|null}).value??0;
+    const query=db.query('SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NOT NULL AND created_at_ms>=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1');
+    let cursor=0;
+    while(!this.stopped) {
+      const row=query.get(since,highWater,cursor) as (PeerRequestRow&{reconciliation_rowid:number})|null;
+      if(!row)break;
+      cursor=row.reconciliation_rowid;
+      await new Promise<void>(resolve=>setImmediate(resolve));
       if(this.stopped)return;
       if(!this.unrecovered.has(row.peer)||failed.has(row.peer))continue;
       if(!isInferredFinal(this.currentFinal(row.request_id)))continue;
@@ -1197,7 +1219,8 @@ export class SessionPeers {
         }
       } catch(error) {failed.add(row.peer);log('warn','session_peer_discarded_reply_recovery_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});}
     }
+    if(this.stopped)return;
     for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
   }
-  async stop(){this.stopped=true;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
+  async stop(){this.stopped=true;this.reconciliationDirty=false;this.disarm?.();this.disarm=null;for(const job of this.catalogueTasks.values())job.controller.abort();await this.reconciliation;await Promise.allSettled([...this.tasks.values(),...[...this.catalogueTasks.values()].map(job=>job.promise)]);}
 }

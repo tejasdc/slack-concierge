@@ -107,6 +107,19 @@ second naming store, backfill or transcript-title rewrite is involved.
 
 `session-communication.ts` retains the existing request/event ledger. Request acceptance atomically retains the immutable target, source, content, due time, prerequisites, mandatory return obligation and native target input before dispatch. A reply names exactly one request. Partial answers may precede its final; ending a turn with other outstanding questions returns an unconfirmed-answer disposition with retained output references.
 
+The communication and peer owners reconcile their existing durable rows with one in-flight
+pass each. Startup restores late retained returns before either owner dispatches; the root
+request socket is already bound, so this migration yields after each event or request. Each
+pass captures a rowid high-water mark for its request, event and inspection stages, visits
+one record at a time, and yields to I/O before the next. An execution change during a pass
+marks another pass, which revisits older changed rows and picks up newly accepted rows.
+The existing per-request task map still serializes one request while independent network
+operations remain in flight. Stop halts scans at the next record boundary and waits for
+their active work. Return auditing keeps its minute cadence and terminal decisions but uses
+the same yielding record boundary. This bounds event-loop occupation across independent
+records; work within one request, such as looking up its sibling questions or matching
+returns, remains atomic and may read several rows.
+
 Request prerequisites wait outside session FIFO, so the reply needed to unblock a continuation can enter the requesting session. Native return events use the same accepted-input and queue machinery. A return may steer only into its exact original asking run while that run remains live. Otherwise it enters FIFO, including when another return or human input is running in that session; idle requesters resume through the same queue.
 
 A busy recipient is never a refusal, for any provider or sender. The coordinator chooses live delivery for agent requests and service returns, so a live input that provider evidence proves was never received — a `failed` steering row with no `provider_sent_at` — returns once to that session's own queue through `recoverUnsentSteeredInput`, keeping its input, request and event identity. It then runs as an ordinary turn when the session next accepts work, and the sender sees a queued receipt rather than a failure. The failed steering row remains evidence and the new queue placement has its own observation identity. Four cases stay terminal instead: an acknowledged or ambiguous send, which is never re-enqueued; a deliberate human `delivery:"steer"`, which names one exact run and refuses by contract; a retained Slack-provenance steering message, which belongs to the deprecated surface; and an archived or suspended session, which cannot accept the input at all. `capabilities.send` is therefore independent of execution state: it reports whether this session can receive input, not whether it is idle right now.
