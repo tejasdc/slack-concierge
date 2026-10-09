@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
@@ -105,6 +106,22 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
  * the agent should ask for more context ... Even if it's absent we get back some sort of a
  * response and we can fill those gaps." The asker answers in the same ChatGPT conversation.
  */
+/**
+ * The line itself lives in the skills catalog, where every agent can read and improve it
+ * (model-selection-skill/references/chatgpt-request-line.md, between its markers); it is read on
+ * every request so an edit applies at once. Tejas, 2026-10-09: "let's make that system like more
+ * visible ... an agent should know that, if there's any recurring issues happening ... they
+ * should be able to update the prompt." This constant is only the fallback when the file is gone.
+ */
+export const CHATGPT_REQUEST_LINE_FILE = '/root/workspace/skills/model-selection-skill/references/chatgpt-request-line.md';
+export function chatgptRequestLine(): string {
+    try {
+        const text = readFileSync(CHATGPT_REQUEST_LINE_FILE, 'utf8');
+        const line = /<!-- line:start -->\s*([^]*?)\s*<!-- line:end -->/.exec(text)?.[1]?.trim();
+        if (line) return line;
+    } catch {}
+    return CHATGPT_ASK_FOR_CONTEXT;
+}
 export const CHATGPT_ASK_FOR_CONTEXT = 'Before you answer: if anything you would need is missing from this message and its files (code, the data model, database schema, architecture, logs, constraints, or any other context), list exactly what is missing and ask for it. Still give your best answer with what you have, and say which parts depend on the missing pieces. I will send what you ask for in this same conversation.';
 const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value))
     throw new Error('A stable source-scoped action_id is required.'); return value; };
@@ -1012,7 +1029,7 @@ export class SessionCommunicationCoordinator {
             const toChatgpt=input.provider==='chatgpt'||targetSession?.provider_id==='chatgpt';
             const firstInput={text:toChatgpt?(input.provider==='chatgpt'&&!input.effort?.startsWith('tejas:')?`${input.text}
 
-${CHATGPT_ASK_FOR_CONTEXT}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};

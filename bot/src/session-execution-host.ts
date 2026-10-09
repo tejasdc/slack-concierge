@@ -27,6 +27,26 @@ import {recordRepairNotice} from './repair-notices';
  * there ... talk with the agent who built that ... so no other agents are blocked". ChatGPT asking
  * to slow down is temporary and is not filed. One notice per failure code per hour.
  */
+/**
+ * Agents pick ChatGPT's thinking level, never a fixed model, so a newer model ChatGPT starts using
+ * is used automatically. When the model it reports for a level changes, Tejas is told once, so
+ * nothing changes silently (Tejas, 2026-10-09: "tomorrow, a new model releases ... it should be
+ * automatically selected, if not, at least be notified"). Read from the answer's first line.
+ */
+function noteChatgptModel(text:string|undefined):void{
+  const found=/^Answered by ChatGPT model (\S+), asked for ([a-z:-]+)/.exec(text??'');
+  if(!found||found[1]==='(not')return;
+  const [,model,level]=found;
+  try{
+    const file=join(process.env.CONCIERGE_STATE_DIR!,'chatgpt-models.json');
+    let seen:Record<string,string>={};try{seen=JSON.parse(readFileSync(file,'utf8'));}catch{}
+    const before=seen[level!];
+    if(before===model)return;
+    writeFileSync(file,JSON.stringify({...seen,[level!]:model}));
+    if(before)publishProviderFreeNotice(db,{key:`chatgpt-model:${level}:${model}`,kind:'chatgpt_model_changed',
+      text:`ChatGPT's ${level} answers now come from ${model} instead of ${before}; agents pick it up on their own, so nothing is needed from you.`});
+  }catch{}
+}
 function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
   const text=error instanceof Error?error.message:String(error);
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
@@ -74,7 +94,7 @@ import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
-import {readFileSync,realpathSync} from 'node:fs';
+import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
@@ -766,7 +786,7 @@ export class SessionExecutionHost {
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
               ...(adoption?{follow:{onLive:()=>recordLiveAdoption(adoption.execution.execution_id)}}:{})}).run(actual)
-              .catch(error=>{noteChatgptChannelFailure(error,session.id);throw error;});
+              .then(result=>{noteChatgptModel(result.text);return result;},error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);
