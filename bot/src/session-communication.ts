@@ -98,6 +98,13 @@ type Dependencies = {
 };
 type WorkDisposition = 'completed' | 'failed' | 'needs_decision';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+/**
+ * Every new ChatGPT request ends with this, so no asking agent can forget it. Tejas, 2026-10-09:
+ * "if there's any code missing, any context missing, any database, data model, architecture ...
+ * the agent should ask for more context ... Even if it's absent we get back some sort of a
+ * response and we can fill those gaps." The asker answers in the same ChatGPT conversation.
+ */
+export const CHATGPT_ASK_FOR_CONTEXT = 'Before you answer: if anything you would need is missing from this message and its files (code, the data model, database schema, architecture, logs, constraints, or any other context), list exactly what is missing and ask for it. Still give your best answer with what you have, and say which parts depend on the missing pieces. I will send what you ask for in this same conversation.';
 const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value))
     throw new Error('A stable source-scoped action_id is required.'); return value; };
 const text = (value: string) => { if (typeof value !== 'string' || !value.trim())
@@ -1002,7 +1009,9 @@ export class SessionCommunicationCoordinator {
             // ChatGPT has no session tools and answers with its turn, so it gets only the asker's
             // words: given the request protocol it tried to run router-actions.sh (2026-10-09).
             const toChatgpt=input.provider==='chatgpt'||targetSession?.provider_id==='chatgpt';
-            const firstInput={text:toChatgpt?input.text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:toChatgpt?(input.provider==='chatgpt'?`${input.text}
+
+${CHATGPT_ASK_FOR_CONTEXT}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};

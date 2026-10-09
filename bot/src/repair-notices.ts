@@ -13,7 +13,7 @@ import type { Database } from "bun:sqlite";
  * delivers whatever is pending when it can.
  */
 export const REPAIR_FIRST_KINDS: ReadonlySet<string> = new Set([
-  "service_failure", "owner_unresponsive", "stuck_work", "retry_stopped", "grafana_alert",
+  "service_failure", "owner_unresponsive", "stuck_work", "retry_stopped", "grafana_alert", "chatgpt_channel",
 ]);
 
 export const REPAIR_AGENT_TITLE = "Repair agent";

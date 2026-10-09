@@ -18,6 +18,24 @@ import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
 import {CHATGPT_THINKING_LEVELS,PROVIDER_ALIASES} from './aliases';
+import {recordRepairNotice} from './repair-notices';
+
+/**
+ * A ChatGPT request that fails because the channel itself broke (the page changed, sign-in failed,
+ * the answer came from the wrong model) reaches the repair agent at once, so it is fixed once for
+ * every agent rather than each asker giving up. Tejas, 2026-10-09: "the agent should not stop
+ * there ... talk with the agent who built that ... so no other agents are blocked". ChatGPT asking
+ * to slow down is temporary and is not filed. One notice per failure code per hour.
+ */
+function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
+  const text=error instanceof Error?error.message:String(error);
+  const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
+  if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED'].includes(code))return;
+  try{
+    recordRepairNotice(db,{key:`chatgpt-channel:${code}:${Math.floor(Date.now()/3_600_000)}`,kind:'chatgpt_channel',
+      text:`The ChatGPT channel failed a request from concierge:${sessionId} with ${code}. Agents ask ChatGPT Pro through it, so fix it for all of them: Thinkering's ChatGPT adapter (packages/adapters/src/chatgpt-browser.ts, chatgpt-subscription.ts), the real Chrome on the server (remote-box docs/chatgpt-browser.md), and the run receipt under /var/lib/thinkering/production/agents/chatgpt/. The session that built the channel is session:WzIsNDYyMiwxXQ.`});
+  }catch{}
+}
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
@@ -711,7 +729,8 @@ export class SessionExecutionHost {
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
-              onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding})}).run(actual);
+              onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding})}).run(actual)
+              .catch(error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);

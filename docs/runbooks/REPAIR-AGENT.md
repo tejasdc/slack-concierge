@@ -43,6 +43,21 @@ one is waiting, and never renew for usage: an account out of room is moved off a
 Tejas asked for this on 2026-10-08 (capture c7274372): "you should just use my laptop, my
 MacBook, to log in and paste the code because that just works."
 
+## A broken ChatGPT channel (`chatgpt_channel`)
+
+Agents send research and second opinions to his ChatGPT Pro through one real Chrome on the
+server (remote-box `docs/chatgpt-browser.md`) driven by Thinkering's adapter. When a request fails
+because the channel itself broke, the owner files one notice per failure code per hour
+(`noteChatgptChannelFailure`); ChatGPT's temporary throttling is never filed. Read the run receipt
+named in the notice (`failure.stage` and `failure.code`) and Thinkering's `chatgpt_*` log lines,
+look at the browser (`DISPLAY=:99 import -window root /tmp/screen.png`), then fix it for everyone:
+a changed page needs the adapter's selectors updated and released; `CHATGPT_MODEL_MISMATCH` means
+two answers in a row came from a non-Pro model, so check the composer's thinking control;
+`CHATGPT_SIGNIN_NEEDS_TEJAS` is the one case for `needs_you --only-he-can sign-in` (Google wants his
+password: he signs in once in that Chrome window on the server desktop). The session that built the
+channel, `session:WzIsNDYyMiwxXQ`, can be asked for context. Tejas, 2026-10-09: "the agent should
+not stop there ... talk with the agent who built that ... so no other agents are blocked".
+
 ## Never
 
 - Never stop, pause (SIGSTOP), kill or restart the production Concierge to test something; use
