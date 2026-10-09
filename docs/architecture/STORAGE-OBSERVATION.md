@@ -9,7 +9,8 @@ existing exact-one lease checks valid. Standalone writers that open the canonica
 including service notices, project registration and deployment controls, use the same adapter;
 the release check refuses every new writable `bun:sqlite` constructor unless it is directly
 wrapped by `ledgerWriteResults` or matches one registered non-ledger/isolated-fixture
-constructor expression in its exact file. It recognizes imported constructor aliases and checks the candidate application
+constructor expression in its exact file. It recognizes default, named (including renamed), and
+namespace constructor imports and checks the candidate application
 before sealing; the preactivation application check also verifies a distinct control-source
 commit. The registry is in `bot/scripts/ledger-constructor-check.ts`. The check is static:
 it does not prove the runtime value of an exception's destination variable, so review any
@@ -60,7 +61,7 @@ fields. Compare occupancy with lag and process CPU, then use the exact installed
 to locate the operation. A high occupancy does not distinguish disk contention from expensive
 query execution by itself; the outside process/I/O evidence supplies that distinction.
 
-This closes the October 8 gap where 37 seconds of low-CPU blocking occurred with no slow
+This closes the October 8 attribution gap where 37 seconds of low-CPU blocking occurred with no slow
 completed requests. Request timers begin after dispatch and cannot measure waiting before a
 handler enters the loop. A read-only diagnostic copy also consumed live disk resources; see
 the incident record rather than interpreting "read-only" as "no performance effect".

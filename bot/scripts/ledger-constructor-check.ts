@@ -76,6 +76,7 @@ export function checkLedgerConstructors(root: string): { files: number; openings
     const namespaces = new Set<string>();
     for (const statement of tree.statements) {
       if (ts.isImportDeclaration(statement) && isSqliteModule(statement.moduleSpecifier)) {
+        if (statement.importClause?.name) aliases.add(statement.importClause.name.text);
         const bindings = statement.importClause?.namedBindings;
         if (bindings && ts.isNamedImports(bindings)) for (const binding of bindings.elements) {
           if ((binding.propertyName?.text ?? binding.name.text) === 'Database') aliases.add(binding.name.text);

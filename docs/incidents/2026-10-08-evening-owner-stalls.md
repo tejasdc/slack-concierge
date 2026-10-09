@@ -125,9 +125,15 @@ file loop or proof that it caused every Concierge pause. A failed read also repl
 with empty results, without retaining enough exception detail to classify the cause.
 
 Request `03412704-843a-43ea-a2ee-288b0b3d3bca` assigns its existing owner, session 3757, the
-complete Thinkering correction: work proportional to appends, preserved branch/message identity,
-and last verified evidence retained with explicit stale coverage on temporary read failure. The
-owner must ship and measure it; no competing implementation exists here. This work remains open
+Thinkering correction: reconcile only changed evidence, preserve branch/message identity,
+and retain last verified evidence with explicit stale coverage on temporary read failure.
+Provider-owned files and rsync mirrors supply no trustworthy append generation; exact whole-file
+versions still require reading and hashing the full changed file. The owning engineers therefore
+retain exact-file authority while removing database write amplification. Total read/parse work
+proportional to appends was an investigator-derived criterion, not a promised producer contract.
+The owner must ship and measure writes and remaining read/CPU cost; if the latter materially
+sustains owner stalls, source-authority integration remains necessary under this task.
+No competing implementation exists here. This work remains open
 under Tejas's widened task and must not be hidden by completing only the Concierge patch.
 
 The screenshot's background-work label was also checked. Session 4081 had an answering execution
