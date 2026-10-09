@@ -17,6 +17,8 @@ export const GRAFANA_CONDITIONS: Readonly<Record<string, string>> = {
   AX41CollectionUnavailable: "Metrics collection is missing, stale or dropping telemetry.",
   AX41LogCollectionStalled: "The host log heartbeat is no longer reaching Loki.",
   PersonalTelemetryAllowance: "Telemetry approaches the initial allowance; check actual account usage.",
+  AX41LoggingOverBudget: "Logging outgrew its budget: short journal history, too much disk, one writer flooding, or lines discarded.",
+  AX41LoggingSlowsRequests: "Logging is in the apps' way: lines wait for the journal or the log-upload endpoint is slow.",
   WorkspaceSkillsSyncStale: "Agent skills have stopped synchronizing; new and changed skills are not reaching that machine.",
   TestAlert: "Grafana contact test.",
   ConciergeWebhookAcceptance: "Grafana firing and recovery acceptance test.",
