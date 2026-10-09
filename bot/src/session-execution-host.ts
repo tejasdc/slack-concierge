@@ -577,6 +577,11 @@ export class SessionExecutionHost {
     return 'delivered';
   }
   private retainResult(result:NativeTurnResult) {
+    // Immediate, because this transaction reads before it writes. A deferred one takes its read
+    // snapshot first, and when another process commits in between (the deployment drain claim at
+    // 22:28:15 on 2026-10-09), SQLite refuses the write at once as "database is locked" without
+    // waiting the busy timeout: the finished answer of turn 5924 failed retention and reached him
+    // only after the next restart adopted it. Reserving the writer up front waits instead.
     db.transaction(()=>{
       const eventId=`result:${result.turnId}`;
       const payload={...result,runId:nativeRunId(result.turnId)};
@@ -584,7 +589,7 @@ export class SessionExecutionHost {
       if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');return;}
       recordSessionInputAttention(result.inputId);
       recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
-    })();
+    }).immediate();
   }
   /**
    * A run is executed here once per dispatch attempt; `adoption` is that same run taken back by a

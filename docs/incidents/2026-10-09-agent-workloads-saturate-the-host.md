@@ -77,3 +77,46 @@ agent workloads. Options for the owning sessions, not applied here:
 The lag after 19:53 was not measured against the workloads ending, because they were still
 running. No controlled comparison of scheduler weights or durability settings was run. The
 change here removes one 1.9 s contributor; it does not make the owner immune to host saturation.
+
+## Reopened at 22:31 UTC: the update itself held the ledger
+
+The outside monitor reopened the same incident at 22:31 UTC with 28 s of owner loop lag in the
+five minutes to 22:34, `during_update: true`. Two deployment runs ran back to back (674ac7d8,
+22:28:14–22:31:54, and f9cac025, 22:32:40–22:35:42), each building two releases because a new
+push advanced the target mid-run, each ending in a service restart.
+
+Confirmed from the owner's lag records and the deploy runners' journals:
+
+- The largest stalls end exactly when each run's "back up and migrate" step finished: 8.1 s at
+  22:28:50 (step ended 22:28:48) and 6.8 s at 22:33:10 (step ended 22:33:09). Inside them one
+  heartbeat statement waited 5,005 ms, the ledger's busy timeout, and a queue claim waited
+  4,040 ms. At 22:28:47 the heartbeat write exhausted its retry budget with "database is locked"
+  and filed a `retry_stopped` repair notice. The migration script ran `integrity_check` and
+  `foreign_key_check` over the 1.9 GB ledger inside its `BEGIN IMMEDIATE`; the owner could not
+  write for roughly the last eight seconds of each step. Commit f04e311 (another session, 22:34
+  UTC, installed 22:35:33) moves those checks after COMMIT and makes the pre-backup checkpoint
+  PASSIVE. No deployment has run the new script yet, so its effect is unmeasured.
+- A second, distinct fault: at 22:28:15.727, 224 ms after turn 5924 (the repair agent) finished
+  with an answer, retaining its result failed at once with "database is locked", with no busy wait.
+  The deploy's drain claim had committed its gate row in between. `retainResult` opened a deferred
+  transaction that reads before it writes, and SQLite refuses that upgrade immediately once another
+  writer has committed past the read snapshot. The turn was marked failed and its answer reached
+  Thinkering only when the next owner adopted it after the 22:31:41 restart. Fixed in this commit:
+  the transaction now reserves the writer first (`.immediate()`), so it waits up to the busy
+  timeout instead of failing. The same shape exists in other owner transactions (218 plain
+  `transaction(` calls against 23 `.immediate(`); only the site with a recorded failure was changed.
+- The rest of the window is disk contention while the release gate built and checked two
+  candidates (3.7 s on an overdue-request scan at 22:30:33, 1.8 s on a catalogue checkpoint at
+  22:30:54, 3.7 s on a fetch transaction at 22:32:34), on a host whose RAID device averaged 54–69%
+  busy with queue depths of 20–140 across the evening's ten-minute samples and reached load 50 on
+  12 cores at 22:20. That is the operational cause recorded above, not a new one.
+
+Side effects found, not acted on:
+
+- The push of e7d9097 (22:36:11 UTC) got "failed to connect to host" (502) from GitHub's delivery
+  at 22:36:15, 40 s after the restart, while Caddy and the owner's ingress were up and logged
+  nothing. The owner catches up on missed pushes only at startup, so that commit waits for the next
+  push or restart; redelivering the webhook from GitHub is the established channel.
+- Turn 5837 in session 4622 was cut off at 22:36:14 by the chann.app account's weekly limit and its
+  continuation (turn 5935) started at once; six returns to that session logged
+  `session_return_unhandled` while the turn was in error. Not investigated here.
