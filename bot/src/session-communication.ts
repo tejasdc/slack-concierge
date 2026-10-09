@@ -1784,6 +1784,19 @@ ${CHATGPT_ASK_FOR_CONTEXT}`:input.text):`Session request ${id} from concierge:${
             // A Concierge update holds new starts and yields running work for a few minutes. Work
             // waiting only for that is not stalled, so look again after the update instead.
             // A recipient waiting on its own request to another session, or on a watch, is working through it, not stalled.
+            // A ChatGPT answer that is still being written past this point tells its asker once, in
+            // plain words, that it is delayed and still coming (Tejas, 2026-10-09: "at least the agent
+            // will be notified that this is getting delayed"). Pro answers often take this long.
+            if (healthy && getSessionById(request.target_session_id)?.provider_id === 'chatgpt') {
+                const summary = request.payload_json ? (JSON.parse(request.payload_json) as {summary?: string; title?: string}) : {};
+                const what = summary.summary ?? summary.title ?? 'your question';
+                db.transaction(() => {
+                    if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null) return;
+                    this.event(request, 'overdue', { text: `ChatGPT is still writing its answer to "${what}" after ${STILL_WAITING_MINUTES} minutes. Pro answers can take an hour. It will arrive here by itself when it is done; nothing needs to be resent.`, health: 'still being answered by ChatGPT' });
+                    db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
+                })();
+                return;
+            }
             if (healthy || updateDraining() || (turn?.status === 'done' && waitingOnDependency(request.target_session_id, request.created_at_ms, false))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);

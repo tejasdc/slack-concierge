@@ -31,6 +31,16 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
   const text=error instanceof Error?error.message:String(error);
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
   if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED'].includes(code))return;
+  // Only he can sign in to Google or pass a check the browser could not: tell him at once, with
+  // its own Inbox thread and push, so nobody waits blind (Tejas, 2026-10-09: "I'm notified
+  // immediately so the agents are like not waiting"). One notice per hour.
+  if(['CHATGPT_SIGNIN_NEEDS_TEJAS','CHATGPT_CHALLENGE_UNPASSED','CHATGPT_AUTH_REQUIRED'].includes(code)){
+    try{publishProviderFreeNotice(db,{key:`chatgpt-signin:${Math.floor(Date.now()/3_600_000)}`,kind:'chatgpt_signin',
+      text:code==='CHATGPT_CHALLENGE_UNPASSED'
+        ?'ChatGPT Pro is blocked because its "verify you are human" check needs a click that only you can make, so agents\' questions to it fail until then. Open the server\'s screen from your Mac and click the check once.'
+        :'ChatGPT Pro is signed out, so agents\' questions to it fail until you sign in again. Open the server\'s screen from your Mac and sign in once.'});}catch{}
+    return;
+  }
   try{
     recordRepairNotice(db,{key:`chatgpt-channel:${code}:${Math.floor(Date.now()/3_600_000)}`,kind:'chatgpt_channel',
       text:`The ChatGPT channel failed a request from concierge:${sessionId} with ${code}. Agents ask ChatGPT Pro through it, so fix it for all of them: Thinkering's ChatGPT adapter (packages/adapters/src/chatgpt-browser.ts, chatgpt-subscription.ts), the real Chrome on the server (remote-box docs/chatgpt-browser.md), and the run receipt under /var/lib/thinkering/production/agents/chatgpt/. The session that built the channel is session:WzIsNDYyMiwxXQ.`});
@@ -59,7 +69,7 @@ import {useCodexResetCredit} from './codex-reset-credit';
 import {storedUsage,usagePressureBrief} from './provider-usage-forecast';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
-import {noticeTime} from './provider-free-notice';
+import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {releaseUsageHeldWork} from './provider-usage';
