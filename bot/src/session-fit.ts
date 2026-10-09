@@ -110,6 +110,34 @@ export function topicRootFor(threadRoot: string | null | undefined, sourceInputI
 
 export const topicOf = (topicRoot: string | null) => topicOfRoot(topicRoot);
 
+export type WorkThread = { topic: { id: string; title: string; state: string } | null; basis: 'turn' | 'session' | null };
+
+/**
+ * The Inbox thread a piece of work served, for an update line that names the session and the turn
+ * input it was made in (thnkr.ing's commit trailers). The turn decides when it can: a request
+ * carries its thread, and any other input reaches the human message it started from. Otherwise the
+ * thread this session most recently worked on, said as such (`basis: 'session'`), because a later
+ * turn typed straight into a worker still serves the thread that set it working. Peer sessions
+ * (`mac:<n>`) resolve through the turn alone: their numbers are not this instance's.
+ */
+export function workThread(session: string | null, input: string | null): WorkThread {
+  let root: string | null = null;
+  if (input?.startsWith('request:')) {
+    const row = db.query(`SELECT thread_root_input_id AS thread, topic_root_input_id AS topic, source_input_id AS source
+      FROM session_communication_requests WHERE request_id=?`).get(input.slice('request:'.length)) as { thread: string | null; topic: string | null; source: string | null } | null;
+    if (row) root = topicRootFor(row.topic || row.thread, row.source);
+  } else if (input) root = topicRootFor(null, input);
+  const described = (topicId: string | null) => {
+    const row = topicId ? db.query('SELECT topic_id AS id, title, state FROM inbox_topics WHERE topic_id=?').get(topicId) as { id: string; title: string; state: string } | null : null;
+    return row ? { id: row.id, title: row.title, state: row.state } : null;
+  };
+  const byTurn = described(topicOfRoot(root));
+  if (byTurn) return { topic: byTurn, basis: 'turn' };
+  const local = /^concierge:(\d+)$/.exec(session ?? '');
+  const bySession = local ? described(heldTopics(Number(local[1]))[0]?.topic ?? null) : null;
+  return bySession ? { topic: bySession, basis: 'session' } : { topic: null, basis: null };
+}
+
 type HeldTopic = { topic: string; title: string; open: boolean; requests: number; lastMs: number };
 
 /** Topics this session has been given work on, newest first (bounded: the last 300 work requests). */

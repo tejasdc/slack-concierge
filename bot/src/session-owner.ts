@@ -57,6 +57,7 @@ import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
+import {workThread} from './session-fit';
 import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -2520,6 +2521,12 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
+      // Which thread a piece of work served, so thnkr.ing's update list can link each change to it.
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[2]==='for-work'&&parts.length===3){
+        const session=url.searchParams.get('session'),input=url.searchParams.get('input');
+        if((!session&&!input)||(session?.length??0)>200||(input?.length??0)>400)throw new SessionOwnerError('Name the session or the input the work was made in.');
+        result=workThread(session,input);
+      }
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
