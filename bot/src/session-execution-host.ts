@@ -78,15 +78,16 @@ import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
-import {currentAccount,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
-import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
+import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {storedUsage,usagePressureBrief} from './provider-usage-forecast';
+import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
@@ -180,13 +181,21 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
-      auth:{status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
+      auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),historyMessage:input=>this.capabilityClient!.sourceHistoryMessage(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
+  /** Private control answer: never reads credentials, usage, SQLite or the filesystem. */
+  authEphemera():ProviderAuthEphemera {
+    return {observedAtMs:Date.now(),checking:this.providerAuthCheck!==null,usageRefreshing:usageRefreshing(),codexSignIn:this.codexSignIn,
+      accountFallback:{codex:accountMemoryFallback('codex'),'claude-code':accountMemoryFallback('claude-code')},
+      codexPending:this.codexLogin.hasPending(),claudePending:this.claudeLogin.hasPending(),
+      claudePendingFor:this.claudeLogin.pendingFor(),claudePendingUrl:this.claudeLogin.pendingUrl(),
+      lastSignIn:{codex:this.lastSignIn.get('codex')??null,'claude-code':this.lastSignIn.get('claude-code')??null}};
+  }
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
     let mark=performance.now();
     const step=(name:string)=>{const now=performance.now();this.authViewSteps[name]=Math.round(now-mark);mark=now;};
@@ -267,13 +276,20 @@ export class SessionExecutionHost {
    * `fresh` directly, so pressing it still waits for new readings (2026-09-23). One check at a time
    * is shared by every reader.
    */
-  private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
+  async refreshAuthEphemera():Promise<ProviderAuthEphemera>{
+    await this.checkProviderAuth(true);
+    return this.authEphemera();
+  }
+  private async checkProviderAuth(fresh=false):Promise<void>{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
     const check=this.providerAuthCheck??(!fresh&&recent?null:this.providerAuthCheck=Promise.all([refreshClaudeAccount(),
       codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
       .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();}));
     if(fresh&&check)await check;
+  }
+  private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
+    await this.checkProviderAuth(fresh);
     const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.

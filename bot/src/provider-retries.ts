@@ -6,7 +6,7 @@ import type { ClaudeProviderRetry } from "./claude-code";
 // cannot outlive the provider process that is doing the retrying.
 const retries = new Map<number, ClaudeProviderRetry>();
 const incarnation=randomUUID();
-db.transaction(()=>{
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.transaction(()=>{
   db.query('INSERT INTO provider_retry_incarnation(singleton,incarnation) VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET incarnation=excluded.incarnation').run(incarnation);
   db.query('DELETE FROM provider_retry_observations').run();
 })();
@@ -29,6 +29,16 @@ export function recordTurnProviderRetry(turnId: number, retry: ClaudeProviderRet
 
 export function turnProviderRetry(turnId: number) {
   return retries.get(turnId) ?? null;
+}
+
+/** A reader's current-incarnation retry evidence; only the writer can create or clear it. */
+export function retainedTurnProviderRetry(turnId:number):ClaudeProviderRetry|null {
+  const row=db.query(`SELECT observation.since_ms,observation.attempt,observation.max_retries,
+      observation.status,observation.retry_at_ms
+    FROM provider_retry_observations observation
+    JOIN provider_retry_incarnation current ON current.singleton=1 AND current.incarnation=observation.incarnation
+    WHERE observation.turn_id=?`).get(turnId) as {since_ms:number;attempt:number;max_retries:number|null;status:number|null;retry_at_ms:number|null}|null;
+  return row?{since:row.since_ms,attempt:row.attempt,maxRetries:row.max_retries,status:row.status,retryAt:row.retry_at_ms} as ClaudeProviderRetry:null;
 }
 
 // A live run stuck retrying can be ended as an ordinary retryable failure so its next

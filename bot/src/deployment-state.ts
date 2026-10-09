@@ -242,6 +242,7 @@ const PHASE_ORDER: DeploymentRunStatus[] = [
   "releasing",
 ];
 
+if (process.env.CONCIERGE_READ_WORKER !== "1") {
 db.exec(`
 CREATE TABLE IF NOT EXISTS deployment_runs (
   id                    TEXT PRIMARY KEY,
@@ -484,6 +485,7 @@ db.query(`UPDATE deployment_wakes
       error='Post-deployment verification wakes were retired; successful deployments no longer invoke feature agents.',
       updated_at=CURRENT_TIMESTAMP
   WHERE status IN ('pending', 'running')`).run();
+}
 
 function appendRunEvent(runId: string, event: string, detail: Record<string, unknown> = {}) {
   db.query(`INSERT INTO deployment_run_events (run_id, event, detail_json) VALUES (?, ?, ?)`)

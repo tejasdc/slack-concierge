@@ -15,7 +15,9 @@ import {
 export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
 
-db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
+// Only the canonical writer owns schema upgrades. Read executors open a physically read-only
+// connection and must never run migration code during module initialization.
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
@@ -70,7 +72,7 @@ const codexRemoteMirrorEventsSchema = `(
   UNIQUE(provider_thread_uuid, provider_item_id)
 )`;
 
-db.exec(`
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`
 CREATE TABLE IF NOT EXISTS channels (
   slack_channel_id   TEXT PRIMARY KEY,
   slack_channel_name TEXT NOT NULL,
@@ -585,6 +587,7 @@ function migrateLegacyCodexRemoteMirrorEvents() {
   })();
 }
 
+if (process.env.CONCIERGE_READ_WORKER !== "1") {
 migrateLegacyCodexRemoteMirrorEvents();
 
 addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
@@ -838,6 +841,7 @@ db.exec(`UPDATE turns SET dispatch_failure_class='chosen_time'
     )`);
 db.exec("UPDATE turns SET dispatch_failure_class='backoff' WHERE dispatch_failure_class='retryable'");
 initializeRouterSearchIndex(db);
+}
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";

@@ -127,7 +127,7 @@ export const USAGE_REFRESH_MS = 3 * 60_000;
 /** Near a limit, where a rate has to be visible before the wall rather than after it. */
 export const USAGE_URGENT_REFRESH_MS = 60_000;
 
-db.exec(`CREATE TABLE IF NOT EXISTS provider_account_usage (
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_account_usage (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
   observed_at TEXT NOT NULL,
   usage_json TEXT NOT NULL

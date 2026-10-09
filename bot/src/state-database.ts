@@ -12,7 +12,7 @@ const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
   || [...process.argv, Bun.main].some((argument) => argument === "test" || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(argument));
 // The responsiveness implementation has its own explicit test authorization (Tejas's
 // f6e938aa investigation and b1eed622 implementation request); production-path checks stay below.
-const authorizedTest = ["native-attribution-5eaa0768", "responsive-system-b1eed622"].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");
+const authorizedTest = ["native-attribution-5eaa0768", "responsive-system-b1eed622", "foreground-isolation-5804d389"].includes(process.env.CONCIERGE_TEST_AUTHORIZATION ?? "");
 if (testInvocation && !authorizedTest) {
   throw new Error("Agent-run tests are disabled by Tejas (1789490492.818709). Refusing to open the Concierge ledger from a test process.");
 }
@@ -31,7 +31,7 @@ if (process.env.CONCIERGE_RUNTIME_PROFILE === "sandbox" && process.env.CONCIERGE
   throw new Error("Sandbox runtime requires CONCIERGE_TEST_MODE=1 before opening a database.");
 }
 
-mkdirSync(configuredDir, { recursive: true });
+if (process.env.CONCIERGE_READ_WORKER !== "1") mkdirSync(configuredDir, { recursive: true });
 const canonicalDir = realpathSync(configuredDir);
 if (testInvocation) {
   const canonicalHome = realpathSync(homedir());
@@ -46,10 +46,12 @@ if (testInvocation) {
   }
 }
 
-export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, { create: true })));
+const readWorker = process.env.CONCIERGE_READ_WORKER === "1";
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, readWorker ? { readonly: true } : { create: true })));
+if (readWorker) db.exec("PRAGMA query_only = ON");
 // Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
 // update restart, the retiring coordinator can still hold that lock for a moment; configuring
 // the timeout afterwards made the recovery preflight fail immediately instead of waiting.
 db.exec("PRAGMA busy_timeout = 5000");
-db.exec("PRAGMA journal_mode = WAL");
+if (!readWorker) db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");

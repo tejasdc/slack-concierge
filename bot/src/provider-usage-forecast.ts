@@ -29,7 +29,7 @@ import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-d
  * run out", and the router decides what to do with that.
  */
 
-db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_readings (
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_readings (
   provider       TEXT    NOT NULL,
   account        TEXT    NOT NULL,
   window_name    TEXT    NOT NULL,

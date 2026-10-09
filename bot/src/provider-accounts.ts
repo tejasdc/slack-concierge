@@ -166,6 +166,10 @@ export async function refreshClaudeAccount(): Promise<void> {
  * answers for the daemon when the file cannot.
  */
 let codexSignIn: ProviderAccount | null = null;
+/** The login manager's last provider answer, when credential files have no readable identity. */
+export function accountMemoryFallback(provider:ProviderKey):ProviderAccount|null {
+  return provider==='claude-code'?claudeSignIn:codexSignIn;
+}
 export function setCodexAccountInUse(account: { email: string | null; planType: string | null } | null): void {
   codexSignIn = account?.email
     ? { id: account.email, label: account.email, detail: account.planType ? `ChatGPT ${account.planType}` : null }
@@ -355,7 +359,7 @@ function recoverProfileAccountEmail(provider: ProviderKey, id: string): string |
     // home, which is where the next read looks first.
     const home = accountHome(provider, id);
     const where = existsSync(home) ? join(home, ".account-email") : join(profileDirectory(provider), `${id}.email`);
-    try { writeFileSync(where, address, { mode: 0o600 }); } catch { /* the name is still right this read */ }
+    if(process.env.CONCIERGE_READ_WORKER!=="1")try { writeFileSync(where, address, { mode: 0o600 }); } catch { /* the name is still right this read */ }
     return address;
   }
   return null;

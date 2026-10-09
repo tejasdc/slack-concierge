@@ -12,6 +12,7 @@ import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
+if (process.env.CONCIERGE_READ_WORKER !== "1") {
 db.exec(`
 CREATE TABLE IF NOT EXISTS executions (
   execution_id            TEXT PRIMARY KEY,
@@ -47,6 +48,7 @@ if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopte
 // release folder, so an update that did not change the host leaves no run on a previous version.
 if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='host_digest'").get()))
   db.exec("ALTER TABLE executions ADD COLUMN host_digest TEXT");
+}
 
 /** This coordinator took the run over while its provider was still running. */
 export function recordLiveAdoption(executionId: string) {

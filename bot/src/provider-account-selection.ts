@@ -1,6 +1,6 @@
 import {db} from './state';
 
-db.exec(`CREATE TABLE IF NOT EXISTS provider_account_selection (
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_account_selection (
   provider TEXT PRIMARY KEY CHECK(provider='claude-code'),
   profile_id TEXT NOT NULL,
   account_label TEXT NOT NULL,
@@ -22,7 +22,7 @@ export function selectClaudeAccount(profileId:string,label:string):void {
  * ledger so a restart does not forget them: on 2026-10-07 a restart at 8:43 PM left the account
  * with room unproven, its new check took two minutes, and work kept failing on the full account.
  */
-db.exec(`CREATE TABLE IF NOT EXISTS claude_home_proof (
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS claude_home_proof (
   home TEXT PRIMARY KEY,
   proven_at_ms INTEGER NOT NULL
 )`);

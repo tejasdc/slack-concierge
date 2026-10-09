@@ -35,7 +35,7 @@ const STOP_GRACE_MS = 10_000;
 const RECORD_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const OUTPUT_TAIL_CHARS = 1_500;
 
-db.exec(`
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`
 CREATE TABLE IF NOT EXISTS watches (
   watch_id            TEXT PRIMARY KEY,
   session_id          INTEGER NOT NULL,

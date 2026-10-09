@@ -28,7 +28,7 @@ import {CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normal
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
-import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
+import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
@@ -72,6 +72,7 @@ import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
+import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -96,7 +97,7 @@ function whereItStopped(error:string|null) {
   return sentence?sentence.slice(0,200):null;
 }
 const ownerStatusContext={
-  retry:turnProviderRetry,
+  retry:turnId=>process.env.CONCIERGE_READ_WORKER==='1'?retainedTurnProviderRetry(turnId):turnProviderRetry(turnId),
   outage:outageOfferForTurn,
   requestWait:(requestId:string,inputId:string)=>{
     const request=db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(requestId,inputId) as {payload_json:string;outcome:string|null}|null;
@@ -344,6 +345,8 @@ export type SessionOwnerRuntime = {
   steer(input:AcceptedSessionInput):boolean;
   stop(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
+  peerForPath?(path:string):string|null;
+  requestReceipt?(requestId:string):{outcome:string|null;result:any;execution?:{acknowledged_at:string|null}|null;events:Array<{event_id:string;kind:string;status:string;error:string|null}>}|null;
   history?(session:SessionRow,cursor:string|null,limit:number):Promise<unknown>;
   projectedHistory?(session:SessionRow,operation:'page'|'delta',cursor:string|null,limit:number,after:string|null):Promise<unknown>;
   historyMessage?(session:SessionRow,messageId:string,turnId:string|null):Promise<ProviderHistoryMessage|null>;
@@ -356,6 +359,8 @@ export type SessionOwnerRuntime = {
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}):Promise<unknown>;
   auth?:{
+    ephemera?():ProviderAuthEphemera;
+    refreshEphemera?():Promise<ProviderAuthEphemera>;
     status(fresh?:boolean):unknown|Promise<unknown>;
     start(provider:string,profileId?:string|null):Promise<unknown>;
     complete(provider:string,code:string):Promise<unknown>;
@@ -470,6 +475,13 @@ export class SessionOwner {
   // still serves, so the owner also refuses every later stream: none can outlive the drain.
   closeStreams() {this.streamsClosed=true;for(const close of [...this.openStreams]){try{close();}catch{}}}
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
+  /** In-memory login state only; account files and usage belong to isolated readers. */
+  authEphemera():ProviderAuthEphemera|null {return this.runtime.auth?.ephemera?.()??null;}
+  async refreshAuthEphemera():Promise<ProviderAuthEphemera> {
+    const refresh=this.runtime.auth?.refreshEphemera;
+    if(!refresh)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return refresh();
+  }
   /**
    * Provider accounts exist per machine: each instance holds its own credentials and is the
    * only one allowed to write them. `machine` names which instance a call is about; absent,
@@ -717,7 +729,7 @@ export class SessionOwner {
         sequence:saved.saved_sequence,status:saved.status}:null;})(),
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
-      resumeMachine:origin==='imported'&&['claude-code','codex'].includes(session.provider_id)?(typeof meta.project==='string'?this.peers?.instanceForPath(meta.project):null)??this.selfMachine:null,
+      resumeMachine:origin==='imported'&&['claude-code','codex'].includes(session.provider_id)?(typeof meta.project==='string'?this.peers?.instanceForPath(meta.project)??this.runtime.peerForPath?.(meta.project):null)??this.selfMachine:null,
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
@@ -778,7 +790,7 @@ export class SessionOwner {
       executionState:observed.state,requestKnown:false,stopTurnStatus:stopTurn?.status}):null;
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     // A request no table knows leaves the receipt without a conversation; it never refuses the read.
-    const conversation=input.request_id&&this.communication?this.communication.find(input.request_id):null;
+    const conversation=input.request_id?(this.communication?.find(input.request_id)??this.runtime.requestReceipt?.(input.request_id)??null):null;
     const requestState=input.kind==='request'&&conversation?receiptOperationState({kind:'request',
       savedState:saved.state,executionState:observed.state,requestKnown:true,requestOutcome:conversation.outcome}):null;
     const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect','resurrect-native','outage-choice'].includes(input.kind);
@@ -1145,7 +1157,14 @@ export class SessionOwner {
     if(current?.provider_id==='claude-code'&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'&&meta.model==='opus[1m]')return current;
     return createNativeSession('claude-code',{title:'Inbox',inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
   }
-  inbox() {return {session:this.view(this.ensureInboxSession())};}
+  inbox() {
+    if(process.env.CONCIERGE_READ_WORKER==='1'){
+      const current=inboxSession();
+      if(!current)throw new SessionOwnerError('The Inbox session has not been prepared by its owner.',503,'INBOX_NOT_READY');
+      return {session:this.view(current)};
+    }
+    return {session:this.view(this.ensureInboxSession())};
+  }
   /**
    * Browser-selected text is never authoritative. Resolve the selected native
    * message from the owner ledger, where its session and bytes are retained.
@@ -2160,20 +2179,24 @@ export class SessionOwner {
     const row=db.query('SELECT content_type,sha256,transcript_text FROM session_attachments WHERE id=?').get(id) as {content_type:string;sha256:string;transcript_text:string|null}|null;
     if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
     if(row.transcript_text!==null){
-      if(process.platform==='linux')void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
+      if(process.platform==='linux'&&process.env.CONCIERGE_READ_WORKER!=='1')void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
       return {state:'done' as const,text:row.transcript_text};
     }
     if(process.platform==='linux'){
       const settled=db.query('SELECT sha256,state,reason FROM session_attachment_transcription_outcomes WHERE attachment_id=?').get(id) as {sha256:string;state:'no-speech'|'failed';reason:string|null}|null;
       if(settled){
         if(settled.sha256!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
-        void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
+        if(process.env.CONCIERGE_READ_WORKER!=='1')void removeFinishedSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),id).catch(()=>{});
         return settled.state==='no-speech'?{state:'no-speech' as const,text:''}:{state:'failed' as const,reason:settled.reason??'transcriber_failed'};
       }
       const root=speechRoot(process.env.CONCIERGE_STATE_DIR!);
       const result=readSpeechJobResult(root,id);
       if(result){
         if(result.sha256!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
+        if(process.env.CONCIERGE_READ_WORKER==='1')
+          return result.kind==='words'?{state:'done' as const,text:result.text}
+            :result.kind==='no-speech'?{state:'no-speech' as const,text:''}
+            :{state:'failed' as const,reason:result.reason??'transcriber_failed'};
         db.transaction(()=>{
           if(result.kind==='words')db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server',transcript_engine=?,duration_ms=? WHERE id=? AND sha256=? AND transcript_text IS NULL")
             .run(result.text,result.source,result.audioMs,id,result.sha256);
@@ -2534,6 +2557,20 @@ export class SessionOwner {
         ...(work??{}),observation_failures:storageObservationFailures()});
       ownerRequestsInFlight.delete(requestId);
     }
+  }
+  /** The isolated execution entrance has no owner loop monitor or mutation dispatch. */
+  async handleRead(request:Request):Promise<Response|null> {
+    const url=new URL(request.url);
+    if(request.method!=='GET')return ownerJson({error:{code:'METHOD_NOT_ALLOWED',message:'Only GET reads are served here.'}},{status:405});
+    const legacy=url.pathname.match(/^\/sessions\/v1\/inbox\/(topics(?:\/[^/]+)?|questions)$/);
+    if(legacy){url.pathname='/sessions/v1/presentation/'+legacy[1];return this.handleRead(new Request(url,request));}
+    const policy=ownerGetPolicy('GET',url.pathname);
+    if(!policy)return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
+    const contract=policy.kind==='presentation'?policy.contract:null;
+    const response=contract?await withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):await this.handleRequest(request);
+    if(response&&policy.maxResponseBytes>0&&Number(response.headers.get('content-length'))>policy.maxResponseBytes)
+      return ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
+    return response;
   }
   private async handleRequest(request:Request):Promise<Response|null> {
     const url=new URL(request.url);

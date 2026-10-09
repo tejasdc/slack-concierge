@@ -20,6 +20,7 @@ import { takesManySubjects } from './session-roles';
  * Design: docs/plans/2026-10-07-session-fit-for-routing.md.
  */
 
+if (process.env.CONCIERGE_READ_WORKER !== "1") {
 db.run(`CREATE TABLE IF NOT EXISTS session_workload (
   session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   context_tokens INTEGER,
@@ -36,6 +37,7 @@ for (const column of ['compactions', 'compactions_before', 'last_compaction_at_m
 // joined to topics on read because topics are re-placed and merged. '' means none.
 if (!(db.query("SELECT 1 FROM pragma_table_info('session_communication_requests') WHERE name='topic_root_input_id'").get()))
   db.run('ALTER TABLE session_communication_requests ADD COLUMN topic_root_input_id TEXT');
+}
 
 type WorkloadRow = { session_id: number; context_tokens: number | null; context_window: number | null; measured_at_ms: number | null; since_ms: number };
 
