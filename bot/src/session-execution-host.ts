@@ -17,7 +17,7 @@ import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
-import {PROVIDER_ALIASES} from './aliases';
+import {CHATGPT_THINKING_LEVELS,PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
@@ -431,7 +431,7 @@ export class SessionExecutionHost {
   }
   async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
   private capabilities(session:SessionRow) {
-    if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
+    if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
     const models=[...new Set(Object.values(PROVIDER_ALIASES).filter(alias=>alias.provider===session.provider_id).flatMap(alias=>'model' in alias?[alias.model]:[]))];
     return {...provider?.capabilities,fork:provider?.capabilities?.fork===true&&!!provider.history,recover:true,models,attachments:restricted?[]:provider?['*/*']:[]};

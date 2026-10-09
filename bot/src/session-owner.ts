@@ -24,7 +24,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex} from './meaning-index';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
-import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
+import {CHATGPT_THINKING_LEVELS,DEFAULT_CHATGPT_THINKING,chatgptThinkingLevel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -1292,8 +1292,12 @@ export class SessionOwner {
   }
   private requestTarget(input:{provider:string;effort?:string;project?:string}) {
     if(input.provider==='chatgpt') {
-      if(input.effort!==undefined||input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project or reasoning effort.');
-      return {provider:'chatgpt' as ProviderId,purpose:'chat',cwd:this.defaultCwd};
+      if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
+      // The thinking level travels as the session's model, so the admission names it and the
+      // browser sets it before sending; an agent that names none gets Pro.
+      const thinking=input.effort===undefined?DEFAULT_CHATGPT_THINKING:chatgptThinkingLevel(input.effort);
+      if(!thinking)throw new SessionOwnerError(`ChatGPT's thinking level is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
+      return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
     const selector=parseProviderSelector(input.provider);
     if(!selector)throw new SessionOwnerError('Select a supported provider alias.');

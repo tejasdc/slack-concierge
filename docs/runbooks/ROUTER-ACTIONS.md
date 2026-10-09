@@ -141,7 +141,8 @@ sets the canonical title. No Slack root is created and no human origin is forged
 An explicit human session/provider/model/effort choice takes precedence.
 Existing addressed sessions preserve their provider/project; provider selection
 creates a new session. Do not alter or replay already-running work because of
-this routing default. ChatGPT uses `--provider chatgpt` without project or effort.
+this routing default. ChatGPT uses `--provider chatgpt` without a project; its `--effort` is a
+ChatGPT thinking level (below).
 
 The former always-fresh rule controlled GPT-6 Astra credits; it is retired now
 that destinations run GPT-5.6. In the September 16 sidebar incident, three
@@ -358,14 +359,22 @@ one argument after `--`; the helper preserves its exact bytes. Missing values,
 repeated scalar flags, repeated dependency IDs, and extra positionals fail
 before contacting the service.
 
-For explicit human intent such as “ask ChatGPT for this information,” the admitted
-agent uses the same ask command with `--provider chatgpt` instead of an address:
+For explicit human intent such as “ask ChatGPT for this information,” and for research and
+second opinions (the model-selection skill's "big guns", [decision: chatgpt-pro-is-the-big-guns]),
+the admitted agent uses the same ask command with `--provider chatgpt` instead of an address:
 
 ```bash
-router-actions.sh sessions ask --provider chatgpt \
-  --source-input '<inputId>' --source-run '<runId>' \
-  --action-id '<stable-action>' -- '<authorized question>'
+router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro] \
+  [--session-name '<title>'] --source-input '<inputId>' --source-run '<runId>' \
+  --action-id '<stable-action>' [--file <path> ...] -- '<authorized question>'
 ```
+
+`--effort` is ChatGPT's thinking level (`CHATGPT_THINKING_LEVELS` in `aliases.ts`), default
+`pro`, ChatGPT's Pro model on Tejas's own subscription. It is stored as the new session's model,
+so the admission names it and Thinkering's browser sets ChatGPT's power slider to it before
+sending. `--file` attaches any file type. A Pro answer can take an hour; the request returns when
+ChatGPT finishes. The browser is remote-box's always-running real Chrome
+(`docs/chatgpt-browser.md` there), which Thinkering keeps signed in.
 
 The exact Slack source pair works too. The owner atomically creates one native
 ChatGPT session and agent-origin first input with the existing request/return

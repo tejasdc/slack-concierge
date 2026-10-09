@@ -163,6 +163,20 @@ const REASONING_EFFORT_SYNONYMS: Record<string, ReasoningEffort> = {
   "maximum": "max",
 };
 
+// ChatGPT's own thinking levels, lowest first, as its composer's power slider orders them. An
+// agent asking ChatGPT picks one with --effort; "pro" is ChatGPT's Pro model, the default,
+// because agents ask ChatGPT for research and second opinions (Tejas, 2026-10-09: "if you use
+// the GPT pro at extra high thinking, we're going to get a very top tier intelligence model").
+// Thinkering's browser adapter carries the same order in `chatgptThinkingLevels`.
+export const CHATGPT_THINKING_LEVELS = ["light", "medium", "high", "extra-high", "pro"] as const;
+export type ChatgptThinkingLevel = typeof CHATGPT_THINKING_LEVELS[number];
+export const DEFAULT_CHATGPT_THINKING: ChatgptThinkingLevel = "pro";
+export function chatgptThinkingLevel(input: string | null | undefined): ChatgptThinkingLevel | null {
+  const value = input?.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  const level = value === "xhigh" || value === "extrahigh" ? "extra-high" : value;
+  return (CHATGPT_THINKING_LEVELS as readonly string[]).includes(level ?? "") ? level as ChatgptThinkingLevel : null;
+}
+
 // Effort is an axis of its own, not a property of the model choice. An alias
 // that names no effort takes its provider's default, which is configured here
 // rather than inherited from the host CLI's `model_reasoning_effort`, so

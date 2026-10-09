@@ -162,12 +162,17 @@ point to it rather than restating it. In short: work whose acceptance criterion 
 already fixed goes **down** to a cheaper model and the parent reviews the result;
 a problem that is stuck — unknown cause after a failed fix, a regression from the
 agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
-shipping guesses, research the platform, and consult GPT-6 Sol without asking
-as a read-only second opinion; the session then codes from its findings itself.
-GPT-6 Astra is brought in the same way only when the same issue has come back three
-or more times (Tejas, September 23, 2026, replacing his September 22 Astra-first
-rule). Fable 5.1 stands in only when the named GPT model is unavailable. Outside
-that repeat threshold, Astra still needs his explicit choice. Tonight's audit that motivated the escalation half is in
+shipping guesses, research the platform, and get a second opinion without asking;
+the session then codes from its findings itself. The big guns for second opinions,
+deep research and building expertise are ChatGPT Pro on Tejas's own subscription,
+reached with `sessions ask --provider chatgpt --effort pro` and the evidence attached
+as files, because it spends no Claude or Codex allowance (October 9, 2026
+[decision: chatgpt-pro-is-the-big-guns]). GPT-6 Sol remains the read-only
+investigator when the second opinion must read the repository itself. GPT-6 Astra is
+brought in only when the same issue has come back three or more times and ChatGPT Pro
+is unavailable or its answer did not hold (Tejas, September 23, 2026, replacing his
+September 22 Astra-first rule). Fable 5.1 stands in only when the named model is
+unavailable. Outside that repeat threshold, Astra still needs his explicit choice. Tonight's audit that motivated the escalation half is in
 [the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
 Model roles for both directions:
