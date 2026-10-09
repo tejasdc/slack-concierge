@@ -489,7 +489,10 @@ export function briefRunningSessions(admit: (input: {
       const inputId = `budget:${episode}:${run.session_id}`;
       if (db.query("SELECT 1 FROM session_inputs WHERE id = ?").get(inputId)) continue;
       try {
-        admit({ sessionId: run.session_id, inputId, origin: "service", sourceInputId: `budget:${episode}`,
+        // The notice is its own source, like the update-wait notice: a source must be an input
+        // that exists, and the episode name it once carried was none, so every brief from
+        // 2026-10-07 to 2026-10-09 was refused by the ledger and no running agent was ever told.
+        admit({ sessionId: run.session_id, inputId, origin: "service", sourceInputId: inputId,
           sourceRunId: nativeRunId(run.turn_id), requestId: inputId, delivery: "steer",
           text: `${brief}\n\nThis is about the account, not a request; you do not need to reply.` });
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
