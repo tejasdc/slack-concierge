@@ -17,9 +17,12 @@ mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
  * Every deployment writes a full copy of the ledger (1.4 GB on 2026-10-07) and nothing removed
  * them: 278 copies, 151 GB, filled the disk that evening and Concierge and the capture service
  * could not start. After a migration that succeeded, only the newest copies are kept. Hand-made
- * backups in the same folder have other names and are never touched.
+ * backups in the same folder have other names and are never touched. Twenty copies (38 GB at
+ * 1.9 GB each) still left the 436 GB disk at 17 GB free on 2026-10-09, and that evening the hourly
+ * Thinkering backup's 21 GB temporary snapshot filled it and every write failed. Eight copies keep a
+ * day of rollbacks at the usual pace of releases for 15 GB.
  */
-const AUTOMATIC_COPIES_KEPT = 20;
+const AUTOMATIC_COPIES_KEPT = 8;
 function pruneAutomaticCopies(): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
   const folder = dirname(backupPath);
