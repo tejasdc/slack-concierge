@@ -1,7 +1,7 @@
 # October 8 evening stalls and failed release
 
-Status: first Concierge correction and archive correction installed and exercised; the newly
-measured background reconciliation correction is reviewed, with installation and acceptance owed.
+Status: Concierge corrections, background reconciliation correction and archive correction
+installed and exercised. Final acceptance and measurement boundaries are recorded below.
 Owner: Concierge session 4583. Human reports: `a95d3cc7-5f9e-4ae5-85ee-af2fe21c9a88`
 (23:09 UTC) and `08d1033c-afe1-4792-b794-4c744988827e` (23:30 UTC).
 
@@ -78,7 +78,9 @@ a correction. A previous passing candidate is not proof that a later candidate p
 | Claimed work is not proof of executing work | Execution ledger, provider acknowledgement and runtime registry; same-owner sweep separates provably unadmitted work, explicit Stop and uncertain effects | Earlier recovery requeued safe work without replaying admitted effects. Detection is delayed by the existing age/sweep thresholds. |
 | An accepted input retains its identity until its owner settles it | Capture ingress custody and owner FIFO; retries preserve the action identity | Earlier lost routing recovered to six recipient topics. Admission is not proof their feature work finished. Phone microphone failures before bytes exist belong to device capture. |
 | Updating the coordinator cannot silently replace the agent provider | Separate supervised execution lifetimes; exact adoption proof and protocol compatibility; provider update preference and admission gate before activation | Managed Codex daemon confirmed since 21:08 UTC; no restart performed by this investigation. |
-| A slow external command does not occupy the accepting event loop | Existing project/deployment/execution owners await child processes; per-project and per-repository sequencing retained; unknown launch remains unknown | New source; scratch 600 ms waits overlapped independent status replies in 43–60 ms. Live acceptance owed. |
+| A slow external command does not occupy the accepting event loop | Existing project/deployment/execution owners await child processes; per-project and per-repository sequencing retained; unknown launch remains unknown | Installed; scratch 600 ms waits overlapped independent status replies in 43–60 ms. Installed status and release reads returned HTTP 200. |
+| Background recovery leaves opportunities to accept interactive work | Existing local/peer coordinators yield between durable records, with one owned pass and a dirty wake latch | Installed; identical 3,001-record outcomes with maximum timer gap reduced from 31,479 ms to 29 ms in a controlled private fixture. Per-record storage cost remains variable. |
+| Appending one archive message does not rewrite unchanged evidence or erase a previous verified version on a failed read | Existing archive worker reconciles stable evidence identities and reports stale coverage | Installed; one-message append changes one evidence/body row rather than replacing 1,001. Full changed-file verification remains necessary without an authoritative append contract. |
 | Every release-check child has one explicit terminal outcome and an owned lifetime | Shared release fixture process boundary, retaining signals, deadline state, bounded output and phase checkpoints | New source passes scratch signal/deadline/spawn/descendant-pipe checks and the real presentation gate. Deadlines and the canonical dispatch assertion remain unchanged. |
 | A responsiveness alert can be investigated without treating request timings as total latency | Existing loop probe gains bounded ledger call/transaction occupancy and one slow caller | New source; commit/rollback included, no SQL or values logged. Other database connections remain outside this measurement. |
 | Diagnostic work has a stable source and bounded cost | Read-only pinned SQLite snapshot, size/time bounds, atomic non-replacing output | Scratch verification only. Still competes for disk; ordinary shell copies remain possible outside this entrance. |
@@ -96,7 +98,7 @@ process is a consequential protocol change with ordering/durability costs; the e
 does not yet isolate a workload that justifies it. Post-install attribution must guide any
 further storage work instead of another speculative tuning pass.
 
-## Acceptance still owed
+## Installed acceptance
 
 The initial Concierge corrections passed a targeted storage/snapshot review and primary Claude
 review (one default-import guard correction, then SHIP). The full build, real presentation gates
@@ -148,7 +150,7 @@ stop-during-recovery check, had a 23.3 ms maximum timer gap and 60.5 ms maximum 
 scratch owner-socket reads. Completed replies stayed answered, progress stayed received,
 uncertain finals were not replayed, and stopped recovery made zero new peer calls while
 retaining its unfinished membership. The package build passed. This is synthetic causal
-evidence; installation and production acceptance of this correction remain owed.
+evidence; installation and production acceptance of this correction are recorded below.
 
 At a later read the unit used 1.161 GB (1.130 GB anonymous, 22.8 MB file cache), with no swap;
 the owner RSS was 312 MB. Children included the meaning engine and history/preparation workers.
@@ -156,8 +158,8 @@ Unit memory and one process's RSS are different accounting scopes. A two-second 
 sample used only 50 ms CPU, despite `ps` showing 109% averaged across its three-hour lifetime;
 that historical average is not proof of a current busy loop.
 
-Complete installation and acceptance of the background-sweep correction. Do not describe
-these initial acceptance checks as completion of the whole widened task.
+These first-release checks preceded the final reconciliation correction and are kept separate
+from its installed acceptance below.
 
 ### Integrated source checks and later contention
 
@@ -238,3 +240,42 @@ Residual archive freshness is explicit: an individual failed read waits for a la
 or restart; failed root enumeration without a later root-return event can stay stale until
 restart. This correction prevents evidence loss; it does not claim every filesystem failure
 automatically heals, nor that memory usage fell.
+
+### Final installed reconciliation acceptance
+
+Normal deployment `b510fc0e-3b3c-4f4a-97ab-ef620e5bef62` installed `8425807` with artifact
+`5384136a3487899ed7bff61e0d4b2ab61273d300fea019d9c38c4de72841d287`. PID 837793 started
+at 00:43:28.774 UTC. The deployment passed its candidate gates, functional health and promotion;
+the retained unit journal ends succeeded. The final independent review was SHIP, including an
+independent rerun of the private backlog/stop-boundary oracle. No production agent was stopped.
+
+The new owner adopted execution `b2f9428bcdf94823` / turn 5725 and execution `e159bd5836eff14e`
+/ turn 5774. The shared managed Codex daemon was still PID 92022, started at 21:08 UTC.
+Fresh marked requests to Claude (`cd4147f3-6262-4793-a8bf-8e3084581937`) and Codex
+(`f8f1fbde-654f-4a04-9553-8d95dce08bd6`) were acknowledged at 00:48:06, answered, and their
+final returns received without errors. The exact reply tokens appeared in both recipient
+history routes and this investigator's history. Claude's historical coverage temporarily
+reported indexing explicitly; its new retained reply was already present.
+
+Installed ping/status/releases/history/operation routes all returned HTTP 200. Status reported
+no active or stuck deployment. Ping took 16.7 ms, status 22.1 ms, release history 382.3 ms;
+three history reads took 728.9/10.7/18.7 ms. These are real owner-route checks, not browser or
+phone timings. The outside supervisor reported healthy, no resource-pressure episode, prepared
+backlog zero and zero preparation failures. Its 00:45 sample included startup lag; the steady
+window below starts after startup and contains both fresh provider requests.
+
+From 00:44:30 through 00:49:30 UTC, the installed owner recorded **zero loop pauses at or above
+200 ms**. All 26 completed handlers returned HTTP 2xx; median 6 ms, p95 36 ms, maximum 728 ms,
+none above two seconds. No restart or exit occurred in that window. The screenshot's five-minute
+window had 37.358 s of recorded blocking, longest 8.656 s, with 276 completed handlers. The
+latest sample is quieter and short: it establishes current behavior, not an equal-load causal
+benchmark, zero subthreshold pauses, or proof that all future storage delays are impossible.
+Earlier stable evening operation was already much better than the morning outage, before these
+changes. Keep the controlled backlog and archive append comparisons separate from these live
+observations.
+
+Private evidence: `tmp/reviews/astra-4583/final-installed-routes.json`,
+`final-installed-deploy.log`, and `final-five-minutes.json` in the investigation worktree.
+The repaired update, message/reply custody, history visibility, continuing provider lifetime,
+archive preservation/write behavior and current loop responsiveness have installed evidence.
+Remaining growth costs and historical attribution limits are explicitly retained above.
