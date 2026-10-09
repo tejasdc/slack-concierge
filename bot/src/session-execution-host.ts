@@ -86,6 +86,14 @@ const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
 
 export class SessionExecutionHost {
   private readonly historyPages=new ProviderHistoryPageClient();
+  // Thinkering's ChatGPT capability verifies every call by asking this owner for the run's receipt,
+  // so a ChatGPT run taken back at startup is followed only once the owner's request API answers.
+  // Following it earlier (adoption runs before the API starts) was refused as unverifiable and ended
+  // a still-running ChatGPT answer as an error (live check, 2026-10-09 7:26 PM).
+  private ownerServingNow:()=>void=()=>{};
+  private readonly ownerServing=new Promise<void>(resolve=>{this.ownerServingNow=resolve;});
+  /** Called by each composition once its owner request API is listening. */
+  markOwnerServing(){this.ownerServingNow();}
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
@@ -733,6 +741,7 @@ export class SessionExecutionHost {
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
+          if(adoption&&session.provider_id==='chatgpt')await this.ownerServing;
           if(session.provider_id==='chatgpt'&&admission) {
             // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
             // service notices (cancellations, returns, reminders) are for agents and stop here.

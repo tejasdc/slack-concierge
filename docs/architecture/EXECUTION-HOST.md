@@ -161,7 +161,10 @@ are command hooks in `--settings`, held by the unchanged process).
   startup like any execution and follows it (`follow` in `session-capability-client.ts`): it asks for
   that run with `reconcile`, then observes from the first event, so messages already recorded are
   matched by their event ids and nothing is typed again. A run still unfinished at takeover is
-  recorded as `adopted_live`.
+  recorded as `adopted_live`. The follow waits until this owner's request API is listening
+  (`markOwnerServing`), because Thinkering verifies every call against this owner's receipt; the
+  first live takeover (7:26 PM, 2026-10-09) followed before the API was up and ended the run as an
+  error while ChatGPT was still answering.
 - This kind (`chatgpt/capability-host`) counts as surviving a restart by construction
   (`CHATGPT_RUN_KIND`), without the observed proof below: the custody was never in this process,
   and waiting for an observed takeover could never end, because every update waited for these runs

@@ -129,6 +129,7 @@ export async function startSessionRuntime() {
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
+  host.markOwnerServing();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
   const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner),onContact:()=>projectSetup.wake()}):null;
