@@ -18,7 +18,7 @@ import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
-import { completionWithCheck, questionForTejas } from './answers-to-tejas';
+import { completionWithCheck, questionForTejas, reasonsFor } from './answers-to-tejas';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
@@ -634,7 +634,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;why?:string;no_choices?:string;his_words?:string;why_not_answered?:string;only_he_can?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -644,8 +644,11 @@ export class SessionCommunicationCoordinator {
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
         if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined))
             throw new Error('--his-words, --why-not-answered and --only-he-can belong to needs_you: they say why only he can answer.');
+        if(input.outcome!=='response'&&(input.why!==undefined||input.no_choices!==undefined))
+            throw new Error('--why and --no-choices belong to response: they give the reason for each choice in an answer he reads.');
+        const reasons=input.outcome==='response'?reasonsFor({why:input.why,noChoices:input.no_choices}):null;
         const content=input.outcome==='needs_you'
-            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can}):stated;
+            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can}):reasons?.line?`${stated}\n\n${reasons.line}`:stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
         // Silence about his own message is never the router's judgement alone: `done` on a turn
@@ -660,7 +663,7 @@ export class SessionCommunicationCoordinator {
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{})},
+                kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{}),...(reasons?.noChoices?{noChoices:reasons.noChoices}:{})},
                 sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             if(turnDeclaredByAction(actor.turn))
@@ -1163,6 +1166,10 @@ export class SessionCommunicationCoordinator {
         /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
         summary?:string;
         /** Why Tejas need not read this completed answer: it is posted in his thread but filed for nobody. */
+        /** Why each choice this completed answer reports was made, shown to him as "Why this way:". */
+        why?:string;
+        /** Why this completed answer reports no choice; kept on the record, never shown. */
+        no_choices?:string;
         quiet_because?:string;
     }) {
         if (this.stopped)
@@ -1173,8 +1180,8 @@ export class SessionCommunicationCoordinator {
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
         if((input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined)&&input.workDisposition!=='needs_decision')
             throw new Error('--his-words, --why-not-answered and --only-he-can belong to --work-disposition needs_decision.');
-        if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
-            throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined||input.why!==undefined||input.no_choices!==undefined)&&input.workDisposition!=='completed')
+            throw new Error('--checked, --not-checked, --all-done, --why and --no-choices belong to --work-disposition completed.');
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
         // confirmation if it was sent? Just let me know if it was not sent")
         // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
@@ -1194,7 +1201,7 @@ export class SessionCommunicationCoordinator {
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can})};
         else if(input.workDisposition==='completed')
-            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
+            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done,why:input.why,noChoices:input.no_choices,quiet:!!quiet})};
         if(outsideRequest)
             return this.externalReply(input)!;
         const attached = !!(input.attachments?.length || files(input.files).length);
@@ -1274,7 +1281,7 @@ export class SessionCommunicationCoordinator {
             ...(input.summary?{summary:input.summary}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
-            ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}) };
+            ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.no_choices?.trim()?{noChoices:input.no_choices.trim().slice(0,2000)}:{}) };
         const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
         if (prior) {
             if (prior.request_id !== request.request_id || prior.payload_json !== JSON.stringify(payload))
