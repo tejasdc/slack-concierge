@@ -91,7 +91,9 @@ export function inboxMessage(row:any) {
   // another thread has its result marked, and a thread's conversation leaves it out.
   const threads=result&&typeof row.turn_id==='number'?turnThreadActions(row.session_id,row.turn_id,row.input_id):null;
   // A reply to his own message that ended without telling him carries the reason it gave.
-  const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id):null;
+  // A post carries its own: an agent's completed answer it said he need not read.
+  const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id)
+    :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
@@ -282,7 +284,7 @@ export function forwardedReplyFraming(requestId:string,text:string) {
  * answer it gave to several requests) are not posted again. Returns the post that carries the
  * answer, or null when the reply had nothing to show.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId?:string|null}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   let carriedBy:string|null=null;
@@ -297,6 +299,7 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             replyKind:answer.final?'final':'partial',...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
+            ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
       }

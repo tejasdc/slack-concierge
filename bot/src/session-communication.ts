@@ -1139,7 +1139,7 @@ export class SessionCommunicationCoordinator {
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.text??''),
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-            workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null});
+            workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
         db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
     }
     reply(input: {
@@ -1162,6 +1162,8 @@ export class SessionCommunicationCoordinator {
         hand_back?:string;
         /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
         summary?:string;
+        /** Why Tejas need not read this completed answer: it is posted in his thread but filed for nobody. */
+        quiet_because?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -1173,6 +1175,13 @@ export class SessionCommunicationCoordinator {
             throw new Error('--his-words, --why-not-answered and --only-he-can belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
+        // confirmation if it was sent? Just let me know if it was not sent")
+        // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
+        // question is always his to read.
+        const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim().slice(0,2000):'';
+        if(input.quiet_because!==undefined&&(!quiet||input.workDisposition!=='completed'))
+            throw new Error('--quiet-because goes with --work-disposition completed and says why he need not read it; a failed or needs_decision reply is always his to read.');
         if(input.hand_back!==undefined) {
             if(input.workDisposition!=='failed')throw new Error('--hand-back goes with --work-disposition failed: the request returns to the requester to start fresh.');
             const replier=getAcceptedSessionInput(input.source.input_id??''),session=replier?getSessionById(replier.session_id):null;
@@ -1204,7 +1213,7 @@ export class SessionCommunicationCoordinator {
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,
-                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{})});
+                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1265,7 +1274,7 @@ export class SessionCommunicationCoordinator {
             ...(input.summary?{summary:input.summary}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
-            ...(input.hand_back?{handBack:input.hand_back}:{}) };
+            ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}) };
         const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
         if (prior) {
             if (prior.request_id !== request.request_id || prior.payload_json !== JSON.stringify(payload))

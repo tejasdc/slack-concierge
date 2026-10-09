@@ -1843,7 +1843,8 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   if(!post||!answer.final||answer.stalled)return post;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:answer.text});
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:answer.text,
+      quiet:answer.workDisposition==='completed'&&typeof answer.quiet==='string'&&answer.quiet.trim()?answer.quiet.trim():null});
   } catch(error) {
     // The answer is in the thread; what failed is only the filing, which the router can still do.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
@@ -1851,7 +1852,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   return post;
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -1879,6 +1880,12 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     }
     const filedId=`topic-answer:${answer.eventId}`;
     if(seen(filedId))return;
+    // Completed work its agent said he need not read is posted and closes its request, and is filed
+    // for nobody: no reading item, no notification [decision: sends-notify-only-on-failure].
+    if(answer.quiet&&answer.disposition==='completed'){
+      log('info','inbox_answer_quiet',{thread:answer.root,post:answer.postId,request_id:answer.dispatchRequestId});
+      return;
+    }
     const decision=answer.disposition==='needs_decision';
     const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
     // One answer posted once is filed once, however many requests it closed.
