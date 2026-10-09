@@ -169,7 +169,8 @@ are command hooks in `--settings`, held by the unchanged process).
   Claude and Codex runs carried on. A ChatGPT run sent before this change has no record and still
   holds its update. New ChatGPT turns still wait for an install to finish before they start.
 - The update line names why each remaining session holds the update (`whyTurnHoldsUpdate`), so a
-  holder is never unexplained.
+  holder is never unexplained; thnkr.ing shows it after each waiting session's title (Thinkering
+  `release-wait-notice.tsx`, since d92c64a4).
 
 ## Updates (design step 7)
 
