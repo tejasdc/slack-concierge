@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
+import { writeLogLine } from "./log";
 
 function toolNames(rows: readonly any[]) {
   const names = new Map<string,string>();
@@ -76,9 +77,9 @@ async function main() {
       for (const [id,name] of names) insertTool.run(id,name);
     })();
     db.exec("PRAGMA optimize");
-    console.log(JSON.stringify({ generation, rows: rows.length, changedDuringImport: before.size !== after.size || before.mtimeMs !== after.mtimeMs }));
+    writeLogLine("info", JSON.stringify({ generation, rows: rows.length, changedDuringImport: before.size !== after.size || before.mtimeMs !== after.mtimeMs }));
   } finally { db.close(); }
   await rename(temporary,destination);
 }
 
-main().catch(error => { console.error(error instanceof Error ? error.message : "HISTORY_IMPORT_FAILED"); process.exitCode = 1; });
+main().catch(error => { writeLogLine("error", error instanceof Error ? error.message : "HISTORY_IMPORT_FAILED"); process.exitCode = 1; });

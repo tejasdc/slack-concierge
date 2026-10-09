@@ -2,6 +2,7 @@
 import { Database } from "bun:sqlite";
 import { open, stat, readFile, writeFile, rename } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
+import { writeLogLine } from "./log";
 
 type Meta = { session_uuid:string;source_path:string;event_cutoff:number;generation:string;verified_source_size:number;
   verified_source_mtime_ms:number;verified_tail_uuid:string|null };
@@ -82,4 +83,4 @@ async function main() {
     await rename(temporary,statusPath);
   } finally {cache.close();state.close();}
 }
-main().catch(error=>{console.error(error instanceof Error?error.message:"HISTORY_SYNC_FAILED");process.exitCode=1;});
+main().catch(error=>{writeLogLine("error",error instanceof Error?error.message:"HISTORY_SYNC_FAILED");process.exitCode=1;});

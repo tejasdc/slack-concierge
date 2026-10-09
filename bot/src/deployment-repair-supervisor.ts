@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { writeLogLine } from "./log";
 import {
   bindDeploymentRepairSession,
   assertDeploymentRepairOwner,
@@ -131,14 +132,14 @@ export class DeploymentRepairSupervisor {
         : "Operator: inspect this incident's retained final message and logs, resolve the recorded blocker from a standalone CLI, and push through normal Git delivery. Do not replay this parked incident or restart managed providers.",
     };
     // Escalation survives Concierge being down; notification delivery is a separate fact.
-    console[deployed ? "log" : "error"](JSON.stringify(outcome));
+    writeLogLine(deployed ? "info" : "error", JSON.stringify(outcome));
     try {
       mkdirSync(this.incidentRoot, { recursive: true, mode: 0o700 });
       const path = join(this.incidentRoot, "outcome.json");
       writeFileSync(`${path}.tmp`, `${JSON.stringify(outcome, null, 2)}\n`, { mode: 0o600 });
       renameSync(`${path}.tmp`, path);
     } catch (error) {
-      console.error(`Repair outcome file could not be written; durable incident and journal remain authoritative: ${String(error)}`);
+      writeLogLine("error", `Repair outcome file could not be written; durable incident and journal remain authoritative: ${String(error)}`);
     }
     return incident;
   }

@@ -1,3 +1,5 @@
+import { writeLogLine } from './log';
+
 /** Numeric-only worker facts. A lease heartbeat is not successful preparation. */
 export class PresentationWorkerObservation {
   private emitted = -Infinity;
@@ -7,7 +9,7 @@ export class PresentationWorkerObservation {
   private started: number;
   private checkpoint: {ready:number;source_head:number;generation:number}|null=null;
   constructor(private read:()=>{ready:number;source_head:number;generation:number;target:number},
-    private write:(line:string)=>void=console.log,private now:()=>number=Date.now) {
+    private write:(line:string)=>void=line=>writeLogLine('info',line),private now:()=>number=Date.now) {
     this.started=this.progressAt=now();
   }
   advance(){this.progress++;this.progressAt=this.now();this.emit();}

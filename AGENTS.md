@@ -12,6 +12,9 @@ Codex's App Server starts only under its native disabled-updater preference on b
 machines; installation and activation are separate, and a running listener is never
 restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
 
+Server application logs use a bounded stdout/stderr sink; its loss counters and standalone
+socket-pause check are described in [Bounded application logging](docs/architecture/BOUNDED-APPLICATION-LOGGING.md).
+
 ## Current delivery policy
 
 Tejas deprecated Slack in inputs `1789490232.840229` and `1789490293.092859` on

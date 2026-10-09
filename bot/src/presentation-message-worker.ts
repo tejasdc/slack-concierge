@@ -1,4 +1,5 @@
 import {PresentationWorkerObservation} from "./presentation-worker-observation";
+import {writeLogLine} from './log';
 import {Database} from 'bun:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
 import {realpathSync} from 'node:fs';
@@ -461,7 +462,7 @@ while(true){
     }
     await catchUp();observation.succeeded();
   }}
-  catch(error){observation.failed();console.error(JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
+  catch(error){observation.failed();writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.
   await Bun.sleep(100);

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { recordRepairNotice, REPAIR_FIRST_KINDS } from "./repair-notices";
+import { writeLogLine } from "./log";
 
 /** The scope every service notice input carries; the one mark that says "nobody's turn wrote this". */
 export const SERVICE_NOTICE_SCOPE = "service:provider-free-notice";
@@ -35,7 +36,7 @@ export function publishProviderFreeNotice(db: Database, input: {
   // zone (`noticeTime`) and a file path tells him nothing. Logged, never refused, because a notice
   // that is dropped for its wording is worse than one that is clumsy (2026-09-25).
   const unreadable = [/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input.text) ? "iso-timestamp" : "", /(?:^|[\s(])(?:\/|~\/)[\w.-]+\/[\w./-]+/.test(input.text) || /\b[\w-]+\/[\w-]+\/[\w-]+\.(?:log|md|txt|json|ts|js|sh)\b/.test(input.text) ? "file-path" : ""].filter(Boolean);
-  if (unreadable.length) console.warn(JSON.stringify({ level: "warn", event: "service_notice_unreadable", key: input.key, unreadable }));
+  if (unreadable.length) writeLogLine("warn", JSON.stringify({ level: "warn", event: "service_notice_unreadable", key: input.key, unreadable }));
   return db.transaction(() => {
     const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
       (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
