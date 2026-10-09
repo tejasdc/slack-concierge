@@ -58,6 +58,7 @@ import {sessionAddress} from './session-address';
 import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
+import {commitWork,originInput} from './commit-work';
 import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -482,6 +483,33 @@ export class SessionOwner {
   }
   private get peers(){return this.communication?.peersOrNull()??null;}
   private get selfMachine(){return this.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';}
+  /**
+   * Which Inbox thread a change was made for. thnkr.ing names the change (its commit, subject and
+   * time); this instance finds the session that made it from its own turns and transcripts, and
+   * asks each peer for theirs, so a change made on his Mac links as one made here. A commit's
+   * stamped session and input, where an agent's checkout added them, answer directly.
+   * `local=1` is a peer asking: it answers only which session here made the change.
+   */
+  private async workThreadFor(url:URL){
+    const param=(key:string,max:number)=>{const value=url.searchParams.get(key);if(value&&value.length>max)throw new SessionOwnerError(`The ${key} is too long.`);return value||null;};
+    let session=param('session',200),input=param('input',400);
+    const commit=param('commit',40),subject=param('subject',300),at=param('at',40),localOnly=url.searchParams.get('local')==='1';
+    if(!session&&!input&&!(commit&&at))throw new SessionOwnerError('Name the change, or the session or input it was made in.');
+    if(!session&&!input){
+      const local=await commitWork(commit!,subject,at!);
+      if(local){session=`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${local.sessionId}`;input=local.input;}
+      else if(!localOnly&&this.peers){
+        for(const name of this.peers.names()){
+          try{
+            const answer=await this.peers.client(name).request('GET','/sessions/v1/work-thread?'+new URLSearchParams({commit:commit!,at:at!,...(subject?{subject}:{}),local:'1'}),undefined,8_000,false) as {session?:unknown;input?:unknown};
+            if(typeof answer?.session==='string'){session=answer.session;input=typeof answer.input==='string'?answer.input:null;break;}
+          }catch{/* A sleeping Mac answers next time; the line stays plain meanwhile. */}
+        }
+      }
+    } else input=originInput(input);
+    if(localOnly)return {session,input};
+    return {...workThread(session,input),session};
+  }
   /** Which peer a call belongs to, or null for this instance. */
   private remoteMachine(machine:unknown):string|null {
     const name=this.machineName(machine);
@@ -2523,11 +2551,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
       // under inbox/topics/: every GET there is rewritten to the prepared thread reads above.
-      else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1){
-        const session=url.searchParams.get('session'),input=url.searchParams.get('input');
-        if((!session&&!input)||(session?.length??0)>200||(input?.length??0)>400)throw new SessionOwnerError('Name the session or the input the work was made in.');
-        result=workThread(session,input);
-      }
+      else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=await this.workThreadFor(url);
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
