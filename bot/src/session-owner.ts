@@ -1208,7 +1208,7 @@ export class SessionOwner {
       return accepted;
     });
     if(input.action==='together'){
-      const live=db.query("SELECT native_run_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL")
+      const live=db.query("SELECT native_run_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL AND provider_input_acknowledged_at IS NOT NULL")
         .get(session.id) as {native_run_id:string}|null;
       if(!live||live.native_run_id!==input.expectedRunId)
         throw new SessionOwnerError('That Inbox run has ended; refresh the queue.',409,'INBOX_RUN_CHANGED');
