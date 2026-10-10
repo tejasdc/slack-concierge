@@ -211,6 +211,12 @@ Canonical requests record a normalized start and completion under one admission 
 including actual encoded JSON response bytes. A blocked or crashed request therefore leaves a
 start even when no completion can be logged. Concurrent calls to the same route retain separate
 in-flight identities. Streams retain separate lifetime/transport observations.
+
+The native communication and external-command handlers also record SQLite failures, including
+their durability wait, through the bounded error sink. These records contain the operation,
+SQLite code, transient classification and five bounded code frames, never submitted text or a full URL. Busy/locked
+failures return 503 without retrying effects inside the handler. This closes the October 10
+caller-visible `sessions post` lock error that previously returned 400 without a journal entry.
 # Bounded owner collections
 
 Saved messages, followed messages, waiting saved work, and the Lab's agent sessions and requests are separate indexed pages. Each page has a cursor and explicit coverage; the browser must offer continuation rather than treating the first page as the whole collection. Lab request membership follows the current project space of either participating session. A session move enqueues bounded reclassification slices in the presentation worker; the owner reads only the prepared request IDs and a fixed number of exact records. These reads have release fixtures at 100, 1,000, and 10,000 source rows and registered storage and response budgets. See `owner-collection-pages.ts`, `prepared-lab-requests.ts`, and the presentation reader registry.

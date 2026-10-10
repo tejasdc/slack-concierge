@@ -26,6 +26,9 @@ ROUTER_ACTIONS_DEST=${CONCIERGE_ROUTER_ACTIONS_DEST:-/root/.local/bin/router-act
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 CONTROL_DIR=${CONCIERGE_DEPLOYMENT_CONTROL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+# Older installed launchers pass the mutable control pointer. Pin it before a
+# last-known-good restore can replace it during this same deployment.
+CONTROL_DIR=$(readlink -f "$CONTROL_DIR")
 CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
 CONTROL_CONFIG_DIR="$CONTROL_DIR/config"
 if [ -f "$CONTROL_DIR/deploy-state.js" ]; then
