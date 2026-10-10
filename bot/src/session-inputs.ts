@@ -89,8 +89,11 @@ export function humanNamedSession(sessionId:number):boolean {
     AND json_extract(payload_json,'$.action.kind')='title' LIMIT 1`).get(sessionId);
 }
 export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata):SessionRow {
+  // A named session always carries at least the intent expressed by its name. Request-created
+  // sessions replace this with the sender's fuller one-line summary when one was supplied.
+  const summary=metadata.summary?.trim()||metadata.title?.trim();
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
-    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify(metadata));
+    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...metadata,...(summary?{summary}:{})}));
   return getSessionById(Number(result.lastInsertRowid))!;
 }
 export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {
