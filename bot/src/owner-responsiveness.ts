@@ -37,16 +37,16 @@ function externalMonitorAvailable(now:number){
   return externalAvailable;
 }
 
-const stalls: { at: number; ms: number }[] = [];
+const stalls: { at: number; ms: number; cpuMs: number | null }[] = [];
 const slow: { at: number; label: string; ms: number }[] = [];
 let episodeStartedAt: number | null = null;
 let lastBadAt = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-/** One late tick of the owner's 250 ms timer: the loop was held for `ms`. */
-export function noteOwnerStall(ms: number): void {
+/** One late tick of the owner's 250 ms timer: the loop was held for `ms`, `cpuMs` of it on the processor. */
+export function noteOwnerStall(ms: number, cpuMs: number | null = null): void {
   const now = Date.now();
-  stalls.push({ at: now, ms });
+  stalls.push({ at: now, ms, cpuMs });
   trim(now);
   // A long freeze ends with this tick; judge it now rather than a minute later.
   evaluate(now);
@@ -134,14 +134,23 @@ function openNotice(now: number, blocked: number, longest: number): void {
   const what = busiest.length && slowTotal >= blocked / 4
     ? `These pages were slow: ${busiest.join("; ")}. What stopped Concierge is not yet known; this report goes to the repair agent.`
     : "What stopped Concierge is not yet known; this report goes to the repair agent.";
+  // A freeze the owner spent off the processor was the machine withholding it (swap, contention),
+  // not owner work: both Mac freezes on 2026-10-10 used about 8% CPU with its 15 GB of swap full.
+  const measured = stalls.filter(stall => stall.cpuMs !== null);
+  const measuredMs = measured.reduce((sum, stall) => sum + stall.ms, 0);
+  const cpuMs = measured.length ? measured.reduce((sum, stall) => sum + (stall.cpuMs ?? 0), 0) : null;
+  const starved = cpuMs !== null && measuredMs > 0 && cpuMs < measuredMs / 4;
+  const machine = starved
+    ? ` Concierge itself used the processor for only ${Math.round(cpuMs / 1000)} of those seconds, so it was mostly waiting on this machine (a memory or processor shortage), not running its own work.`
+    : "";
   const text = `Concierge stopped answering for ${Math.round(blocked / 1000)} seconds of the last five minutes`
     + ` (the longest single freeze was ${Math.round(longest / 1000)} seconds), from ${noticeTime(db, episodeStartedAt ?? now)}.`
-    + ` Pages, messages and agents' commands all waited during that time. ${what}`
+    + ` Pages, messages and agents' commands all waited during that time.${machine} ${what}`
     + " This closes by itself once Concierge has answered normally for ten minutes.";
-  log("error", "owner_unresponsive", { blocked_ms: blocked, longest_ms: longest, routes: busiest });
+  log("error", "owner_unresponsive", { blocked_ms: blocked, longest_ms: longest, cpu_ms: cpuMs, starved, routes: busiest });
   try {
     if (publishProviderFreeNotice(db, { key: `${NOTICE_PREFIX}${episodeStartedAt}`, kind: "owner_unresponsive", text,
-      payload: { blockedMs: blocked, longestMs: longest, startedAt: episodeStartedAt } })) fileServiceNotices();
+      payload: { blockedMs: blocked, longestMs: longest, cpuMs, starved, startedAt: episodeStartedAt } })) fileServiceNotices();
   } catch (error) {
     log("error", "owner_unresponsive_notice_failed", { error: String(error) });
   }

@@ -264,7 +264,7 @@ function startOwnerLoopMonitor() {
     // Processor time spent while the loop was held tells waiting (a lock, synchronous I/O: near
     // zero) from computing (close to the lag or above it) without a profiler, which may not run here.
     const storage=takeStorageInterval();
-    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag);}
+    if(lag>=200){log('warn','owner_event_loop_lag',{lag_ms:lag,cpu_ms:Math.round((used.user+used.system)/1000),storage,in_flight:[...ownerRequestsInFlight].map(([requestId,route])=>({requestId,route}))});noteOwnerStall(lag,Math.round((used.user+used.system)/1000));}
   },250);
   ownerLoopMonitor.unref?.();
 }
