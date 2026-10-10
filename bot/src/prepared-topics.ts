@@ -184,6 +184,11 @@ export class PreparedTopics {
   const his=input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
   const payload=input?JSON.parse(input.payload_json):{},body=payload.firstInput??payload;
   let text=typeof body.text==='string'?body.text:'';
+  if(root.startsWith('request:')){
+   const sent=this.source.query('SELECT payload_json FROM session_communication_requests WHERE target_input_id=?')
+    .get(root) as {payload_json:string}|null;
+   if(sent)text=JSON.parse(sent.payload_json).text??text;
+  }
   if(body.capture?.source?.kind==='thinkering'&&text.startsWith('Thinkering bug report\n')&&text.includes('\nDescription:\n')){
    const diagnostics=text.indexOf('\nComplete diagnostics JSON');if(diagnostics>=0)text=text.slice(0,diagnostics).trimEnd();
   }

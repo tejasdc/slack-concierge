@@ -1,6 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
+import {inboxRequestRoot} from './inbox-request-root';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -25,9 +26,11 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const input=row.input_json?JSON.parse(row.input_json):{};
   const payload=input.firstInput??input;
   const event=JSON.parse(row.payload_json);
-  const result=row.kind==='result',post=row.kind==='post',agent=result||post;
+  const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
+  const displayedRoot=post&&typeof event.requestId==='string'
+    ?inboxRequestRoot(database,event.requestId,row.input_id):row.input_id;
   const content=post?event.text??'':result?event.text??row.agent_text??'':payload.text??'';
-  const attachmentIds=agent?event.attachments:payload.attachments;
+  const attachmentIds=result||post?event.attachments:payload.attachments;
   const ids=Array.isArray(attachmentIds)?attachmentIds.filter((id:unknown):id is string=>typeof id==='string'):[];
   const attachments=ids.map(id=>database.query(
     'SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
@@ -57,9 +60,10 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,row.turn_id) as {quiet:string}|null)?.quiet?.trim():null;
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
-    content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:row.input_id}:{}),
+    content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
-    ...(post?{replyToMessage:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
+    ...(request?{author:{kind:'agent',communication:'request',requestId:event.requestId}}:{}),
+    ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
       ...(typeof event.postedBySession==='string'?{fromSession:event.postedBySession}:{})},...(event.relayed?{relayed:true}:{})}:{}),
     ...(link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:link.thread},routedBy:link.routedBy}:{}),
     ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),

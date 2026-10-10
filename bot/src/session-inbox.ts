@@ -3,6 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
+import {inboxRequestRoot} from './inbox-request-root';
 
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue'|'outside-agent';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -65,23 +66,25 @@ export const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.or
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post'
+    WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
 /** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
-export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post'].includes(row.kind)?row.event_id:row.input_id;
+export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post','request'].includes(row.kind)?row.event_id:row.input_id;
 export function inboxMessage(row:any) {
   const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
-  const result=row.kind==='result',post=row.kind==='post',agent=result||post;
+  const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const eventPayload=JSON.parse(row.payload_json);
+  const displayedRoot=post&&typeof eventPayload.requestId==='string'
+    ?inboxRequestRoot(db,eventPayload.requestId,row.input_id):row.input_id;
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   // An agent message carries its own files: a post names them, and a result names them when
   // the retained result payload does. A human capture or a returned answer carries the
   // attachments of its accepted input.
-  const attachments=((agent?eventPayload.attachments:payload.attachments)??[])
+  const attachments=(((result||post)?eventPayload.attachments:payload.attachments)??[])
     .map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   // A result names the input it answers, so an Inbox thread is one request plus the
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
@@ -96,10 +99,11 @@ export function inboxMessage(row:any) {
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
-    ...(row.input_id?{inputId:row.input_id}:{}),
+    ...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent' as const,outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
-    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
+    ...(request?{author:{kind:'agent' as const,communication:'request' as const,requestId:eventPayload.requestId}}:{}),
+    ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
       // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
       ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
@@ -138,13 +142,21 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
 export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
   const scope=sessionId===null?'':' AND event.session_id=?';
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
-  return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
-    ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+  return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??null;
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
-  const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null}|null;
+  const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+  if(row?.kind==='request')return row.event_id;
   if(!row?.input_id)return row?.input_id??null;
+  if(row.kind==='post'){
+    const requestId=JSON.parse(row.payload_json)?.requestId;
+    if(typeof requestId==='string'){
+      const linked=inboxRequestRoot(db,requestId,row.input_id);
+      if(linked!==row.input_id)return linked;
+    }
+  }
   if(seen.has(row.input_id))return row.input_id;
   seen.add(row.input_id);
   // A capture placed into a thread answers that thread's root, so everything answering it

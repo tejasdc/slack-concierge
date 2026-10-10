@@ -577,7 +577,8 @@ authorization or a change to the default rapid-iteration policy.
   by both deliver paths), and a final files his item with its notification (a question for
   `needs_decision`, a reading item otherwise) and closes the linked thread request when it answered
   done; no `return:` reaches the router, which reads the posts in its `<topic>` block
-  (`agentAnswers`). Hand-backs, stalls, the owner's settlements and information answers still return
+  (`agentAnswers`). A placed dispatch root owns that request's Conversation and answers even
+  when the router named another thread; see the native Inbox contract. Hand-backs, stalls, the owner's settlements and information answers still return
   to the router; see the session-owner contract. A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever

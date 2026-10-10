@@ -242,7 +242,13 @@ and refuses, before anything is sent, an Inbox ask with no thread, one naming a 
 is not in the Inbox, or one whose thread is not yet placed in a topic; other sessions have
 no threads and name none. The root is recorded on the request (`thread_root_input_id`, local
 and peer rows), so progress and final returns file under that thread and its Timeline lists
-the dispatch, whatever input started the turn that sent it. A post's `--topic` must be the
+the dispatch, whatever input started the turn that sent it. When the dispatch itself is placed
+as a topic root, that placement owns the request and every answer to it, even if `--thread`
+named an older topic. The Conversation shows the original request text as its root message;
+the answer keeps its exact source and author. Linking a dispatch to a topic refuses a mismatch
+unless that topic contains the dispatch root or the named thread. This rule also projects
+already retained answers under their request's placed root without changing their bytes.
+A post's `--topic` must be the
 topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
 a thread other than its own input's, and `answeredByPost` when it posted into its own thread.
 Thinkering keeps either closing text out of that thread's conversation. **A turn another agent opened owes its thread a post** (`threadOwedByTurn`): a worker's return or an agent's request filed in a thread is answered only by a post, because the closing text of such a turn is never shown there. `sessions outcome` is refused for that turn until it has posted into the thread (`failed` excepted); a turn that ends without posting has its closing text relayed into the thread by the owner as the router's reply (`post:relay:<turnId>`, payload `relayed:true`, projected `relayed:true` on the message), releasing the router's focus like any post, so an answer can reach the thread or be refused, never vanish. On 2026-09-24 a worker's result was answered only in closing text and Tejas found nothing in the thread for two hours. **A turn that answers his own message cannot end in unexplained silence** (`answersHisOwnMessage`): `sessions outcome done` on it is refused unless `--quiet-because "<why he need not read this>"` is given, and a turn that ends by marker or without declaring is raised to `response` so he is notified; the stated reason is recorded on the turn outcome (`quiet`) and projected on the reply message as `quiet`, which thnkr.ing shows under it. Nothing is inferred from the text (Tejas, 2026-09-25: "if you make a field mandatory … then you are forced to answer it. That's a system … we are not relying on good intention"). Both facts come

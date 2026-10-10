@@ -6,6 +6,7 @@ import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import {inboxRequestRoot} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand } from './session-topics';
@@ -1137,8 +1138,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         // An answer that already became a return before this road existed keeps its return.
         const agentReply=work&&!event.accepted_input_id&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack;
         const inbox=getSessionById(request.source_session_id);
-        if(!agentReply||!request.thread_root_input_id||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(request.thread_root_input_id))return null;
-        return {root:request.thread_root_input_id,forwarded:null};
+        const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
+        if(!agentReply||!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
+        return {root,forwarded:null};
     }
     /**
      * He stopped the run working for one of his threads: the thread gets a quiet service line and
@@ -1149,7 +1151,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
     private postHisStop(request:RequestRow,event:EventRow,declared:any):boolean {
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
         const inbox=getSessionById(request.source_session_id);
-        const root=request.thread_root_input_id??(forwarded?request.source_input_id:null);
+        const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id??(forwarded?request.source_input_id:null));
         if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return false;
         const responder=getSessionById(request.target_session_id);
         const title=responder?sessionMetadata(responder).title??null:null;

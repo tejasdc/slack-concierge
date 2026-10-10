@@ -24,7 +24,7 @@ prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,
     event_watermark INTEGER NOT NULL,source_head INTEGER NOT NULL,ready INTEGER NOT NULL
   );
-  INSERT OR IGNORE INTO presentation_message_meta VALUES(1,0,0,0,0);
+  INSERT OR IGNORE INTO presentation_message_meta(singleton,generation,event_watermark,source_head,ready) VALUES(1,0,0,0,0);
   CREATE TABLE IF NOT EXISTS presentation_worker_lease(
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),token TEXT,heartbeat_ms INTEGER NOT NULL DEFAULT 0
   );
@@ -82,6 +82,9 @@ if(!hadEntryKind){
   prepared.exec("ALTER TABLE presentation_messages ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'other'");
   prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
 }
+const hadRequestRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+  .some(column=>column.name==='request_roots_version');
+if(!hadRequestRoots)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN request_roots_version INTEGER NOT NULL DEFAULT 0');
 prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
   ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
 const search=new PreparedSearchIndex(prepared);
@@ -139,6 +142,40 @@ function writeDisplay(generation:number,sequence:number,sessionId:number,message
 function writeInboxMessage(generation:number,row:{sessionId:number;root:string;sequence:number;messageId:string;inputId:string;createdAt:string;entryKind:string}) {
   insert.run(generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt,row.entryKind);
   writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+}
+/** Reproject the small set of request and attributed answer rows after this lineage rule changes. */
+async function upgradeRequestRoots(generation:number){
+  const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
+  if(version>=1)return;
+  const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
+  let after=0;
+  while(true){
+    const rows=source.query(`SELECT event.sequence,event.session_id AS sessionId,event.event_id AS messageId,
+      event.input_id AS inputId,event.created_at AS createdAt,event.kind
+      FROM session_owner_events event JOIN sessions owner ON owner.id=event.session_id
+      WHERE event.sequence>? AND json_extract(owner.native_metadata_json,'$.inbox')=1
+        AND (event.kind='request' OR (event.kind='post' AND json_extract(event.payload_json,'$.requestId') IS NOT NULL))
+      ORDER BY event.sequence LIMIT 50`).all(after) as
+      {sequence:number;sessionId:number;messageId:string;inputId:string;createdAt:string;kind:string}[];
+    if(!rows.length)break;
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of rows){
+        const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
+          .get(generation,row.sequence) as {root:string}|null;
+        const root=resolveRoot(row.sessionId,row.messageId);
+        if(!root)continue;
+        if(prior)changedRoots.add(prior.root);
+        changedRoots.add(root);
+        writeInboxMessage(generation,{...row,inputId:row.kind==='request'?row.messageId:row.inputId,root,entryKind:row.kind==='post'?'post':'other'});
+      }
+    })();
+    after=rows.at(-1)!.sequence;
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=1 WHERE singleton=1').run();})();
 }
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
@@ -316,7 +353,7 @@ async function rebuild() {
     }
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -336,6 +373,7 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  await upgradeRequestRoots(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
@@ -381,6 +419,28 @@ async function catchUp() {
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
+    const dispatchesToReassign=new Set<string>();
+    for(const root of movedRoots)if(root.startsWith('request:'))dispatchesToReassign.add(root.slice('request:'.length));
+    for(const change of changes.filter(change=>change.source_table==='inbox_requests')){
+      const linked=source.query('SELECT dispatches_json FROM inbox_requests WHERE request_id=?').get(change.row_key) as {dispatches_json:string}|null;
+      for(const dispatch of linked?JSON.parse(linked.dispatches_json) as {requestId?:string}[]:[]){
+        if(typeof dispatch.requestId==='string')dispatchesToReassign.add(dispatch.requestId);
+      }
+    }
+    for(const requestId of dispatchesToReassign){
+        const posts=source.query(`SELECT sequence,session_id AS sessionId,event_id AS messageId,input_id AS inputId,created_at AS createdAt
+          FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?`).all(requestId) as
+          {sequence:number;sessionId:number;messageId:string;inputId:string;createdAt:string}[];
+        for(const post of posts){
+          const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
+            .get(current.generation,post.sequence) as {root:string}|null;
+          const root=resolveRoot(post.sessionId,post.messageId);
+          if(!root||root===prior?.root)continue;
+          if(prior)changedRoots.add(prior.root);
+          changedRoots.add(root);
+          writeInboxMessage(current.generation,{...post,root,entryKind:'post'});
+        }
+    }
     for(const eventId of changedReturnEvents){
       const inputId=`return:${eventId}`;
       const event=(source.query('SELECT kind FROM session_communication_events WHERE event_id=?').get(eventId)

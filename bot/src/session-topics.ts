@@ -6,6 +6,7 @@ import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
+import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
@@ -1390,12 +1391,20 @@ export function topicsCommand(actor:TopicActor,body:any) {
     case 'request.link':{
       assertInbox(session);
       const dispatchId=text(body?.dispatch,'--dispatch',200);
-      return agentMutation(actor,actionId(),{kind:'topic-request-link',requestId:body?.request_id,dispatch:dispatchId},()=>{
+      const linked=agentMutation(actor,actionId(),{kind:'topic-request-link',requestId:body?.request_id,dispatch:dispatchId},()=>{
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
         const local=db.query('SELECT target_session_id,outcome,status FROM session_communication_requests WHERE request_id=?').get(dispatchId) as any;
         const peer=local?null:db.query('SELECT peer,remote_session_id,outcome,status FROM session_peer_requests WHERE request_id=?').get(dispatchId) as any;
         if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
+        const originalRoot=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
+          ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
+        const ownRoot=`request:${dispatchId}`;
+        if(topicOfRoot(ownRoot)!==topic.topicId&&(!originalRoot?.root||topicOfRoot(originalRoot.root)!==topic.topicId))
+          throw new TopicError('Place the dispatch itself in this topic before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISMATCH');
+        const elsewhere=db.query(`SELECT request.topic_id AS topicId FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+          WHERE json_extract(dispatch.value,'$.requestId')=? AND request.topic_id<>? LIMIT 1`).get(dispatchId,topic.topicId) as {topicId:string}|null;
+        if(elsewhere)throw new TopicError('That dispatch already belongs to another topic. Nothing was linked.',409,'DISPATCH_TOPIC_MISMATCH');
         const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:receiveSessionFromPeer(peer.remote_session_id,peer.peer),
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
           outcome:(local??peer).outcome??null,state:(local??peer).status??null};
@@ -1404,6 +1413,9 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const topicNext=bumped(topic);
         return {change:{kind:'topic_request',payload:{change:'linked',topicId:topic.topicId,topic:topicNext,request:next,by,revision:topicNext.revision}},result:{request:next}};
       });
+      try{reconcilePlacedRequestAnswers(dispatchId);}catch(error){log('error','inbox_request_answer_reconciliation_failed',{
+        request_id:dispatchId,message:error instanceof Error?error.message:String(error)});}
+      return linked;
     }
     case 'request.close':{
       assertInbox(session);
@@ -1796,6 +1808,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
 export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null}):string|null {
+  answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
   if(!post||!answer.final||answer.stalled)return post;
   try {
@@ -1807,6 +1820,47 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
   }
   return post;
+}
+/** Close completed topic requests whose retained answer was originally filed under another root. */
+export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
+  const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
+    WHERE kind='post' AND event_id LIKE 'post:forward:%'
+      AND json_extract(payload_json,'$.replyKind')='final'
+      AND json_extract(payload_json,'$.workDisposition')='completed'
+      AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
+      {event_id:string;session_id:number;input_id:string;payload_json:string}[];
+  let reconciled=0;
+  for(const row of rows){
+    const payload=JSON.parse(row.payload_json);
+    if(typeof payload.requestId!=='string')continue;
+    const root=inboxRequestRoot(db,payload.requestId,row.input_id);
+    if(!root||root===row.input_id||!topicOfRoot(root))continue;
+    const pending=db.query(`SELECT 1 FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+      WHERE request.topic_id=? AND request.state='open' AND json_extract(dispatch.value,'$.requestId')=? LIMIT 1`)
+      .get(topicOfRoot(root),payload.requestId);
+    if(!pending)continue;
+    const postId=row.event_id,eventId=postId.slice('post:forward:'.length);
+    fileAgentAnswer({inboxSessionId:row.session_id,root,postId,eventId,dispatchRequestId:payload.requestId,
+      respondingSessionId:payload.postedBySession??'',respondingTitle:null,disposition:'completed',text:payload.text??'',
+      quiet:'The retained answer was already notified when it first arrived.'});
+    const oldFile=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
+      .get(`topic-answer:${eventId}`) as {payload_json:string}|null;
+    const oldQuestionId=oldFile?JSON.parse(oldFile.payload_json).questions?.[0]?.questionId:null;
+    const movedEvent=`topic-rehome:answer:${eventId}`;
+    if(typeof oldQuestionId==='string'&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(movedEvent)){
+      const question=questionRow(oldQuestionId),toTopic=topicOfRoot(root);
+      if(toTopic&&question.topicId!==toTopic&&question.kind==='reading'&&question.state==='open'){
+        const from=bumped(topicRow(question.topicId)),to=bumped(topicRow(toTopic));
+        const next={...question,topicId:toTopic,sources:[root,postId],revision:question.revision+1,updatedAt:nowIso()};
+        const change={change:'answer_rehomed',topicId:toTopic,topic:to,topics:[from],questions:[next],
+          by:{kind:'owner' as const},reason:'The answer belongs to the topic rooted at its request.',revision:to.revision};
+        recordSessionEvent({eventId:movedEvent,sessionId:row.session_id,kind:'topic_question',payload:change});
+        applyTopicChange('topic_question',change);
+      }
+    }
+    reconciled++;
+  }
+  return reconciled;
 }
 const headline=(value:string)=>answerLine(value);
 function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null}) {

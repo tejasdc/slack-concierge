@@ -18,7 +18,7 @@ import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {migrateInboxTopics,wakeDeferredQuestions} from './session-topics';
+import {migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
@@ -88,6 +88,7 @@ export async function startSessionRuntime() {
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+  try {reconcilePlacedRequestAnswers();} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({claim:()=>claimQueuedTurnWithSavedWork(instanceId,registry.activeSessions),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),

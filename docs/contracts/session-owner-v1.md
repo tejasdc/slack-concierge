@@ -220,6 +220,9 @@ request whose row has `thread_root_input_id` (every Inbox ask names one) placed 
 this machine or a peer — is posted at once through the same poster as a forwarded reply
 (`postAgentAnswer` → `postForwardedThreadAnswer`): one `post` per reply event (`post:forward:<eventId>`,
 `postedBy:'owner-forward'`, `postedBySession`, `requestId`, `replyKind`, `workDisposition` on a final);
+when `request:<requestId>` is placed as a topic root, it takes precedence over the `--thread`
+captured at dispatch for local and peer answers, and appears as the original request text
+in the Conversation. The retained answer is projected under that root, including older answers.
 the same agent's byte-identical words already posted in that thread within the hour are not posted
 again. The communication event is `received` with no return input, so the Inbox gets no `return:`
 input and no turn, and `result_waiting` cannot arise for it. A final answer then files, in the same

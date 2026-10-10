@@ -15,6 +15,7 @@ import {log,errorFields} from './log';
 import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply} from './session-inbox';
+import {inboxRequestRoot} from './inbox-request-root';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
@@ -720,11 +721,12 @@ export class SessionPeers {
     // router asked for itself and the owner's settlements still return.
     const forwarded=JSON.parse(row.payload_json).forwardedReply;
     const inbox=getSessionById(row.source_session_id);
-    const routed=!forwarded&&!event.accepted_input_id&&JSON.parse(row.payload_json).requestedEffect==='work'&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack&&!!row.thread_root_input_id
-      &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(row.thread_root_input_id);
+    const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    const routed=!forwarded&&!event.accepted_input_id&&JSON.parse(row.payload_json).requestedEffect==='work'&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack&&!!answerRoot
+      &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
     if((forwarded&&typeof forwarded.inboxInputId==='string')||routed){
       const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-      const root=row.thread_root_input_id??row.source_input_id;
+      const root=answerRoot??row.source_input_id;
       postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
         inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.text??''),
@@ -736,7 +738,7 @@ export class SessionPeers {
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
-      const root=row.thread_root_input_id??(forwarded?row.source_input_id:null);
+      const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
         const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
         const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
