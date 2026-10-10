@@ -463,7 +463,14 @@ export class SessionExecutionHost {
     if(hasRoom)releaseUsageHeldWork(key);
     // The account just proved it answers, so work held for a sign-in may go to it now.
     if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
-    return {status:'completed',activation:{status:'applied',detail:full?`New Claude work will use ${profile.label}. It is at its usage limit right now, so its work waits for the reset or runs on another account with room.`:`New Claude work will use ${profile.label}.`},
+    // Read usage again now: the page's account line comes from the last reading, and after a reset or a
+    // switch that reading is stale. On 2026-10-10 it still said chann.app was at its limit minutes after his reset.
+    void scheduleProviderAccountUsageRefresh();
+    // The sentence says what the test request actually showed, because the app prints it as the result. It
+    // used to print "It answered a real request" for every switch, including one Claude refused as out of usage.
+    return {status:'completed',activation:{status:'applied',detail:full
+      ?`Switched to ${profile.label}, but it did not answer the test request: Claude said it is at its usage limit. Its work waits for the reset or runs on another account with room.`
+      :`Switched. ${profile.label} answered a real request on this machine.`},
       resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
   }
   private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
