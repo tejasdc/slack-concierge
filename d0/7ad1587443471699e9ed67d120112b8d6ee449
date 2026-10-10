@@ -1,0 +1,1 @@
+The update checks now exercise conversation reads and safe message delivery through a deliberately stalled private copy.
