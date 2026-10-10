@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireDatabaseTestLock } from "./db-lock";
+import {releaseProvenUsageHolds,usageAttempt} from "../src/provider-usage";
 
 const state = require("../src/state");
 const {
@@ -49,6 +50,26 @@ afterEach(() => {
 });
 
 describe("durable provider dispatch retention", () => {
+  test("a proven model releases timed and no-reset usage holds, leaving other models held", () => {
+    const makeHeld=(channel:string,model:string,kind:'backoff'|'usage_wait')=>{
+      const session=createOrGetSession(channel,channel,'claude-code');
+      const turn=acquireSessionTurn(session.id,channel,'waiting','runtime-1');
+      db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,provider_model=?,
+        dispatch_hold='usage',dispatch_failure_class=?,dispatch_next_attempt_ms=? WHERE id=?`)
+        .run(model,kind,kind==='backoff'?Date.now()+3_600_000:null,turn.id);
+      return turn.id;
+    };
+    const timed=makeHeld('usage-timed','claude-opus-5','backoff');
+    const noReset=makeHeld('usage-no-reset','claude-opus-5','usage_wait');
+    const other=makeHeld('usage-other-model','claude-sonnet-5','backoff');
+    const attempt=usageAttempt('claude-code','claude-opus-5','test@example.com');
+    expect(releaseProvenUsageHolds(attempt,'test@example.com')).toBe(2);
+    const read=(id:number)=>db.query('SELECT dispatch_failure_class,dispatch_next_attempt_ms FROM turns WHERE id=?').get(id);
+    expect(read(timed)).toMatchObject({dispatch_failure_class:'backoff',dispatch_next_attempt_ms:0});
+    expect(read(noReset)).toMatchObject({dispatch_failure_class:'backoff',dispatch_next_attempt_ms:0});
+    expect(read(other)).toMatchObject({dispatch_failure_class:'backoff'});
+    expect((read(other) as {dispatch_next_attempt_ms:number}).dispatch_next_attempt_ms).toBeGreaterThan(Date.now());
+  });
   test("retries the same turn after its due time with a new fenced attempt", () => {
     const session = createOrGetSession("C1", "1787555393.054739", "claude-code");
     const turn = acquireSessionTurn(session.id, "1787555393.054739", "monologue", "runtime-1");

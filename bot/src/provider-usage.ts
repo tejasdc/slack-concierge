@@ -193,24 +193,25 @@ export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "acco
 }
 
 /** A successful manual check proves only the attempted account and model, not every refusal. */
-export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string): number {
+export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, defaultModelWasChecked = false): number {
   const rows = db.query(`SELECT turns.id,
     COALESCE(turns.provider_model,(SELECT earlier.provider_model FROM turns earlier
       WHERE earlier.session_id=turns.session_id AND earlier.id<turns.id
         AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS provider_model FROM turns
     JOIN sessions ON sessions.id=turns.session_id
-    WHERE turns.status='queued' AND turns.dispatch_failure_class='backoff'
-      AND turns.dispatch_hold='usage' AND COALESCE(turns.dispatch_next_attempt_ms,0)>0
+    WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('backoff','usage_wait')
+      AND turns.dispatch_hold='usage'
       AND sessions.provider_id=?`).all(attempt.provider) as {id:number;provider_model:string|null}[];
   const ids = rows.filter(row => attempt.provider === 'codex' ||
-    row.provider_model !== null && usageAttempt('claude-code',row.provider_model,account).scope===attempt.scope)
+    (row.provider_model === null ? defaultModelWasChecked : usageAttempt('claude-code',row.provider_model,account).scope===attempt.scope))
     .map(row=>row.id);
   if (!ids.length) return 0;
   const released=db.transaction(()=>{
     let count=0;
-    for(const id of ids)count+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
+    for(const id of ids)count+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=0,dispatch_failure_class='backoff'
       WHERE id=? AND status='queued' AND dispatch_hold='usage'
-        AND dispatch_failure_class='backoff' AND COALESCE(dispatch_next_attempt_ms,0)>0`).run(id).changes;
+        AND dispatch_failure_class IN ('backoff','usage_wait')
+        AND (dispatch_failure_class='usage_wait' OR COALESCE(dispatch_next_attempt_ms,0)>0)`).run(id).changes;
     return count;
   }).immediate();
   if(released){log('info','provider_usage_hold_released',{provider:attempt.provider,released,scope:attempt.scope});announceUsageHoldEnded(attempt.provider,'manual_check',released,new Set(ids));}

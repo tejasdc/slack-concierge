@@ -73,7 +73,10 @@ the normal queue and other models keep their holds. A successful provider answer
 waiting turns for that proved model and account; a usage refusal keeps the hold, and an unrelated
 failure is reported as unconfirmed. The result names the checked account, model and number of
 released turns. A usage percentage is not proof, since it read zero while Claude refused real
-work on 2026-10-10. Opening Accounts and the
+work on 2026-10-10. The check also covers a usage hold created by a percentage reading before
+any provider refusal has been cached, and a continuation with no reset instant. If a check has
+not finished in one minute, Concierge requests cancellation, waits briefly for settlement, and
+keeps the work held; a still-running check prevents another one on that machine. Opening Accounts and the
 ordinary background usage readings never spend model tokens or override a refusal. A successful
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
 work as part of that action. The operator shell remains available for recovery even when the
