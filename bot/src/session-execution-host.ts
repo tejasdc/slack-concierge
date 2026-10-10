@@ -328,6 +328,7 @@ export class SessionExecutionHost {
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
   private usageCheck:Promise<unknown>|null=null;
   private usageProbeRunning=false;
+  private usageProbeContext:{provider:'claude-code'|'codex';account:string;model:string|null}|null=null;
   private retryHeldUsage(){
     if(this.usageCheck)return this.usageCheck;
     const check=this.checkHeldUsage().finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
@@ -335,7 +336,8 @@ export class SessionExecutionHost {
     return check;
   }
   private async checkHeldUsage(){
-    if(this.usageProbeRunning)return {status:'unconfirmed',detail:'The previous provider check is still stopping; no new check was started.'};
+    if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
+      detail:'The previous provider check is still stopping; no new check was started.'};
     for(const provider of ['claude-code','codex'] as const){
       const home=provider==='claude-code'?selectedClaudeHome():null;
       const accountLabel=home?.label??currentAccount(provider)?.label;
@@ -356,6 +358,7 @@ export class SessionExecutionHost {
         const cancellation:{stop:(()=>Promise<void>)|null}={stop:null};
         let expired=false;
         let deadline:ReturnType<typeof setTimeout>|null=null;
+        this.usageProbeContext={provider,account:accountLabel,model:waiting.model};
         this.usageProbeRunning=true;
         const execution=Promise.resolve().then(()=>runner.run({
           prompt:'Reply OK. Do not use tools.',cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
@@ -363,7 +366,7 @@ export class SessionExecutionHost {
           ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{}),
           onCancellationReady:stop=>{cancellation.stop=stop;if(expired)void stop().catch(()=>{});},
         })).then(answer=>({kind:'success' as const,answer}),error=>({kind:'failure' as const,error}))
-          .finally(()=>{this.usageProbeRunning=false;});
+          .finally(()=>{this.usageProbeRunning=false;this.usageProbeContext=null;});
         const timeout=new Promise<{kind:'timeout'}>(resolve=>{
           deadline=setTimeout(()=>resolve({kind:'timeout'}),60_000);
           deadline.unref?.();
