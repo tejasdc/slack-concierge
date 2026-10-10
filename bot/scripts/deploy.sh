@@ -603,6 +603,15 @@ install_systemd_unit() {
       echo "DEPLOY FAILED: required systemd source is missing: $src" >&2
       return 1
     fi
+    # A unit that requires one this machine does not have would never start again (the ledger's
+    # mount unit comes from remote-box, which must be deployed first).
+    local required
+    for required in $(sed -n 's/^Requires=//p' "$src"); do
+      if ! systemctl cat "$required" >/dev/null 2>&1; then
+        echo "DEPLOY FAILED: $unit requires $required, which is not installed; deploy remote-box first." >&2
+        return 1
+      fi
+    done
     if ! cmp -s "$src" "$dest" 2>/dev/null; then
       install -m 0644 "$src" "$dest"
       echo "  installed $unit"
