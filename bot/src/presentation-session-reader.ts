@@ -3,6 +3,7 @@ import {existsSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {db} from './state';
 import {observedDatabase} from './storage-observation';
+import {isTransientDatabaseError} from './database-retry';
 import {readPreparedSessionChanges,readPreparedSessionWindow,type SessionWindow} from './prepared-session-cards';
 import {readPreparedInboxAttention} from './prepared-topics';
 import {labRequestPageViews,readPreparedLabRequests} from './prepared-lab-requests';
@@ -10,17 +11,29 @@ import type {SessionSpace} from './session-space';
 
 let connection:Database|null=null;
 function prepared():Database|null {
+  if(connection)return connection;
   const directory=process.env.CONCIERGE_STATE_DIR;
   if(!directory)return null;
   const path=join(realpathSync(directory),'presentation.db');
   if(!existsSync(path))return null;
-  if(!connection){
-    const raw=new Database(path,{readonly:true});
-    raw.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
-    connection=observedDatabase(raw);
+  let raw:Database|null=null;
+  try {
+    raw=new Database(path,{readonly:true});
+    // File creation precedes WAL and schema initialization. That interval is indexing,
+    // not a failed catalogue read, and must not block a reader on the startup lock.
+    raw.exec('PRAGMA busy_timeout=0; PRAGMA query_only=ON');
+    const reader=observedDatabase(raw);
+    if(!reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_session_meta' LIMIT 1").get()){
+      raw.close();return null;
+    }
+    raw.exec('PRAGMA busy_timeout=1000');
+    connection=reader;
+    return connection;
+  } catch(error) {
+    raw?.close();
+    if(isTransientDatabaseError(error))return null;
+    throw error;
   }
-  return connection.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_session_meta' LIMIT 1").get()
-    ?connection:null;
 }
 const canonicalHead=()=>Number((db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log')
   .get() as {n:number}).n);

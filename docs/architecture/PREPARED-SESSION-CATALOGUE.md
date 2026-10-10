@@ -15,6 +15,24 @@ gate starts the actual native API against isolated state, observes initial and l
 rows, refuses a duplicate listener without a second worker, and checks worker exit on stop.
 This Linux composition check does not substitute for installed Mac acceptance.
 
+Catalogue reader startup treats a missing file, an uncommitted schema, or SQLite
+contention while opening and checking that schema as `presentation_indexing` with
+incomplete coverage. File existence alone is not readiness: the worker creates the
+file before configuring WAL and committing its atomic schema installation. The reader
+does not wait for a startup lock and closes an unsuccessful opening; a later request
+opens it again. Only a connection with a readable catalogue schema is cached. Once
+cached, normal reads retain their existing busy timeout and error behavior. Other
+opening failures, including permissions and corruption, remain errors.
+
+The October 10 candidate failure retained a first catalogue response of 503 after
+1,010 ms, with zero completed measured queries. The source path exposes a one-second
+startup lock wait before a prepared query can execute; it previously escaped the
+indexing response. The fixture did not retain the response body or SQLite error, so
+the exact lock site is inferred from that timing and control flow. This correction
+does not extend fixture deadlines or relax the requirement for complete initial and
+subsequent cards. No tests or reviews were run by the autonomous repair; the external
+supervisor and detached controller own integration and installed health proof.
+
 The worker builds a new generation in finite pages from a read-only canonical connection.
 It replays the canonical change journal, then flips the visible generation and checkpoint in
 one presentation transaction. While that work is incomplete, readers keep the prior generation

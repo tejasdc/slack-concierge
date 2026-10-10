@@ -139,6 +139,7 @@ authorization or a change to the default rapid-iteration policy.
 - The interactive session catalogue is a prepared, bounded read over the owner's ledger;
   new card fields need canonical change-journal coverage and a growth fixture. The worker,
   cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).
+  Catalogue startup locks report indexing until its readonly schema entrance is ready.
   The accepting request API owns the prepared worker lifetime in both native and adapter
   compositions; closing that API also stops its worker.
   Prepared routes require a registered read contract and executable growth fixture; the build
