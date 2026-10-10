@@ -108,18 +108,23 @@ export class PreparedTopics {
      .get(row.generation,row.session_id,row.root_id) as {event_sequence:number;created_at:string}|null;
     if(first)fill.run(first.event_sequence,instant(first.created_at),this.sentByHim(row.root_id)?1:0,row.generation,row.root_id);
    }
+   for(const row of prepared.query("SELECT generation,root_id FROM presentation_topic_roots WHERE text LIKE 'Thinkering bug report%'").all() as {generation:number;root_id:string}[])
+    this.updateRoot(row.generation,row.root_id);
   })();
   prepared.exec('CREATE INDEX IF NOT EXISTS presentation_topic_incoming ON presentation_topic_roots(generation,session_id,his,first_sequence DESC,root_id)');
   if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='started_sort_key'))prepared.transaction(()=>{
    prepared.exec("ALTER TABLE presentation_topics ADD COLUMN started_sort_key TEXT NOT NULL DEFAULT ''");
-   // Every row gets its start key now, from the roots already filled above, so the Started order is
-   // right while the rewrite below brings each summary its own start and arrivals.
-   const key=prepared.query('UPDATE presentation_topics SET started_sort_key=? WHERE generation=? AND topic_id=?');
+   // Every row gets its start key and its summary its start and arrivals now, from the roots filled
+   // above, as the next write would compute them. Rewriting every thread instead took about 13 s a
+   // thread under load in a rehearsal on his 634 threads (2026-10-10), and real changes would have
+   // queued behind it for hours.
+   const patch=prepared.query("UPDATE presentation_topics SET started_sort_key=?,summary_json=json_set(summary_json,'$.startedAt',?,'$.arrivals',json(?)) WHERE generation=? AND topic_id=?");
    for(const row of prepared.query("SELECT generation,topic_id,json_extract(summary_json,'$.createdAt') AS created FROM presentation_topics").all() as {generation:number;topic_id:string;created:string|null}[]){
-    const first=(prepared.query("SELECT MIN(first_at) AS at FROM presentation_topic_roots WHERE generation=? AND topic_id=? AND first_at<>''").get(row.generation,row.topic_id) as {at:string|null}).at;
-    const at=first??row.created;if(at)key.run(orderKey(0,at,row.topic_id),row.generation,row.topic_id);
+    const roots=prepared.query("SELECT MIN(first_at) AS first,SUM(his) AS count,MAX(CASE WHEN his=1 THEN first_at END) AS last FROM presentation_topic_roots WHERE generation=? AND topic_id=? AND first_at<>''")
+     .get(row.generation,row.topic_id) as {first:string|null;count:number|null;last:string|null};
+    const at=roots.first??row.created;if(!at)continue;
+    patch.run(orderKey(0,at,row.topic_id),at,json({count:roots.count??0,lastAt:roots.last}),row.generation,row.topic_id);
    }
-   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topics_started ON presentation_topics(generation,session_id,state,started_sort_key);
    CREATE INDEX IF NOT EXISTS presentation_topics_started_all ON presentation_topics(generation,session_id,started_sort_key);`);
@@ -224,6 +229,9 @@ export class PreparedTopics {
    .get(generation,row.session_id,root) as {event_sequence:number;created_at:string};
   if(body.capture?.source?.kind==='thinkering'&&text.startsWith('Thinkering bug report\n')&&text.includes('\nDescription:\n')){
    const diagnostics=text.indexOf('\nComplete diagnostics JSON');if(diagnostics>=0)text=text.slice(0,diagnostics).trimEnd();
+   // A row shows his words, not the report's header lines ("What changed: Phone app: …").
+   const description=text.slice(text.indexOf('\nDescription:\n')+'\nDescription:\n'.length).trim();
+   if(description)text='Bug report: '+description;
   }
   this.prepared.query(`INSERT INTO presentation_topic_roots(generation,root_id,topic_id,session_id,sequence,at,text,unfiled,first_sequence,first_at,his)
    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
