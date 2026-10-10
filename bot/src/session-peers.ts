@@ -683,8 +683,7 @@ export class SessionPeers {
         const current=this.row(row.request_id);
         if(current.outcome||current.stalled_at_ms!==null)return;
         const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
-        const worker=this.presentedSession(row.peer,row.remote_session_id);
-        this.event(row,'overdue',{text:stalledNotice(row.request_id,worker,remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,reason:remote.stalled.reason});
+        this.event(row,'overdue',{text:stalledNotice(remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,reason:remote.stalled.reason});
         db.query('UPDATE session_peer_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
       log('warn','session_peer_request_stalled',{request_id:row.request_id,peer:row.peer,reason:remote.stalled.reason});
@@ -839,10 +838,10 @@ export class SessionPeers {
   /** A request the peer holds and will not start soon tells its sender now, as a local one does. */
   private inspectHold(row:PeerRequestRow) {
       const hold=JSON.parse(row.remote_status_json!).hold;
-      const text=heldRequestNotice(row.request_id,`${this.presentedSession(row.peer,row.remote_session_id)} on ${row.peer}`,hold);
+      const forwarded=!!JSON.parse(row.payload_json).forwardedReply;
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        this.event(row,'overdue',{text,health:`held: ${hold.code}`,held:hold.code});
+        if(!forwarded)this.event(row,'overdue',{text:heldRequestNotice(hold),health:`held: ${hold.code}`,held:hold.code});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
   }
@@ -858,7 +857,7 @@ export class SessionPeers {
         // this work matters to him now (his decision, 2026-09-27).
         db.transaction(()=>{
           if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-          this.event(row,'overdue',{text:`Request ${row.request_id} is waiting on ${row.peer}, which has not answered for ${STILL_WAITING_MINUTES} minutes; it is probably asleep or offline. ${row.status==='queued_offline'?'The request has not reached it yet and will be delivered':'Its status will be read again'} automatically when ${row.peer} is back; nothing is lost or re-sent. Tejas was not told. If this work matters to him before ${row.peer} wakes, ask him (for example, to open the laptop); otherwise no action is needed.`,health:`${row.peer} unreachable`});
+          this.event(row,'overdue',{text:`The other machine has not answered for ${STILL_WAITING_MINUTES} minutes; it may be asleep or offline. ${row.status==='queued_offline'?'This request will be delivered':'Its status will be checked again'} when that machine is back. Nothing has been sent twice.`,health:`${row.peer} unreachable`});
           db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
         })();
         return;
@@ -868,7 +867,7 @@ export class SessionPeers {
         :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});
+        this.event(row,'overdue',{text:`This request has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. It remains recorded and has not been sent again. The agent that sent it can inspect its progress and decide what to do next.`,health});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
       })();
   }

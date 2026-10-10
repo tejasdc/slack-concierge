@@ -112,6 +112,9 @@ const ownerStatusContext={
     return {after:after.length>0,held:held?{requestId:held.request_id,outcome:held.outcome}:null};
   },
   savedTurn,
+  continuationRefusal:(turnId:number)=>(db.query(`SELECT json_extract(input.payload_json,'$.continuation.reason.refusal') AS refusal
+    FROM turns turn JOIN session_inputs input ON input.id=turn.accepted_input_id WHERE turn.id=?`)
+    .get(turnId) as {refusal:string|null}|null)?.refusal??null,
   session:(sessionId:number)=>{
     const session=getSessionById(sessionId)!;
     return {status:session.status,providerId:session.provider_id,suspended:!!sessionMetadata(session).suspended};
@@ -121,8 +124,11 @@ const ownerStatusContext={
     const survivable=survivableRunKinds();
     return !(inputKind!=='fork'&&(providerId==='claude-code'?survivable.claude:providerId==='codex'?survivable.codexShared:false));
   },
-  olderBlockingStatus:(sessionId:number,turnId:number)=>(db.query(`SELECT status FROM turns older WHERE session_id=? AND id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY id LIMIT 1`)
-    .get(sessionId,turnId) as {status:string}|null)?.status??null,
+  olderBlockingTurn:(sessionId:number,turnId:number)=>db.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
+    json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
+    FROM turns older LEFT JOIN session_inputs blocked ON blocked.id=older.accepted_input_id
+    WHERE older.session_id=? AND older.id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY older.id LIMIT 1`)
+    .get(sessionId,turnId) as {status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;dispatch_hold:string|null;continuation_refusal:string|null}|null,
   dependencyPending:(turnId:number)=>!!db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turnId),
   now:()=>Date.now(),formatTime:(ms:number)=>noticeTime(db,ms)
 };
@@ -143,11 +149,8 @@ export function inputHold(input:AcceptedSessionInput):InputStatusDetail|null {
 }
 
 /** The words a sender reads about a hold, the same from a local or a peer recipient. */
-export function heldRequestNotice(requestId:string,worker:string,hold:InputStatusDetail):string {
-  const waits=hold.code==='PROVIDER_AUTH_HELD'?`${worker} cannot start it: its provider on that machine cannot sign in. Tejas has been told once to sign it in again`
-    :hold.code==='PROVIDER_USAGE_HELD'?`${worker} cannot start it: its provider on that machine has no usage left until an account has room`
-    :`${worker} has not started it: ${hold.message}`;
-  return `Request ${requestId} is held. ${waits}. ${hold.automaticRetry?'It stays queued and starts by itself when that clears.':'Nothing will start it by itself.'} If it cannot wait, cancel it (sessions cancel ${requestId}) and send it to another session.`;
+export function heldRequestNotice(hold:InputStatusDetail):string {
+  return hold.message;
 }
 /**
  * The outage offer as the receipt shows it: open while the message is still waiting and he

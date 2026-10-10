@@ -1367,7 +1367,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             if (current.outcome || current.stalled_at_ms !== null)
                 return;
             const partial = db.query("SELECT payload_json FROM session_communication_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(request.request_id) as { payload_json: string } | null;
-            const text = stalledNotice(request.request_id, `concierge:${request.target_session_id}`, next.reason, partial ? JSON.parse(partial.payload_json).text : null);
+            const text = stalledNotice(next.reason, partial ? JSON.parse(partial.payload_json).text : null);
             this.event(request, 'overdue', { text, stalled: true, reason: next.reason });
             db.query('UPDATE session_communication_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(), request.request_id);
         })();
@@ -1781,11 +1781,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             const input = getAcceptedSessionInput(request.target_input_id!);
             const hold = input ? inputHold(input) : null;
             if (!hold) return;
-            const text = heldRequestNotice(request.request_id, `concierge:${request.target_session_id}`, hold);
+            const forwarded=!!JSON.parse(request.payload_json).forwardedReply;
             db.transaction(() => {
                 const current = this.row(request.request_id);
                 if (current.outcome || current.overdue_at_ms !== null) return;
-                this.event(request, 'overdue', { text, health: `held: ${hold.code}`, held: hold.code });
+                if(!forwarded)this.event(request, 'overdue', { text:heldRequestNotice(hold), health: `held: ${hold.code}`, held: hold.code });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
     }
@@ -1834,7 +1834,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
                 if (!reported)
-                    this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
+                    this.event(request, 'overdue', { text: `This request has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. It remains recorded and has not been sent again. The agent that sent it can inspect its progress and decide what to do next.`, health });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
     }

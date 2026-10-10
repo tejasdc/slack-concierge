@@ -280,7 +280,15 @@ export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessio
 export function followForwardedReply(inboxInputId:string,to:{sessionId:string;requestId:string;title?:string|null},progress:{working:boolean;hold:{code:string;message:string;clearsAt:string|null;automaticRetry:boolean}|null}) {
   const row=db.query('SELECT receipt_json FROM session_inputs WHERE id=?').get(inboxInputId) as {receipt_json:string|null}|null;
   const saved=row?.receipt_json?JSON.parse(row.receipt_json):null;
-  if(!saved?.forwardedTo||!['waiting','queued','running'].includes(saved.state))return;
+  // An older hold update was posted as a stalled answer and incorrectly made the human reply
+  // uncertain. Reopen only when that exact text came from a retained hold event for this request.
+  const mistakenHold=saved?.state==='uncertain'&&saved.error?.code==='FORWARDED_REPLY_STALLED'&&!!db.query(`
+    SELECT 1 FROM (
+      SELECT payload_json FROM session_communication_events WHERE request_id=?
+      UNION ALL SELECT payload_json FROM session_peer_events WHERE request_id=?
+    ) WHERE json_extract(payload_json,'$.held') IS NOT NULL AND json_extract(payload_json,'$.text')=? LIMIT 1`)
+    .get(to.requestId,to.requestId,saved.error.message);
+  if(!saved?.forwardedTo||!['waiting','queued','running'].includes(saved.state)&&!mistakenHold)return;
   const title=to.title??saved.forwardedTo.title??null;
   const agent=title?`“${title}”`:'The agent';
   const working=progress.working&&!progress.hold;

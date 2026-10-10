@@ -187,6 +187,9 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
         WHERE id=? AND saved_kind IS NOT NULL`).get(turnId) as {saved_kind:'scheduled'|'banked';dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null}|null;
       return row;
     },
+    continuationRefusal:(turnId)=>(source.query(`SELECT json_extract(input.payload_json,'$.continuation.reason.refusal') AS refusal
+      FROM turns turn JOIN session_inputs input ON input.id=turn.accepted_input_id WHERE turn.id=?`)
+      .get(turnId) as {refusal:string|null}|null)?.refusal??null,
     session:(sessionId)=>{
       const row=source.query('SELECT status,provider_id,native_metadata_json FROM sessions WHERE id=?').get(sessionId) as
         {status:string;provider_id:string;native_metadata_json:string};
@@ -197,9 +200,12 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
       const survivable=survivableRunKinds(source);
       return !(inputKind!=='fork'&&(providerId==='claude-code'?survivable.claude:providerId==='codex'?survivable.codexShared:false));
     },
-    olderBlockingStatus:(sessionId,turnId)=>(source.query(`SELECT status FROM turns older WHERE session_id=? AND id<?
-      AND (older.status='queued' OR (older.status='parked' AND older.turn_kind<>'native')) ORDER BY id LIMIT 1`)
-      .get(sessionId,turnId) as {status:string}|null)?.status??null,
+    olderBlockingTurn:(sessionId,turnId)=>source.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
+      json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
+      FROM turns older LEFT JOIN session_inputs blocked ON blocked.id=older.accepted_input_id WHERE older.session_id=? AND older.id<? AND
+      ((older.status='queued' AND (older.saved_kind IS NULL OR older.saved_manual_start=1))
+        OR (older.status='parked' AND older.turn_kind<>'native')) ORDER BY older.id LIMIT 1`)
+      .get(sessionId,turnId) as {status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;dispatch_hold:string|null;continuation_refusal:string|null}|null,
     dependencyPending:(turnId)=>!!source.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turnId),
     now:()=>nowMs,formatTime:ms=>noticeTime(source,ms)
   };

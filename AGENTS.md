@@ -267,7 +267,11 @@ authorization or a change to the default rapid-iteration policy.
   [parity approach](docs/plans/2026-09-17-claude-session-parity.md).
 - `statusDetail` explains only holds a person must know about or act on. Ordinary
   progress — waiting behind other work, awaiting dispatch, or queued in a live run —
-  carries none; the input's state already says it is queued.
+  carries none; the input's state already says it is queued. A queued input behind an
+  earlier usage-held turn inherits that turn's reason and reset time, because the
+  earlier turn cannot finish until usage returns. A human thread reply gets that reason
+  under its message, never as a second Service post; older duplicate hold posts remain
+  retained but are not shown. See the [receipt contract](docs/contracts/session-owner-v1.md).
 - Ambiguous steering follows its linked turn's confirmed terminal state, with a separate
   `STEERING_DELIVERY_UNCONFIRMED` explanation while provider acknowledgement is absent.
   Turn completion never proves that particular steering input reached the provider;

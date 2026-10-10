@@ -311,8 +311,9 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
         :elsewhere?null
         :reason.kind==='provider_refused'&&reason.refusal==='usage'&&!wait?'usage_wait'
         :reason.kind==='boundary'&&wait?'chosen_time':'backoff';
-      db.query(`UPDATE turns SET dispatch_failure_class=?,dispatch_next_attempt_ms=? WHERE id=? AND status='queued'`)
-        .run(hold,hold==='auth_wait'||hold==='usage_wait'?null:wait,queued.turn_id);
+      db.query(`UPDATE turns SET dispatch_failure_class=?,dispatch_next_attempt_ms=?,dispatch_hold=? WHERE id=? AND status='queued'`)
+        .run(hold,hold==='auth_wait'||hold==='usage_wait'?null:wait,
+          reason.kind==='provider_refused'&&reason.refusal==='usage'&&!elsewhere?'usage':null,queued.turn_id);
     }
     return queued;
   })();

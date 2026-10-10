@@ -99,10 +99,10 @@ export function strandedStep(owner: SessionOwner, input: { requestId: string; wo
         : 'its turn ended without a final reply, and its end-of-turn check did not send it back (the check was unavailable, or the request arrived after it ran)' };
 }
 
-export const stalledNotice = (requestId: string, worker: string, reason: string, lastPartial: string | null) =>
-    `Request ${requestId} has stalled: ${worker} has not sent a final reply, and ${reason}. `
+export const stalledNotice = (reason: string, lastPartial: string | null) =>
+    `The agent stopped before answering this request: ${reason}. `
     + (lastPartial ? `Its last partial reply said: "${lastPartial.slice(0, 600)}". ` : 'It sent no partial reply. ')
-    + 'The request stays open and a late final reply will still return here. Decide whether to wait, ask again, or cancel it (sessions cancel).';
+    + 'The request stays open, and a late answer will still arrive here.';
 
 /**
  * FIPA's cancel reaches the participant: a canceled request tells a worker that already holds it
