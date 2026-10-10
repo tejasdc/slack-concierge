@@ -110,7 +110,8 @@ from the executing host.
 
 #### Automatic starts for new work
 
-New unbound coding work can request `--provider auto`. At creation, the session owner reads
+New unbound coding work defaults to Automatic when an agent names a project without a provider;
+callers can also request `--provider auto` explicitly. At creation, the session owner reads
 recent allowance data for accounts this machine can actually launch. Claude remains the
 ordinary choice while its roomiest usable account is below the existing 90% warning level.
 Once Claude reaches that level, the owner starts the new session on whichever provider has
@@ -131,7 +132,7 @@ coding session.
 The agent request path and Thinkering's Automatic new-conversation choice enter this same
 owner decision. Native provider child processes spawned directly by a provider are outside
 the owner, so their model selection follows the provider's own tools; work delegated as a
-new Concierge session uses `--provider auto`.
+new Concierge session defaults to Automatic.
 
 `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` remains the static preference for
 legacy callers and project defaults that name no provider. It is `cc-opus` — Claude

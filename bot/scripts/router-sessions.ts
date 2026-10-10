@@ -15,7 +15,7 @@ router-actions.sh sessions usage <source-flags> [--by-session] [--period today|w
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] -- <text>
-router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
+router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro] [--his-chat] [--session-name <title>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask --peer <instance> --machine-need "<what only that machine can do>" --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
@@ -583,7 +583,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation,body:{source,action_id:actionId,thread,text:message,...attached,
       ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(keepWorking?{keep_working:true}:{})}};
   }
-  const provider=flags.get('--provider');
+  // A project and no address mean a new coding session. Resolve that choice in the owner,
+  // so callers do not have to remember a provider when an allowance changes.
+  const provider=flags.get('--provider')??(operation==='ask'&&!identity&&flags.has('--project')?'auto':undefined);
   const title=flags.get('--session-name')?.trim();
   if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
   if(title!==undefined&&!provider)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');

@@ -12,7 +12,8 @@ function candidatesForNewWork(now: number): Candidate[] {
   const candidates: Candidate[] = [];
   for (const provider of ['claude-code', 'codex'] as const) {
     const usage = providerAccountUsage(provider);
-    if (!usage || usage.problem || Date.parse(usage.observedAt) < now - FRESH_MS) continue;
+    const observedAt = Date.parse(usage?.observedAt ?? '');
+    if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - FRESH_MS) continue;
     const rooms = savedWorkAccountRooms(provider, usage, now);
     for (const room of rooms) {
       if (room.problem || room.tightestUsedPercent === null || (!room.home && !room.isDefault)) continue;
@@ -20,7 +21,7 @@ function candidatesForNewWork(now: number): Candidate[] {
       if (!account) continue;
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
       const relevant = account.windows.filter(window => window.name !== 'Weekly · Fable only');
-      if (!relevant.length) continue;
+      if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
       const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(account.label) : null;
       const used = cachedReset ? 100 : Math.max(...relevant.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)
