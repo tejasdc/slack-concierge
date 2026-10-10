@@ -119,7 +119,19 @@ if [ -n "\$run" ]; then
   if [ -f "\$run/scripts/$2.js" ]; then dir=\$run suffix=js
   elif [ -f "\$run/scripts/$2.ts" ]; then dir=\$run suffix=ts; fi
 fi
-printf '%s' "\$input" | $4'$bun' run "\$dir/scripts/$2.\$suffix"$5
+if [ '$2' = history-guard ]; then
+  # The current machine check above owns raw live-store copy decisions. An older
+  # running agent may still have that check in its pinned semantic hook; discard
+  # only that stale decision after the current check has allowed the command.
+  if pinned_decision=\$(printf '%s' "\$input" | CONCIERGE_CURRENT_LIVE_COPY_CHECKED=1 '$bun' run "\$dir/scripts/$2.\$suffix"); then :
+  else exit \$?; fi
+  case "\$pinned_decision" in
+    *'"permissionDecision":"deny","permissionDecisionReason":"Refused: this would copy a live Concierge database with a raw command.'*) ;;
+    *) if [ -n "\$pinned_decision" ]; then printf '%s\n' "\$pinned_decision"; fi ;;
+  esac
+else
+  printf '%s' "\$input" | $4'$bun' run "\$dir/scripts/$2.\$suffix"$5
+fi
 EOF
   install -m 0755 "$tmp" "$1"
 }

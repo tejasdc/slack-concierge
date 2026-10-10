@@ -32,7 +32,13 @@ try {
   symlinkSync(release,current);
   const old=join(root,'old/bot');
   mkdirSync(join(old,'scripts'),{recursive:true});
-  writeFileSync(join(old,'scripts/history-guard.js'),`process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',additionalContext:'PINNED_OLD_SEMANTIC'}})+'\\n');`);
+  writeFileSync(join(old,'scripts/history-guard.js'),`const command=JSON.parse((await Bun.stdin.text())||'{}').tool_input?.command||'';
+const hookSpecificOutput=command.includes('router-actions.sh sessions reply')&&command.includes('install a package')
+  ? {hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'Refused: this would copy a live Concierge database with a raw command. Old pinned check.'}
+  : command.includes('PINNED_OTHER_REFUSAL')
+    ? {hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'A different pinned semantic refusal.'}
+    : {hookEventName:'PreToolUse',additionalContext:'PINNED_OLD_SEMANTIC'};
+process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   const destination=join(root,'concierge-history-guard');
   const template=join(root,'template');
   const env={marker:'# test installer',dispatch:'# dispatch: per-run v2',tmp:template,bot:join(current,'control/bot'),suffix:'js',current_guard:guard,current_private:privateCommand,state:join(root,'state'),bun,guard:destination};
@@ -45,7 +51,8 @@ try {
     writeFileSync(inputPath,input);
     const output=Bun.spawnSync([destination],{env:{...process.env,CONCIERGE_ROUTER_BOT_DIR:old,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')},stdin:Bun.file(inputPath),stdout:'pipe',stderr:'pipe'});
     check(output.exitCode===0,`wrapper failed: ${output.stderr.toString()}`);
-    return JSON.parse(output.stdout.toString()).hookSpecificOutput;
+    const decision=output.stdout.toString().trim();
+    return decision ? JSON.parse(decision).hookSpecificOutput : {};
   };
   check(execute('echo safe').additionalContext==='PINNED_OLD_SEMANTIC','benign command did not reach pinned semantic hook');
   check(execute('bun run build').permissionDecision==='deny','inherited live build was not refused');
@@ -62,7 +69,8 @@ try {
   check(execute('sqlite3 -readonly "file:/root/.local/state/concierge/state.db?mode=ro" "SELECT 1"').additionalContext==='PINNED_OLD_SEMANTIC','read-only live query was refused');
   check(execute('/root/workspace/slack-concierge/systemd/router-actions.sh sessions list').additionalContext==='PINNED_OLD_SEMANTIC','router CLI was refused');
   const reply='/root/.local/bin/router-actions.sh sessions reply request-id --summary "Please install a package" -- "tar is mentioned as text"';
-  check(execute(reply).additionalContext==='PINNED_OLD_SEMANTIC','quoted reply text was mistaken for a copy command');
+  check(execute(reply).permissionDecision!== 'deny','old pinned copy policy still refused quoted reply text');
+  check(execute('echo PINNED_OTHER_REFUSAL').permissionDecision==='deny','a different pinned semantic refusal was lost');
   check(execute(reply+'; cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','router command hid a chained live copy');
   check(execute('echo "install a package" /root/.local/state/concierge/state.db').additionalContext==='PINNED_OLD_SEMANTIC','quoted prose was mistaken for a copy command');
   check(execute('timeout 10 cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','wrapped live copy was not refused');
@@ -75,6 +83,12 @@ try {
   check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could access canonical live state');
   const raw='sqlite3 /root/.local/state/'+'concierge/state.db "'+'.back'+'up /tmp/raw.db"';
   check(execute(raw).permissionDecision==='deny','current machine policy did not deny raw live copy');
+  const marked=Bun.spawnSync([bun,resolve(import.meta.dir,'history-guard.ts')],{
+    env:{...process.env,CONCIERGE_CURRENT_LIVE_COPY_CHECKED:'1'},
+    stdin:Buffer.from(JSON.stringify({tool_name:'Bash',tool_input:{command:raw},cwd:root})),
+    stdout:'pipe',stderr:'pipe'});
+  check(marked.exitCode===0&&!marked.stdout.toString().includes('permissionDecision'),
+    'new semantic hook repeated the machine copy decision');
   const releaseB=join(root,'release-b');
   mkdirSync(join(releaseB,'control/bot/scripts'),{recursive:true});
   renameSync(current,join(root,'former-current'));

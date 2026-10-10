@@ -96,7 +96,8 @@ try {
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {
-    reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    reason = (process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED === '1' ? null : liveStoreCopyRefusal(command, start))
+      ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {

@@ -438,19 +438,19 @@ export function claudeCodeArgs(input: {
 /**
  * Claude Code settings carrying the end-of-turn hook and the history guard, the same scripts Codex
  * runs as managed hooks. They run with the provider child's environment, which names the router
- * bot directory and the state database; the runtime is the one running Concierge, so no PATH
- * lookup is involved. The guard refuses a command that rewrites pushed history
- * (bot/scripts/history-guard.ts); it travels here because Claude's own settings file is
- * machine-local, so every agent this owner starts carries it on either machine.
+ * bot directory and the state database. The history hook uses the machine wrapper when present,
+ * so its current live-store policy runs before the run's pinned semantic hook. The direct pinned
+ * command remains a fallback for a machine awaiting its managed-hook installation.
  */
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
+const MANAGED_HISTORY_HOOK = `${process.env.CODEX_SYSTEM_DIR || "/etc/codex"}/hooks/concierge-history-guard`;
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"`, timeout: 20 }] }],
+    command: `if [ -x "${MANAGED_HISTORY_HOOK}" ]; then "${MANAGED_HISTORY_HOOK}"; else "${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] }],
 } });
 
 export async function runClaudeCodeTurn(input: {

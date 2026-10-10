@@ -739,6 +739,12 @@ with the exact request ID and source pair; it reads through the owner API.
 The raw-copy check recognizes copy tools in command position, so words such as
 `install` in a quoted reply are ordinary message text. A standalone session helper
 call is handled as an owner API call; a chained shell copy is still checked.
+The machine wrapper makes this current check authoritative before invoking an
+older running agent's pinned semantic hook. If that old hook repeats only the
+superseded raw-copy refusal, the wrapper drops it; other pinned refusals remain.
+New semantic hooks skip their duplicate raw-copy pass after the wrapper check.
+Claude's launch settings use that same machine wrapper when installed, so their
+additional hook runs the same current decision before its pinned semantic pass.
 The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
