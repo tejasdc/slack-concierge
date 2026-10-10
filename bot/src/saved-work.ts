@@ -285,13 +285,16 @@ export function waitingSavedWork():SavedTurn[] {return savedRows();}
  * The latest firing of a schedule places the next one as soon as it is due or has left the
  * queue by any path, whatever started it, so a firing a claim took first still has a successor.
  * A firing records its own instant because the claim clears its dispatch time.
- * Only dropping the schedule, or archiving or suspending its session, ends it.
+ * A queued firing in a paused session remains held for an explicit resume. A completed
+ * firing does not place a successor after its session is archived or suspended.
  */
 export function advanceRepeatingSchedules(now=Date.now()):number {
   let advanced=0;
   const due=db.query(`SELECT * FROM turns latest WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.saved_root_id=latest.saved_root_id AND later.saved_sequence>latest.saved_sequence)
     AND ((status='queued' AND dispatch_next_attempt_ms<=?) OR (status<>'queued' AND saved_fire_at_ms IS NOT NULL))
+    AND (latest.status<>'queued' OR EXISTS (SELECT 1 FROM sessions session WHERE session.id=latest.session_id
+      AND session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
     ORDER BY id`).all(now) as SavedTurn[];
   for(const row of due) {
     // One broken schedule must not stop the claim that every other session's work waits on.
