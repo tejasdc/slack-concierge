@@ -173,7 +173,8 @@ overnight runs covered by the retained Codex result, clear that particular stale
 record the transition, and wake the ordinary queue. The nightly review's and Adidas
 watch's next firings remain queued: their due times follow the Codex checks, so treating
 them as duplicates would skip real work. The superseded palette review watch is retired;
-the repair agent's exact retained alert becomes runnable. Historical interrupted turns
+the repair agent's retained, never-submitted notices become runnable in their accepted
+order. Historical interrupted turns
 remain visible and terminal rather than being replayed. An unrecognized new input,
 newer Pause, active or uncertain run, or still-open request makes that conversation stay
 stopped. The taste-mining conversation
