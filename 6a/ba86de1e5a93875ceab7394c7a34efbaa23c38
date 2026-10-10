@@ -1,0 +1,1 @@
+Updates now keep their own tools consistent throughout installation, and temporary storage failures are recorded so they cannot pass unnoticed.
