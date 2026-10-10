@@ -146,11 +146,10 @@ default, and explicit selections still use the alias table.
 
 The Codex allowance is [account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md)
 and was exhausted on a second account on September 16, 2026, so starting every
-session on Codex was not sustainable. The cheaper Codex tiers are now reached by
-[delegating bounded work](#delegation-and-escalation) from inside an Opus turn rather
-than by starting there. This is a default, not a fallback chain: an explicit
-human provider/model/effort choice wins over it, an already-bound session keeps
-its binding, and nothing reassigns work between providers on its own.
+session on Codex was not sustainable. That historical default is superseded for
+new unbound native sessions by [Automatic starts](#automatic-starts-for-new-work).
+An explicit human provider/model/effort choice wins, and an already-bound session
+keeps its binding.
 
 A project or channel that has selected its own provider keeps that selection.
 The `channels.provider_default` column is `NOT NULL DEFAULT 'codex'`, so a
@@ -164,17 +163,18 @@ data migration and cannot overwrite a deliberate choice.
 
 ### One provider policy
 
-The DM router classifies intent; the service does not infer a design or review request from task prose. Precedence is:
+The following precedence records the retired DM router and bound-session behavior.
+New unbound native sessions use [Automatic starts](#automatic-starts-for-new-work):
 
 1. The user's explicit provider, model, and reasoning-effort choice, expressed by the router with `--provider` and `--effort`.
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
-3. Other work omits the flag: an existing bound session retains its explicit provider/model binding; an unpinned Codex session resolves the current `cx` default from this alias table, and a new ordinary session resolves `DEFAULT_PROVIDER_ALIAS`, which is `cc-opus`. A project or channel that has selected its own provider still wins over that default.
+3. Other work omits the flag: an existing bound session retains its explicit provider/model binding; an unpinned Codex session resolves the current `cx` default from this alias table. New native sessions use Automatic; the historical Slack path resolves `DEFAULT_PROVIDER_ALIAS`, which is `cc-opus`.
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
 5. A provider outage never switches anything by itself. A stuck human message is offered the alternatives that answered a live check at that moment, and runs on one only when Tejas picks it (in the notification or on the message); see the `provider_outage` offer in the wire contract. This is a per-message choice, not a fallback chain, and it never changes a session's selected model (Tejas, 2026-09-22).
 6. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
 7. Within a selected provider, a running turn may start other agents in two directions: it delegates bounded work down to cheaper models and escalates a stuck problem up to a stronger independent investigator. The global instruction file's Model selection section is the authority for both (see [delegation and escalation](#delegation-and-escalation)); this document owns only the alias table they name. Neither direction changes the turn's own binding, adds a selection mechanism, or overrides an explicit user choice.
 
-The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, the configured default applies only at an eligible admission boundary; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
+The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, Automatic applies only when a new native session is created; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Already-bound sessions do not alternate providers automatically.
 
 Managed reviewer turns use this same adapter and fallback chain. Direct `claude -p` review subprocesses, deployment-repair CLI runs, and externally owned Codex turns bypass it; selecting a reviewer in prose does not give those runners automatic fallback. The [dispatch audit](../incidents/2026-09-15-provider-dispatch-fallback-audit.md) records that boundary. Their owning workflows must report quota failure explicitly and preserve the selected review/comparison counterpart; this router change does not claim to retrofit those runners.
 

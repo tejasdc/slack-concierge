@@ -321,8 +321,9 @@ authorization or a change to the default rapid-iteration policy.
   the live or recently completed session that built the surface in question when
   title, project, source, dialogue and send capability establish one exact owner.
   Mere topical similarity and consultation-only evidence do not authorize a resume;
-  clarify ambiguous ownership. Create a named `cc-opus` session in the registered
-  project when no session owns the work or the surface differs.
+  clarify ambiguous ownership. Create a named session in the registered project
+  without `--provider` when no session owns the work or the surface differs;
+  the owner chooses from current Claude and Codex headroom.
   Preserve an explicit human session/provider/model/effort choice, and discover an
   existing owner's exact address before asking it. The owner pins model,
   effort and cwd before dispatch. Preserve complete diagnostics/images in

@@ -115,20 +115,19 @@ router-actions.sh sessions ask '<exact-discovered-address>' \
 Mere topical similarity and consultation-only evidence do not establish an
 owner. Clarify ambiguous ownership instead of choosing a near-match. If no
 session owns the work or the surface is genuinely different, create a fresh
-Claude Opus session:
+session with automatic provider selection:
 
 ```bash
-router-actions.sh sessions ask --provider cc-opus \
+router-actions.sh sessions ask \
   --project thinkering --session-name 'Startup responsiveness' \
   --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
   --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
 ```
 
 The retained Slack source pair may replace the native pair. Never mix them.
-`cc-opus` is the configured default for a new session; a registered project that
-has its own selected default keeps that selection. Use another model alias,
-including `cx-sol` or `cx-astra`, for an explicit human choice; no escalation or
-fallback is silent.
+The owner chooses Claude or Codex from current usable account headroom when no
+provider is supplied. An explicit human provider or model choice stays pinned;
+no escalation or fallback is silent.
 `sessions projects` lists current canonical project folders under the workspace root:
 each has a real `AGENTS.md` and Git root. It no longer depends on the retained
 Slack `channels` table. `--project` resolves one exact listed name or cwd at the
@@ -137,7 +136,7 @@ not a routing target. Concierge implementation belongs to `slack-concierge`;
 Thinkering implementation belongs to `thinkering`. If a project is missing or
 unclear, ask instead of selecting an unrelated folder. The native Inbox router
 itself uses Claude Opus with 1M context in `slack-inbox`, while newly created
-destination sessions use Sol at medium effort. Alias resolution pins the exact
+destination sessions use the automatic choice. Alias resolution pins the exact
 model and effort in native session metadata and queued execution. `--session-name`
 sets the canonical title. No Slack root is created and no human origin is forged.
 An explicit human session/provider/model/effort choice takes precedence.
