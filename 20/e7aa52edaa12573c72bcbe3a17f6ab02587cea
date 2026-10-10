@@ -1,0 +1,1 @@
+Cancelling a page load keeps its reader available for future work, and frozen-owner recovery keeps working.
