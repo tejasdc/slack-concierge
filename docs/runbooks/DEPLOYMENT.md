@@ -728,8 +728,12 @@ it; a missing or failed guard refuses commands. The Mac source installer seals t
 guard under its machine hook directory. Neither installation restarts provider turns.
 
 Older providers can still inherit the live ledger setting. The current machine guard
-refuses their code/build/check launches and names the sealed `private-code-command`
-entrance in its refusal. That entrance creates fresh temporary ledger and capture paths
+refuses package runner launches that can import Concierge modules before a check chooses
+scratch state, and names the sealed `private-code-command` entrance in its refusal.
+Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries
+remain available. For request status and results, use `router-actions.sh sessions get`
+with the exact request ID and source pair; it reads through the owner API.
+The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
 check command. Router API commands and ordinary shell inspection remain available. This

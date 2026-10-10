@@ -55,7 +55,11 @@ try {
   const observed='cd /root/workspace/slack-concierge && git fetch -q && git worktree add -q /tmp/main-check origin/main 2>/dev/null; cd /tmp/main-check/bot && ln -sf /root/workspace/slack-concierge/.wt/ledger-own-fs/bot/node_modules node_modules && PATH=/root/.bun/bin:$PATH timeout 120 bun run scripts/archive-search-retention-check.ts > /tmp/main-archive.log 2>&1; echo "main: $?"; cd /root/workspace/slack-concierge/.wt/ledger-own-fs/bot && PATH=/root/.bun/bin:$PATH timeout 120 bun run scripts/archive-search-retention-check.ts > /tmp/mine-archive.log 2>&1; echo "mine: $?"; grep -v "^ *[0-9]* |" /tmp/mine-archive.log | grep -iE "error|refus|ledger link" | head -5';
   check(execute(observed).permissionDecision==='deny','literal observed multi-command launch was not refused');
   check(execute('bun run scripts/archive-search-retention-check.ts').permissionDecision==='deny','direct code check was not refused');
-  check(execute('python3 scripts/read-check.py').permissionDecision==='deny','Python code check was not refused');
+  check(execute('python3 -c "import json; print(json.loads(\'{}\'))"').additionalContext==='PINNED_OLD_SEMANTIC','Python JSON parsing was refused');
+  check(execute('node -e "JSON.parse(\'{}\')"').additionalContext==='PINNED_OLD_SEMANTIC','Node JSON parsing was refused');
+  check(execute('bun -e "JSON.parse(\'{}\')"').additionalContext==='PINNED_OLD_SEMANTIC','Bun inline parsing was refused');
+  check(execute('/root/.local/bin/router-actions.sh sessions search --source-input example --source-run example -- x | python3 -c "import json,sys; print(json.load(sys.stdin))"').additionalContext==='PINNED_OLD_SEMANTIC','piped router JSON parsing was refused');
+  check(execute('sqlite3 -readonly "file:/root/.local/state/concierge/state.db?mode=ro" "SELECT 1"').additionalContext==='PINNED_OLD_SEMANTIC','read-only live query was refused');
   check(execute('/root/workspace/slack-concierge/systemd/router-actions.sh sessions list').additionalContext==='PINNED_OLD_SEMANTIC','router CLI was refused');
   check(execute(`${bun} run ${privateCommand} -- /usr/bin/env`).additionalContext==='PINNED_OLD_SEMANTIC','sealed private command was refused');
   const privateEnv=run(bun,['run',privateCommand,'--','/usr/bin/env'],{CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')});
@@ -72,5 +76,5 @@ try {
   check(execute(raw).permissionDecision==='deny','rollback symlink lost installed guard');
   renameSync(guard,`${guard}.hidden`);
   check(execute('echo safe').permissionDecision==='deny','missing current guard did not fail closed');
-  console.log('PASS generated wrapper: pinned dispatch, inherited-live build/code refusal, private entrance, router CLI, raw copy refusal, rollback pin, missing-guard denial');
+  console.log('PASS generated wrapper: pinned dispatch, ordinary parsing and read-only queries, inherited-live package check refusal, private entrance, raw copy refusal, rollback pin, missing-guard denial');
 } finally {rmSync(root,{recursive:true,force:true});}

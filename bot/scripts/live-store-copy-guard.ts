@@ -24,14 +24,14 @@ function routerCommand(command:string){
   return /^\s*(?:(?:\/[^\s]+\/)?(?:bash|zsh|sh)\s+)?(?:[^\s]*\/)?router-actions\.sh(?:\s+.*)?$/.test(command);
 }
 function codeLaunch(command:string){
-  // Literal shell commands and router CLI access remain available. These forms launch
-  // code or package scripts that can import a ledger before a fixture creates scratch state.
+  // Package runners in the bot checkout can import ledger modules before a fixture
+  // replaces inherited state. General Python and Node commands are used for ordinary
+  // parsing and have no implicit Concierge module import; explicit live-store copies
+  // are checked separately by liveStoreCopyRefusal above.
   if(routerCommand(command))return false;
   const prefix='(?:[A-Za-z_]\\w*=\\S+\\s+|timeout\\s+\\d+\\s+|env\\s+|command\\s+)*';
   const entrance='(?:^|[;&|]\\s*|\\(\\s*)'+prefix;
-  return new RegExp(entrance+'(?:[^\\s;&|]*\\/)?(?:bun|node|python[\\d.]*|npm|npx|tsx|ts-node)\\s+(?!--?(?:version|help|v|h)(?:\\s|$))\\S','i').test(command)
-    || new RegExp(entrance+'(?:[^\\s;&|]*\\/)?(?:bash|zsh|sh)\\s+(?:-c\\b|[^\\s;&|]+\\.sh\\b)','i').test(command)
-    || new RegExp(entrance+'(?:\\.\\.?\\/|\\/)[^\\s;&|]+\\.(?:sh|py|[cm]?[jt]s)\\b','i').test(command);
+  return new RegExp(entrance+'(?:[^\\s;&|]*\\/)?(?:bun\\s+run|npm\\s+run|npx|tsx|ts-node)\\s+\\S','i').test(command);
 }
 
 let hook: any;
