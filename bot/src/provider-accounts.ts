@@ -296,6 +296,9 @@ function adoptLegacyClaudeProfiles(): void {
 }
 
 function profileSources(provider: ProviderKey): Map<string, string> {
+  return new Map(accountFilesView(`sources:${provider}`, () => [...readProfileSources(provider)]));
+}
+function readProfileSources(provider: ProviderKey): Map<string, string> {
   if (provider === "claude-code") adoptLegacyClaudeProfiles();
   const sources = new Map<string, string>();
   for (const entry of installedAccounts(provider)) sources.set(entry.id, entry.path);
@@ -372,6 +375,9 @@ export function keptProfileCount(provider: ProviderKey): number {
 }
 
 export function listProfiles(provider: ProviderKey): ProviderProfile[] {
+  return accountFilesView(`profiles:${provider}`, () => readProfiles(provider)).map(profile => ({ ...profile }));
+}
+function readProfiles(provider: ProviderKey): ProviderProfile[] {
   const active = currentAccount(provider);
   return [...profileSources(provider).entries()]
     .map(([id, path]) => {
@@ -432,6 +438,7 @@ export function profileSignedIn(provider: ProviderKey, id: string): boolean {
  * surface that still asks for one is told how accounts are kept instead.
  */
 export function saveProfile(_provider: ProviderKey, _label: string): ProviderProfile[] {
+  forgetAccountFiles();
   throw new Error("Accounts are kept by signing in to them. A copied login stops working as soon as the original renews.");
 }
 
@@ -477,6 +484,7 @@ export type CodexAccountMove = Readonly<{ incoming: ProviderAccount; outgoing: P
  * were, so a failed switch leaves exactly the machine he had.
  */
 export function moveCodexAccountIntoUse(source: string): CodexAccountMove {
+  forgetAccountFiles();
   const live = credentialPath("codex");
   const incoming = codexAccount(readJson(source));
   if (!incoming) throw new Error("That saved account holds no Codex login.");
@@ -494,6 +502,7 @@ export function moveCodexAccountIntoUse(source: string): CodexAccountMove {
   }
   renameSync(source, live);
   memo.delete("codex");
+  forgetAccountFiles();
   log("info", "provider_profile_moved_into_use", { provider: "codex", replaced_kept: !!outgoingTarget });
   return {
     incoming, outgoing,
@@ -511,6 +520,7 @@ export function moveCodexAccountIntoUse(source: string): CodexAccountMove {
         step("kept", outgoingAside, outgoingTarget);
       } else step("previous", liveAside, live);
       memo.delete("codex");
+      forgetAccountFiles();
       log(failed.length ? "error" : "info", "provider_profile_move_undone", { provider: "codex", failed_steps: failed });
     },
   };

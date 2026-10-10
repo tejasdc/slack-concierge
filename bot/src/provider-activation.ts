@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
+import { forgetAccountFiles } from "./account-files-memo";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
@@ -429,6 +430,7 @@ export function watchAuthHeldCredentials(): () => void {
       const filename=basename(path);
       const watcher=watch(dirname(path),(event,changed)=>{
         if(changed && String(changed)!==filename)return;
+        forgetAccountFiles();
         const prior=debounce.get(provider);if(prior)clearTimeout(prior);
         debounce.set(provider,setTimeout(()=>{debounce.delete(provider);check(provider,source);},350));
       });
