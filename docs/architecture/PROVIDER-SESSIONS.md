@@ -170,10 +170,13 @@ paused on October 10. On a fresh, usable Claude reading it compares each convers
 latest Pause action, exact expected accepted inputs, current queue, pending request
 authority and active attempts. Only on an exact match does one transaction mark the
 overnight runs covered by the retained Codex result, clear that particular stale Pause,
-record the transition, and wake the ordinary queue. The nightly review's already queued
-future firing is preserved; other repeating schedules place their next firing through
-their existing rule. A new input, newer Pause, uncertain run, or
-still-open request makes that conversation stay stopped. The taste-mining conversation
+record the transition, and wake the ordinary queue. The nightly review's and Adidas
+watch's next firings remain queued: their due times follow the Codex checks, so treating
+them as duplicates would skip real work. The superseded palette review watch is retired;
+the repair agent's exact retained alert becomes runnable. Historical interrupted turns
+remain visible and terminal rather than being replayed. An unrecognized new input,
+newer Pause, active or uncertain run, or still-open request makes that conversation stay
+stopped. The taste-mining conversation
 with an open original request is intentionally outside this repair until that request's
 result authority is reconciled. This is an exact historical migration, not a prefix-based
 policy for future pauses. It does not spend reset credits or change account bindings.
