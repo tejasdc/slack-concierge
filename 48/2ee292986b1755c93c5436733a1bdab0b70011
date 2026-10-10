@@ -1,0 +1,1 @@
+The new thread start times are filled in quickly at startup instead of holding the thread list for minutes.
