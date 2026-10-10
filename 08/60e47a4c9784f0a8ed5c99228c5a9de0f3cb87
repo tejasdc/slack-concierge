@@ -1,0 +1,1 @@
+Concierge now preserves its database locks during background storage checks and applies database updates only while its coordinator is stopped, keeping running agents alive.
