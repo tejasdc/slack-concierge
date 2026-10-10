@@ -1,0 +1,1 @@
+The update check now starts its critical work claim check before other checks compete for the busy server, so a valid update is less likely to be refused during installation.
