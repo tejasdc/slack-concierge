@@ -4212,7 +4212,14 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           requireCanvasRefresh,
           refreshCanvases: () => runStartupPhase('canvas_refresh', refreshRequiredCanvases),
           startRuntime: async () => {
-            await runStartupPhase('slack_connection', () => app.start());
+            // The native owner must serve accepted work even when the retired Slack
+            // socket cannot complete its TLS handshake. Keep its connection attempt
+            // alive; only the Slack sandbox requires it before serving.
+            const slackConnection=runStartupPhase('slack_connection', () => app.start());
+            if(sandboxSlackIdentity)await slackConnection;
+            else void slackConnection.catch(error=>log('warn','slack_connection_unavailable',{
+              error:error instanceof Error?error.message:String(error),
+            }));
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null));
             sessionExecutionHost.markOwnerServing();
