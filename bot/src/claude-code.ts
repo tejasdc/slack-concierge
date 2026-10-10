@@ -464,6 +464,7 @@ export async function runClaudeCodeTurn(input: {
   systemPrompt?: string;
   environment?: Record<string, string>;
   accountLabel?: string;
+  usageProbe?: boolean;
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
@@ -516,9 +517,9 @@ export async function runClaudeCodeTurn(input: {
     }
     return undefined;
   };
-  const selectedModel = input.adopted ? input.model : input.model
+  const selectedModel = input.adopted || input.usageProbe ? input.model : input.model
     ? selectAvailableModel([input.model, ...claudeUsageFallbackModels(input.model)]) : undefined;
-  if (input.model && !selectedModel && !input.adopted) assertUsageAvailable(usageAttempt("claude-code", input.model, input.accountLabel));
+  if (input.model && !selectedModel && !input.adopted && !input.usageProbe) assertUsageAvailable(usageAttempt("claude-code", input.model, input.accountLabel));
   if (selectedModel && selectedModel !== input.model) {
     input.onProgress?.({ type: "narration", text: `Starting with ${selectedModel} because the preferred model has a cached usage limit.` });
   }
@@ -859,7 +860,7 @@ export async function runClaudeCodeTurn(input: {
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
         || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
     if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
-    const model = selectAvailableModel(fallbackModels);
+    const model = input.usageProbe ? undefined : selectAvailableModel(fallbackModels);
     if (!model) return false;
     fallbackModels = fallbackModels.slice(fallbackModels.indexOf(model) + 1);
     const requestId = `concierge_model_${++nextControlRequestId}`;

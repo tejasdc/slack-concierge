@@ -192,6 +192,34 @@ export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "acco
   return released;
 }
 
+/** A successful manual check proves only the attempted account and model, not every refusal. */
+export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, defaultModelWasChecked = false): {released:number;turnIds:number[]} {
+  const rows = db.query(`SELECT turns.id,
+    COALESCE(turns.provider_model,(SELECT earlier.provider_model FROM turns earlier
+      WHERE earlier.session_id=turns.session_id AND earlier.id<turns.id
+        AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS provider_model FROM turns
+    JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('backoff','usage_wait')
+      AND turns.dispatch_hold='usage'
+      AND sessions.provider_id=?`).all(attempt.provider) as {id:number;provider_model:string|null}[];
+  const ids = rows.filter(row => attempt.provider === 'codex' ||
+    (row.provider_model === null ? defaultModelWasChecked : usageAttempt('claude-code',row.provider_model,account).scope===attempt.scope))
+    .map(row=>row.id);
+  if (!ids.length) return {released:0,turnIds:[] as number[]};
+  const turnIds=db.transaction(()=>{
+    const moved:number[]=[];
+    for(const id of ids){const row=db.query(`UPDATE turns SET dispatch_next_attempt_ms=0,dispatch_failure_class='backoff'
+      WHERE id=? AND status='queued' AND dispatch_hold='usage'
+        AND dispatch_failure_class IN ('backoff','usage_wait')
+        AND (dispatch_failure_class='usage_wait' OR COALESCE(dispatch_next_attempt_ms,0)>0)
+        RETURNING id`).get(id) as {id:number}|null;
+      if(row)moved.push(row.id);}
+    return moved;
+  }).immediate();
+  if(turnIds.length){log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});announceUsageHoldEnded(attempt.provider,'manual_check',turnIds.length,new Set(turnIds));}
+  return {released:turnIds.length,turnIds};
+}
+
 /**
  * Held work is moving again, so every notice that said it was waiting on this provider's
  * allowance gets a resolution event, which Thinkering turns into taking that notice back from
@@ -199,7 +227,7 @@ export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "acco
  * held inputs at 5:59 PM, and two "Claude has no usage left" notices stayed on his Lock Screen
  * past 8 PM. The sign-in hold already announces its end the same way (provider-activation.ts).
  */
-function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, released: number) {
+function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, released: number, turnIds?: ReadonlySet<number>) {
   try {
     const notices = db.query(`SELECT event_id, session_id, input_id, turn_id FROM session_owner_events e
       WHERE kind='provider_outage' AND created_at > datetime('now','-2 days')
@@ -207,7 +235,7 @@ function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, rel
         AND NOT EXISTS (SELECT 1 FROM session_owner_events r WHERE r.event_id = e.event_id || ':resolved')`)
       .all(`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`, `provider-usage-forecast:${provider}:%`) as
       { event_id: string; session_id: number; input_id: string | null; turn_id: number | null }[];
-    for (const notice of notices)
+    for (const notice of notices.filter(notice=>!turnIds||notice.turn_id!==null&&turnIds.has(notice.turn_id)))
       recordSessionEvent({ eventId: `${notice.event_id}:resolved`, sessionId: notice.session_id, inputId: notice.input_id,
         turnId: notice.turn_id, kind: "provider_outage_resolved",
         payload: { provider, usage: { released_by: releasedBy, released_inputs: released } } });

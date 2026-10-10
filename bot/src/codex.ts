@@ -425,6 +425,7 @@ export interface RunCodexTurnInput {
   clientUserMessageId?: string;
   environment?: Record<string, string>;
   accountLabel?: string;
+  usageProbe?: boolean;
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
@@ -1591,7 +1592,7 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
   assertProviderInteractionPolicy(input.interactionPolicy);
   const attempt = usageAttempt("codex", undefined, input.accountLabel);
   // A turn being taken back is already the daemon's; refusing it on usage would abandon it running.
-  if (!input.adoptTurn && !input.adopted) assertUsageAvailable(attempt);
+  if (!input.adoptTurn && !input.adopted && !input.usageProbe) assertUsageAvailable(attempt);
   let resetAt: number | null = null;
   const onRateLimits = input.onRateLimits;
   input = { ...input, onRateLimits(snapshot) {

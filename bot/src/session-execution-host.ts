@@ -84,7 +84,7 @@ import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
-import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
+import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome,admitProvenClaudeWaitingTurn} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {storedUsage} from './provider-usage-forecast';
@@ -95,7 +95,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork} from './provider-usage';
+import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -325,19 +325,90 @@ export class SessionExecutionHost {
     if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;
   }
-  /** One user-requested retry, using the retained turns as the provider check. */
-  private async retryHeldUsage(){
-    const retried:Record<'claude-code'|'codex',boolean>={'claude-code':false,codex:false};
+  /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
+  private usageCheck:Promise<unknown>|null=null;
+  private usageProbeRunning=false;
+  private usageProbeContext:{provider:'claude-code'|'codex';account:string;model:string|null}|null=null;
+  private retryHeldUsage(){
+    if(this.usageCheck)return this.usageCheck;
+    const check=this.checkHeldUsage().finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
+    this.usageCheck=check;
+    return check;
+  }
+  private async checkHeldUsage(){
+    if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
+      detail:'The previous provider check is still stopping; no new check was started.'};
     for(const provider of ['claude-code','codex'] as const){
-      const waiting=db.query(`SELECT 1 FROM turns JOIN sessions ON sessions.id=turns.session_id
-        WHERE turns.status='queued' AND turns.dispatch_hold='usage' AND turns.dispatch_failure_class='backoff'
-          AND sessions.provider_id=? LIMIT 1`).get(provider);
+      const home=provider==='claude-code'?selectedClaudeHome():null;
+      const accountLabel=home?.label??currentAccount(provider)?.label;
+      if(!accountLabel)continue;
+      const waiting=db.query(`SELECT COALESCE(turns.provider_model,
+          (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
+            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model
+        FROM turns JOIN sessions ON sessions.id=turns.session_id
+        WHERE turns.status='queued' AND turns.dispatch_hold='usage'
+          AND turns.dispatch_failure_class IN ('backoff','usage_wait')
+          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null}|null;
       if(!waiting)continue;
-      clearProviderUsage(provider);
-      retried[provider]=true;
+      const attempt=usageAttempt(provider,waiting.model??'unresolved',accountLabel);
+      const priorLimit=cachedUsageLimit(attempt);
+      const runner=this.options.providers[provider];
+      if(!runner)return {status:'unconfirmed',provider,account:accountLabel,detail:'The provider is not available on this machine.'};
+      try{
+        const cancellation:{stop:(()=>Promise<void>)|null}={stop:null};
+        let expired=false;
+        let deadline:ReturnType<typeof setTimeout>|null=null;
+        this.usageProbeContext={provider,account:accountLabel,model:waiting.model};
+        this.usageProbeRunning=true;
+        const execution=Promise.resolve().then(()=>runner.run({
+          prompt:'Reply OK. Do not use tools.',cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
+          model:waiting.model??undefined,accountLabel,interactionPolicy:'consultation-only',usageProbe:true,
+          ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{}),
+          onCancellationReady:stop=>{cancellation.stop=stop;if(expired)void stop().catch(()=>{});},
+        })).then(answer=>({kind:'success' as const,answer}),error=>({kind:'failure' as const,error}))
+          .finally(()=>{this.usageProbeRunning=false;this.usageProbeContext=null;});
+        const timeout=new Promise<{kind:'timeout'}>(resolve=>{
+          deadline=setTimeout(()=>resolve({kind:'timeout'}),60_000);
+          deadline.unref?.();
+        });
+        const result=await Promise.race([execution,timeout]);
+        if(deadline)clearTimeout(deadline);
+        if(result.kind==='timeout'){
+          expired=true;
+          if(cancellation.stop)void cancellation.stop().catch(()=>{});
+          let stopWait:ReturnType<typeof setTimeout>|null=null;
+          await Promise.race([execution,new Promise<void>(resolve=>{
+            stopWait=setTimeout(resolve,10_000);
+            stopWait.unref?.();
+          })]);
+          if(stopWait)clearTimeout(stopWait);
+          return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+            detail:'The provider did not finish within a minute. Stop was requested; waiting work remains held.'};
+        }
+        if(result.kind==='failure')throw result.error;
+        if((provider==='claude-code'?selectedClaudeHome()?.label??currentAccount(provider)?.label:currentAccount(provider)?.label)!==accountLabel)
+          return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,detail:'The selected account changed during the check.'};
+        const actualModel=waiting.model??result.answer.model??null;
+        if(provider==='claude-code'&&!actualModel)return {status:'unconfirmed',provider,account:accountLabel,
+          model:null,detail:'The provider answered but did not identify the model it used.'};
+        const provenAttempt=usageAttempt(provider,actualModel??undefined,accountLabel);
+        const {released,turnIds}=releaseProvenUsageHolds(provenAttempt,accountLabel,provider==='claude-code'&&!waiting.model);
+        if(provider==='claude-code'&&released){
+          const revision=claudeAccountSelection()?.revision??0;
+          for(const turnId of turnIds)admitProvenClaudeWaitingTurn(turnId,accountLabel,revision);
+        }
+        if(released)this.options.wake();
+        return {status:'available',provider,account:accountLabel,model:actualModel,released};
+      }catch(error){
+        const latest=cachedUsageLimit(usageAttempt(provider,waiting.model??'unresolved',accountLabel));
+        const message=error instanceof Error?error.message:String(error);
+        const refused=provider==='claude-code'?/^Claude usage is exhausted\b/.test(message)
+          :/^you(?:'|’)ve hit your usage limit\b/i.test(message);
+        return {status:refused||latest&&latest.revision>(priorLimit?.revision??-1)?'still_limited':'unconfirmed',
+          provider,account:accountLabel,model:waiting.model,detail:String(error)};
+      }
     }
-    if(retried['claude-code']||retried.codex)this.options.wake();
-    return {retried};
+    return {status:'no_waiting'};
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();

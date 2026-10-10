@@ -1166,10 +1166,11 @@ commit does not change immutable LKG control until proven promotion; use the
 failures, and never enroll its detached owner alongside an active normal runner.
 
 Provider exhaustion and early top-up/reset invalidation use the shared
-[usage cache](docs/architecture/PROVIDER-USAGE.md). Accounts Refresh retries held work
-once on his press; the shell clear remains for operator recovery.
-Never bypass a known usage limit merely to force another attempt. Clear does not
-authorize replay or resume stopped work.
+[usage cache](docs/architecture/PROVIDER-USAGE.md). Accounts Refresh checks one
+held account/model scope with at most one tool-free provider call per reachable machine on his press;
+only a successful check moves matching waiting work. The shell clear remains for
+operator recovery. Never bypass a known usage limit outside that deliberate check.
+Clear does not authorize replay or resume stopped work.
 The separate [usage breakdown](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance)
 reads provider transcripts off the owner event loop and stores its cursor outside the ledger.
 
