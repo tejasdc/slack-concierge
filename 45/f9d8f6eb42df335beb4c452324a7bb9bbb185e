@@ -1,0 +1,1 @@
+The recovery check now reaches every held conversation instead of getting stuck on the first group.
