@@ -366,12 +366,22 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
     const claude = claudeCapacity;
     const codex = codexCapacity;
     if (bothNear && claude && codex && claude.windowResetAt && codex.windowResetAt) {
-      const key = `both-providers-at-${NOTICE_AT_PERCENT}:${allowancePeriod(new Date(claude.windowResetAt).toISOString())}:${allowancePeriod(new Date(codex.windowResetAt).toISOString())}`;
-      published ||= publishProviderFreeNotice(db, {key,kind:'provider_usage_warning',
-        text:'Both Claude and Codex are at or above 90% on the accounts that can start new work. Automatic new work uses whichever still has room. If both run out, new requests wait for the first usable allowance reset; work already running keeps its provider.',
-        payload:{providers:['claude-code','codex'],thresholdPercent:NOTICE_AT_PERCENT,
-          claudeUsedPercent:claude.used,codexUsedPercent:codex.used,
-          resetsAt:new Date(Math.min(claude.windowResetAt,codex.windowResetAt)).toISOString()}});
+      // Account eligibility can change before either provider refills. That must not turn
+      // one period of shared pressure into a second warning with a different reset key.
+      const open = db.query(`SELECT 1 FROM session_inputs input
+        JOIN session_owner_events event ON event.input_id=input.id AND event.kind='provider_usage_warning'
+        WHERE input.scope=? AND json_extract(event.payload_json,'$.providers') IS NOT NULL
+          AND json_extract(event.payload_json,'$.resetsAt')>?
+          AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)
+        LIMIT 1`).get(SERVICE_NOTICE_SCOPE,new Date().toISOString());
+      if (!open) {
+        const key = `both-providers-at-${NOTICE_AT_PERCENT}:${allowancePeriod(new Date(claude.windowResetAt).toISOString())}:${allowancePeriod(new Date(codex.windowResetAt).toISOString())}`;
+        published ||= publishProviderFreeNotice(db, {key,kind:'provider_usage_warning',
+          text:'Both Claude and Codex are at or above 90% on the accounts that can start new work. Automatic new work uses whichever still has room. If both run out, new requests wait for the first usable allowance reset; work already running keeps its provider.',
+          payload:{providers:['claude-code','codex'],thresholdPercent:NOTICE_AT_PERCENT,
+            claudeUsedPercent:claude.used,codexUsedPercent:codex.used,
+            resetsAt:new Date(Math.min(claude.windowResetAt,codex.windowResetAt)).toISOString()}});
+      }
     }
   } catch (error) { log('error','combined_provider_usage_notice_failed',
     {error:error instanceof Error?error.message:String(error)}); }
@@ -412,8 +422,10 @@ function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare
 function settleRefilledUsageWarnings(): void {
   const rows = db.query(`SELECT input.id, event.payload_json FROM session_inputs input
     JOIN session_owner_events event ON event.input_id=input.id AND event.kind='provider_usage_warning'
-    WHERE input.scope=? AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)`)
+    WHERE input.scope=? AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)
+    ORDER BY event.sequence`)
     .all(SERVICE_NOTICE_SCOPE) as { id: string; payload_json: string }[];
+  let sharedWarningActive = false;
   for (const row of rows) {
     try {
       const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string; providers?: string[]; thresholdPercent?: number };
@@ -424,6 +436,12 @@ function settleRefilledUsageWarnings(): void {
         continue;
       }
       const resetsAtMs = Date.parse(payload.resetsAt ?? "");
+      if (payload.providers && Number.isFinite(resetsAtMs) && resetsAtMs > Date.now()) {
+        if (sharedWarningActive) settleServiceNotice({inputId:row.id,
+          text:'This repeated warning has closed. The first warning remains active.'});
+        else sharedWarningActive = true;
+        continue;
+      }
       if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
         text: payload.providers
