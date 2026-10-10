@@ -9,6 +9,7 @@ type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:st
   provider_turn_id:string|null;provider_input_acknowledged_at:string|null;saved_kind:string|null};
 
 let reconciling=false;
+let scanAfterTurnId=0;
 
 function waitingTurns(sessionId:number):WaitingTurn[] {
   return db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,
@@ -139,19 +140,25 @@ export function recoverExhaustedClaudeWork():number {
   if(reconciling)return 0;
   const claude=newWorkCapacity('claude-code');
   const codex=newWorkCapacity('codex');
-  if(!claude||claude.used<100||!codex||codex.used>=100)return 0;
+  if(!claude||claude.used<100||!codex||codex.used>=100){scanAfterTurnId=0;return 0;}
   reconciling=true;
   try {
     let moved=0;
-    const sessions=db.query(`SELECT DISTINCT turn.session_id AS id FROM turns turn
+    const sessions=db.query(`SELECT turn.session_id AS id,MIN(turn.id) AS oldest_turn_id FROM turns turn
       JOIN sessions session ON session.id=turn.session_id
       WHERE session.provider_id='claude-code' AND turn.status='queued' AND turn.dispatch_hold='usage'
-      ORDER BY turn.id LIMIT 20`).all() as {id:number}[];
+        AND turn.id>?
+      GROUP BY turn.session_id ORDER BY oldest_turn_id LIMIT 20`).all(scanAfterTurnId) as
+      {id:number;oldest_turn_id:number}[];
     for(const session of sessions){
       try{moved+=db.transaction(()=>transferSession(session.id)).immediate();}
       catch(error){log('error','provider_recovery_failed',{source_session_id:session.id,
         error:error instanceof Error?error.message:String(error)});}
     }
+    if(sessions.length===20){
+      scanAfterTurnId=sessions[sessions.length-1]!.oldest_turn_id;
+      setImmediate(recoverExhaustedClaudeWork);
+    } else scanAfterTurnId=0;
     if(moved)executionChanged();
     return moved;
   } finally {reconciling=false;}

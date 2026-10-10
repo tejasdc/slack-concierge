@@ -117,6 +117,8 @@ account is exhausted and the signed-in Codex account has verified room, it trans
 eligible accepted work into a linked, independent Codex session. The Inbox router is
 excluded and stays bound to Claude. No provider or account is switched inside a running
 conversation.
+The owner scans held sessions in bounded pages and yields between pages. An ineligible
+session cannot keep later sessions out of recovery indefinitely.
 
 Eligibility is deliberately narrower than a usage hold. The source session must be active
 and unsuspended, with no running or unresolved execution, outgoing helper, dependency,
