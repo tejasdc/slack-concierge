@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { db } from './state-database';
 import { installLedgerBarrier } from './ledger-durability-barrier';
@@ -22,7 +23,7 @@ const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 4 * 1024 * 1024 *
 
 type Waiter = { changes: number; resolve: () => void };
 const counters = { syncs: 0, slowSyncs: 0, slowestSyncMs: 0, lastSyncMs: 0, checkpoints: 0, slowestCheckpointMs: 0,
-  lastCheckpointAt: null as string | null, restarts: 0, failure: null as string | null };
+  lastCheckpointAt: null as string | null, failure: null as string | null };
 /** Once the owner's connection stops syncing (`deferred`), it never syncs again for the life of
  * the process, and only a confirmed sync releases anything. A thread that fails is replaced while
  * waiters keep waiting: returning to synchronous commits would put the disk wait back on the loop. */
@@ -62,31 +63,52 @@ function durable(): Promise<void> {
   });
 }
 
-function fail(reason: string) {
+/** Only the sync thread that was open when a commit skipped its sync can vouch for it: Linux
+ * reports a failed write-back to descriptors open at the time, so a replacement could report
+ * success over a lost write. Once commits stop syncing, losing that thread restarts the owner,
+ * which reopens the ledger from what is actually on disk; nothing unsynced was ever answered.
+ * The checkpoint thread proves nothing and is simply replaced. */
+function fail(role: 'sync' | 'checkpoint', reason: string) {
   if (!threads) return;
+  counters.failure = reason;
+  if (role === 'sync' && deferred) {
+    // Written synchronously: the bounded log sink is asynchronous and the process ends here.
+    writeSync(2, JSON.stringify({ ts: new Date().toISOString(), level: 'critical', event: 'ledger_durability_lost', reason, waiters: waiters.length }) + '\n');
+    process.exit(75);
+  }
+  log('error', 'ledger_durability_thread_failed', { role, reason, restart_ms: RESTART_AFTER_MS });
+  if (role === 'checkpoint') {
+    const failed = threads.checkpoint;
+    void failed.terminate();
+    setTimeout(() => { if (threads?.checkpoint === failed) threads.checkpoint = startWorker('checkpoint'); }, RESTART_AFTER_MS).unref();
+    return;
+  }
   const { sync, checkpoint } = threads;
   threads = null; inFlight = null;
-  counters.failure = reason;
-  log('error', 'ledger_durability_thread_failed', { reason, waiters: waiters.length, restart_ms: RESTART_AFTER_MS });
   void sync.terminate(); void checkpoint.terminate();
   restartLater();
 }
 
-/** Durability has no fallback that keeps the loop free, so a failed thread is replaced for as long
- * as it takes; each failure is logged at error level for the repair agent. */
+/** Before commits stop syncing nothing is owed, so a failed start is simply tried again. */
 function restartLater() { setTimeout(startThreads, RESTART_AFTER_MS).unref(); }
+
+function startWorker(role: 'sync' | 'checkpoint'): Worker {
+  const worker = new Worker(releaseWorkerPath('ledger-durability-worker'), { workerData: { role, databasePath, ...CHECKPOINT } });
+  worker.unref();
+  worker.on('error', error => { if (threads?.[role] === worker) fail(role, `${role} thread error: ${error.message}`); });
+  worker.on('exit', code => { if (threads?.[role] === worker) fail(role, `${role} thread exited with ${code}`); });
+  if (role === 'checkpoint') worker.on('message', (result: { ms: number; bytes: number; ioPressure: number; busy?: number; log?: number; checkpointed?: number; error?: string }) => {
+    counters.checkpoints++; counters.lastCheckpointAt = new Date().toISOString();
+    counters.slowestCheckpointMs = Math.max(counters.slowestCheckpointMs, Math.round(result.ms));
+    log(result.error ? 'warn' : 'info', 'ledger_checkpoint', { ...result, ms: Math.round(result.ms) });
+  });
+  return worker;
+}
 
 function startThreads() {
   if (threads) return;
-  const start = (role: 'sync' | 'checkpoint') => {
-    const worker = new Worker(releaseWorkerPath('ledger-durability-worker'), { workerData: { role, databasePath, ...CHECKPOINT } });
-    worker.unref();
-    worker.on('error', error => { if (threads?.[role] === worker) fail(`${role} thread error: ${error.message}`); });
-    worker.on('exit', code => { if (threads?.[role] === worker) fail(`${role} thread exited with ${code}`); });
-    return worker;
-  };
   let sync: Worker, checkpoint: Worker;
-  try { sync = start('sync'); checkpoint = start('checkpoint'); }
+  try { sync = startWorker('sync'); checkpoint = startWorker('checkpoint'); }
   catch (error) {
     log('error', 'ledger_durability_thread_failed', { reason: error instanceof Error ? error.message : String(error), restart_ms: RESTART_AFTER_MS });
     restartLater();
@@ -104,15 +126,12 @@ function startThreads() {
         db.exec('PRAGMA wal_autocheckpoint = 0');
         deferred = true;
         log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes });
-      } else {
-        counters.restarts++; counters.failure = null;
-        log('warn', 'ledger_durability_thread_restarted', { waiters: waiters.length });
       }
       pump();
       return;
     }
     if (!inFlight) return;
-    if (reply.error) { fail(`log sync failed: ${reply.error}`); return; }
+    if (reply.error) { fail('sync', `log sync failed: ${reply.error}`); return; }
     const ms = performance.now() - inFlight.since;
     synced = Math.max(synced, inFlight.changes);
     inFlight = null;
@@ -122,11 +141,6 @@ function startThreads() {
     if (ms >= SLOW_SYNC_MS) { counters.slowSyncs++; log('warn', 'ledger_durability_slow_sync', { ms: Math.round(ms), sync_ms: Math.round(reply.ms ?? 0), waiters: waiters.length }); }
     settle();
     pump();
-  });
-  checkpoint.on('message', (result: { ms: number; bytes: number; ioPressure: number; busy?: number; log?: number; checkpointed?: number; error?: string }) => {
-    counters.checkpoints++; counters.lastCheckpointAt = new Date().toISOString();
-    counters.slowestCheckpointMs = Math.max(counters.slowestCheckpointMs, Math.round(result.ms));
-    log(result.error ? 'warn' : 'info', 'ledger_checkpoint', { ...result, ms: Math.round(result.ms) });
   });
 }
 

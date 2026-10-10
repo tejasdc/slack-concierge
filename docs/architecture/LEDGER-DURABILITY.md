@@ -54,10 +54,15 @@ operations, and this change removes the measured wait without changing any trans
 The owner's connection switches to NORMAL only after the sync thread has opened its descriptor on
 the log, so a writeback error after that point reaches the descriptor that vouches for it. From
 then on it never returns to synchronous commits: that would put the disk wait back on the loop.
-If either thread errors or exits, or a sync fails (including a replaced log file), both threads are
-replaced after five seconds, for as long as it takes, each failure logged as
-`ledger_durability_thread_failed` (error). Waiters are never released without a confirmed sync and
-the barrier never rejects, so outbound effects wait (fail closed) while durability is unproven. A
+Only the sync thread that was open when a commit skipped its sync can vouch for it: Linux reports
+a failed write-back to descriptors open at the time, so a replacement could report success over a
+lost write. So once commits stop syncing, a sync thread that errors, exits or reports a failed sync
+(including a replaced log file) ends the owner process with `ledger_durability_lost` (critical,
+written synchronously to stderr) and exit status 75; systemd restarts it and it reopens the ledger
+from what is actually on disk, which is the same recovery as the supervisor's kill. Nothing
+unsynced was ever answered. A checkpoint thread that fails is replaced after five seconds
+(`ledger_durability_thread_failed`, error); it proves nothing. Waiters are never released
+without a confirmed sync and the barrier never rejects. A
 sync that has not returned for a minute is logged as `ledger_durability_sync_stalled` (error) each
 minute and is never treated as done. Stopping the request API leaves the threads running until the
 process exits, so commits made while it drains still gate what leaves. `meaning-index.db` (a derived,
@@ -71,4 +76,4 @@ until those passages are indexed again.
   time, waiters, age of the sync in flight, unsynced changes, checkpoint counts. This is database
   completion latency, kept apart from the owner's loop lag (`owner_event_loop_lag`).
 - `ledger_durability_slow_sync` (warn, sync ≥ 1 s), `ledger_checkpoint` (each checkpoint, with
-  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_thread_failed`, `ledger_durability_thread_restarted`, `ledger_durability_sync_stalled`.
+  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`.
