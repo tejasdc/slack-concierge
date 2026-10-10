@@ -84,7 +84,7 @@ import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
-import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome} from './provider-account-dispatch';
+import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {storedUsage} from './provider-usage-forecast';
@@ -95,7 +95,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork} from './provider-usage';
+import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -325,19 +325,49 @@ export class SessionExecutionHost {
     if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;
   }
-  /** One user-requested retry, using the retained turns as the provider check. */
-  private async retryHeldUsage(){
-    const retried:Record<'claude-code'|'codex',boolean>={'claude-code':false,codex:false};
+  /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
+  private usageCheck:Promise<unknown>|null=null;
+  private retryHeldUsage(){
+    if(this.usageCheck)return this.usageCheck;
+    const check=this.checkHeldUsage().finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
+    this.usageCheck=check;
+    return check;
+  }
+  private async checkHeldUsage(){
     for(const provider of ['claude-code','codex'] as const){
-      const waiting=db.query(`SELECT 1 FROM turns JOIN sessions ON sessions.id=turns.session_id
+      const home=provider==='claude-code'?selectedClaudeHome():null;
+      const accountLabel=home?.label??currentAccount(provider)?.label;
+      if(!accountLabel)continue;
+      const waiting=db.query(`SELECT COALESCE(turns.provider_model,
+          (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
+            AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model
+        FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage' AND turns.dispatch_failure_class='backoff'
-          AND sessions.provider_id=? LIMIT 1`).get(provider);
+          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null}|null;
       if(!waiting)continue;
-      clearProviderUsage(provider);
-      retried[provider]=true;
+      if(provider==='claude-code'&&!waiting.model)return {status:'unconfirmed',provider,account:accountLabel,detail:'The waiting work has no exact model to check.'};
+      const attempt=usageAttempt(provider,waiting.model??undefined,accountLabel);
+      const priorLimit=cachedUsageLimit(attempt);
+      if(!priorLimit)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+        detail:'Waiting work has no retained refusal for the selected account and model.'};
+      const runner=this.options.providers[provider];
+      if(!runner)return {status:'unconfirmed',provider,account:accountLabel,detail:'The provider is not available on this machine.'};
+      try{
+        await runner.run({prompt:'Reply OK. Do not use tools.',cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
+          model:waiting.model??undefined,accountLabel,interactionPolicy:'consultation-only',usageProbe:true,
+          ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{})});
+        if((provider==='claude-code'?selectedClaudeHome()?.label??currentAccount(provider)?.label:currentAccount(provider)?.label)!==accountLabel)
+          return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,detail:'The selected account changed during the check.'};
+        const released=releaseProvenUsageHolds(attempt,accountLabel);
+        if(released)this.options.wake();
+        return {status:'available',provider,account:accountLabel,model:waiting.model,released};
+      }catch(error){
+        const latest=cachedUsageLimit(usageAttempt(provider,waiting.model??undefined,accountLabel));
+        return {status:latest&&latest.revision>priorLimit.revision?'still_limited':'unconfirmed',
+          provider,account:accountLabel,model:waiting.model,detail:String(error)};
+      }
     }
-    if(retried['claude-code']||retried.codex)this.options.wake();
-    return {retried};
+    return {status:'no_waiting'};
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();

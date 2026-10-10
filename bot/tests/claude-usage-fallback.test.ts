@@ -10,6 +10,7 @@ const creditError = "You're out of usage credits. Switch to another model, or ma
 function fixture(options: {
   model?: string; failures?: number; error?: string; structured?: boolean;
   earlyResult?: boolean;
+  usageProbe?: boolean;
   switchMode?: "reject" | "silent" | "cancel" | "missing-replay" | "transport-error" | "steer";
 } = {}) {
   const writes: any[] = [];
@@ -60,13 +61,20 @@ function fixture(options: {
     return closed.promise;
   } };
   const result = runClaudeCodeTurn({ prompt: "Original user request", cwd: "/tmp", additionalDirs: [], sessionUUID: sessionId,
-    transport, modelSwitchTimeoutMs: 10,
+    transport, model: options.model, modelSwitchTimeoutMs: 10, usageProbe: options.usageProbe,
     onPreferredModel: model => preferred.push(model), onProgress: event => progress.push(event),
     onProviderTerminal: () => { terminals++; }, onCancellationReady: value => { cancel = value; },
     onSteeringReady: value => { steer = value; },
   });
   return { result, writes, preferred, progress, terminals: () => terminals, steering: () => steering };
 }
+
+test("a manual usage probe attempts only its exact model", async () => {
+  const run = fixture({ model: "claude-opus-5", failures: 1, structured: true, usageProbe: true });
+  const failure = await run.result.catch(error => error);
+  expect(failure).toBeInstanceOf(ProviderDispatchError);
+  expect(run.writes.filter(event => event.request?.subtype === "set_model")).toHaveLength(0);
+});
 
 test("usage fallback preserves session, completed tools, preferred model and one terminal boundary", async () => {
   const run = fixture();

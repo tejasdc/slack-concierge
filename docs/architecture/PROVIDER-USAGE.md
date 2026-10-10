@@ -66,12 +66,14 @@ an explicit model. Direct external CLI invocations outside these adapters do not
 Concierge's cache. Existing dispatch provenance and comparison counterpart selection
 remain with their owners.
 
-The chosen early invalidation mechanism is **explicit retry**. The Accounts window's Refresh
-press asks each reachable machine to clear the refusal for a provider with queued usage-held
-work and release only those turns for one new attempt, then rereads the account usage. The
-provider turn itself proves whether work is possible; another refusal restores the hold. A
-usage percentage is not used as proof, since it read zero while Claude refused real work on
-2026-10-10. Opening Accounts and the
+The chosen early invalidation mechanism is **explicit check**. The Accounts window's Refresh
+press asks each reachable machine to try at most one small, tool-free provider turn on its selected account
+and exact model of its oldest usage-held work. This trial bypasses only its own cached refusal;
+the normal queue and other models keep their holds. A successful provider answer releases only
+waiting turns for that proved model and account; a usage refusal keeps the hold, and an unrelated
+failure is reported as unconfirmed. The result names the checked account, model and number of
+released turns. A usage percentage is not proof, since it read zero while Claude refused real
+work on 2026-10-10. Opening Accounts and the
 ordinary background usage readings never spend model tokens or override a refusal. A successful
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
 work as part of that action. The operator shell remains available for recovery even when the

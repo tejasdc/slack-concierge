@@ -643,7 +643,7 @@ export class SessionOwner {
     return this.authAction(machine,'reset-credit/use',{provider,account},30_000,()=>this.localAuth().useResetCredit(provider,account));
   }
   retryHeldUsage(machine?:unknown){
-    return this.authAction(machine,'usage/retry',{},30_000,()=>this.localAuth().retryHeldUsage());
+    return this.authAction(machine,'usage/retry',{},120_000,()=>this.localAuth().retryHeldUsage());
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}

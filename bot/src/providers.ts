@@ -42,6 +42,8 @@ export interface AgentProvider {
     /** Only for adoption of a private Codex execution recorded before shared-only dispatch. */
     legacyPrivateCodex?: boolean;
     accountLabel?: string;
+    /** One explicit Accounts check may bypass a retained refusal for this exact attempt. */
+    usageProbe?: boolean;
     interactionPolicy?: ProviderInteractionPolicy;
     model?: string;
     reasoning_effort?: string;
