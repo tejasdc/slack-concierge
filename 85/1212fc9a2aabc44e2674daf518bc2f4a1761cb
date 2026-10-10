@@ -1,0 +1,1 @@
+A thread created for an agent request now shows that request and its answers together, even when the work was sent from another thread.
