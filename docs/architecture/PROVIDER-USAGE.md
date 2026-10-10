@@ -376,6 +376,16 @@ message said every Claude account was out until Oct 11 at 11 PM, which was tejas
 reset alone, while tejastej.dc@gmail.com refilled at 11:20 PM. The hold notice payload also carries
 `accounts`: each account with `hasRoom` and `freeAt`.
 
+**A refusal ends when a reading proves a reset.** A Claude refusal recorded against an account was
+cleared only by a successful run on that account, and none is tried while it stands, so a reset the
+provider granted early could never be noticed: on 2026-10-10 the Mac held every Claude job "until Oct
+11, 11 PM" for a chann.app refusal his 2:05 AM reset had already ended. Each reading now forgets an
+account's refusals when that account shows every window below 100% and some window lower than its last
+reading before the refusal (`usageFellSince`); usage only falls on a reset, so a reading that merely lags
+a refusal never clears it. Accounts read for this machine by its peer count like any other: the Mac's
+usage is read by the server. After a switch the owner re-reads usage at once, and the switch result says
+whether the account answered its test request or refused it as out of usage; the app shows that sentence.
+
 **A conversation moves between accounts, because its history is shared.** It could not until
 2026-09-23: a transcript lived only in the home it was created in, and a resume elsewhere did
 not lose context, it failed to start (`No conversation found with session ID: 802095ed-…`,
