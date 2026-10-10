@@ -348,6 +348,10 @@ turn. The session view exposes that account; an account event carries the rule's
 one-time chosen or moved sentence. A confirmed usage refusal on one account is cached under
 that account, allowing a safe queued retry to choose another immediately. When none has
 room, the existing timed usage hold keeps the input for the earliest readable reset.
+Each fresh Claude usage reading also asks the actual dispatch chooser whether an account can
+run. If one can, the owner releases only queued usage holds and wakes the queue; it does not
+move time-based retries for unrelated failures. This matters when a five-hour limit on one
+account clears before the longer reset time assigned while every account was exhausted.
 
 **A conversation moves between accounts, because its history is shared.** It could not until
 2026-09-23: a transcript lived only in the home it was created in, and a resume elsewhere did
