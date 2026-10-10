@@ -1,0 +1,1 @@
+Writing diagnostic logs no longer holds up your conversations when the logging service slows down.
