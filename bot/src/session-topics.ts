@@ -1400,7 +1400,8 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const originalRoot=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
           ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
         const ownRoot=`request:${dispatchId}`;
-        if(topicOfRoot(ownRoot)!==topic.topicId&&(!originalRoot?.root||topicOfRoot(originalRoot.root)!==topic.topicId))
+        const ownTopic=topicOfRoot(ownRoot);
+        if(ownTopic&&ownTopic!==topic.topicId||!ownTopic&&(!originalRoot?.root||topicOfRoot(originalRoot.root)!==topic.topicId))
           throw new TopicError('Place the dispatch itself in this topic before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISMATCH');
         const elsewhere=db.query(`SELECT request.topic_id AS topicId FROM inbox_requests request,json_each(request.dispatches_json) dispatch
           WHERE json_extract(dispatch.value,'$.requestId')=? AND request.topic_id<>? LIMIT 1`).get(dispatchId,topic.topicId) as {topicId:string}|null;
