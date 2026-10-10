@@ -1,0 +1,1 @@
+Older work threads now recognize answers that arrived before their threads were made, and close the finished request without sending another alert.
