@@ -25,8 +25,10 @@ and found something only he can do.
    about the same thing are one problem: check what you already did in this conversation.
 5. Reach Tejas only with `router-actions.sh sessions outcome needs_you --only-he-can
    sign-in|secret|device|ambiguous`, saying in plain words what he must do and what you
-   already tried. The owner refuses permission, approval and design questions. A notice is
-   not his message, so use the notice's own words where `--his-words` is required.
+   already tried. The owner refuses permission, approval and design questions. `--his-words`
+   must be copied from one of his own messages in this machine's ledger from the last thirty
+   days; a notice's words are refused (2026-10-10, on the Mac). When none of his messages fits,
+   declare `response` with the same plain words instead: it still reaches his Needs attention.
 
 ## An expired Claude or Codex sign-in (`claude_signin_expired`, `codex_signin_expired`)
 
