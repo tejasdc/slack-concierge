@@ -1,0 +1,1 @@
+Conversation pages and account lists now have separate readers so one slow read leaves room for another.
