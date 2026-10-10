@@ -1,0 +1,1 @@
+When an agent comes back to an older piece of work whose installed packages the daily disk cleanup removed, it now reinstalls them automatically before running anything there.
