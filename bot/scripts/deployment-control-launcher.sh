@@ -4,7 +4,9 @@ set -euo pipefail
 
 RELEASE_ROOT=${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-/var/lib/slack-concierge-deployment}
 INSTALL_ROOT=${CONCIERGE_DEPLOYMENT_RUNTIME_DIR:-/usr/local/lib/slack-concierge-deployment}
-CONTROL_ROOT="$RELEASE_ROOT/control/control"
+# A restore or promotion may replace the pointer during this invocation. Keep
+# every helper on the verified artifact that supplied this runner.
+CONTROL_ROOT=$(readlink -f "$RELEASE_ROOT/control/control")
 export CONCIERGE_DEPLOYMENT_CONTROL_ROOT="$CONTROL_ROOT"
 export CONCIERGE_DEPLOY_COMMAND="$INSTALL_ROOT/control"
 

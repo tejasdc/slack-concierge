@@ -19,6 +19,20 @@ async function child() {
  const [{db},{createNativeSession,retainSessionInput,enqueueSessionInput},{SessionOwner,sessionAddress},{SessionCommunicationCoordinator},{recordForwardedThreadReply},{SessionPeers,PeerClient},{claimQueuedTurnWithSavedWork}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/session-owner'),import('../src/session-communication'),import('../src/session-inbox'),import('../src/session-peers'),import('../src/saved-work')]);
  phase('owner-loaded');
+ const {requestApiHandler}=await import('../src/routed-request-api');
+ const writes:string[]=[];
+ const originalWrite=process.stderr.write;
+ let attempts=0;
+ process.stderr.write=((chunk:unknown)=>{writes.push(String(chunk));return true;}) as typeof process.stderr.write;
+ try {
+  const handler=requestApiHandler(null,null,{post(){attempts++;throw Object.assign(new Error('database is locked'),{code:'SQLITE_BUSY'});}} as any);
+  const response=await handler(new Request('http://fixture/session-communication/post',{method:'POST',body:JSON.stringify({text:'private fixture words'})}));
+  assert.equal(response.status,503);
+  assert.equal(attempts,1,'the error boundary must not replay a command');
+  const record=writes.map(line=>JSON.parse(line)).find(row=>row.event==='native_command_database_failed');
+  assert.equal(record?.operation,'post');assert.equal(record?.code,'SQLITE_BUSY');
+  assert.ok(!writes.join('').includes('private fixture words'));
+ } finally {process.stderr.write=originalWrite;}
  const session=createNativeSession('codex',{title:'Private accepted input fixture'});
  let runtimeWakes=0;
  const owner=new SessionOwner({wake(){runtimeWakes++;},steer(){return false;},async stop(){return false;},available(){return true;}} as any,process.cwd());

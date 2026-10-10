@@ -11,6 +11,19 @@ import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
+import {isTransientDatabaseError} from './database-retry';
+
+function requestFailure(request:Request,error:unknown):Response {
+  const transient=isTransientDatabaseError(error);
+  const code=String((error as {code?:unknown})?.code??'');
+  if(transient||/^SQLITE_[A-Z_]+$/.test(code)) {
+    const path=new URL(request.url).pathname;
+    const operation=/^\/(?:session-communication|external)\/([a-z-]+)$/.exec(path)?.[1]??'other';
+    const stack=error instanceof Error?error.stack?.split('\n').filter(line=>/^\s+at /.test(line)).slice(0,5).map(line=>line.trim().slice(0,300)):undefined;
+    log('error','native_command_database_failed',{operation,code:/^SQLITE_[A-Z_]+$/.test(code)?code:'SQLITE_BUSY',transient,stack});
+  }
+  return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:transient?503:400});
+}
 
 /** Routes shared by the root-only owner socket and the authenticated peer listener. */
 const startedAt=new Date().toISOString();
@@ -68,7 +81,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
       }
       return Response.json({ error: 'Unknown request API route.' }, { status: 404 });
     } catch (error) {
-      return Response.json({ error: error instanceof Error ? error.message : 'Request API failed.' }, { status: 400 });
+      return requestFailure(request,error);
     }
   };
 }
@@ -98,7 +111,7 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
       }
       return shared(request);
     } catch(error) {
-      return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:400});
+      return requestFailure(request,error);
     }
   };
 }
@@ -114,9 +127,11 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // A command's answer is its receipt, so it leaves only once the rows it reports are on disk.
     // Reads answer at once: the supervisor's liveness ping must never wait for the disk.
     fetch: async request=>{
-      const response=await handle(request);
-      if(request.method!=='GET')await ledgerDurable();
-      return response;
+      try {
+        const response=await handle(request);
+        if(request.method!=='GET')await ledgerDurable();
+        return response;
+      } catch(error) {return requestFailure(request,error);}
     },
   });
   if(owner)startLedgerDurability(stateDir);

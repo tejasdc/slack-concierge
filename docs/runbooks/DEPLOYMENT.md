@@ -40,6 +40,10 @@ candidate can be built.
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
+The stable controller launcher resolves its control artifact once for each invocation.
+Restoring or promoting the control pointer cannot switch a running deployment's helper
+programs midway through the run; the following invocation takes the new artifact.
+
 The production native request owner starts serving independently of the retired Slack
 Socket Mode connection. Slack's WebSocket can remain in its own connection attempt or
 fail its TLS handshake without preventing the owner socket, capture intake, or queued
