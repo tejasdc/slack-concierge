@@ -425,7 +425,7 @@ For Claude, the account is decided **fresh at every dispatch**:
 3. A conversation **moves** when another eligible account has more room, and continues there
    with its context. This can happen before the former account is completely spent because
    continuation across homes has been proven.
-4. A new conversation also goes to the candidate with the most room in its tightest window.
+4. A new conversation also goes to the eligible account with the most primary weekly room.
 5. Only a **banked release** is bound: it exists to spend one named account's allowance before
    it lapses, so landing elsewhere spends the wrong subscription and lapses the allowance
    anyway. `provider-account-choice.ts` carries this rule.

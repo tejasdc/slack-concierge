@@ -292,11 +292,9 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
       problem:trusted||account.label===provenAccount?null:account.problem,
     };
   });
-  // Where his work runs when nothing else decides: the account he selected in Provider accounts,
-  // else this machine's default login. A conversation that has never run anywhere prefers it, so
-  // it starts where everything starts instead of on whichever account happens to be roomiest —
-  // which is what makes "started somewhere else" true whenever it is said, rather than a sentence
-  // the caller has to reason its way to.
+  // The selected account or default login is the continuity expectation for new work. A fresh
+  // selection wins the next turn; otherwise the chooser ranks eligible weekly room and uses
+  // this expectation only to break a tie.
   const usual=selection?.label??defaultAccount;
   // Where he would expect this turn to run, which is the one thing a notice is measured against.
   const expected=selectedAccount??prefer??usual;
