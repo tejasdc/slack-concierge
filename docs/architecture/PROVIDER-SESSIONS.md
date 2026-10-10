@@ -120,7 +120,9 @@ session keeps its provider; this is a creation decision, not a fallback or repla
 
 The owner ignores stale or unreadable allowance as proof of room. If both providers are spent,
 it binds the new request to the provider whose spent window refills first, so the existing
-provider usage hold retains the input and wakes it at that reset. If neither provider has a
+provider usage hold retains the input and wakes it at that reset. A Claude account with a
+stored login and an observed usage refusal remains eligible as a *wait* target even when
+its immediate launch proof fails before that reset. If neither provider has a
 usable reading or reset, automatic creation refuses instead of guessing. The 90% provider-free
 warning names the risk that both providers may stall when both have reached that level;
 one combined provider-free warning also fires when both have already crossed 90% before

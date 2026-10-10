@@ -1,4 +1,4 @@
-import { currentAccount } from './provider-accounts';
+import { currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT } from './provider-usage-forecast';
@@ -15,14 +15,19 @@ function candidatesForNewWork(now: number): Candidate[] {
     const observedAt = Date.parse(usage?.observedAt ?? '');
     if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - FRESH_MS) continue;
     const rooms = savedWorkAccountRooms(provider, usage, now);
+    const storedClaude = provider === 'claude-code'
+      ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
     for (const room of rooms) {
-      if (room.problem || room.tightestUsedPercent === null || (!room.home && !room.isDefault)) continue;
+      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account) : null;
+      // A real usage refusal can make an account fail a fresh launch proof until its reset.
+      // It is still a valid *wait* target when its stored login and reset are known.
+      const canWaitForReset = !!cachedReset && !!storedClaude?.has(room.account);
+      if (room.problem || room.tightestUsedPercent === null || (!room.home && !room.isDefault && !canWaitForReset)) continue;
       const account = usage.accounts.find(value => value.label === room.account);
       if (!account) continue;
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
       const relevant = account.windows.filter(window => window.name !== 'Weekly · Fable only');
       if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
-      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(account.label) : null;
       const used = cachedReset ? 100 : Math.max(...relevant.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)
         .map(window => Date.parse(window.resetsAt ?? '')).filter(Number.isFinite);
