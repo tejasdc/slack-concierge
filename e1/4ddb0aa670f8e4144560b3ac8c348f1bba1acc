@@ -1,0 +1,1 @@
+Finished work threads are repaired during startup without slowing the service by reading every saved event.
