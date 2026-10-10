@@ -36,6 +36,7 @@ if [ -f "$CONTROL_DIR/deploy-state.js" ]; then
   RELEASE_MANAGER_SCRIPT="$CONTROL_DIR/release-manager.js"
   MIGRATION_SCRIPT="$CONTROL_DIR/migrate-deployment-repair.js"
   DRAIN_STATUS_SCRIPT="$CONTROL_DIR/drain-status.js"
+  RELOCATE_LEDGER_SCRIPT="$CONTROL_DIR/relocate-ledger.js"
   CAPTURE_DRAIN_STATUS_SCRIPT="$CONTROL_DIR/capture-drain-status.js"
   HEALTHCHECK_SCRIPT="$CONTROL_DIR/healthcheck.js"
   CAPTURE_HEALTHCHECK_SCRIPT="$CONTROL_DIR/capture-healthcheck.js"
@@ -47,6 +48,7 @@ else
   RELEASE_MANAGER_SCRIPT="$CONTROL_DIR/release-manager.ts"
   MIGRATION_SCRIPT="$CONTROL_DIR/migrate-deployment-repair.ts"
   DRAIN_STATUS_SCRIPT="$CONTROL_DIR/drain-status.ts"
+  RELOCATE_LEDGER_SCRIPT="$CONTROL_DIR/relocate-ledger.ts"
   CAPTURE_DRAIN_STATUS_SCRIPT="$CONTROL_DIR/capture-drain-status.ts"
   HEALTHCHECK_SCRIPT="$CONTROL_DIR/healthcheck.ts"
   CAPTURE_HEALTHCHECK_SCRIPT="$CONTROL_DIR/capture-healthcheck.ts"
@@ -87,47 +89,13 @@ DEPLOY_FAILURE_REASON="The deployment runner stopped before the current operatio
 INTERRUPTED_RECOVERY_HANDLED=0
 
 # The ledger lives on its own filesystem (an ext4 image on a loop device that remote-box mounts at
-# LEDGER_HOME), so its writes never wait on the root filesystem's journal behind agents' writes: a
-# side-by-side trial on 2026-10-10 under the same agent load measured 0.4% of the writer's time
-# blocked against 35% on the root filesystem (docs/architecture/LEDGER-DURABILITY.md). The move
-# happens once, here, while the drained coordinator is stopped, and only when remote-box has mounted
-# that filesystem; every other update finds nothing to do. Each file is checkpointed, copied, checked
-# and only then swapped for a link in one rename, with the original kept beside it as a hard link.
+# LEDGER_HOME), so its writes never wait on the root filesystem's journal behind agents' writes.
+# relocate-ledger moves it once, here, while the drained coordinator is stopped, holding SQLite's
+# writer lock across the copy, the checks and the swap; it does nothing until remote-box has
+# mounted that filesystem, and nothing once the move is done (docs/architecture/LEDGER-DURABILITY.md).
 LEDGER_HOME=${CONCIERGE_LEDGER_HOME:-/var/lib/concierge-ledger}
 relocate_ledger_to_own_filesystem() {
-  mountpoint -q "$LEDGER_HOME" 2>/dev/null || return 0
-  local name stamp
-  stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  for name in state.db meaning-index.db; do
-    local here="$STATE_DIR/$name" there="$LEDGER_HOME/$name"
-    [ -L "$here" ] && continue
-    [ -f "$here" ] || continue
-    local held=0 part
-    for part in "$here" "$here-wal" "$here-shm"; do
-      [ -e "$part" ] && fuser -s "$part" 2>/dev/null && held=1
-    done
-    if [ "$held" = 1 ]; then
-      echo "Ledger move skipped: $name is still open; the next update will try again."
-      return 0
-    fi
-    if [ -e "$there" ]; then
-      echo "Ledger move refused: $there already exists beside a regular $here." >&2
-      return 1
-    fi
-    "$BUN_BIN" -e 'const {Database}=require("bun:sqlite");const d=new Database(process.argv[1]);d.exec("PRAGMA busy_timeout=5000");const r=d.query("PRAGMA wal_checkpoint(TRUNCATE)").get();d.close();if(r.busy!==0||r.log!==0)throw new Error("checkpoint incomplete "+JSON.stringify(r));' "$here"
-    cp --sparse=always "$here" "$there.moving"
-    sync "$there.moving"
-    "$BUN_BIN" -e 'const {Database}=require("bun:sqlite");const [copy,source]=process.argv.slice(1);const a=new Database(copy,{readonly:true}),b=new Database(source,{readonly:true});const check=a.query("PRAGMA quick_check").get().quick_check;const pages=[a,b].map(d=>d.query("PRAGMA page_count").get().page_count);if(check!=="ok"||pages[0]!==pages[1])throw new Error("copy check failed "+check+" "+pages);console.log("ledger copy verified: "+pages[0]+" pages");' "$there.moving" "$here"
-    rm -f "$there.moving-wal" "$there.moving-shm"
-    mv -T "$there.moving" "$there"
-    sync "$there" "$LEDGER_HOME"
-    ln -f "$here" "$here.before-own-filesystem-$stamp"
-    ln -s "$there" "$here.link-$stamp"
-    mv -T "$here.link-$stamp" "$here"
-    rm -f "$here-wal" "$here-shm"
-    sync "$STATE_DIR"
-    echo "Ledger moved: $name now lives on $LEDGER_HOME; the original is kept as $here.before-own-filesystem-$stamp."
-  done
+  "$BUN_BIN" run "$RELOCATE_LEDGER_SCRIPT" "$STATE_DIR" "$LEDGER_HOME"
 }
 
 # A start this runner asks for is not a crash. The units' StartLimitBurst (5 in 10 minutes)

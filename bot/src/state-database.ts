@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
@@ -48,6 +48,13 @@ if (testInvocation) {
 }
 
 const readWorker = process.env.CONCIERGE_READ_WORKER === "1";
+// The ledger can live on its own filesystem behind a link (docs/architecture/LEDGER-DURABILITY.md).
+// A link whose file is missing means that filesystem is not the one that holds the ledger: opening
+// it would create an empty ledger and fork history, so Concierge refuses to start instead.
+const ledgerEntry = lstatSync(`${canonicalDir}/state.db`, { throwIfNoEntry: false });
+if (ledgerEntry?.isSymbolicLink() && !existsSync(`${canonicalDir}/state.db`)) {
+  throw new Error(`The ledger link ${canonicalDir}/state.db points at a missing file; its filesystem is not mounted. Refusing to create an empty ledger.`);
+}
 const access = ledgerAccess(canonicalDir, Bun.main, readWorker);
 export const initializeLedgerSchema = access.schema;
 export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema })));
