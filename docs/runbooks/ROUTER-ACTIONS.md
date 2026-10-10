@@ -242,6 +242,10 @@ router-actions.sh sessions ask --provider cc-opus --project slack-concierge --se
 # A receiving session pushing back; the requester's answer opens with "Handed back (…)" and the fresh command.
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition failed \
   --hand-back not-my-subject -- "<what context I can give>"
+# One answer to several requests from the same asker: one command, the same words to each.
+# The owner gives byte-identical answers one return and one post in a thread (one notification).
+router-actions.sh sessions reply <request-id> --also <request-id> --also <request-id> <source-flags> --action-id A \
+  --work-disposition completed --summary "<one line>" --all-done --checked "<what you saw>" -- <text>
 ```
 
 What reaches Tejas carries its reasons, and the owner refuses it otherwise:

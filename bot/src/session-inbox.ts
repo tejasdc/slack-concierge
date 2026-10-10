@@ -318,11 +318,12 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
       // The thread is the topic, not the one capture this request named: the router sends several
       // requests for one topic each under a different capture of it, and the one answer to all of
       // them was posted, filed and notified once per capture (three times on 2026-10-09).
-      const same=!answer.stalled&&!answer.attachments.length?db.query(`SELECT event_id FROM session_owner_events
+      const same=!answer.stalled?db.query(`SELECT event_id FROM session_owner_events
           WHERE input_id IN (SELECT ? UNION SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=(SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?))
           AND session_id=? AND kind='post'
-          AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND created_at>=datetime('now','-1 hour') LIMIT 1`)
-        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text) as {event_id:string}|null:null;
+          AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND coalesce(json_extract(payload_json,'$.attachments'),'[]')=json(?)
+          AND created_at>=datetime('now','-1 hour') LIMIT 1`)
+        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text,JSON.stringify(answer.attachments)) as {event_id:string}|null:null;
       if(same)carriedBy=same.event_id;
       else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',

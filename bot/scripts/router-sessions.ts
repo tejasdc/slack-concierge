@@ -28,7 +28,7 @@ Moves an idle session to another folder; its next turn resumes the same conversa
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
-router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
@@ -117,7 +117,7 @@ export type SessionCommunicationRequest =
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
@@ -377,6 +377,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   const flags = new Map<string, string>();
   const after: string[] = [];
+  const also: string[] = [];
   const paths: string[] = [];
   const custody: string[] = [];
   let partial = false;
@@ -451,6 +452,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--machine-need' && operation === 'ask')
       || (flag === '--consult' && operation === 'ask')
       || (flag === '--work-disposition' && operation === 'reply')
+      || (flag === '--also' && operation === 'reply')
       || (flag === '--summary' && (operation === 'ask' || operation === 'reply'))
       || (flag === '--answer-view' && operation === 'ask');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
@@ -464,6 +466,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     else if (flag === "--after-request") {
       if (after.includes(value)) invalid("Repeated dependency request ID.");
       after.push(value);
+    }
+    else if (flag === "--also") {
+      if (also.includes(value) || value === identity) invalid("Repeated --also request ID.");
+      also.push(value);
     } else {
       if (flags.has(flag)) invalid(`Repeated ${flag} option.`);
       flags.set(flag, value);
@@ -591,6 +597,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const summary=flags.get('--summary')?.trim();
   if(summary!==undefined&&(summary.length>200||summary.includes('\n')))invalid('--summary is one line of at most 200 characters.');
   if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
+  if(also.length&&paths.length)invalid('--also sends one answer to several requests; attach files already retained with --attachment, or send the files with one request.');
+  if(also.length&&partial)invalid('--also closes other requests with this one final answer; a partial reply names one request.');
   if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
@@ -616,11 +624,22 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--checked','checked'],['--not-checked','not_checked'],['--hand-back','hand_back'],['--quiet-because','quiet_because']]
-          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}) } };
+          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(also.length?{also}:{}) } };
 }
 
-export function runRouterSessions(request: SessionCommunicationRequest) {
-  return requestApiResponse(`/session-communication/${request.operation}`, request.body);
+export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if (request.operation !== 'reply' || !request.body.also?.length)
+    return requestApiResponse(`/session-communication/${request.operation}`, request.body);
+  // One answer to several requests is one command: the same words go to each, and the owner
+  // gives them one return and one thread post because they are byte-identical.
+  const { also, ...first } = request.body;
+  const answers = [];
+  for (const [index, requestId] of [first.request_id, ...also].entries()) {
+    const response = await requestApiResponse('/session-communication/reply', index === 0 ? first : { ...first, request_id: requestId, action_id: `${first.action_id}:${requestId}` });
+    if (!response.ok) return response;
+    answers.push(response.result);
+  }
+  return { ok: true, result: answers } as Awaited<ReturnType<typeof requestApiResponse>>;
 }
 
 if (import.meta.main) {
