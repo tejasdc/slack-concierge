@@ -6,7 +6,7 @@
 import { Database } from 'bun:sqlite';
 import { ledgerWriteResults } from '../src/ledger-write-results';
 import { spawnSync } from 'node:child_process';
-import { closeSync, createReadStream, existsSync, fsyncSync, linkSync, lstatSync, openSync, realpathSync, renameSync, rmSync,
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, realpathSync, renameSync, rmSync,
   statSync, statfsSync, symlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -24,20 +24,9 @@ const otherHolders = (paths: string[]) => {
   const result = spawnSync('fuser', present, { encoding: 'utf8' });
   return [...new Set((result.stdout ?? '').split(/\s+/).filter(Boolean).map(Number).filter(pid => pid && pid !== process.pid))];
 };
-const sameBytes = async (a: string, b: string) => {
-  if (statSync(a).size !== statSync(b).size) return false;
-  const left = createReadStream(a, { highWaterMark: 1 << 20 })[Symbol.asyncIterator]();
-  const right = createReadStream(b, { highWaterMark: 1 << 20 })[Symbol.asyncIterator]();
-  let pendingA = Buffer.alloc(0), pendingB = Buffer.alloc(0);
-  for (;;) {
-    if (!pendingA.length) { const next = await left.next(); pendingA = next.done ? Buffer.alloc(0) : next.value; if (next.done && !pendingB.length) return true; }
-    if (!pendingB.length) { const next = await right.next(); pendingB = next.done ? Buffer.alloc(0) : next.value; }
-    const n = Math.min(pendingA.length, pendingB.length);
-    if (!n) return pendingA.length === pendingB.length;
-    if (!pendingA.subarray(0, n).equals(pendingB.subarray(0, n))) return false;
-    pendingA = pendingA.subarray(n); pendingB = pendingB.subarray(n);
-  }
-};
+// Compared by a separate process: closing a descriptor this process opened on the database file
+// would release every POSIX lock this process holds on it, including the writer fence below.
+const sameBytes = (a: string, b: string) => spawnSync('cmp', ['-s', a, b]).status === 0;
 const freeBytes = (path: string) => { const s = statfsSync(path); return s.bavail * s.bsize; };
 
 /**
@@ -68,7 +57,7 @@ async function fencedCopyAndSwap(source: string, destination: string, retired: s
     const moving = `${destination}.moving`;
     if (spawnSync('cp', ['--sparse=always', source, moving], { stdio: 'inherit' }).status !== 0) throw new Error(`could not copy ${source}`);
     fsyncPath(moving);
-    if (!(await sameBytes(source, moving))) throw new Error(`copy of ${source} differs from the original`);
+    if (!sameBytes(source, moving)) throw new Error(`copy of ${source} differs from the original`);
     const copy = new Database(moving, { readonly: true });
     const integrity = (copy.query('PRAGMA integrity_check').all() as { integrity_check: string }[]).map(row => row.integrity_check);
     const foreign = copy.query('PRAGMA foreign_key_check').all();
