@@ -293,8 +293,10 @@ export class TrustedRootReleaseManager {
         this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
       ],{cwd:join(sourceRoot,'bot')}):null;
+      // The end of the output names the step and its deadline; the start is Bun's source excerpt.
+      // Keeping the start left two failed updates (2026-10-09 7:16 PM, 2026-10-10 12:10 AM) unexplained.
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
-        `Candidate presentation cost check failed: ${Buffer.from(presentationCheck.stderr).toString('utf8').slice(0,2000)}`);
+        `Candidate presentation cost check failed: ${Buffer.from(presentationCheck.stderr).toString('utf8').slice(-2000)}`);
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });

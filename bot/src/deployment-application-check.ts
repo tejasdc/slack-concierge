@@ -34,7 +34,7 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
    symlinkSync(dependencies,join(controlRoot,'bot/node_modules'),'dir');
    const check=spawnSync(process.execPath,[join(controlRoot,'bot/scripts/ledger-constructor-check.ts'),join(controlRoot,'bot')],
     {cwd:join(controlRoot,'bot'),encoding:'utf8',timeout:15_000,env:{...process.env,BUN_INSTALL_AUTO:'disable'}});
-   if(check.error||check.status!==0)throw new Error(`Candidate control SQLite constructor check failed: ${(check.stderr||check.error?.message||'unknown').slice(0,1500)}`);
+   if(check.error||check.status!==0)throw new Error(`Candidate control SQLite constructor check failed: ${(check.stderr||check.error?.message||'unknown').slice(-1500)}`);
   }
   const declarationPath=join(scratch,'bot/src/deployment-artifact-files.json');
   const declaration=existsSync(declarationPath)?JSON.parse(readFileSync(declarationPath,'utf8')):{};
@@ -56,7 +56,7 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   const checked=spawnSync(process.execPath,[gate],{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,
    env:{...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
     CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')}});
-  if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${(checked.stderr||checked.error?.message||'unknown').slice(0,1500)}`);
+  if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${(checked.stderr||checked.error?.message||'unknown').slice(-1500)}`);
   const result=JSON.parse(checked.stdout.trim().split('\n').at(-1)??'null');
   if(result?.check!=='presentation-release'||result.status!=='passed')throw new Error('Candidate presentation check returned no passing receipt.');
   return {...result,git_commit:manifest.git_commit,artifact_digest:manifest.artifact_digest};
