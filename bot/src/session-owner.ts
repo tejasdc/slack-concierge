@@ -30,7 +30,7 @@ import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairInci
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -52,6 +52,7 @@ import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} fro
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
@@ -126,9 +127,10 @@ const ownerStatusContext={
   },
   olderBlockingTurn:(sessionId:number,turnId:number)=>db.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
     json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
-    FROM turns older LEFT JOIN session_inputs blocked ON blocked.id=older.accepted_input_id
-    WHERE older.session_id=? AND older.id<? AND ${EARLIER_TURN_BLOCKS_SQL} ORDER BY older.id LIMIT 1`)
-    .get(sessionId,turnId) as {status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;dispatch_hold:string|null;continuation_refusal:string|null}|null,
+    FROM turns older JOIN turns current ON current.id=? LEFT JOIN session_inputs blocked ON blocked.id=older.accepted_input_id
+    WHERE older.session_id=? AND ${queuePrecedesSql('older','current')} AND ${EARLIER_TURN_BLOCKS_SQL}
+    ORDER BY older.queue_priority DESC,older.id LIMIT 1`)
+    .get(turnId,sessionId) as {status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;dispatch_hold:string|null;continuation_refusal:string|null}|null,
   dependencyPending:(turnId:number)=>!!db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turnId),
   now:()=>Date.now(),formatTime:(ms:number)=>noticeTime(db,ms)
 };
@@ -1172,6 +1174,68 @@ export class SessionOwner {
       return {session:this.view(current)};
     }
     return {session:this.view(this.ensureInboxSession())};
+  }
+  inboxQueue(cursor:string|null,limit:number) {
+    const session=inboxSession();
+    return session?inboxQueuePage(db,session.id,cursor,limit):{items:[],nextCursor:null,active:null};
+  }
+  inboxQueueAction(body:unknown) {
+    const session=inboxSession();
+    if(!session)throw new SessionOwnerError('The Inbox is unavailable.',404);
+    const input=object(body);only(input,['clientActionId','action','inputIds','expectedRunId']);
+    const action=actionId(input);
+    const prior=this.existingAction(session.id,'inbox-queue-action',input);
+    if(prior)return {operation:this.receipt(prior),items:JSON.parse(prior.receipt_json!).result};
+    if(input.action!=='next'&&input.action!=='together')throw new SessionOwnerError('Choose a waiting Inbox action.');
+    if(!Array.isArray(input.inputIds)||input.inputIds.length<1||input.inputIds.length>(input.action==='next'?1:20)
+      ||new Set(input.inputIds).size!==input.inputIds.length||!input.inputIds.every(id=>typeof id==='string'))
+      throw new SessionOwnerError('Choose exact waiting inputs (one for Move next, up to twenty to work together).');
+    if(input.action==='together'&&(typeof input.expectedRunId!=='string'||!input.expectedRunId))
+      throw new SessionOwnerError('Choose the exact current Inbox run.');
+    const targets=input.inputIds.map(id=>{
+      const accepted=this.input(id);
+      const turn=accepted.turn_id?db.query(`SELECT id,status,accepted_input_id,owner_instance_id,
+        provider_admission_intended_at,provider_started_at,provider_turn_id,provider_input_acknowledged_at,saved_kind
+        FROM turns WHERE id=?`).get(accepted.turn_id) as any:null;
+      const capture=JSON.parse(accepted.payload_json).capture;
+      if(accepted.session_id!==session.id||!(accepted.origin==='human'||accepted.origin==='agent'&&capture?.source?.kind==='outside-agent')
+        ||accepted.kind!=='input'||accepted.steering_id!==null
+        ||accepted.receipt_json!==null||!turn||turn.status!=='queued'||turn.accepted_input_id!==accepted.id
+        ||turn.owner_instance_id||turn.provider_admission_intended_at||turn.provider_started_at
+        ||turn.provider_turn_id||turn.provider_input_acknowledged_at||turn.saved_kind
+        ||db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? LIMIT 1').get(turn.id))
+        throw new SessionOwnerError('That Inbox input is no longer waiting; refresh the queue.',409,'INBOX_INPUT_NOT_WAITING');
+      return accepted;
+    });
+    if(input.action==='together'){
+      const live=db.query("SELECT native_run_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL")
+        .get(session.id) as {native_run_id:string}|null;
+      if(!live||live.native_run_id!==input.expectedRunId)
+        throw new SessionOwnerError('That Inbox run has ended; refresh the queue.',409,'INBOX_RUN_CHANGED');
+    }
+    const control=this.saveControl(session,'inbox-queue-action',input,()=>{
+      if(input.action==='next'){
+        const row=db.query("SELECT COALESCE(MAX(queue_priority),0) AS priority FROM turns WHERE session_id=? AND status='queued'")
+          .get(session.id) as {priority:number};
+        const priority=row.priority+1;
+        db.query("UPDATE turns SET queue_priority=? WHERE id=? AND status='queued'").run(priority,targets[0]!.turn_id);
+        recordSessionEvent({eventId:`queue:${action}:${targets[0]!.id}`,sessionId:session.id,inputId:targets[0]!.id,
+          kind:'queue_order',payload:{action:'next',priority}});
+        return [{inputId:targets[0]!.id,state:'queued'}];
+      }
+      return targets.map(target=>{
+        const sent=this.runtime.steer(target);
+        if(!sent){
+          const recovered=recoverUnsentSteeredInput(target.id);
+          if(recovered.turn_id===null)enqueueSessionInput(recovered.id);
+        }
+        recordSessionEvent({eventId:`queue:${action}:${target.id}`,sessionId:session.id,inputId:target.id,
+          kind:'queue_join',payload:{action:'together',runId:input.expectedRunId,state:sent?'steering':'queued'}});
+        return {inputId:target.id,state:sent?'steering':'queued'};
+      });
+    });
+    executionChanged();this.runtime.wake();
+    return {operation:this.receipt(control),items:JSON.parse(control.receipt_json!).result};
   }
   /**
    * Browser-selected text is never authoritative. Resolve the selected native
@@ -2602,6 +2666,10 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
+        result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='queue-actions'&&parts.length===2)
+        result=this.inboxQueueAction(body);
       // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
       // under inbox/topics/: every GET there is rewritten to the prepared thread reads above.
       else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=await this.workThreadFor(url);

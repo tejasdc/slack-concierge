@@ -734,6 +734,10 @@ addColumn("turns", "input_context_received_by_turn_id", "input_context_received_
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
+// A human may move a waiting Inbox input ahead of other waiting inputs. Identity and
+// admission history stay on the original turn; only the claim order changes.
+addColumn("turns", "queue_priority", "queue_priority INTEGER NOT NULL DEFAULT 0");
+db.exec("CREATE INDEX IF NOT EXISTS turns_session_queue_priority ON turns(session_id,queue_priority DESC,id) WHERE status='queued'");
 // A deliberate saved wait is not a provider retry. These fields survive every requeue.
 addColumn("turns", "saved_kind", "saved_kind TEXT CHECK(saved_kind IN ('scheduled','banked'))");
 // Earlier saved-work drafts stored the same kind twice. Keep only the current rule.
@@ -939,6 +943,10 @@ export const EARLIER_TURN_BLOCKS_SQL = `
   ((older.status='queued' AND (older.saved_kind IS NULL OR older.saved_manual_start=1))
     OR (older.status='parked' AND older.turn_kind<>'native'))
 `;
+export const queuePrecedesSql=(before:string,after:string)=>
+  `(( ${before}.status='parked' AND ${before}.id<${after}.id) OR
+    (${before}.status<>'parked' AND (COALESCE(${before}.queue_priority,0)>COALESCE(${after}.queue_priority,0) OR
+      (COALESCE(${before}.queue_priority,0)=COALESCE(${after}.queue_priority,0) AND ${before}.id<${after}.id))))`;
 
 const settleDependenciesSql = `
   UPDATE turn_dependencies SET satisfied_at=CURRENT_TIMESTAMP,
@@ -1636,7 +1644,7 @@ export function claimNativeResultReconciliation(input: {
         AND t.status IN ('interrupted','parked','delivery_parked')
         AND NOT EXISTS (SELECT 1 FROM turns live WHERE live.session_id=t.session_id AND live.id<>t.id
           AND live.status IN ('running','delivering'))
-        AND NOT EXISTS (SELECT 1 FROM turns older WHERE older.session_id=t.session_id AND older.id<t.id
+        AND NOT EXISTS (SELECT 1 FROM turns older WHERE older.session_id=t.session_id AND ${queuePrecedesSql('older','t')}
           AND ${EARLIER_TURN_BLOCKS_SQL})`)
       .get(input.turnId,input.sessionId) as {owner_instance_id:string|null;pid:number|null;boot_id:string|null;process_start_ticks:string|null}|null;
     if (!turn || (turn.owner_instance_id && input.isOwnerAlive({pid:turn.pid??0,bootId:turn.boot_id??'',startTicks:turn.process_start_ticks??''}))) return false;
@@ -5093,7 +5101,7 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND turn.session_id NOT IN (SELECT value FROM json_each(?))
   AND NOT EXISTS (
     SELECT 1 FROM turns older
-    WHERE older.session_id=turn.session_id AND older.id<turn.id
+    WHERE older.session_id=turn.session_id AND ${queuePrecedesSql('older','turn')}
       AND ${EARLIER_TURN_BLOCKS_SQL}
   )
   AND NOT EXISTS (
