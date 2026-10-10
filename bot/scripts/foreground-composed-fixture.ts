@@ -205,6 +205,8 @@ async function main(){
       const writeEvidence=await new Response(writeProbe.stdout).text();
       assert.equal(await writeProbe.exited,0,'Read-worker SQLite connection accepted a write.');
       assert.ok(writeEvidence.includes('readonly-refused'));
+      const baselineHealth=await check("/supervisor/ping");
+      const readerPid=baselineHealth.readCapacity.readers[0].pid as number;
       const ownerHoldStarted=performance.now();
       const ownerHold=socketFetch(join(root,'request-owner.sock'),'/fixture/hold');
       await wait(()=>existsSync(join(root,'owner.entered')),2000);
@@ -227,9 +229,27 @@ async function main(){
       assert.equal(ownerReads.length,4);
       const unavailableAuth=await check('/sessions/v1/auth/providers?machine=cloud',503);
       assert.equal(unavailableAuth.error?.code,'AUTH_EPHEMERA_UNAVAILABLE');
-      const unhealthy=await check('/supervisor/ping',503);assert.ok(unhealthy);
+      let pingAnswered=false;
+      try{await socketFetch(socket,'/supervisor/ping',{signal:AbortSignal.timeout(3000)});pingAnswered=true;}catch{}
+      assert.equal(pingAnswered,false,'A frozen canonical owner must remain unanswered to its recovery supervisor.');
       const stillRetained=await capture(`/commands/${actionId}`);
       assert.ok(['pending','delivering'].includes((await stillRetained.json() as any).status));
+      process.kill(readerPid,'SIGUSR2');await wait(()=>existsSync(join(root,`reader-${readerPid}.entered`)),2000);
+      const readerBatchStarted=performance.now();
+      const readerBatch=await Promise.all(Array.from({length:8},async()=>{
+        const started=performance.now();
+        try {const response=await socketFetch(socket,'/sessions/v1/presentation/topics',
+          {signal:AbortSignal.timeout(1500)});
+          return {status:response.status,ms:Math.round(performance.now()-started),body:await response.json() as any};}
+        catch{return {status:0,ms:Math.round(performance.now()-started),body:null};}
+      }));
+      const independent=readerBatch.filter(item=>item.status===200&&item.body?.topics?.length>0);
+      assert.ok(independent.length>=7,`One blocked reader held unrelated reads: ${JSON.stringify(readerBatch)}`);
+      assert.ok(Math.max(...independent.map(item=>item.ms))<1400,JSON.stringify(readerBatch));
+      assert.ok(performance.now()-readerBatchStarted<2000,'Other reader waited for the synchronous stall.');
+      await Bun.sleep(100);
+      assert.doesNotThrow(()=>process.kill(readerPid,0),'Caller cancellation killed an occupied reader before its executor deadline.');
+      await wait(()=>{try{process.kill(readerPid,0);return false;}catch{return true;}},22_000);
       await ownerHold;
       const ownerStallMs=Math.round(performance.now()-ownerHoldStarted);
       assert.ok(ownerStallMs>=34_000,`Canonical synchronous stall lasted only ${ownerStallMs}ms`);
@@ -244,20 +264,6 @@ async function main(){
       }finally{state.close();}
       assert.ok(custody.ownerStatus>=200&&custody.ownerStatus<300,JSON.stringify(custody));
       const healthy=await check('/supervisor/ping');assert.equal(healthy.ok,true);
-      const readerPid=healthy.readCapacity.readers[0].pid as number;
-      process.kill(readerPid,'SIGUSR2');await wait(()=>existsSync(join(root,`reader-${readerPid}.entered`)),2000);
-      const readerBatchStarted=performance.now();
-      const readerBatch=await Promise.all(Array.from({length:8},async()=>{
-        const started=performance.now();
-        try {const response=await socketFetch(socket,'/sessions/v1/presentation/topics',
-          {signal:AbortSignal.timeout(1500)});
-          return {status:response.status,ms:Math.round(performance.now()-started),body:await response.json() as any};}
-        catch{return {status:0,ms:Math.round(performance.now()-started),body:null};}
-      }));
-      const independent=readerBatch.filter(item=>item.status===200&&item.body?.topics?.length>0);
-      assert.ok(independent.length>=7,`One blocked reader held unrelated reads: ${JSON.stringify(readerBatch)}`);
-      assert.ok(Math.max(...independent.map(item=>item.ms))<1400,JSON.stringify(readerBatch));
-      assert.ok(performance.now()-readerBatchStarted<2000,'Other reader waited for the synchronous stall.');
       await wait(async()=>{const value=await read('/supervisor/ping');return value.status===200&&
         value.body.readCapacity.readers[0].pid!==readerPid;},25_000);
       const readyAgain=await check('/sessions/v1/presentation/topics');assert.ok(readyAgain.topics.length);
@@ -271,7 +277,7 @@ async function main(){
       await wait(async()=>{const value=await read('/supervisor/ping');return value.status===200&&
         value.body.readCapacity.readers[1].pid!==childPid&&value.body.readCapacity.ready===2;},10_000);
       console.log(JSON.stringify({fixture:'foreground-composed',status:'passed',measured,peerUnauthorized:peerWrong.status,
-        readerRetired:readerPid,canonicalStallMs:ownerStallMs,independentReaderReads:independent.length,
+        readerRetired:readerPid,callerCancellationPreservedReader:true,supervisorPingUnanswered:true,canonicalStallMs:ownerStallMs,independentReaderReads:independent.length,
         independentReaderMaxMs:Math.max(...independent.map(item=>item.ms)),
         custody:{status:custody.status,ownerStatus:custody.ownerStatus,actionId:custody.actionId},
         readonlyWriteRefused:true,authDuringOwnerStall:unavailableAuth.error.code,readerExitRecovered:childPid}));

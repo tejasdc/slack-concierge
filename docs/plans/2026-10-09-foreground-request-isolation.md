@@ -70,8 +70,9 @@ real composed applications against private synthetic state. Block a child for 35
 and verify they progress through the other executor. Exercise pending durable commands,
 later canonical acknowledgement, authorization failures, streams, worker death/restart
 and sink backpressure. Build/seal all declared children through the normal release path.
-Independent review examines the complete cross-repository implementation against the
-original words. After normal activation, check the actual installed read and admission
-paths and record revision, latency, errors and capacity. Schedule one dormant follow-up
+Concierge receives the required trust-boundary and lifecycle review against the original
+words. Thinkering follows its explicit build, deploy and live-check policy; its existing
+nightly review owns review there, with no extra per-change review gate. After normal
+activation, check the actual installed read and admission paths and record revision, latency, errors and capacity. Schedule one dormant follow-up
 after deployment so real activity can reveal remaining stalls without keeping an agent
 running. A short healthy sample is not proof of universal availability.

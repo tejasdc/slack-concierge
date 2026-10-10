@@ -11,7 +11,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     if(path==='/internal/ready')return Response.json({ok:true,pid:process.pid});
     if(path==='/block'){
       await writeFile(process.env.CONCIERGE_READ_SOCKET!+'.entered','entered');
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,35_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1_000);
     }
     return Response.json({ok:true,pid:process.pid,path});
   }});
@@ -27,6 +27,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
   const request=(path:string,signal?:AbortSignal)=>pool.request(new Request('http://fixture'+path,{signal}),path,crypto.randomUUID());
   try {
     await pool.start();
+    const readerPid=pool.snapshot().readers[0]!.pid;
     const abort=new AbortController();
     const blocked=request('/block',abort.signal);
     const until=Date.now()+5000;
@@ -45,10 +46,16 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
       latencies.push(performance.now()-before);
     }
     assert.ok(Math.max(...latencies)<1000,`Independent reads stalled: ${latencies}`);
-    assert.ok(performance.now()-started<3000,'The other executor must not wait for a 35-second synchronous block.');
-    abort.abort();assert.equal((await blocked).status,503);
+    assert.ok(performance.now()-started<3000,'The other executor must not wait for a one-second synchronous block.');
+    abort.abort();
+    await Bun.sleep(50);
+    assert.equal(pool.snapshot().readers[0]!.pid,readerPid,"Caller cancellation must preserve the occupied reader.");
+    assert.ok(pool.snapshot().readers[0]!.active);
+    assert.equal((await blocked).status,503);
+    assert.equal(pool.snapshot().readers[0]!.pid,readerPid);
+    assert.equal(pool.snapshot().readers[0]!.active,null);
     const after=await request('/after-cancel');assert.equal(after.status,200);await after.body?.cancel();
-    console.log(JSON.stringify({fixture:'foreground-pool',status:'passed',blocked_executor_requested_ms:35000,
+    console.log(JSON.stringify({fixture:'foreground-pool',status:'passed',blocked_executor_requested_ms:1000,callerCancellationPreservedReader:true,
       independent_reads:latencies.length,independent_max_ms:Math.max(...latencies),independent_total_ms:performance.now()-started}));
   } finally {await pool.stop();await rm(root,{recursive:true,force:true});}
 }

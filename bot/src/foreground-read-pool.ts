@@ -92,9 +92,9 @@ export class ForegroundReadPool {
   async request(request:Request,route:string,id:string) {
     const began=performance.now();
     const timeout=AbortSignal.timeout(OWNER_READ_RESPONSE_MS);
-    const signal=AbortSignal.any([request.signal,timeout]);
+    const admissionSignal=AbortSignal.any([request.signal,timeout]);
     const occupied=this.snapshot().readers.filter(slot=>slot.active);
-    const slot=await this.acquire(signal);
+    const slot=await this.acquire(admissionSignal);
     const waited=performance.now()-began;
     if(!slot) {
       log('warn','foreground_read_unavailable',{request_id:id,route,admission_ms:Math.round(waited),occupied,capacity:this.snapshot()});
@@ -105,22 +105,25 @@ export class ForegroundReadPool {
     let released=false;
     const release=()=>{
       if(released)return;released=true;
-      signal.removeEventListener('abort',abort);
+      timeout.removeEventListener('abort',retire);
       slot.active=null;this.dispatch();
     };
-    const abort=()=>{
+    const retire=()=>{
       if(released)return;
-      // Aborting fetch cannot interrupt synchronous work in the executor. Retire
-      // that reader before admitting another request to its still-occupied loop.
+      // Only the executor's deadline retires occupied work. A caller leaving
+      // must not destroy warm history state or spend everybody's read capacity.
       if(slot.child===running){slot.ready=false;running?.kill('SIGKILL');}
       release();
     };
-    signal.addEventListener('abort',abort,{once:true});
-    if(signal.aborted)abort();
+    if(admissionSignal.aborted){release();return unavailable('READ_CANCELLED','This read was cancelled before execution.');}
+    timeout.addEventListener('abort',retire,{once:true});
     try {
-      const response=await forwardPrivateRequest(request,slot.socket,signal);
+      // Keep the slot until execution finishes even if its original caller left.
+      // Cancellation while waiting for a slot is still immediate above.
+      const response=await forwardPrivateRequest(request,slot.socket,timeout);
       if(waited>=200||performance.now()-began>=2000)
         log('warn','foreground_read_delayed',{request_id:id,route,reader:slot.id,admission_ms:Math.round(waited),headers_ms:Math.round(performance.now()-began),occupied});
+      if(request.signal.aborted){await response.body?.cancel();release();return unavailable('READ_CANCELLED','The caller cancelled this read.');}
       if(!response.body){release();return response;}
       const reader=response.body.getReader();
       const body=new ReadableStream<Uint8Array>({
@@ -130,14 +133,14 @@ export class ForegroundReadPool {
             if(part.done){release();controller.close();}else controller.enqueue(part.value);
           } catch(error){release();controller.error(error);}
         },
-        async cancel(reason){try {await reader.cancel(reason);}finally{abort();}},
+        async cancel(reason){try {await reader.cancel(reason);}finally{release();}},
       });
       return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
     } catch(error) {
       log('warn','foreground_read_failed',{request_id:id,route,reader:slot.id,admission_ms:Math.round(waited),elapsed_ms:Math.round(performance.now()-began),...errorFields(error)});
       // Only readonly work may be interrupted at its deadline. Canonical command
       // execution is never killed or replayed because an HTTP caller gave up.
-      abort();
+      if(timeout.aborted)retire();else release();
       return unavailable('READ_EXECUTOR_UNAVAILABLE','This read did not complete. Other requests can continue.');
     }
   }

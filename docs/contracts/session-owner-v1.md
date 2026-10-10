@@ -3,7 +3,10 @@
 ## Outside-agent owner socket entrance
 
 The root-only `requests.sock` also accepts `GET /supervisor/ping`. It reads no ledger and
-returns `{ok,pid,startedAt,release}`; the outside work-flow supervisor uses it only to tell
+returns canonical `{ok,pid,startedAt,release,logging}` through the storage-free gateway,
+which adds `readCapacity`, `readerHealth` and `gatewayLogging`. The gateway leaves a frozen
+canonical owner's ping unanswered until its caller's deadline; it never replaces that
+freeze signal with its own error response. The outside work-flow supervisor uses it to tell
 a frozen owner from a working one. Stuck work is not read through this socket: Concierge
 watches its own queues (`stuck-work-watch.ts`, below), so the outside supervisor's single job
 is reviving Concierge when it is down or frozen.

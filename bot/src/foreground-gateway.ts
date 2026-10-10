@@ -35,8 +35,10 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     const began=performance.now();
     const mutation=request.method!=='GET'&&request.method!=='HEAD';
     // A stream is intentionally long lived; the caller owns its cancellation.
-    const signal=read?.domain==='stream-owner'?request.signal:AbortSignal.any([
-      request.signal,AbortSignal.timeout(url.pathname==='/supervisor/ping'?2000:mutation?OWNER_COMMAND_RESPONSE_MS:OWNER_READ_RESPONSE_MS),
+    // The outside supervisor owns the ping deadline. An answering gateway must
+    // not turn a frozen canonical owner into an answered (but non-OK) ping.
+    const signal=read?.domain==='stream-owner'||url.pathname==='/supervisor/ping'?request.signal:AbortSignal.any([
+      request.signal,AbortSignal.timeout(mutation?OWNER_COMMAND_RESPONSE_MS:OWNER_READ_RESPONSE_MS),
     ]);
     try {
       const response=await forwardPrivateRequest(request,config.ownerSocket,signal);

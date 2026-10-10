@@ -25,7 +25,9 @@ remains a path check by an agent already inside Concierge and starts no Inbox tu
 
 The same root-only owner socket answers `GET /supervisor/ping` with process identity,
 start time and installed release, which the outside work-flow supervisor uses to tell a
-frozen owner from a working one. Stuck work is watched inside Concierge, not through this
+frozen owner from a working one. Its gateway adds reader capacity, reader health and bounded
+logger counters, but does not answer on behalf of a frozen canonical owner; the supervisor's
+own unanswered-ping deadline still controls recovery. Stuck work is watched inside Concierge, not through this
 socket; see the shared wire contract.
 
 ## Waiting for a local process

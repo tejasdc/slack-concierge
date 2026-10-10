@@ -89,15 +89,19 @@ and refuses a live listener; the gateway never takes a socket from another proce
 dependency or event stream. Two persistent read executors provide independent capacity when one
 reader blocks. A finite response owns its slot through body completion; event streams have a
 separate domain. The queue retains at most 64 read requests, and admission plus response share
-the existing 20-second read deadline. Cancellation/expiry retires only that readonly executor,
-so its still-running synchronous call cannot capture the next request. A command is forwarded
+the existing 20-second read deadline. A departing caller cancels its queued admission or drops
+its response; already executing work retains its slot until it finishes. Only executor deadline
+expiry retires that readonly executor, so its still-running synchronous call cannot capture the
+next request and ordinary navigation does not repeatedly destroy warm readers. A command is forwarded
 once to the canonical backend and is never killed or replayed when its response is lost.
 
 The gateway generates `x-concierge-admission-id`. Delay records name the bounded route label,
 admission wait, header wait and occupied readers. A slow canonical dependency is distinct from
 read-capacity exhaustion. No request body, query string or credential belongs in those fields.
 The supervisor ping still executes in the canonical process and includes read capacity; a live
-gateway alone cannot make a blocked owner healthy. Canonical request observations retain that
+gateway alone cannot make a blocked owner healthy. The gateway does not manufacture a response
+when the canonical ping hangs: the outside supervisor retains its own unanswered-ping deadline
+and recovery decision. Canonical request observations retain that
 same admission identity. Read workers count every completion, error, slow read and elapsed time;
 they log failures, reads of at least two seconds, and one in 100 ordinary completions. Their
 current-process counters and bounded logger counters appear in the ping's reader health records.
