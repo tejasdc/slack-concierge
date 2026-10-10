@@ -58,8 +58,9 @@ try {
     try { accessSync(join(homedir(),'.local/state/concierge'),constants.R_OK | constants.X_OK); }
     catch { canMountCanonical = false; }
     if (process.platform === 'linux' && existsSync('/usr/bin/bwrap') && canMountCanonical) {
-      // Exercise the installed controller layout against private bytes mounted at the
-      // canonical name. The real live directory is hidden before the child opens anything.
+      // Keep the configured path outside home so the test-mode guard stays enforced.
+      // The private canonical mount has the same database inode as root, so ledgerAccess
+      // still exercises live-entrypoint policy without exposing the real live directory.
       const control = join(root, 'slack-concierge-deployment/releases', 'a'.repeat(40), 'control');
       mkdirSync(control, { recursive: true });
       const build = await Bun.build({entrypoints:[join(import.meta.dir,'release-manager.ts')],target:'bun',outdir:control});
@@ -67,7 +68,7 @@ try {
       const compiled = Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
         '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
         '--',process.execPath,join(control,'release-manager.js'),'lkg'],
-        {env:{...env,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/concierge')},stdout:'pipe',stderr:'pipe',timeout:3_000});
+        {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(compiled.exitCode,1,compiled.stderr.toString());
       assert(compiled.stdout.length,compiled.stderr.toString());
       assert.equal(JSON.parse(compiled.stdout.toString()).status,'missing');

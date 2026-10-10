@@ -718,8 +718,16 @@ retention with an incomplete newest filename, raw-script command refusal, and th
 read command while a separate connection holds the writer. The accepted-input fixture owns
 the F1/F2 admission checks. The key-change watcher opens the ledger only when a key changed;
 its ordinary minute check has no ledger connection.
-The gate exercises the packaged controller separately against private state at the canonical
-path. Inside an already isolated check, descendants inherit the inaccessible directory rather
+When the canonical directory is accessible, the gate exercises the packaged controller with
+private state mounted at the canonical path but configured through its original temporary
+path outside home. The database's matching device/inode identity still selects live-entrypoint
+policy; the test-mode home-directory guard remains enforced. Configuring the child with the
+canonical home path instead caused incident `deb48b05` on October 10: the guard correctly
+refused the child before its `lkg` command could report a missing release. This candidate-owned
+check is also consumed by the preceding installed builder, so the correction needs no control
+replacement. No tests or reviews were run by the autonomous repair; activation and health
+proof remain with the normal detached controller.
+Inside an already isolated check, descendants inherit the inaccessible directory rather
 than trying to create another user namespace. The wrapper supplies its own device directory,
 which Bun requires to start. Owner startup and the checkpoint worker report their actual
 SQLite version and source identity through the existing bounded application log.
