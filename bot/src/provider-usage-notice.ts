@@ -5,12 +5,12 @@ import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-d
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
-  tightestCurrentWindow, usagePressureBrief, type UsageForecast } from "./provider-usage-forecast";
+  tightestCurrentWindow, type UsageForecast } from "./provider-usage-forecast";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
-import { newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
+import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
@@ -523,9 +523,11 @@ export function publishExpiringResetNotices(_record?: RecordEvent): void {
  *  - It is pinned to the exact live run (`delivery:'steer'` with that run's id), so it can
  *    never start a turn on an idle session. If the run ends first, the notice fails and is
  *    not retried into a queue.
- *  - One per session per allowance period, keyed by the window's reset instant, so a
- *    tightening window cannot turn into a stream a session learns to skip.
- *  - It informs and asks; it instructs nothing. The session keeps its model and its work.
+ *  - One brief for each delegation-availability state per session and allowance
+ *    period. A change in available room can update the action without repeated
+ *    notices for every usage reading.
+ *  - It gives a delegation action only when the same account choice that starts helpers
+ *    verifies Codex has the room. The session keeps its model and its work.
  */
 export function briefRunningSessions(admit: (input: {
   sessionId: number; inputId: string; origin: "service"; sourceInputId: string; sourceRunId: string;
@@ -534,18 +536,25 @@ export function briefRunningSessions(admit: (input: {
   for (const provider of ["claude-code", "codex"] as const) {
     let brief: string | null = null;
     let tight;
+    let capacity;
     try {
       tight = tightestCurrentWindow(provider);
-      brief = usagePressureBrief(provider);
+      capacity = newWorkCapacity(provider);
+      brief = budgetBriefWithProviderRoom(provider);
     } catch { continue; }
-    if (!brief || !tight?.resetsAt) continue;
-    const episode = `${provider}:${tight.window}:${allowancePeriod(tight.resetsAt)}`;
+    const resetsAt = tight?.resetsAt ?? (capacity?.windowResetAt ? new Date(capacity.windowResetAt).toISOString() : null);
+    if (!brief || !resetsAt) continue;
+    const episode = `${provider}:${tight?.window ?? 'most-spent'}:${allowancePeriod(resetsAt)}`;
     const running = db.query(`SELECT turn.id AS turn_id, turn.session_id FROM turns turn
       JOIN sessions session ON session.id = turn.session_id
       WHERE turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
         AND session.provider_id = ?`).all(provider) as { turn_id: number; session_id: number }[];
     for (const run of running) {
-      const inputId = `budget:${episode}:${run.session_id}`;
+      // A previous brief this allowance period lacked verified provider room and the
+      // delegation action. The versioned identity delivers the changed contract once.
+      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation()
+        ? 'codex-ready' : 'budget-only';
+      const inputId = `budget-room-v1:${direction}:${episode}:${run.session_id}`;
       if (db.query("SELECT 1 FROM session_inputs WHERE id = ?").get(inputId)) continue;
       try {
         // The notice is its own source, like the update-wait notice: a source must be an input
@@ -555,7 +564,8 @@ export function briefRunningSessions(admit: (input: {
           sourceRunId: nativeRunId(run.turn_id), requestId: inputId, delivery: "steer",
           text: `${brief}\n\nThis is about the account, not a request; you do not need to reply.` });
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
-          turn_id: run.turn_id, window: tight.window, minutes_left: tight.minutesLeft });
+          turn_id: run.turn_id, window: tight?.window ?? 'most-spent', minutes_left: tight?.minutesLeft ?? null,
+          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation() });
       } catch (error) {
         // A run that ended between the query and the admission is the ordinary case here.
         log("info", "provider_usage_session_brief_skipped", { provider, session_id: run.session_id,

@@ -1,7 +1,7 @@
 import { currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
-import { NOTICE_AT_PERCENT } from './provider-usage-forecast';
+import { NOTICE_AT_PERCENT, usagePressureBrief } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
 
 type Candidate = { provider: 'claude-code' | 'codex'; used: number; resetsAt: number | null; windowResetAt: number | null };
@@ -50,9 +50,37 @@ export function newWorkCapacity(provider: 'claude-code' | 'codex', now = Date.no
     .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0] ?? null;
 }
 
+/** A running Claude agent's independent helper can use Codex while its own allowance is under pressure. */
+export function codexRoomForClaudeDelegation(now = Date.now()): { claudeUsed: number; codexUsed: number } | null {
+  const claude = newWorkCapacity('claude-code', now);
+  const codex = newWorkCapacity('codex', now);
+  if (!claude || !codex || codex.used >= 100 || codex.used >= claude.used) return null;
+  if (claude.used < NOTICE_AT_PERCENT && !usagePressureBrief('claude-code')) return null;
+  return { claudeUsed: claude.used, codexUsed: codex.used };
+}
+
+/** The same fresh account evidence used for delegation is named in each agent budget brief. */
+export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', now = Date.now()): string | null {
+  const forecast = usagePressureBrief(provider);
+  const own = newWorkCapacity(provider, now);
+  if (!forecast && (!own || own.used < NOTICE_AT_PERCENT)) return null;
+  const other = provider === 'claude-code' ? 'codex' : 'claude-code';
+  const elsewhere = newWorkCapacity(other, now);
+  const name = (key: 'claude-code' | 'codex') => key === 'codex' ? 'Codex' : 'Claude';
+  const facts = `${name(provider)} new-session allowance: ${own ? `${own.used}% used` : 'unverified'}. `
+    + `${name(other)} new-session allowance: ${elsewhere ? `${elsewhere.used}% used` : 'unverified'}. `
+    + 'The owner checks again when a helper request is created.';
+  const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now) : null;
+  const action = codex
+    ? 'Delegate bounded implementation to an independent Codex session through sessions ask --project without --provider. The owner makes that choice automatically while this pressure and Codex room persist. Review its result before you finish; this running Claude session keeps its provider.'
+    : 'Continue the accepted work. A helper request without a provider uses the owner\'s current account choice; no other provider has been established as the roomier delegation target.';
+  return [forecast ?? `Budget: this ${name(provider)} provider is at or above ${NOTICE_AT_PERCENT}% of its usable allowance.`, facts, action].join(' ');
+}
+
 export function chooseProviderForNewWork(canStart: (provider: 'claude-code' | 'codex') => boolean,
-  now = Date.now()): 'claude-code' | 'codex' {
+  now = Date.now(), delegatedFromClaude = false): 'claude-code' | 'codex' {
   const candidates = candidatesForNewWork(now).filter(candidate => canStart(candidate.provider));
+  if (delegatedFromClaude && canStart('codex') && codexRoomForClaudeDelegation(now)) return 'codex';
   const available = candidates.filter(candidate => candidate.used < 100);
   if (available.length) {
     const claude = available.filter(candidate => candidate.provider === 'claude-code')

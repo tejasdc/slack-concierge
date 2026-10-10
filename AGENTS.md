@@ -389,6 +389,9 @@ authorization or a change to the default rapid-iteration policy.
   uses `--provider auto` to select from current usable allowance at creation; this does not
   switch an existing session or retry one provider's work on another. See
   [provider starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
+  Under Claude budget pressure, independent helper requests from a Claude session use the
+  owner's current Codex room decision; the running agent receives that guidance through its
+  budget brief and keeps its own provider.
   When a session hands work down
   to a cheaper model or escalates a stuck problem up to a stronger investigator is
   owned by the global instructions' Model selection section; the per-turn prompt in

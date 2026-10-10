@@ -79,8 +79,9 @@ import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
 }
-function automaticProvider(canStart: (provider: 'claude-code' | 'codex') => boolean): 'claude-code' | 'codex' {
-  try { return chooseProviderForNewWork(canStart); }
+function automaticProvider(canStart: (provider: 'claude-code' | 'codex') => boolean,
+  delegatedFromClaude = false): 'claude-code' | 'codex' {
+  try { return chooseProviderForNewWork(canStart, Date.now(), delegatedFromClaude); }
   catch (error) { throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN'); }
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
@@ -917,7 +918,9 @@ export class SessionOwner {
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
   createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
     const title=normalizeSessionTitle(input.title);
-    const selected=this.requestTarget(input);
+    const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
+    const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
+    const selected=this.requestTarget(input,fromClaude);
     const {provider,...metadata}=selected;
     if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
     const session=createNativeSession(provider,{title,...metadata});
@@ -1415,7 +1418,7 @@ export class SessionOwner {
       throw error;
     }
   }
-  private requestTarget(input:{provider:string;effort?:string;project?:string}) {
+  private requestTarget(input:{provider:string;effort?:string;project?:string},delegatedFromClaude=false) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
       // The thinking level travels as the session's model, so the admission names it and the
@@ -1424,7 +1427,7 @@ export class SessionOwner {
       if(!thinking)throw new SessionOwnerError(`ChatGPT's thinking level is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
       return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
-    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):null;
+    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),delegatedFromClaude):null;
     const selector=parseProviderSelector(selectedProvider==='codex'?'cx-sol':selectedProvider==='claude-code'?'cc-opus':input.provider);
     if(!selector)throw new SessionOwnerError('Select a supported provider alias.');
     if(input.effort!==undefined) {

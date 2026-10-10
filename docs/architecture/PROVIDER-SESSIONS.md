@@ -138,6 +138,22 @@ new Concierge session defaults to Automatic. On the server, an agent whose run p
 an update still uses the current installed request helper for a *new* outbound ask; its
 run hooks and recovery helpers remain pinned to their original release.
 
+For an independent helper requested by a Claude session, Automatic also sees the source
+session. When a fresh launchable Claude account is under budget pressure (the existing
+90% warning or its one-hour usage brief) and the signed-in Codex account has more room,
+the owner starts that helper on Codex. The decision is repeated at request creation, so
+a previously started Claude run gets the current choice without a router message. A
+provider named by the agent remains explicit; the source session and its admitted work
+stay on Claude. Provider-native child tools still use their parent's provider.
+
+The existing usage watch tells each running session about its own budget and current
+launchable room on both providers. Under Claude pressure, the same room decision adds
+an instruction to delegate bounded implementation through a new session request, while
+the Claude agent keeps the approach and reviews the result. A change from no Codex
+delegation room to verified room creates one new brief in that allowance episode. New
+turns receive the same brief in their opening context. These are service notices to
+the agent, not human Inbox alerts or a provider switch for an active run.
+
 `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` remains the static preference for
 legacy callers and project defaults that name no provider. It is `cc-opus` — Claude
 Code on `claude-opus-5-5`. New work entering through `auto` uses the owner's live

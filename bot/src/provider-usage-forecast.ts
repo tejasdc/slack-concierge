@@ -390,32 +390,16 @@ export function usageReadingIsUrgent(): boolean {
  * words it needs to act on: the numbers, how they were arrived at, and where the room
  * actually is. Null when that provider is not close to a wall.
  *
- * It asks rather than instructs, on purpose. Tejas settled this on 2026-09-23: "we don't
- * have to switch to our cheaper model suddenly … the sessions who are working on it can be
- * informed. And notified and say, hey, the session is running low. Are you making sure that
- * you're using the intelligence intelligently?" A running session keeps its own model —
- * that rule is unchanged — and what actually spends an allowance is a session choosing to
- * do bounded work itself instead of handing it down, which no model switch can fix and
- * which the session is the only one in a position to judge.
- *
- * It names the other provider too, because both credentials are on this machine and both
- * readings exist: a Claude session low on Claude should be told which Codex models have
- * room, and the reverse. Handing work down to the provider that has room is the point.
+ * A running session keeps its own model. The account comparison and delegation action
+ * are attached by the new-session choice owner from fresh, launchable account readings.
  */
 export function usagePressureBrief(provider: ProviderKey): string | null {
   const tight = tightestCurrentWindow(provider);
   if (!tight || tight.minutesLeft === null || tight.minutesLeft * 60_000 > WARN_LEAD_MS) return null;
-  const other: ProviderKey = provider === "codex" ? "claude-code" : "codex";
   const name = (key: ProviderKey) => key === "codex" ? "Codex" : "Claude";
   const basis = tight.source === "provider"
     ? `${name(provider)}'s own projection`
     : `this machine's readings (${tight.samples} in the last ${tight.spanMinutes ?? 0} minutes, climbing about ${tight.ratePerHour ?? 0}% an hour)`;
-  const elsewhere = tightestCurrentWindow(other);
-  const otherRoom = elsewhere === null
-    ? `${name(other)} has room on the account in use`
-    : elsewhere.minutesLeft === null
-      ? `${name(other)}'s headroom is unknown`
-      : `${name(other)} is also close to a wall (about ${elsewhere.minutesLeft} minutes)`;
   const spare = accountsWithRoomBesides(provider, tight.account);
   const banked = (storedUsage(provider)?.accounts ?? []).flatMap(account => account.resetCredits?.available
     ? [{ account: account.label, available: account.resetCredits.available }] : []);
@@ -425,12 +409,12 @@ export function usagePressureBrief(provider: ProviderKey): string | null {
       + (tight.resetsAt ? `, before it refills at ${tight.resetsAt}` : "") + ".",
     "This is a forecast from a rate, not a countdown: a burst of work arrives faster than any line through past readings predicts, and a quiet spell never arrives at all.",
     `Nothing about this session changes — your model and your work are untouched, and no one is switching anything under you.`,
-    `What it is worth asking yourself: are you spending your own turns on work that has a fixed acceptance criterion and could be handed down? ${otherRoom}, so hand that work to the provider that has room rather than only to your own provider's smaller models.`,
+    'Move bounded implementation into independent helper requests when another provider has verified room; keep your approach and review responsibility.',
     spare.length ? `Other accounts on this machine with room, if Tejas switches: ${spare.join(", ")}.` : "",
     banked.length
       ? `Banked resets on this provider: ${banked.map(entry => `${entry.account} (${entry.available})`).join(", ")}.`
         + " One is spent automatically if work actually stops and no account has room, so there is nothing for you to do about it."
       : "",
-    "Do not stop, hand off or abandon what you are doing because of this. It is information.",
+    'Do not stop or abandon admitted work because of this budget notice.',
   ].filter(Boolean).join(" ");
 }
