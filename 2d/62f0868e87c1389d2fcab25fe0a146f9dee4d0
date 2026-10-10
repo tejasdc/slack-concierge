@@ -1,0 +1,1 @@
+Threads can now be read in the order they started, and a new list shows each request you sent with the thread it went into.
