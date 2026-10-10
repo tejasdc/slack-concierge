@@ -718,6 +718,11 @@ retention with an incomplete newest filename, raw-script command refusal, and th
 read command while a separate connection holds the writer. The accepted-input fixture owns
 the F1/F2 admission checks. The key-change watcher opens the ledger only when a key changed;
 its ordinary minute check has no ledger connection.
+An existing writable helper connection explicitly selects Bun's `readwrite` mode as well as
+`create:false`: `create:false` alone produced `SQLITE_MISUSE` after the October 10 activation.
+The private packaged-controller fixture opens both read and writable helper roles under a held
+writer, so this failure cannot hide behind the successful read-only check again. Command-guard
+source inspection applies to executed scripts, not files merely read by `rg` or `sed`.
 When the canonical directory is accessible, the gate exercises the packaged controller with
 private state mounted at the canonical path but configured through its original temporary
 path outside home. The database's matching device/inode identity still selects live-entrypoint
