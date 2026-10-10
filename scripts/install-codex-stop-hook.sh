@@ -30,12 +30,12 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
   bot="$release/control/bot"
   updater_policy="$release/control/ensure-codex-updater-disabled.js"
   suffix=js
 else
-  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
   updater_policy="$bot/scripts/ensure-codex-updater-disabled.ts"
   suffix=ts
 fi
@@ -64,9 +64,22 @@ if [ -e "$hook" ] && ! grep -Fq "$marker" "$hook"; then
 fi
 mkdir -p "$etc/hooks"
 tmp=$(mktemp)
+if [ "$suffix" = js ]; then
+  # Resolve the release symlink now. A later rollback can move /current to an older
+  # artifact without removing the machine policy already installed for running agents.
+  current_guard=$(cd "$(dirname "$bot/scripts/live-store-copy-guard.js")" && pwd -P)/live-store-copy-guard.js
+else
+  # The Mac installs from a checkout that updates in place; seal this one check under
+  # the machine hook directory so a checkout rollback cannot replace it mid-run.
+  current_guard="$etc/hooks/concierge-live-store-copy.js"
+  "$bun" build "$bot/scripts/live-store-copy-guard.ts" --target bun --outfile "$tmp"
+  install -m 0644 "$tmp" "$current_guard"
+fi
 # Both wrappers dispatch per run (marker line "dispatch: per-run v2", HOOK_DISPATCH_MARKER in
 # bot/src/hook-pins.ts): the hook runs from the helper folder of the version that started the run,
-# so an update never changes the hooks under a running agent. In order:
+# so an update never changes those semantic hooks under a running agent. The history wrapper first
+# runs the installed release's raw-live-copy refusal, which must also protect already-running agents.
+# Pinned semantic dispatch then follows, in order:
 #   1. a shared Codex daemon turn: the folder Concierge filed under its conversation id, which the
 #      hook receives as session_id on stdin (<state>/hook-pins/codex/<id>);
 #   2. a run Concierge started in a host: its own CONCIERGE_ROUTER_BOT_DIR;
@@ -80,6 +93,20 @@ $marker
 $dispatch
 # $3
 input=\$(cat)
+# current-live-store-copy v1: machine policy runs before the pinned per-run hook.
+if [ '$2' = history-guard ]; then
+  current='$current_guard'
+  if [ ! -f "\$current" ]; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"The current live-store copy guard is unavailable; retry after Concierge hook installation."}}'
+    exit 0
+  fi
+  if decision=\$(printf '%s' "\$input" | '$bun' run "\$current"); then :
+  else
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"The current live-store copy guard could not run; retry after Concierge hook installation."}}'
+    exit 0
+  fi
+  if [ -n "\$decision" ]; then printf '%s\n' "\$decision"; exit 0; fi
+fi
 dir='$bot' suffix='$suffix' run=''
 id=\$(printf '%s' "\$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p' | head -n 1)
 if [ -n "\$id" ] && [ -f '$state/hook-pins/codex/'"\$id" ]; then run=\$(head -n 1 '$state/hook-pins/codex/'"\$id")

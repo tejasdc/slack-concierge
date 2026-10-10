@@ -43,6 +43,10 @@ entrypoint. Ordinary agents do not invoke it or register deployment requests.
 The stable controller launcher resolves its control artifact once for each invocation.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
 programs midway through the run; the following invocation takes the new artifact.
+Normal rollout restores use `restore-lkg --keep-control`: they restore the application while
+retaining the runner's verified controller for startup recovery too. Promotion advances that
+controller only after health succeeds. Explicit `restore-lkg` without the flag still restores
+both pointers for its documented recovery use.
 
 The production native request owner starts serving independently of the retired Slack
 Socket Mode connection. Slack's WebSocket can remain in its own connection attempt or
@@ -716,6 +720,12 @@ checks additionally run under bubblewrap with the live state directory inaccessi
 capabilities dropped, inherited by their descendants. Raw SQLite or file-copy code in a
 fixture therefore cannot reach production. These are executable boundaries, not a claim
 that unrestricted root operators cannot bypass operating-system policy deliberately.
+
+The machine's command wrapper runs the current installed raw-copy guard before selecting
+the session's pinned semantic hook. This applies to already-running agents too. Its guard
+is pinned to the verified installed artifact so rolling back the application cannot remove
+it; a missing or failed guard refuses commands. The Mac source installer seals that small
+guard under its machine hook directory. Neither installation restarts provider turns.
 
 The candidate's `database-safety-fixture.ts` exercises failed backup verification, publication,
 retention with an incomplete newest filename, raw-script command refusal, and the real release

@@ -92,7 +92,10 @@ try {
   if (command === "restore-lkg") {
     const release = getLastKnownGoodRelease();
     if (!release) throw new Error("No last-known-good release has been recorded.");
-    const manifest = manager.restore(release.artifact_path);
+    if (process.argv.includes('--keep-control') && !manager.controlArtifactPath())
+      throw new Error('Cannot retain a missing deployment controller.');
+    const manifest = process.argv.includes('--keep-control')
+      ? manager.activate(release.artifact_path) : manager.restore(release.artifact_path);
     finish(0, { status: "restored", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "promote") {
