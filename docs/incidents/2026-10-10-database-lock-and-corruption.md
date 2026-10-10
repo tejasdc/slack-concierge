@@ -182,3 +182,22 @@ private fixtures exercise failures, exact retries, changed payloads and one queu
 Exact row evidence remains private under `/root/workspace/agent-scripts/dblock-reconciliation/`.
 Final review and installed observation evidence are appended to the incident's working report;
 this source record does not substitute for terminal deployment evidence.
+
+### 14:05 failed start of 9fddf07a: the old control, not the new code
+
+The 14:05 activation of `9fddf07a` failed in the unit's pre-start `control recover`
+five times, and deployment repair restored `6f67b686`. The stack named
+`releases/bcab255…/control/recover-deployment.js`, which is `6f67b686`'s control:
+activation leaves the last promoted control in place until promotion, so the new
+release's start ran the old control. `603b7abc` (in `6f67b686`) opened the existing
+ledger with `{ create: false }`, and Bun 1.4.2 refuses that with `SQLITE_MISUSE`
+unless `readwrite: true` is also given (reproduced on a scratch file; `{ readwrite:
+true, create: false }` and `{ readonly: true, create: false }` both open). The
+"anonymous database in read-only mode" lines in the journal are Bun's printed source
+context around the throwing call, not the error; no path was empty and nothing
+opened `:memory:`. `5df2d22a` already fixed the open, and its fixture now covers a
+non-schema writable entrance. Repair's cutover moved control to `9fddf07a` at 14:05,
+whose `recover` then ran clean at 14:06:07, so the next start uses fixed control.
+Until a release containing `5df2d22a` is current, the minute-by-minute native
+continuation bundled in `6f67b686` keeps failing with the same `SQLITE_MISUSE`.
+This entry's push is the fresh run that installs it.
