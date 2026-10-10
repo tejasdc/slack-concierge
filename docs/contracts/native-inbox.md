@@ -1,5 +1,28 @@
 # Native Inbox
 
+## Waiting captures
+
+The owner exposes a bounded, ordered page of human Inbox inputs and attributed outside-agent
+captures that are still queued and have never reached a provider. Thinkering's Inbox uses it
+to show what is waiting, marking outside-agent authorship explicitly.
+`Move next` raises one queued input's priority within this Inbox session; the owner claim and
+the older-turn blocker use that same priority, then original turn order. It changes neither
+the input nor the turn identity. An already admitted or ambiguously delivered input cannot
+move.
+
+`Work with current run` names the exact acknowledged Inbox run and up to twenty selected
+waiting inputs. The owner attaches each original input as its own steering message, preserving
+capture bytes, authorship, thread and receipt. If that run has ended, the owner refuses the
+action and the captures remain queued. If the run stops accepting partway through, those it
+did not take remain queued; accepted and ambiguous messages are never replayed. Stop still
+addresses one exact run. Replacement is a new human input plus withdrawal of the old queued
+one, never a rewrite of retained words.
+
+Queue controls are idempotent human actions. The read is a bounded page over the canonical
+ledger, and the action emits owner events so the Inbox refreshes without a second queue or
+copy of capture state. Priority is local to the Inbox session: it does not displace work in
+other sessions.
+
 Concierge owns the active canonical Inbox session, accepted inputs, attachment bytes
 and request obligations. Thinkering opens it with its existing conversation surface.
 The existing capture ingress and queue remain the producer boundary. A provider/cwd

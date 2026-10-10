@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db, executionChanged, finishTurn, getSessionById, type ProviderId, type SessionRow } from './state';
+import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
 import {resolveProviderDefault} from './aliases';
 import {receiveSessionFromPeer} from './peer-identity';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
@@ -367,7 +367,23 @@ export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
     if (!input) throw new Error('Unknown accepted input.');
-    if (input.turn_id!==null) return input;
+    if (input.turn_id!==null) {
+      // An explicit Inbox "work together" action can move a never-received
+      // queued capture into this run without replacing its accepted identity.
+      const queued=db.query(`SELECT id FROM turns WHERE id=? AND session_id=? AND status='queued'
+        AND accepted_input_id=? AND owner_instance_id IS NULL
+        AND provider_admission_intended_at IS NULL AND provider_started_at IS NULL
+        AND provider_turn_id IS NULL AND provider_input_acknowledged_at IS NULL
+        AND saved_kind IS NULL`).get(input.turn_id,input.session_id,input.id) as {id:number}|null;
+      const capture=JSON.parse(input.payload_json).capture;
+      if(!queued||!sessionMetadata(getSessionById(input.session_id)!).inbox
+        ||!(input.origin==='human'||input.origin==='agent'&&capture?.source?.kind==='outside-agent'))
+        throw new Error('Only a never-received Inbox capture can join a running turn.');
+      db.query("UPDATE turns SET accepted_input_id=NULL WHERE id=? AND status='queued'").run(queued.id);
+      finishTurn(queued.id,'cancelled','Joined the current Inbox work.');
+      settleTurnDependencies(queued.id);
+      db.query('UPDATE session_inputs SET turn_id=NULL WHERE id=? AND turn_id=?').run(input.id,queued.id);
+    }
     const active=db.query("SELECT session_id FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(turnId) as {session_id:number}|null;
     if (!active || active.session_id!==input.session_id) throw new Error('Active execution no longer matches the accepted input.');
     if(input.origin==='human'||input.origin==='agent')discardQueuedTurnContinuations(input.session_id,'new_input');
@@ -394,7 +410,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
 export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string):AcceptedSessionInput[] {
   return db.transaction(()=>{
     const later=getAcceptedSessionInput(laterInputId);
-    if(!later||later.origin!=='human')return [];
+    if(!later||later.origin!=='human'||JSON.parse(later.payload_json).delivery==='queue')return [];
     const rows=db.query(`SELECT input.id AS id,turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
       WHERE input.session_id=? AND input.id<>? AND input.origin='human' AND input.kind='input' AND input.steering_id IS NULL
         AND input.receipt_json IS NULL AND json_extract(input.payload_json,'$.delivery') IS NULL

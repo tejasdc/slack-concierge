@@ -2,6 +2,9 @@
  * The release harness runs these descriptors against retained-cardinality fixtures; adding
  * a route here without a fixture is a build failure, not a performance waiver. */
 export const PRESENTATION_READERS={
+  inboxQueue:{route:'GET /sessions/v1/presentation/inbox-queue',collection:'waiting Inbox inputs',
+    growth:'queued inputs and retained Inbox history',maxRows:50,maxStorageRows:60,maxResponseBytes:65_536,
+    sourceTables:['turns','session_inputs'],fixture:'inbox-queue-growth'},
   topicEvents:{route:'GET /sessions/v1/inbox/topics/:topic/entries',collection:'topic entries',
     growth:'unrelated messages and large management declarations',maxRows:20,maxStorageRows:180,maxResponseBytes:524_288,
     sourceTables:['presentation_messages','presentation_topic_events','presentation_topic_event_display'],fixture:'topic-events-growth'},
