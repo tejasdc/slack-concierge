@@ -10,6 +10,8 @@ type State='open'|'closed'|'background'|'all';
 const orderKey=(band:number,at:string,id:string)=>`${band}:${String(9999999999999-Date.parse(at)).padStart(13,'0')}:${id}`;
 type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number};
 const json=(value:unknown)=>JSON.stringify(value);
+/** Owner times have two spellings ('2026-09-23 18:46:23' and ISO); keep one in prepared rows. */
+const instant=(at:string)=>at.includes('T')?at:at.replace(' ','T')+'Z';
 const cursor=(value:unknown)=>Buffer.from(json(value)).toString('base64url');
 const decode=(value:string)=>{try{return JSON.parse(Buffer.from(value,'base64url').toString());}catch{return null;}};
 const preview=(text:string,size=240)=>{let result='',count=0;for(const character of text){if(count++===size)break;result+=character;}return result;};
@@ -90,6 +92,42 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN one_reply_rule INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // A thread's start and each of his requests' arrival, for the Started order and the Incoming view
+  // (Tejas, 2026-10-09: "a chronological view of like all of the requests that are like coming in
+  // ... mapping to the threads"). Added in place with a backfill: forcing a whole rebuild emptied
+  // his Threads list for fifteen minutes on 2026-10-08.
+  if(!(prepared.query('PRAGMA table_info(presentation_topic_roots)').all() as {name:string}[]).some(column=>column.name==='first_sequence'))prepared.transaction(()=>{
+   prepared.exec(`ALTER TABLE presentation_topic_roots ADD COLUMN first_sequence INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE presentation_topic_roots ADD COLUMN first_at TEXT NOT NULL DEFAULT '';
+    ALTER TABLE presentation_topic_roots ADD COLUMN his INTEGER NOT NULL DEFAULT 0;`);
+   // Only the new facts, by index: rebuilding every root's text parses each capture's whole payload,
+   // which took 200 s over his 2,577 roots in a rehearsal on 2026-10-10.
+   const fill=prepared.query('UPDATE presentation_topic_roots SET first_sequence=?,first_at=?,his=? WHERE generation=? AND root_id=?');
+   for(const row of prepared.query('SELECT generation,root_id,session_id FROM presentation_topic_roots').all() as {generation:number;root_id:string;session_id:number}[]){
+    const first=prepared.query('SELECT event_sequence,created_at FROM presentation_messages WHERE generation=? AND session_id=? AND root_input_id=? ORDER BY event_sequence LIMIT 1')
+     .get(row.generation,row.session_id,row.root_id) as {event_sequence:number;created_at:string}|null;
+    if(first)fill.run(first.event_sequence,instant(first.created_at),this.sentByHim(row.root_id)?1:0,row.generation,row.root_id);
+   }
+   for(const row of prepared.query("SELECT generation,root_id FROM presentation_topic_roots WHERE text LIKE 'Thinkering bug report%'").all() as {generation:number;root_id:string}[])
+    this.updateRoot(row.generation,row.root_id);
+  })();
+  prepared.exec('CREATE INDEX IF NOT EXISTS presentation_topic_incoming ON presentation_topic_roots(generation,session_id,his,first_sequence DESC,root_id)');
+  if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='started_sort_key'))prepared.transaction(()=>{
+   prepared.exec("ALTER TABLE presentation_topics ADD COLUMN started_sort_key TEXT NOT NULL DEFAULT ''");
+   // Every row gets its start key and its summary its start and arrivals now, from the roots filled
+   // above, as the next write would compute them. Rewriting every thread instead took about 13 s a
+   // thread under load in a rehearsal on his 634 threads (2026-10-10), and real changes would have
+   // queued behind it for hours.
+   const patch=prepared.query("UPDATE presentation_topics SET started_sort_key=?,summary_json=json_set(summary_json,'$.startedAt',?,'$.arrivals',json(?)) WHERE generation=? AND topic_id=?");
+   for(const row of prepared.query("SELECT generation,topic_id,json_extract(summary_json,'$.createdAt') AS created FROM presentation_topics").all() as {generation:number;topic_id:string;created:string|null}[]){
+    const roots=prepared.query("SELECT MIN(first_at) AS first,SUM(his) AS count,MAX(CASE WHEN his=1 THEN first_at END) AS last FROM presentation_topic_roots WHERE generation=? AND topic_id=? AND first_at<>''")
+     .get(row.generation,row.topic_id) as {first:string|null;count:number|null;last:string|null};
+    const at=roots.first??row.created;if(!at)continue;
+    patch.run(orderKey(0,at,row.topic_id),at,json({count:roots.count??0,lastAt:roots.last}),row.generation,row.topic_id);
+   }
+  })();
+  prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topics_started ON presentation_topics(generation,session_id,state,started_sort_key);
+   CREATE INDEX IF NOT EXISTS presentation_topics_started_all ON presentation_topics(generation,session_id,started_sort_key);`);
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topic_question_topic_page ON presentation_topic_questions(generation,topic_id,selected,created_at DESC,question_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_request_links(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,input_id TEXT NOT NULL,request_id TEXT NOT NULL,
     PRIMARY KEY(generation,topic_id,input_id,request_id));`);
@@ -179,9 +217,7 @@ export class PreparedTopics {
   if(!row){this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=? AND root_id=?').run(generation,root);return;}
   const topic=this.source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null;
   const input=this.source.query('SELECT payload_json,origin FROM session_inputs WHERE id=?').get(root) as {payload_json:string;origin:string}|null;
-  // Only what he sent himself waits to be filed. Agents' requests to the router showed in his Inbox
-  // as raw "Session request … agent-authored input" rows, marked Being sorted forever (2026-10-08).
-  const his=input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
+  const his=this.sentByHim(root);
   const payload=input?JSON.parse(input.payload_json):{},body=payload.firstInput??payload;
   let text=typeof body.text==='string'?body.text:'';
   if(root.startsWith('request:')){
@@ -189,12 +225,27 @@ export class PreparedTopics {
     .get(root) as {payload_json:string}|null;
    if(sent)text=JSON.parse(sent.payload_json).text??text;
   }
+  const first=this.prepared.query('SELECT event_sequence,created_at FROM presentation_messages WHERE generation=? AND session_id=? AND root_input_id=? ORDER BY event_sequence LIMIT 1')
+   .get(generation,row.session_id,root) as {event_sequence:number;created_at:string};
   if(body.capture?.source?.kind==='thinkering'&&text.startsWith('Thinkering bug report\n')&&text.includes('\nDescription:\n')){
    const diagnostics=text.indexOf('\nComplete diagnostics JSON');if(diagnostics>=0)text=text.slice(0,diagnostics).trimEnd();
+   // A row shows his words, not the report's header lines ("What changed: Phone app: …").
+   const description=text.slice(text.indexOf('\nDescription:\n')+'\nDescription:\n'.length).trim();
+   if(description)text='Bug report: '+description;
   }
-  this.prepared.query(`INSERT INTO presentation_topic_roots VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
-   DO UPDATE SET topic_id=excluded.topic_id,session_id=excluded.session_id,sequence=excluded.sequence,at=excluded.at,text=excluded.text,unfiled=excluded.unfiled`)
-   .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,row.created_at.includes('T')?row.created_at:row.created_at.replace(' ','T')+'Z',text.trim().slice(0,120),topic||!his?0:1);
+  this.prepared.query(`INSERT INTO presentation_topic_roots(generation,root_id,topic_id,session_id,sequence,at,text,unfiled,first_sequence,first_at,his)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
+   DO UPDATE SET topic_id=excluded.topic_id,session_id=excluded.session_id,sequence=excluded.sequence,at=excluded.at,text=excluded.text,unfiled=excluded.unfiled,
+    first_sequence=excluded.first_sequence,first_at=excluded.first_at,his=excluded.his`)
+   .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,instant(row.created_at),text.trim().slice(0,120),topic||!his?0:1,
+    first.event_sequence,instant(first.created_at),his?1:0);
+ }
+ /** Only what he sent himself waits to be filed or appears as his incoming. Agents' requests to the
+  * router showed in his Inbox as raw "Session request … agent-authored input" rows, marked Being
+  * sorted forever (2026-10-08). */
+ private sentByHim(root:string){
+  const input=this.source.query('SELECT origin FROM session_inputs WHERE id=?').get(root) as {origin:string}|null;
+  return input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
  }
  updateSorting(context:TopicContext){
   const sessionId=context.requestedSessionId??context.sessionId;
@@ -269,6 +320,14 @@ export class PreparedTopics {
    this.prepared.query('DELETE FROM presentation_topics WHERE generation=? AND topic_id=?').run(generation,topicId);
    if(previous&&previous.session_id===context.sessionId)this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,NULL)').run(generation,topicId,previous.summary_json);
    return;}
+  // A thread started when the first message it holds arrived, not when the router made the record:
+  // every thread that existed before topics was recorded as made on 2026-09-16. Arrivals counts only
+  // what he sent himself, so the Started list can say a new request joined an old thread.
+  const rootTimes=value.summary.roots.map(root=>this.prepared.query('SELECT first_at AS at,his FROM presentation_topic_roots WHERE generation=? AND root_id=?')
+   .get(generation,root) as {at:string;his:number}|null).filter((row):row is {at:string;his:number}=>!!row?.at);
+  const startedAt=rootTimes.map(row=>row.at).sort()[0]??value.summary.createdAt;
+  const his=rootTimes.filter(row=>row.his).map(row=>row.at).sort();
+  Object.assign(value.summary,{startedAt,arrivals:{count:his.length,lastAt:his.at(-1)??null}});
   value.detail.topic.history.forEach((item,index)=>writeItem(item,'history',index));
   const ref=this.retain({...value.detail,collections:'paged',itemsRevision:itemDigest.digest('hex')});
   const summary=this.compact(value.summary,ref);
@@ -278,15 +337,16 @@ export class PreparedTopics {
    {topicId,runId:value.detail.focus.runId,summary:preview(value.detail.focus.summary??''),detailRef:this.retain(value.detail.focus)}:value.detail.focus;
   const questionCounts=value.questionCounts;
   const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.requestCount};
-   this.prepared.query(`INSERT INTO presentation_topics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-   ON CONFLICT(generation,topic_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state,
+   this.prepared.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
+    search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+   ON CONFLICT(generation,topic_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state,started_sort_key=excluded.started_sort_key,
     background=excluded.background,band=excluded.band,recency=excluded.recency,closed_recency=excluded.closed_recency,
     summary_json=excluded.summary_json,detail_hash=excluded.detail_hash,search_text=excluded.search_text,sort_key=excluded.sort_key,closed_sort_key=excluded.closed_sort_key,reply_targets_json=excluded.reply_targets_json,overview_json=excluded.overview_json`)
    .run(generation,topicId,owner,value.summary.state,
     value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
     value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
     orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
-    json(replyTargets),json(overview));
+    json(replyTargets),json(overview),orderKey(0,startedAt,topicId));
   for(const root of value.summary.roots)depend('root',root);
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
@@ -376,13 +436,15 @@ function coverage(current:Meta,head:number){return {complete:!!current.ready&&cu
  code:!current.ready||current.source_head<head?'presentation_indexing':null,appliedSequence:current.source_head};}
 function reset(current:Meta){return {topics:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};}
 
-export function readPreparedTopics(db:Database,options:{state?:State;query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
- const current=meta(db),state=options.state??'open',limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));
+export function readPreparedTopics(db:Database,options:{state?:State;order?:'updated'|'started';query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
+ const current=meta(db),state=options.state??'open',order=options.order??'updated',limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));
+ if(!['updated','started'].includes(order))throw new Error('Unknown topic order');
  if(!['open','closed','background','all'].includes(state))throw new Error('Unknown topic state filter');
  if(options.query?.trim())return searchPreparedTopics(db,{...options,state,limit,query:options.query.trim().toLowerCase()});
  const old=options.cursor?decode(options.cursor):null;
- if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.state!==state||typeof old.key!=='string'))return reset(current);
- const key=state==='closed'?'closed_sort_key':'sort_key';
+ if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.state!==state||typeof old.key!=='string'||(old.order??'updated')!==order))return reset(current);
+ // Started is newest thread first and never moves for later messages; Updated follows the conversation.
+ const key=order==='started'?'started_sort_key':state==='closed'?'closed_sort_key':'sort_key';
  const condition=state==='all'?'1=1':state==='background'?'background=1':`state='${state}'`;
  const rows=db.query(`SELECT ${key} AS key,summary_json FROM presentation_topics
   WHERE generation=? AND session_id=? AND ${condition} ${old?`AND ${key}>?`:''} ORDER BY ${key} LIMIT ?`)
@@ -392,7 +454,29 @@ export function readPreparedTopics(db:Database,options:{state?:State;query?:stri
  const captures=db.query('SELECT root_id AS inputId,text,at FROM presentation_topic_roots WHERE generation=? AND unfiled=1 ORDER BY sequence DESC,root_id LIMIT 5').all(current.generation);
  const changeHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_topic_changes WHERE generation=?').get(current.generation) as {n:number}).n;
  return {topics:page.map(row=>JSON.parse(row.summary_json)),sorting:{count:sortingRow?.count??0,captures,attention:JSON.parse(sortingRow?.attention_json??'[]')},asOf:cursor({g:current.generation,inbox:current.inbox_session,sequence:changeHead}),nextCursor:rows.length>limit&&last?
-  cursor({g:current.generation,inbox:current.inbox_session,state,key:last.key}):null,
+  cursor({g:current.generation,inbox:current.inbox_session,state,order,key:last.key}):null,
+  coverage:coverage(current,options.canonicalHead)};
+}
+/** Everything he sent the Inbox that started a thread root, newest arrival first, each with the
+ * thread it was filed into (none yet: Being sorted). Agents' requests to the router never appear. */
+export function readPreparedIncoming(db:Database,options:{cursor?:string|null;limit?:number;canonicalHead:number}){
+ const current=meta(db),limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));
+ const old=options.cursor?decode(options.cursor):null;
+ if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||!Number.isSafeInteger(old.sequence)||typeof old.root!=='string'))
+  return {items:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};
+ const rows=db.query(`SELECT root_id,topic_id,first_sequence,first_at,text FROM presentation_topic_roots
+  WHERE generation=? AND session_id=? AND his=1 ${old?'AND (first_sequence<? OR (first_sequence=? AND root_id>?))':''}
+  ORDER BY first_sequence DESC,root_id LIMIT ?`)
+  .all(current.generation,current.inbox_session,...(old?[old.sequence,old.sequence,old.root]:[]),limit+1) as {root_id:string;topic_id:string|null;first_sequence:number;first_at:string;text:string}[];
+ const page=rows.slice(0,limit),last=page.at(-1);
+ const topic=db.query('SELECT summary_json FROM presentation_topics WHERE generation=? AND topic_id=?');
+ const items=page.map(row=>{
+  const found=row.topic_id?topic.get(current.generation,row.topic_id) as {summary_json:string}|null:null;
+  const summary=found?JSON.parse(found.summary_json):null;
+  return {inputId:row.root_id,text:row.text,at:row.first_at,
+   topic:summary?{id:summary.id,title:summary.title,state:summary.state,startedAt:summary.startedAt??summary.createdAt}:null};
+ });
+ return {items,nextCursor:rows.length>limit&&last?cursor({g:current.generation,inbox:current.inbox_session,sequence:last.first_sequence,root:last.root_id}):null,
   coverage:coverage(current,options.canonicalHead)};
 }
 function searchPreparedTopics(db:Database,options:{state:State;query:string;cursor?:string|null;limit:number;canonicalHead:number}){

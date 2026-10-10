@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {db} from './state';
 import {presentationHead} from './presentation-changes';
 import {observedDatabase} from './storage-observation';
-import {readPreparedTopics,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,
+import {readPreparedTopics,readPreparedIncoming,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,
  readPreparedTopicChanges,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedTopicEvents} from './prepared-topics';
 
 let connection:Database|null=null;
@@ -23,6 +23,10 @@ export function preparedTopicEventDisplays(sequences:readonly number[]){
 export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics>[1],'canonicalHead'>){
  const reader=prepared();return reader?readPreparedTopics(reader,{...options,canonicalHead:presentationHead(db)}):
   {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
+}
+export function preparedIncoming(options:Omit<Parameters<typeof readPreparedIncoming>[1],'canonicalHead'>){
+ const reader=prepared();return reader?readPreparedIncoming(reader,{...options,canonicalHead:presentationHead(db)}):
+  {items:[],nextCursor:null,coverage:indexing()};
 }
 /** Whether the prepared thread list exists yet. Until it does, the list is answered from the ledger
  * itself, because an empty "still indexing" page read as no threads at all (2026-10-08, the rebuild
