@@ -32,6 +32,9 @@ export type AccountRoom = Readonly<{
    * this machine could not read the account at all, which is not the same as full.
    */
   tightestUsedPercent: number | null;
+  /** The primary weekly allowance, when known. This ranks eligible Claude accounts without
+   * spending a nearly exhausted week merely because another account's short window is fuller. */
+  weeklyUsedPercent?: number | null;
   /** A configuration home this machine holds for it, when it has one of its own. */
   home: string | null;
   /** True for the account the default login already uses, which needs no home. */
@@ -83,8 +86,10 @@ export function chooseAccountForTurn(input: {
   accounts: readonly AccountRoom[];
   /** An account this turn must run on or wait for. Only a banked release binds. */
   bound: AccountBinding | null;
-  /** The account this conversation last ran on. A preference, not a requirement. */
+  /** The account this conversation last ran on, used to break equal-room ties. */
   prefer: string | null;
+  /** A fresh Accounts selection wins once, before ordinary room-based dispatch resumes. */
+  newlySelected?: boolean;
 }): AccountChoice {
   const usable = input.accounts.filter(launchable);
   if (!usable.length) return { account: null, home: null, because: "nothing-readable" };
@@ -105,20 +110,22 @@ export function chooseAccountForTurn(input: {
   const withRoom = usable.filter(account => account.tightestUsedPercent! < 100);
   if (!withRoom.length) return { account: null, home: null, because: "no-account-has-room" };
 
-  // A conversation prefers the account it last ran on and keeps it while that account has
-  // room: staying is free, and a conversation that hops accounts for no reason makes his
-  // usage harder to read. It is only a preference. When its account is spent it moves and
-  // continues there with its context, which is the whole point of sharing one history —
-  // proven on the Mac, 2026-09-23: session 74077648 was started under one account and
-  // resumed under the other, which recalled the token planted in the first turn. Before that
-  // was proven this branch returned a refusal, because a conversation genuinely could not
-  // move; "never wait for a refill while another account has room" is now the behaviour
-  // rather than the goal.
-  const stayed = input.prefer && withRoom.find(account => account.account === input.prefer);
-  if (stayed) return { account: stayed.account, home: stayed.home, because: "stayed-on-its-account" };
+  // A fresh manual choice applies to the next turn. Otherwise use the account with most
+  // weekly room among accounts whose every required window can run. Keeping a conversation
+  // on its previous account while it had any room spent the last 13% of one weekly allowance
+  // after the other account's morning reset left 83% available (Inbox, 2026-10-10). Equal room is the case where
+  // staying is free; it also avoids a needless account hop.
+  const preferred = input.prefer && withRoom.find(account => account.account === input.prefer);
+  if (input.newlySelected && preferred)
+    return { account: preferred.account, home: preferred.home, because: "stayed-on-its-account" };
 
+  const spentWeekOrLimit=(account:AccountRoom)=>account.weeklyUsedPercent??account.tightestUsedPercent!;
   const roomiest = withRoom.reduce((best, account) =>
-    account.tightestUsedPercent! < best.tightestUsedPercent! ? account : best);
+    spentWeekOrLimit(account) < spentWeekOrLimit(best)
+      || (spentWeekOrLimit(account) === spentWeekOrLimit(best) && account.account === input.prefer)
+      ? account : best);
+  if (roomiest.account === input.prefer)
+    return { account: roomiest.account, home: roomiest.home, because: "stayed-on-its-account" };
   return {
     account: roomiest.account,
     home: roomiest.home,

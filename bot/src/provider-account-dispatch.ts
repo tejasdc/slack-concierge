@@ -286,6 +286,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     return {
       account:account.label,
       tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      weeklyUsedPercent:account.windows.find(window=>window.name==='Weekly')?.usedPercent??null,
       home,
       isDefault:account.label===defaultAccount,
       problem:trusted||account.label===provenAccount?null:account.problem,
@@ -301,7 +302,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const expected=selectedAccount??prefer??usual;
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected});
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
   if(choice.account===null){
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
     const resets=accountAvailability('claude-code').filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
