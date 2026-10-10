@@ -112,6 +112,13 @@ export class PreparedTopics {
   prepared.exec('CREATE INDEX IF NOT EXISTS presentation_topic_incoming ON presentation_topic_roots(generation,session_id,his,first_sequence DESC,root_id)');
   if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='started_sort_key'))prepared.transaction(()=>{
    prepared.exec("ALTER TABLE presentation_topics ADD COLUMN started_sort_key TEXT NOT NULL DEFAULT ''");
+   // Every row gets its start key now, from the roots already filled above, so the Started order is
+   // right while the rewrite below brings each summary its own start and arrivals.
+   const key=prepared.query('UPDATE presentation_topics SET started_sort_key=? WHERE generation=? AND topic_id=?');
+   for(const row of prepared.query("SELECT generation,topic_id,json_extract(summary_json,'$.createdAt') AS created FROM presentation_topics").all() as {generation:number;topic_id:string;created:string|null}[]){
+    const first=(prepared.query("SELECT MIN(first_at) AS at FROM presentation_topic_roots WHERE generation=? AND topic_id=? AND first_at<>''").get(row.generation,row.topic_id) as {at:string|null}).at;
+    const at=first??row.created;if(at)key.run(orderKey(0,at,row.topic_id),row.generation,row.topic_id);
+   }
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topics_started ON presentation_topics(generation,session_id,state,started_sort_key);
