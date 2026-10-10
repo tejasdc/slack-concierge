@@ -787,7 +787,10 @@ export class SessionExecutionHost {
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
-          if(adoption&&session.provider_id==='chatgpt')await this.ownerServing;
+          if(adoption&&session.provider_id==='chatgpt'){
+            await this.ownerServing;
+            log('info','chatgpt_run_follow_started',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id});
+          }
           if(session.provider_id==='chatgpt'&&admission) {
             // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
             // service notices (cancellations, returns, reminders) are for agents and stop here.
@@ -801,7 +804,8 @@ export class SessionExecutionHost {
               directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
             return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
-              ...(adoption?{follow:{onLive:()=>recordLiveAdoption(adoption.execution.execution_id)}}:{})}).run(actual)
+              ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
+                log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
               .then(result=>{noteChatgptModel(result.text);return result;},error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
