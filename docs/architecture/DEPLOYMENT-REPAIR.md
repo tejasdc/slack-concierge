@@ -39,6 +39,14 @@ and retains it in the failed run and repair incident. Shell fail-fast handling
 must not exit from the command substitution before that evidence is recorded.
 Without the builder's error, repair can prove only the failed stage and must not
 guess at an application correction or repeat the candidate for diagnostics.
+
+The SQLite constructor gate parses every scanned TypeScript source before inspecting
+database openings. Its `cannot parse TypeScript` error identifies invalid source,
+not a database-access failure. In incident 053dbab8 (October 10, 2026), the Brief
+progress guidance added two unescaped apostrophes to the single-quoted instruction
+in `bot/src/request-protocol.ts`. Escaping those apostrophes preserves the exact
+instruction text while correcting the syntax; the constructor gate stays intact.
+
 The service's recovery preflight configures SQLite's busy timeout before any
 pragma that can take the writer lock. The retiring coordinator may still hold a
 short writer transaction at the restart boundary; recovery waits for that owner
