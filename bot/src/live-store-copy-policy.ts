@@ -22,11 +22,42 @@ const LIVE_STORE = /(?:\.local\/state\/concierge(?:[/'"\s]|$)|\$\{?CONCIERGE_STA
 const BARE_STORE = /\b[\w.-]+\.db\b/;
 const STATE_DIR = /\/\.local\/state\/concierge\/?$/;
 const SQLITE_COPY = /\.(?:backup|clone|save|dump)\b|\bVACUUM\s+INTO\b/i;
-const FILE_COPY = /(?:^|[\s;&|(])(?:cp|rsync|dd|tar|install|scp)\s/;
+const FILE_COPY = /(?:^|[;&|\n(]\s*)(?:(?:env|command|then|do|else)\s+|(?:[A-Za-z_]\w*=\S+|timeout\s+\d+)\s+)*(?:[^\s;&|()]*\/)?(?:cp|rsync|dd|tar|install|scp)\s/;
+const SUBSTITUTION_COPY = /(?:^|[\s;&|(])(?:cp|rsync|dd|tar|install|scp)\s/;
 const SCRIPT = /(?:^|[\s;&|])(?:[^\s"']*\/)?(?:python[\d.]*|bun|node|bash|zsh|sh)\s+(?:run\s+)?(?:--?[\w-]+\s+)*["']?([^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
 const DIRECT_SCRIPT = /(?:^|[;&|]\s*)["']?((?:\/|\.\/|\.\.\/)[^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
 const SCRIPT_COPY = /\.backup\s*\(|\b(?:copyfile|copy2|copyFileSync|copyFile|copytree)\s*\(|\bVACUUM\s+INTO\b/i;
 const REHEARSAL = /\b(?:migrate-deployment-repair|rehears\w*|.*fixture)\.[cm]?[jt]s\b|\b(?:BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i;
+
+/** A router call sends its quoted text to the owner; it does not execute that text. */
+function standaloneRouterCall(command: string): boolean {
+  if (!/^\s*(?:(?:[^\s]*\/)?(?:bash|zsh|sh)\s+)?(?:[^\s]*\/)?router-actions\.sh\s+sessions\s+/.test(command)
+    || LIVE_STORE.test(command)) return false;
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (char === "'" && quote !== '"') { quote = quote === "'" ? null : "'"; continue; }
+    if (char === '"' && quote !== "'") { quote = quote === '"' ? null : '"'; continue; }
+    if (char === '\\' && quote !== "'") { i++; continue; }
+    if (quote !== "'" && (char === '$' || char === '`')) return false;
+    if (!quote && /[;&|<>\n\r()]/.test(char)) return false;
+  }
+  return quote === null;
+}
+
+/** Ignore quoted prose when identifying a command's executable. */
+function executableText(command: string): string {
+  let quote: "'" | '"' | null = null;
+  let text = '';
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (char === "'" && quote !== '"') { quote = quote === "'" ? null : "'"; text += ' '; continue; }
+    if (char === '"' && quote !== "'") { quote = quote === '"' ? null : '"'; text += ' '; continue; }
+    if (char === '\\' && quote !== "'") { text += ' '; i++; text += ' '; continue; }
+    text += quote ? ' ' : char;
+  }
+  return text;
+}
 
 function mentionedScripts(command: string, cwd: string): string {
   let text = '';
@@ -49,10 +80,13 @@ export const LIVE_STORE_COPY_REFUSAL = 'Refused: this would copy a live Concierg
 
 export function liveStoreCopyRefusal(command: string | null, cwd = ''): string | null {
   if (!command) return null;
+  if (standaloneRouterCall(command)) return null;
   const inspected = command + mentionedScripts(command, cwd);
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
   if (!LIVE_STORE.test(inspected) && !(STATE_DIR.test(canonicalCwd) && BARE_STORE.test(inspected))) return null;
-  return SQLITE_COPY.test(inspected) || FILE_COPY.test(command) || SCRIPT_COPY.test(inspected) || REHEARSAL.test(inspected)
+  return SQLITE_COPY.test(inspected) || FILE_COPY.test(executableText(command))
+    || (/[`]|\$\(/.test(command) && SUBSTITUTION_COPY.test(command))
+    || SCRIPT_COPY.test(inspected) || REHEARSAL.test(inspected)
     ? LIVE_STORE_COPY_REFUSAL : null;
 }

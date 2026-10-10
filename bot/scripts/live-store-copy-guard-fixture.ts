@@ -61,6 +61,12 @@ try {
   check(execute('/root/.local/bin/router-actions.sh sessions search --source-input example --source-run example -- x | python3 -c "import json,sys; print(json.load(sys.stdin))"').additionalContext==='PINNED_OLD_SEMANTIC','piped router JSON parsing was refused');
   check(execute('sqlite3 -readonly "file:/root/.local/state/concierge/state.db?mode=ro" "SELECT 1"').additionalContext==='PINNED_OLD_SEMANTIC','read-only live query was refused');
   check(execute('/root/workspace/slack-concierge/systemd/router-actions.sh sessions list').additionalContext==='PINNED_OLD_SEMANTIC','router CLI was refused');
+  const reply='/root/.local/bin/router-actions.sh sessions reply request-id --summary "Please install a package" -- "tar is mentioned as text"';
+  check(execute(reply).additionalContext==='PINNED_OLD_SEMANTIC','quoted reply text was mistaken for a copy command');
+  check(execute(reply+'; cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','router command hid a chained live copy');
+  check(execute('echo "install a package" /root/.local/state/concierge/state.db').additionalContext==='PINNED_OLD_SEMANTIC','quoted prose was mistaken for a copy command');
+  check(execute('timeout 10 cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','wrapped live copy was not refused');
+  check(execute('echo "$(cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db)"').permissionDecision==='deny','copy in command substitution was not refused');
   check(execute(`${bun} run ${privateCommand} -- /usr/bin/env`).additionalContext==='PINNED_OLD_SEMANTIC','sealed private command was refused');
   const privateEnv=run(bun,['run',privateCommand,'--','/usr/bin/env'],{CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')});
   check(/CONCIERGE_STATE_DIR=\/tmp\/concierge-private-code-/.test(privateEnv),'private command did not replace inherited live state');

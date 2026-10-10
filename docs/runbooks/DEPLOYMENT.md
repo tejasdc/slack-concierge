@@ -736,6 +736,9 @@ scratch state, and names the sealed `private-code-command` entrance in its refus
 Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries
 remain available. For request status and results, use `router-actions.sh sessions get`
 with the exact request ID and source pair; it reads through the owner API.
+The raw-copy check recognizes copy tools in command position, so words such as
+`install` in a quoted reply are ordinary message text. A standalone session helper
+call is handled as an owner API call; a chained shell copy is still checked.
 The private entrance creates fresh temporary ledger and capture paths
 before executing any requested code and applies the same Linux mount isolation as release
 checks. Use the exact installed command printed by the guard, followed by `--` and the
