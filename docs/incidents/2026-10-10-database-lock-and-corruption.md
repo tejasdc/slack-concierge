@@ -119,3 +119,14 @@ released both gates and retained the healthy repaired invocation; it never stopp
 the coordinator. Pressure subsequently fell below 7% without this task stopping
 another agent. This evidence delivery permits a normal fresh candidate assessment
 under the changed resource conditions, with all deadlines and checks unchanged.
+
+That fresh candidate assessment, run `cb8e30bd-cb54-4cf8-be0d-7a6a0ee0267c`,
+also refused activation at 13:01:36 after a disposable dispatch-claim fixture hit
+its 15-second deadline. Crucially, at 13:01:08 and :13, the *already upgraded*
+coordinator logged two more `database is locked` message projections for turn
+6670. The candidate's readonly backup had completed at 13:00:12, and the
+coordinator had not stopped for schema migration. This disproves any claim that
+the SHM and online migration fixes exhausted the incident. The exact competing
+writer for this interval is not yet attributed; neither test fixtures nor the
+later transient readonly CLI process may be called the cause from timing alone.
+A bounded kernel lock census is recording the next held writer's PID and byte.
