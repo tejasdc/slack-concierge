@@ -100,7 +100,14 @@ export class PreparedTopics {
    prepared.exec(`ALTER TABLE presentation_topic_roots ADD COLUMN first_sequence INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE presentation_topic_roots ADD COLUMN first_at TEXT NOT NULL DEFAULT '';
     ALTER TABLE presentation_topic_roots ADD COLUMN his INTEGER NOT NULL DEFAULT 0;`);
-   for(const row of prepared.query('SELECT generation,root_id FROM presentation_topic_roots').all() as {generation:number;root_id:string}[])this.updateRoot(row.generation,row.root_id);
+   // Only the new facts, by index: rebuilding every root's text parses each capture's whole payload,
+   // which took 200 s over his 2,577 roots in a rehearsal on 2026-10-10.
+   const fill=prepared.query('UPDATE presentation_topic_roots SET first_sequence=?,first_at=?,his=? WHERE generation=? AND root_id=?');
+   for(const row of prepared.query('SELECT generation,root_id,session_id FROM presentation_topic_roots').all() as {generation:number;root_id:string;session_id:number}[]){
+    const first=prepared.query('SELECT event_sequence,created_at FROM presentation_messages WHERE generation=? AND session_id=? AND root_input_id=? ORDER BY event_sequence LIMIT 1')
+     .get(row.generation,row.session_id,row.root_id) as {event_sequence:number;created_at:string}|null;
+    if(first)fill.run(first.event_sequence,instant(first.created_at),this.sentByHim(row.root_id)?1:0,row.generation,row.root_id);
+   }
   })();
   prepared.exec('CREATE INDEX IF NOT EXISTS presentation_topic_incoming ON presentation_topic_roots(generation,session_id,his,first_sequence DESC,root_id)');
   if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='started_sort_key'))prepared.transaction(()=>{
@@ -198,9 +205,7 @@ export class PreparedTopics {
   if(!row){this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=? AND root_id=?').run(generation,root);return;}
   const topic=this.source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null;
   const input=this.source.query('SELECT payload_json,origin FROM session_inputs WHERE id=?').get(root) as {payload_json:string;origin:string}|null;
-  // Only what he sent himself waits to be filed. Agents' requests to the router showed in his Inbox
-  // as raw "Session request … agent-authored input" rows, marked Being sorted forever (2026-10-08).
-  const his=input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
+  const his=this.sentByHim(root);
   const payload=input?JSON.parse(input.payload_json):{},body=payload.firstInput??payload;
   let text=typeof body.text==='string'?body.text:'';
   if(root.startsWith('request:')){
@@ -219,6 +224,13 @@ export class PreparedTopics {
     first_sequence=excluded.first_sequence,first_at=excluded.first_at,his=excluded.his`)
    .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,instant(row.created_at),text.trim().slice(0,120),topic||!his?0:1,
     first.event_sequence,instant(first.created_at),his?1:0);
+ }
+ /** Only what he sent himself waits to be filed or appears as his incoming. Agents' requests to the
+  * router showed in his Inbox as raw "Session request … agent-authored input" rows, marked Being
+  * sorted forever (2026-10-08). */
+ private sentByHim(root:string){
+  const input=this.source.query('SELECT origin FROM session_inputs WHERE id=?').get(root) as {origin:string}|null;
+  return input?.origin==='human'&&!this.source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
  }
  updateSorting(context:TopicContext){
   const sessionId=context.requestedSessionId??context.sessionId;
