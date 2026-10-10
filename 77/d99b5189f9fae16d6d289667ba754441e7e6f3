@@ -1,0 +1,1 @@
+An update cannot install if it puts blocking work back on the request entrance or fails the independent-read check.
