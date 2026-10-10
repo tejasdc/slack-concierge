@@ -10,6 +10,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
 import {log} from './log';
+import {accountAvailability} from './provider-usage-forecast';
 import {claudeKeychainHasLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
@@ -227,6 +228,15 @@ export function claudeAccountWithRoomBesides(refused:string|null):boolean{
   } catch { return false; }
 }
 
+/**
+ * When every Claude account this machine can launch is spent, the earliest moment one frees up,
+ * by the same rules dispatch uses; null when one can run now or no reset is known.
+ */
+export function claudeEveryAccountClearsAt():number|null{
+  try { chooseClaudeDispatch(null); return null; }
+  catch(error) { return error instanceof ProviderDispatchError?error.clearsAtMs:null; }
+}
+
 /** Held for a sign-in, never run on the main folder's login instead (the message is a sign-in refusal on purpose). */
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
@@ -281,10 +291,9 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
   const expected=selectedAccount??prefer??usual;
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected});
   if(choice.account===null){
-    const resets=usage.accounts.filter(account=>rooms.some(room=>room.account===account.label&&(room.home||room.isDefault)))
-      .map(account=>Math.max(claudeAccountCachedReset(account.label)??-Infinity,
-        ...account.windows.filter(window=>window.usedPercent>=100).map(window=>Date.parse(window.resetsAt??''))))
-      .filter(reset=>Number.isFinite(reset)&&reset>Date.now());
+    // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
+    const resets=accountAvailability('claude-code').filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
+      .flatMap(account=>account.freeAt!==null&&account.freeAt>Date.now()?[account.freeAt]:[]);
     throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
       terminalConfirmed:true,clearsAtMs:resets.length?Math.min(...resets):null});
   }

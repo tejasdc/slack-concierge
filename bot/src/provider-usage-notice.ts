@@ -4,7 +4,7 @@ import { currentAccount } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
-import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
+import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
   tightestCurrentWindow, usagePressureBrief, type UsageForecast } from "./provider-usage-forecast";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
@@ -99,8 +99,14 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
   if (!turn?.accepted_input_id || !getSessionById(turn.session_id)) return;
   const inputId = turn.accepted_input_id;
   try {
-    const account = currentAccount(input.provider)?.label ?? null;
+    // The account agents run on, never the terminal's login in the main folder.
+    const account = (input.provider === "claude-code" && claudeRunsFromOwnHomes() ? selectedClaudeHome()?.label : null)
+      ?? currentAccount(input.provider)?.label ?? null;
     const alternatives = accountsWithRoom(input.provider);
+    // Each account's own state, so nothing reading this notice has to infer one account's
+    // reset from another's: which is out, and until when.
+    const accounts = accountAvailability(input.provider).map(room => ({ account: room.account, hasRoom: room.hasRoom,
+      freeAt: room.freeAt === null ? null : new Date(room.freeAt).toISOString() }));
     const held = heldInputCount(input.clearsAtMs);
     record({
       eventId, sessionId: turn.session_id, inputId, turnId: input.turnId,
@@ -113,7 +119,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
         alternatives: [],
         usage: {
           account, clearsAt: new Date(input.clearsAtMs).toISOString(),
-          heldInputs: held, accountsWithRoom: alternatives,
+          heldInputs: held, accountsWithRoom: alternatives, accounts,
           // The moment a banked reset is worth most: work is stopped, and this ends it now
           // rather than at the reset instant above.
           resetCredit: availableResetCredit(input.provider),
@@ -243,7 +249,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const named = (match: (name: string) => boolean) =>
     blockedWindows.find(window => match(window.name.toLowerCase()))?.usedPercent ?? null;
   const decision = decideAutomaticReset({
-    provider, blockedAccount, accountsWithRoom: accountsWithRoom(provider),
+    provider, blockedAccount, accountsWithRoom: blockedAccount ? accountsWithRoomBesides(provider, blockedAccount) : accountsWithRoom(provider),
     candidates: (usage?.accounts ?? []).flatMap(account => account.resetCredits?.available
       ? [{ account: account.label, available: account.resetCredits.available,
            expiresAt: account.resetCredits.expiresAt ?? null }] : []),

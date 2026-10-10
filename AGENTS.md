@@ -914,7 +914,8 @@ authorization or a change to the default rapid-iteration policy.
   That command remains for a genuine top-up on the same account; clearing it, and
   activating a different account, now also release work that was waiting on the old
   account's reset. Fresh Claude usage readings also release only usage-held queued work when
-  the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md).
+  the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md). Whether each account is out and until when has one answer (`accountAvailability`); a hold waits until
+  the first launchable account frees up, never only the refusing account's reset.
 - An input the provider never received is not failed work, and a refusal that states when
   it clears is a wait rather than a death. A usage refusal carries that instant
   (`clearsAtMs`), the turn waits in its own queue for it under every existing

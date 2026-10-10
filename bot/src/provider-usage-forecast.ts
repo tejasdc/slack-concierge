@@ -4,6 +4,7 @@ import { db } from "./state";
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
 import type { ProviderKey } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
+import { claudeAccountCachedReset } from "./provider-usage";
 
 /**
  * Seeing a usage wall coming, instead of discovering it by hitting one.
@@ -259,22 +260,54 @@ export function accountsNearlySpent(provider: ProviderKey): UsageForecast[] {
   return [...fullest.values()];
 }
 
-/** Accounts other than `account` whose windows all still have room, at the last reading. */
-export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {
-  return (storedUsage(provider)?.accounts ?? [])
-    .filter(other => other.label !== account && !other.problem && other.windows.length
-      && other.windows.every(window => window.usedPercent < 100))
-    .map(other => other.label);
-}
-
-/** Accounts on this machine whose windows all still have room, at the last reading. */
-export function accountsWithRoom(provider: ProviderKey): string[] {
+/**
+ * Whether one account can take work now and, when it cannot, the moment it can: the latest
+ * reset among its spent windows, or the reset Claude stated when it last refused that account
+ * (a refusal is newer than any reading). `freeAt` is null when it has room, or when a spent
+ * window does not say when it refills. Unreadable accounts are left out, never counted as
+ * having room, and so are accounts only the other machine could read: work here cannot run on them.
+ *
+ * This is the one place that answers "is this account out, and until when". Holds, notices,
+ * the room lists and dispatch all read it, so none of them can state a time another disagrees
+ * with. On 2026-10-09 a held message said every Claude account was out until Oct 11 at 11 PM,
+ * which was chann.app's weekly reset alone; his personal account refilled at 11:20 PM.
+ */
+export type AccountAvailability = Readonly<{ account: string; selected: boolean; hasRoom: boolean; freeAt: number | null }>;
+export function accountAvailability(provider: ProviderKey): AccountAvailability[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
-  return usage.accounts
-    .filter(account => !account.current && !account.problem && account.windows.length
-      && account.windows.every(window => window.usedPercent < 100))
-    .map(account => account.label);
+  return usage.accounts.filter(account => account.label && !account.viaPeer).flatMap(account => {
+    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
+    // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
+    if (account.problem || !account.windows.length)
+      return refusedUntil === null ? [] : [{ account: account.label, selected: account.current, hasRoom: false, freeAt: refusedUntil }];
+    const spent = account.windows.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
+    const hasRoom = !spent.length && refusedUntil === null;
+    const resets = refusedUntil === null ? spent : [...spent, refusedUntil];
+    const freeAt = hasRoom || resets.some(reset => reset === null) ? null : Math.max(...resets as number[]);
+    return [{ account: account.label, selected: account.current, hasRoom, freeAt }];
+  });
+}
+
+/** The earliest moment any account of this provider can take work: now when one has room, null when unknown. */
+export function earliestRoomAt(provider: ProviderKey): number | null {
+  const rooms = accountAvailability(provider);
+  if (rooms.some(room => room.hasRoom)) return Date.now();
+  const known = rooms.flatMap(room => room.freeAt === null ? [] : [room.freeAt]);
+  return known.length ? Math.min(...known) : null;
+}
+
+/** Accounts other than `account` with room now. */
+export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {
+  return accountsWithRoom(provider).filter(label => label !== account);
+}
+
+/**
+ * Every account with room now, the one agents are selected to use included. It used to leave the
+ * selected account out, so with only that one free it read as "no account has room" (2026-10-09).
+ */
+export function accountsWithRoom(provider: ProviderKey): string[] {
+  return accountAvailability(provider).filter(room => room.hasRoom).map(room => room.account);
 }
 
 /**
@@ -364,7 +397,7 @@ export function usagePressureBrief(provider: ProviderKey): string | null {
     : elsewhere.minutesLeft === null
       ? `${name(other)}'s headroom is unknown`
       : `${name(other)} is also close to a wall (about ${elsewhere.minutesLeft} minutes)`;
-  const spare = accountsWithRoom(provider);
+  const spare = accountsWithRoomBesides(provider, tight.account);
   const banked = (storedUsage(provider)?.accounts ?? []).flatMap(account => account.resetCredits?.available
     ? [{ account: account.label, available: account.resetCredits.available }] : []);
   return [

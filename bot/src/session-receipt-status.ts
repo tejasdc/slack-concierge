@@ -83,8 +83,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=context.session(input.session_id).providerId==='codex'?'Codex':'Claude';
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
-      ?`Every ${product} account is out of usage until ${when}. Your message is kept and starts then by itself, or straight away if you add or switch to an account with room in Accounts.`
-      :`Every ${product} account is out of usage. Your message is kept and starts by itself as soon as one has room, or straight away if you add or switch to an account with room in Accounts.`,clearsAt:next,automaticRetry:true};
+      ?`No ${product} account has room until ${when}, when the first one frees up. Your message is kept and starts then by itself, or straight away if you add an account with room in Accounts.`
+      :`No ${product} account has room, and none has said when it frees up. Your message is kept and starts by itself as soon as one has room, or straight away if you add an account with room in Accounts.`,clearsAt:next,automaticRetry:true};
     const again=when?`at ${when}`:'now';
     return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} Your message is kept and goes again ${again}; nothing is needed from you.`
       :`${product} is not answering right now. Your message is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
@@ -102,8 +102,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const reset=older.dispatch_next_attempt_ms!==null&&older.dispatch_next_attempt_ms>context.now()?older.dispatch_next_attempt_ms:null;
     const product=session.providerId==='codex'?'Codex':'Claude';
     return {code:'PROVIDER_USAGE_HELD',message:reset
-      ?`${product} is out of usage until ${context.formatTime(reset)}. This message waits behind earlier work and is read after that work resumes; an account with room can resume it sooner.`
-      :`${product} is out of usage. This message waits behind earlier work and is read after that work resumes when an account has room.`,
+      ?`No ${product} account has room until ${context.formatTime(reset)}, when the first one frees up. This message waits behind earlier work and is read after that work resumes; an account with room can resume it sooner.`
+      :`No ${product} account has room. This message waits behind earlier work and is read after that work resumes when an account has room.`,
       clearsAt:reset===null?null:new Date(reset).toISOString(),automaticRetry:true};
   }
   return null;

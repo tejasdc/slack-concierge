@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
-import {chooseClaudeDispatch,claudeAccountWithRoomBesides,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
+import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
@@ -1037,14 +1037,21 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // 2026-09-23 this fell through to a terminal failure, and one five-hour Claude limit
       // destroyed nine of the Inbox's inputs in 43 seconds with nothing left to resume.
       let switchClaudeAccount=false;
+      // When every account is spent, the earliest moment any launchable one frees up, as the
+      // dispatcher itself computes it. The refusal only knows its own account's reset: holding
+      // until that told him every account was out until chann.app's weekly reset two days away,
+      // while his other account refilled that evening (2026-10-09).
+      let everyAccountClearsAtMs:number|null=null;
       if(replaySafe&&!input.boundAccount&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
         // The account this attempt actually ran on, not the session's last recorded one, which is
         // written only once Claude reports the start and can name an earlier attempt's account.
         const spent=runningClaudeAccount??sessionMetadata(input.session).claudeAccount??null;
         try {const next=chooseClaudeDispatch(spent);switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
-        catch { /* every account is spent; keep the existing usage hold */ }
+        catch { everyAccountClearsAtMs=claudeEveryAccountClearsAt(); }
       }
-      const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
+      const refusalClearsAtMs=structuredFailure?.clearsAtMs??null;
+      const heldUntilMs = replaySafe&&!switchClaudeAccount&&refusalClearsAtMs!==null
+        ? Math.min(refusalClearsAtMs,everyAccountClearsAtMs??refusalClearsAtMs) : null;
       if(isRefreshableAuthFailure(message)){
         markClaudeHomeRefused(runningClaudeHome);
         // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.
@@ -1242,7 +1249,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const refused=structuredFailure?.terminalConfirmed && input.providerId!=='chatgpt'
         && (observedAssistantOutput || observedToolCount>0 || structuredFailure.assistantOutput
           || structuredFailure.toolsUsed.length>0 || artifactActivity)
-        ? providerRefusalContinuationReason(String(error),structuredFailure.clearsAtMs,Date.now(),dispatchAttempt):null;
+        ? providerRefusalContinuationReason(String(error),
+          // Like a hold, a continuation waits for the first account to free up, not only the refusing one.
+          input.providerId==='claude-code'&&structuredFailure.clearsAtMs!==null
+            ?Math.min(structuredFailure.clearsAtMs,claudeEveryAccountClearsAt()??structuredFailure.clearsAtMs):structuredFailure.clearsAtMs,
+          Date.now(),dispatchAttempt):null;
       // Whether any other Claude account can take the work now, judged against the account this
       // attempt actually ran on (the selected account counts too).
       const refusal=refused&&refused.refusal==='usage'&&input.providerId==='claude-code'

@@ -5029,6 +5029,21 @@ export function releaseScheduledProviderRetries(providerId: ProviderId): number 
   return released;
 }
 
+/**
+ * Brings usage-held work forward to the moment the first account frees up, when a reading shows
+ * that is sooner than the time it was held for. The held time is what his status line states, so it
+ * must never be later than the truth. Only the instant moves; nothing is released early.
+ */
+export function moveUsageHoldsEarlier(providerId: ProviderId, atMs: number): number {
+  const moved = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=?
+    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
+      AND dispatch_next_attempt_ms>?
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
+    RETURNING id`).all(atMs, atMs, providerId) as {id:number}[]).length;
+  if (moved) executionChanged();
+  return moved;
+}
+
 /** Release only the provider inputs that were refused before any work for lack of sign-in. */
 export function releaseAuthHeldWork(providerId: ProviderId): number {
   const released = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0

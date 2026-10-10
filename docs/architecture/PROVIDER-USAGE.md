@@ -353,6 +353,21 @@ run. If one can, the owner releases only queued usage holds and wakes the queue;
 move time-based retries for unrelated failures. This matters when a five-hour limit on one
 account clears before the longer reset time assigned while every account was exhausted.
 
+**Whether an account is out, and until when, has one answer** (`accountAvailability` in
+`provider-usage-forecast.ts`): per readable account on this machine, whether it has room now and,
+if not, `freeAt`, the latest reset among its spent windows or the reset Claude stated when it last
+refused it. Accounts only the peer could read, and unreadable ones, never count as room. Every
+reader takes it from there: `accountsWithRoom` (every account with room, the selected one
+included; it once left the selected one out and read empty while that account had room),
+`accountsWithRoomBesides` (for warnings and the reset policy), dispatch's all-spent reset, and the
+hold. A usage hold waits until the first launchable account frees up
+(`claudeEveryAccountClearsAt`), not the refusing account's own reset, and each reading moves held
+work earlier when a reading shows an account frees sooner (`moveUsageHoldsEarlier`); the held line
+says "No Claude account has room until X, when the first one frees up". On 2026-10-09 a held
+message said every Claude account was out until Oct 11 at 11 PM, which was tejas@chann.app's weekly
+reset alone, while tejastej.dc@gmail.com refilled at 11:20 PM. The hold notice payload also carries
+`accounts`: each account with `hasRoom` and `freeAt`.
+
 **A conversation moves between accounts, because its history is shared.** It could not until
 2026-09-23: a transcript lived only in the home it was created in, and a resume elsewhere did
 not lose context, it failed to start (`No conversation found with session ID: 802095ed-…`,

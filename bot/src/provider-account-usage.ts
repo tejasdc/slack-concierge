@@ -1,13 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { db, releaseUsageContinuationHolds } from "./state";
+import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
+import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
-import { claudeAccountWithRoomBesides, proveClaudeHomesAhead } from "./provider-account-dispatch";
+import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 
 /**
@@ -409,6 +409,12 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
+      // Still none with room: held work waits only until the first account frees up, by this reading.
+      const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt():earliestRoomAt(provider);
+      if(firstRoomAt!==null&&firstRoomAt>Date.now()){
+        const moved=moveUsageHoldsEarlier(provider,firstRoomAt);
+        if(moved)log("info","provider_usage_hold_moved_earlier",{provider,moved,until:new Date(firstRoomAt).toISOString()});
+      }
       log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
         unreadable: usage.accounts.filter(account => account.problem).length, problem: !!usage.problem });
     } catch (error) {
