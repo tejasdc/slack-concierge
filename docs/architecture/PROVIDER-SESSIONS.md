@@ -110,7 +110,6 @@ from the executing host.
 
 #### Recovery of accepted Claude work at an allowance wall
 
-
 The server's canonical session owner also checks existing Claude queues on startup, after
 an execution changes, and when fresh allowance readings arrive. When every usable Claude
 account is exhausted and the signed-in Codex account has verified room, it transfers
@@ -151,6 +150,39 @@ Codex router. This choice avoids changing the router's model while making the ba
 its reason visible. Agent-written task copies were rejected because they do not transfer
 canonical reply authority or prevent duplicate execution; automatic in-place provider
 switching was rejected because running sessions retain their provider binding.
+
+#### Budget pauses and the October 10 idle-capacity repair
+
+An account limit is a resource condition, not a session Pause. The owner already retains
+queued work under a usage hold, checks each account on fresh readings, and releases the
+hold when an account it can launch has room. The action API now refuses the incident's
+`budget-pause-*` action identity and an explicit `usage` or `budget` Pause value. This
+prevents the known outside steering pattern from turning a temporary allowance decision
+into an indefinite human-style Pause. A deliberate Pause still requires Continue.
+
+Withdrawing an agent request now also terminalizes its already queued target turn, not
+only an unqueued target input. The communication reconciler applies the same rule to
+older withdrawn requests at owner startup. This matters when a paused worker has a
+queued target: releasing capacity must not run a request another worker already covered.
+
+The owner has one audited incident repair for twelve of the thirteen conversations
+paused on October 10. On a fresh, usable Claude reading it compares each conversation's
+latest Pause action, exact expected accepted inputs, current queue, pending request
+authority and active attempts. Only on an exact match does one transaction mark the
+overnight runs covered by the retained Codex result, clear that particular stale Pause,
+record the transition, and wake the ordinary queue. The nightly review's already queued
+future firing is preserved; other repeating schedules place their next firing through
+their existing rule. A new input, newer Pause, uncertain run, or
+still-open request makes that conversation stay stopped. The taste-mining conversation
+with an open original request is intentionally outside this repair until that request's
+result authority is reconciled. This is an exact historical migration, not a prefix-based
+policy for future pauses. It does not spend reset credits or change account bindings.
+
+This choice reuses the existing provider hold and FIFO owner instead of adding a
+second scheduler. An unconditional Continue was rejected because several original
+runs were completed by Codex while the Claude conversations stayed paused; it could
+repeat external effects. The retained Codex duty result is the coverage reference for
+the exact incident inputs. Manual pauses and unknown outcomes remain binding.
 
 #### Automatic starts for new work
 

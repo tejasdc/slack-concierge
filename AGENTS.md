@@ -11,6 +11,9 @@ remote-box, server Concierge, Thinkering, then the Mac, with installed-revision 
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
 
+Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
+repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
+
 Codex's App Server starts only under its native disabled-updater preference on both
 machines; installation and activation are separate, and a running listener is never
 restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
