@@ -97,7 +97,11 @@ function startWorker(role: 'sync' | 'checkpoint'): Worker {
   worker.unref();
   worker.on('error', error => { if (threads?.[role] === worker) fail(role, `${role} thread error: ${error.message}`); });
   worker.on('exit', code => { if (threads?.[role] === worker) fail(role, `${role} thread exited with ${code}`); });
-  if (role === 'checkpoint') worker.on('message', (result: { ms: number; bytes: number; ioPressure: number; busy?: number; log?: number; checkpointed?: number; error?: string }) => {
+  if (role === 'checkpoint') worker.on('message', (result: { kind?: string; version?: string; sourceId?: string; ms: number; bytes: number; ioPressure: number; busy?: number; log?: number; checkpointed?: number; error?: string }) => {
+    if (result.kind === 'engine') {
+      log('info', 'ledger_engine', { role, version: result.version, sourceId: result.sourceId });
+      return;
+    }
     counters.checkpoints++; counters.lastCheckpointAt = new Date().toISOString();
     counters.slowestCheckpointMs = Math.max(counters.slowestCheckpointMs, Math.round(result.ms));
     log(result.error ? 'warn' : 'info', 'ledger_checkpoint', { ...result, ms: Math.round(result.ms) });
@@ -125,7 +129,8 @@ function startThreads() {
         db.exec('PRAGMA synchronous = NORMAL');
         db.exec('PRAGMA wal_autocheckpoint = 0');
         deferred = true;
-        log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes });
+        const engine = db.query('SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId').get();
+        log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes, engine });
       }
       pump();
       return;

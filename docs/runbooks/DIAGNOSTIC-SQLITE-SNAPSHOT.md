@@ -30,5 +30,10 @@ that command can restart its copy when writes occur between steps. See the
 [Python's backup parameters](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup).
 
 Each invocation represents one database cut. Running this command separately for two
-databases does **not** produce a shared point in time. This is an operator script, not an OS
-restriction: ordinary shell commands can still copy a live database outside this entrance.
+databases does **not** produce a shared point in time. The agent command guard refuses direct
+raw copies and named copy scripts; the canonical ledger module refuses ad-hoc live rehearsal
+imports. Candidate release checks have an OS boundary making the live state inaccessible.
+The diagnostic script itself is an operator entrance, not a universal restriction on an
+unrestricted root shell. Its output is forensic evidence rather than a verified deployment
+rollback copy. Deployment backup publication and verified retention are owned by the
+[deployment runbook](DEPLOYMENT.md#state-migration-and-backups).

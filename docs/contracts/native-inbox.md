@@ -39,6 +39,20 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+An accepted executable message and its local queued turn commit together. A forwarded
+thread reply and its local agent request also commit together. Forwarding to another
+machine retains the exact chosen destination as an intent before the network call;
+retry and startup recovery reuse the original input and peer request identity. A lost
+peer answer leaves delivery explicitly unconfirmed until that identity is reconciled.
+For a forwarded reply, the recipient commits its own queued turn with the peer
+delivery record, so a repeated request identity observes the same turn.
+The private `accepted-input-admission-fixture.ts` exercises rollback on turn insertion,
+same-action duplicate and changed-payload refusal. Recovery acts only on explicit
+queue or forwarding intents with no turn, steering, request or source-run custody;
+an exact duplicate of an older unbound message without that proof gets an explicit
+unconfirmed receipt and remains held for exact investigation.
+It does not exercise peer delivery or prove an installed recovery.
+
 A post carries files: repeated `--file <path>` for its own bytes and `--attachment
 <custodyId>` to place a file already in custody — a worker's returned mockups — without
 downloading and re-uploading them. The owner retains every file before it accepts the post,

@@ -885,13 +885,14 @@ export class SessionOwner {
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id)!;
-    if(!this.canSend(session)) return input;
     // A live delivery this coordinator chose, which the provider provably never
     // received, returns to this session's queue instead of failing the sender.
     const recovered=recoverUnsentSteeredInput(input.id);
-    if(recovered.turn_id!==input.turn_id) this.runtime.wake();
     input=recovered;
-    if(input.turn_id!==null) return input;
+    // Admission may have queued the turn in its own transaction. Its post-commit
+    // dispatch still owes the queue a wake even when no further write is needed.
+    if(input.turn_id!==null){this.runtime.wake();return input;}
+    if(!this.canSend(session)) return input;
     const payload=JSON.parse(input.payload_json);
     if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer')enqueueSessionInput(input.id);
     else if(!this.runtime.steer(input)) {
@@ -1489,7 +1490,7 @@ export class SessionOwner {
         const queued=enqueueSessionInput(recorded.id);
         if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
         saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined);
-      }
+      } else if(input.firstInput&&!recorded.receipt_json) enqueueSessionInput(recorded.id);
       return getAcceptedSessionInput(recorded.id)!;
     })();
     if(input.firstInput&&this.runtime.available(getSessionById(saved.session_id)!.provider_id)&&!saved.receipt_json) this.dispatch(saved);
@@ -1514,7 +1515,9 @@ export class SessionOwner {
     // in the session as failure"). Exact-run steering stays for service notices, which are not this route.
     const asQueued=(value:Record<string,any>)=>{const {expectedRunId:_run,...rest}=value;return {...rest,delivery:'queue'};};
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
-    if(prior){const kept=stablePayload(JSON.parse(prior.payload_json));if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
+    if(prior){const kept=stablePayload(JSON.parse(prior.payload_json));if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
+      this.recoverAcceptedInput(prior);
+      return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
     this.validateAttachments(session,input.attachments);
     if(input.expectedRunId!==undefined&&input.delivery!=='steer')throw new SessionOwnerError('expectedRunId requires explicit steer delivery.');
     if(input.delivery==='steer') {
@@ -1533,17 +1536,63 @@ export class SessionOwner {
       // His message is his answer to whatever this session (or Inbox thread) asked him.
       const canceled=saved.input.receipt_json&&JSON.parse(saved.input.receipt_json).state==='canceled';
       if(!saved.duplicate&&!agent&&!canceled)clearNeedsForHumanInput(session.id,input);
-      if(forward&&!saved.duplicate&&!canceled)recordForwardedThreadReply(session,saved.input,forward);
+      if(forward&&!saved.duplicate&&!canceled) {
+        if(!this.communication)throw new SessionOwnerError('Session communication is unavailable; the reply was not accepted.',503);
+        if(forward.peer&&!db.query('SELECT 1 FROM turns WHERE session_id=? LIMIT 1').get(session.id))
+          throw new SessionOwnerError('The Inbox cannot record a forwarded request until it has an execution reference.',409);
+        recordForwardedThreadReply(session,saved.input,forward);
+        // Local request creation has no external effect; acceptance and its next step commit together.
+        if(!forward.peer)this.communication.forwardReply({inbox:session,inputId:saved.input.id,target:forward,text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
+      } else if(!forward&&!saved.duplicate&&!canceled&&input.delivery!=='steer'&&this.canSend(session)) {
+        // The accepted input and its queued turn are one transaction.
+        enqueueSessionInput(saved.input.id);
+      } else if(!forward&&!saved.duplicate&&!canceled&&input.delivery!=='steer') {
+        // A temporarily unavailable recipient keeps an explicit, recoverable queue intent.
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'queue'}),saved.input.id);
+      }
       return saved;
     })();
     if(retained.input.receipt_json&&JSON.parse(retained.input.receipt_json).state==='canceled')
       return {operation:this.receipt(retained.input)};
     if(forward) {
-      if(!this.communication)throw new SessionOwnerError('Session communication is unavailable; the reply was kept and not sent.',503);
-      this.communication.forwardReply({inbox:session,inputId:retained.input.id,target:forward,text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
+      if(forward.peer)this.recoverAcceptedInput(getAcceptedSessionInput(retained.input.id)!);
       return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
     }
-    return {operation:this.receipt(this.dispatch(retained.input))};
+    const current=getAcceptedSessionInput(retained.input.id)!;
+    if(current.receipt_json&&JSON.parse(current.receipt_json).admissionIntent==='queue')this.communication?.wake();
+    return {operation:this.receipt(this.dispatch(current))};
+  }
+  /** Complete a retained admission without changing its input or request identity. */
+  recoverAcceptedInput(input:AcceptedSessionInput) {
+    if(input.scope!=='surface:thinkering'||input.origin!=='human'||input.kind!=='input'||input.turn_id!==null
+      ||input.steering_id!==null||input.request_id!==null||input.source_input_id!==null||input.source_run_id!==null)return;
+    // A detached binding can retain evidence of a prior, possibly ambiguous provider send.
+    // Only an explicit intent written by this admission path is eligible for recovery.
+    if(db.query('SELECT 1 FROM turns WHERE accepted_input_id=? LIMIT 1').get(input.id)
+      ||db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? LIMIT 1').get(input.id)
+      ||db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? LIMIT 1').get(input.id)
+      ||db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? LIMIT 1').get(input.id))return;
+    const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
+    if(receipt?.state&&receipt.state!=='waiting')return;
+    if(receipt?.admissionIntent!=='queue'&&!receipt?.forwardTarget) {
+      // Older split-commit records have no proof that an external effect never began.
+      // An exact duplicate exposes that uncertainty; it never starts another run.
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...receipt,state:'uncertain',
+        error:{code:'ACCEPTED_DISPATCH_UNCONFIRMED',message:'This accepted message has no confirmed execution record. Its earlier delivery must be checked before it can run again.'}}),input.id);
+      return;
+    }
+    const target=receipt?.forwardTarget;
+    if(target) {
+      const actionId=`forward:${input.id}`;
+      if(db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.id,actionId)
+        ||db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(input.id,actionId))return;
+      if(!this.communication)return;
+      const payload=JSON.parse(input.payload_json);
+      this.communication.forwardReply({inbox:getSessionById(input.session_id)!,inputId:input.id,target,
+        text:String(payload.text??''),...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments}:{})});
+      return;
+    }
+    if(receipt?.admissionIntent==='queue'&&this.canSend(getSessionById(input.session_id)!))this.dispatch(input);
   }
   /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
   private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}|null {

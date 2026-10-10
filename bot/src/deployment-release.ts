@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { privateDatabaseCommand } from './private-database-command';
 import {
   chmodSync,
   copyFileSync,
@@ -299,12 +300,12 @@ export class TrustedRootReleaseManager {
       const hasPresentationGate=existsSync(join(sourceRoot,'bot/scripts/presentation-release-check.ts'));
       if(applicationDeclaration.applicationBundles.length&&!hasPresentationGate)
         throw new Error('Candidate application is missing its presentation release check.');
-      const presentationCheck=hasPresentationGate?this.services.spawn([
+      const presentationCheck=hasPresentationGate?this.services.spawn(privateDatabaseCommand([
         '/usr/bin/timeout','90','/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
         `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
         this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
-      ],{cwd:join(sourceRoot,'bot')}):null;
+      ]),{cwd:join(sourceRoot,'bot')}):null;
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${failedCheckSummary(Buffer.from(presentationCheck.stderr).toString('utf8'))}`);
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });

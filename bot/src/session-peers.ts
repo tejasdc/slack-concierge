@@ -9,7 +9,7 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
-import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {enqueueSessionInput,getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
@@ -450,7 +450,7 @@ export class SessionPeers {
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(files.length?{files}:{})};
+      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply}:{}),...(files.length?{files}:{})};
     let accepted:{sessionId:string;address:string;operationId:string};
     let queued=false;
     try {
@@ -901,16 +901,26 @@ export class SessionPeers {
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
+    if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'))
+      throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
+    if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     if(input.summary!==undefined&&(typeof input.summary!=='string'||!input.summary.trim()||input.summary.includes('\n')||input.summary.length>200))throw new SessionOwnerError('A session description is one line of at most 200 characters.');
     const effect=input.requestedEffect??'informational';
     if(!['informational','work'].includes(effect))throw new SessionOwnerError('Requested effect must be informational or work.');
-    if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     const owner=this.dependencies.owner;
+    const forwardedIntent=input.forwardedReply?{forwardedReply:input.forwardedReply,address:input.address,text:input.text,message:input.message,
+      files:(input.files??[]).map((file:{name:string;contentType:string;base64:string})=>({name:file.name,contentType:file.contentType,
+        sha256:createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex')}))}:null;
     const existing=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=?').get(requestId) as DeliveryRow|null;
-    if(existing)return this.accepted(existing);
+    if(existing){
+      const retained=existing.origin_provenance_json?JSON.parse(existing.origin_provenance_json):{};
+      if(retained.forwardedIntent&&JSON.stringify(retained.forwardedIntent)!==JSON.stringify(forwardedIntent))
+        throw new SessionOwnerError('Idempotency conflict: forwarded request payload changed.',409);
+      return this.accepted(existing);
+    }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
-      ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{})};
+      ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{})};
     const created=db.transaction(()=>{
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[]).map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,clientActionId:`peer-file:${requestId}:${index}`}).attachment.id);
       const scope=`peer:${origin.peer}:${origin.inputId}`;
@@ -926,11 +936,13 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
+          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.forwardedReply||target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
       db.query(`INSERT INTO session_peer_deliveries(request_id,peer,origin_session_id,origin_input_id,origin_run_id,target_session_id,target_input_id,requested_effect,origin_provenance_json,created_at_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?)`).run(requestId,origin.peer,origin.sessionId,origin.inputId,origin.runId,sessionId,`request:${requestId}`,effect,JSON.stringify(provenance),this.now());
+      if(input.forwardedReply&&enqueueSessionInput(`request:${requestId}`).turn_id===null)
+        throw new SessionOwnerError('The forwarded reply could not be queued for its exact recipient.',409,'CAPABILITY_UNAVAILABLE');
       return this.delivery(requestId);
     })();
     owner.dispatch(getAcceptedSessionInput(created.target_input_id)!);

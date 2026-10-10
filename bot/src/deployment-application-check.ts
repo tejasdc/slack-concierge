@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {TrustedRootReleaseManager,failedCheckSummary,type ReleaseManifest} from './deployment-release';
 import {releaseCodexBridgePath} from './release-worker';
+import {privateDatabaseCommand} from './private-database-command';
 
 /** Runs in the candidate's existing preactivation command, including when an older control
  * built it. The Git archive is verified against the seal before executing isolated fixtures. */
@@ -53,7 +54,8 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   }
   const gate=join(scratch,'bot/scripts/presentation-release-check.ts');
   if(!existsSync(gate))throw new Error('Candidate application is missing its presentation release check.');
-  const checked=spawnSync(process.execPath,[gate],{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,
+  const [executable,...arguments_]=privateDatabaseCommand([process.execPath,gate]);
+  const checked=spawnSync(executable!,arguments_,{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,
    env:{...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
     CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')}});
   if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${failedCheckSummary((checked.stderr||checked.error?.message||'unknown'))}`);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db } from "./state-database";
+import { db, initializeLedgerSchema } from "./state-database";
 import type { ProviderId, SessionRow } from "./state";
 import { isProcessIdentityAlive } from "./runtime-identity";
 
@@ -242,7 +242,7 @@ const PHASE_ORDER: DeploymentRunStatus[] = [
   "releasing",
 ];
 
-if (process.env.CONCIERGE_READ_WORKER !== "1") {
+if (initializeLedgerSchema) {
 db.exec(`
 CREATE TABLE IF NOT EXISTS deployment_runs (
   id                    TEXT PRIMARY KEY,

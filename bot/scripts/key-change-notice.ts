@@ -26,11 +26,17 @@ const baselines = join(stateDir, 'key-change-notice');
 mkdirSync(baselines, { recursive: true, mode: 0o700 });
 // Only its own few rows, written directly: loading Concierge's state module would run its schema
 // setup against the live ledger from outside the running release.
-const db = ledgerWriteResults(new Database(join(stateDir, 'state.db')));
-db.exec('PRAGMA busy_timeout=15000');
+let connection: ReturnType<typeof ledgerWriteResults> | null = null;
+function database() {
+  if (!connection) {
+    connection = ledgerWriteResults(new Database(join(stateDir!, 'state.db')));
+    connection.exec('PRAGMA busy_timeout=15000');
+  }
+  return connection;
+}
 const read = (path: string) => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
 const log = (fields: object) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...fields }));
-const metadataOf = (id: number) => JSON.parse((db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(id) as { native_metadata_json: string | null } | null)?.native_metadata_json || '{}');
+const metadataOf = (id: number) => JSON.parse((database().query('SELECT native_metadata_json FROM sessions WHERE id=?').get(id) as { native_metadata_json: string | null } | null)?.native_metadata_json || '{}');
 const titleOf = (id: number): string | null => metadataOf(id).title ?? null;
 
 function startedAt(file: KeyFile): string | null {
@@ -40,7 +46,7 @@ function startedAt(file: KeyFile): string | null {
 
 /** A service message in the Inbox, raised to Needs attention as something to read. */
 function tellHim(eventId: string, text: string, payload: object) {
-  try { publishProviderFreeNotice(db, { key: eventId, text, kind: 'secrets_rotated', payload: payload as Record<string, unknown> }); }
+  try { publishProviderFreeNotice(database(), { key: eventId, text, kind: 'secrets_rotated', payload: payload as Record<string, unknown> }); }
   catch (error) { log({ event: 'secrets_rotated_unannounced', eventId, error: String(error) }); }
 }
 
@@ -58,7 +64,7 @@ for (const file of KEY_FILES) {
     removed: Object.keys(before).filter(key => !(key in now)),
   };
   if (!keys.changed.length && !keys.added.length && !keys.removed.length) continue;
-  const working = (db.query(`SELECT DISTINCT session_id FROM turns WHERE status IN ('running','delivering') ORDER BY session_id LIMIT 8`).all() as { session_id: number }[])
+  const working = (database().query(`SELECT DISTINCT session_id FROM turns WHERE status IN ('running','delivering') ORDER BY session_id LIMIT 8`).all() as { session_id: number }[])
     .map(row => ({ sessionId: `concierge:${row.session_id}`, title: titleOf(row.session_id) }));
   const detectedAt = new Date().toISOString(), started = startedAt(file);
   const signsOut = [...keys.changed, ...keys.removed].includes('THINKERING_SESSION_KEY');
@@ -73,3 +79,4 @@ for (const file of KEY_FILES) {
   log({ event: 'secrets_rotated', ...payload });
   tellHim(eventId, text, payload);
 }
+connection?.close();

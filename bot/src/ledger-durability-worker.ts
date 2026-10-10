@@ -41,9 +41,11 @@ if (setup.role === 'sync') {
   raw.exec('PRAGMA busy_timeout = 5000');
   raw.exec('PRAGMA synchronous = FULL');
   const connection = ledgerWriteResults(raw);
-  const version = (connection.query('SELECT sqlite_version() AS version').get() as { version: string }).version.split('.').map(Number);
+  const engine = connection.query('SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId').get() as { version: string; sourceId: string };
+  const version = engine.version.split('.').map(Number);
   if (version[0] < 3 || version[0] === 3 && version[1] < 51)
     throw new Error('Checkpoint inspection requires SQLite 3.51.0 or newer; older versions treat NOOP as PASSIVE.');
+  port.postMessage({ kind: 'engine', ...engine });
   const pressure = () => {
     try { return Number(/^some avg10=([0-9.]+)/m.exec(readFileSync('/proc/pressure/io', 'utf8'))?.[1] ?? 0); }
     catch { return 0; }

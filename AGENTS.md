@@ -16,10 +16,18 @@ repair belong to the canonical owner; see [provider sessions](docs/architecture/
 That repair credits the exact covered taste-mining request to the retained Codex result
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 
+Accepted messages and local forwarded replies retain their next step atomically; recovery
+requires explicit intent and checks prior custody. See [waiting captures and replies](docs/contracts/native-inbox.md)
+and the [October 10 reconciliation](docs/incidents/2026-10-10-database-lock-and-corruption.md).
+
 Production native startup does not wait for the retired Slack socket; see
 [deployment](docs/runbooks/DEPLOYMENT.md).
 Deployment backs up online, then applies additive schema only after its normal drain
 stops the coordinator; surviving agent hosts are adopted on startup. The same deployment runbook owns this boundary.
+Deployment helpers never initialize live schema; candidate checks cannot access live state.
+Backups publish only after verification and fsync, and retention counts matching verification
+records. The [migration and backup boundary](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups)
+owns the executable gates and their root-operator limits.
 
 Codex's App Server starts only under its native disabled-updater preference on both
 machines; installation and activation are separate, and a running listener is never
