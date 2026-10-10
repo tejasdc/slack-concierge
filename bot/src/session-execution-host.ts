@@ -93,7 +93,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {releaseUsageHeldWork} from './provider-usage';
+import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -183,7 +183,8 @@ export class SessionExecutionHost {
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
-        useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
+        useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account),
+        retryHeldUsage:()=>this.retryHeldUsage()},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),historyMessage:input=>this.capabilityClient!.sourceHistoryMessage(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
@@ -256,6 +257,8 @@ export class SessionExecutionHost {
    * the automatic move to an account with room (2026-10-07).
    */
   private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
+    const cached=claudeAccountCachedReset(chosen);
+    if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
     const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
     if(!full.length)return '';
@@ -316,8 +319,23 @@ export class SessionExecutionHost {
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
     const outcome=await useCodexResetCredit(account);
+    if(outcome.status==='used'&&currentAccount('codex')?.label===account){clearProviderUsage('codex');this.options.wake();}
     if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;
+  }
+  /** One user-requested retry, using the retained turns as the provider check. */
+  private async retryHeldUsage(){
+    const retried:Record<'claude-code'|'codex',boolean>={'claude-code':false,codex:false};
+    for(const provider of ['claude-code','codex'] as const){
+      const waiting=db.query(`SELECT 1 FROM turns JOIN sessions ON sessions.id=turns.session_id
+        WHERE turns.status='queued' AND turns.dispatch_hold='usage' AND turns.dispatch_failure_class='backoff'
+          AND sessions.provider_id=? LIMIT 1`).get(provider);
+      if(!waiting)continue;
+      clearProviderUsage(provider);
+      retried[provider]=true;
+    }
+    if(retried['claude-code']||retried.codex)this.options.wake();
+    return {retried};
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();
