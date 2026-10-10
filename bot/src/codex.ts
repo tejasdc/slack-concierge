@@ -599,21 +599,21 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   let resolveWriter!: () => void;
   const writerReady = new Promise<void>((resolve) => { resolveWriter = resolve; });
 
-  const writeMessage = async (message: unknown, meta?: TransportFrameMeta, beforeWrite?: () => void) => {
+  const writeMessage = async (message: unknown, meta?: TransportFrameMeta, afterWrite?: () => void) => {
     await writerReady;
     // Turn and steering rows reach the disk before Codex is told; the barrier keeps call order.
     await ledgerDurable();
-    beforeWrite?.();
     if (processClosed || !writeLine) throw new Error("codex app-server stdin is closed");
     await writeLine(`${JSON.stringify(message)}\n`, meta);
+    afterWrite?.();
   };
 
   const request = (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
     const id = ++requestId;
     return new Promise((resolve, reject) => {
       pendingRequests.set(id, { resolve, reject, timeout: undefined, onAccepted });
-      // Codex's answer time starts when the request is written, not while the ledger reaches disk:
-      // a timeout here reads as an ambiguous send, and nothing has been sent yet.
+      // Codex's answer time starts once the request is written, not while the ledger reaches disk
+      // or the write waits: a timeout reads as an ambiguous send, so it must follow a real send.
       const armTimeout = () => {
         const pending = pendingRequests.get(id);
         if (!pending) return;

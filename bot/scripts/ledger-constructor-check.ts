@@ -7,6 +7,8 @@ import ts from 'typescript';
 const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'src/capture-state.ts': ['new Database(`${canonicalCaptureStateDir}/state.db`, { create: true, strict: true })'],
   'src/meaning-index.ts': ['new Database(path,{create:true})'],
+  // The ledger's checkpoint thread writes no rows; it sets its lock wait before ledgerWriteResults prepares.
+  'src/ledger-durability-worker.ts': ['new Database(setup.databasePath)'],
   'src/presentation-message-worker.ts': ["new Database(join(stateDir,'presentation.db'),{create:true})"],
   'src/provider-history-worker.ts': ['new Database(temporary, { create: true, strict: true })'],
   'scripts/capture-drain-status.ts': ['new Database(`${stateDir}/state.db`, { create: true, strict: true })'],

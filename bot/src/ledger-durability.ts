@@ -1,10 +1,9 @@
 import { Worker } from 'node:worker_threads';
-import { closeSync, fdatasyncSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { db } from './state-database';
 import { installLedgerBarrier } from './ledger-durability-barrier';
 import { releaseWorkerPath } from './release-worker';
-import { errorFields, log } from './log';
+import { log } from './log';
 
 /** The accepting owner commits ledger rows without waiting for the disk, and nothing leaves the
  * process until those rows are on it. SQLite's default commit syncs the write-ahead log on the
@@ -17,98 +16,103 @@ import { errorFields, log } from './log';
 
 const PERIODIC_SYNC_MS = 1_000;
 const SLOW_SYNC_MS = 1_000;
-const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 1024 * 1024 * 1024, quietPressure: 10, intervalMs: 5_000 };
+const STALLED_SYNC_LOG_MS = 60_000;
+const RESTART_AFTER_MS = 5_000;
+const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 4 * 1024 * 1024 * 1024, quietPressure: 10, intervalMs: 5_000 };
 
-type Waiter = { changes: number; resolve: () => void; reject: (error: Error) => void };
+type Waiter = { changes: number; resolve: () => void };
 const counters = { syncs: 0, slowSyncs: 0, slowestSyncMs: 0, lastSyncMs: 0, checkpoints: 0, slowestCheckpointMs: 0,
-  lastCheckpointAt: null as string | null, failure: null as string | null };
-let active: { sync: Worker; checkpoint: Worker; walPath: string } | null = null;
-let synced = 0, inFlight: { changes: number; since: number } | null = null, nextId = 0;
+  lastCheckpointAt: null as string | null, restarts: 0, failure: null as string | null };
+/** Once the owner's connection stops syncing (`deferred`), it never syncs again for the life of
+ * the process, and only a confirmed sync releases anything. A thread that fails is replaced while
+ * waiters keep waiting: returning to synchronous commits would put the disk wait back on the loop. */
+let threads: { sync: Worker; checkpoint: Worker } | null = null;
+let deferred = false, databasePath = '';
+let synced = 0, inFlight: { changes: number; since: number; loggedAt: number } | null = null, nextId = 0;
 const waiters: Waiter[] = [];
 
 const totalChanges = () => (db.query('SELECT total_changes() AS n').get() as { n: number }).n;
 
-function settle(error?: Error) {
-  while (waiters.length && (error || waiters[0].changes <= synced)) {
-    const waiter = waiters.shift()!;
-    if (error) waiter.reject(error); else waiter.resolve();
-  }
+function settle() {
+  while (waiters.length && waiters[0].changes <= synced) waiters.shift()!.resolve();
 }
 
 function pump() {
-  if (!active || inFlight || db.inTransaction) return;
+  if (!threads || inFlight || db.inTransaction) return;
   const changes = totalChanges();
   if (changes <= synced) { settle(); return; }
-  inFlight = { changes, since: performance.now() };
-  active.sync.postMessage({ id: ++nextId });
+  inFlight = { changes, since: performance.now(), loggedAt: performance.now() };
+  threads.sync.postMessage({ id: ++nextId });
 }
 
 /** Resolves once every ledger commit made before the call is on disk. Waiters resolve in call
- * order, so callers that write to one stream keep their order. */
+ * order, so callers that write to one stream keep their order. It never rejects: while the disk
+ * cannot confirm a sync, what depends on it waits. */
 function durable(): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     // Sample after the current synchronous task: a caller inside a transaction callback must
     // not count rows that are not committed yet.
     queueMicrotask(() => {
-      if (!active) {
-        try { syncOwed(); resolve(); } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
-        return;
-      }
+      if (!deferred) { resolve(); return; }
       const changes = totalChanges();
       if (!waiters.length && changes <= synced) { resolve(); return; }
-      waiters.push({ changes, resolve, reject });
+      waiters.push({ changes, resolve });
       pump();
     });
   });
 }
 
-/** Rows committed while the threads ran, not yet synced when they stopped; synced on this thread
- * the next time anything needs them, because the barrier no longer sees them. */
-let owedSync: string | null = null;
-function syncOwed() {
-  if (!owedSync) return;
-  const fd = openSync(owedSync, 'r');
-  try { fdatasyncSync(fd); } finally { closeSync(fd); }
-  owedSync = null;
-}
-
-/** The threads are gone: return to SQLite's own synchronous commits. Waiters are released only
- * after one sync here; with none waiting, that sync waits for the next caller, so stopping under
- * disk load does not hold the loop. */
-function fallBack(reason: string, stopping = false) {
-  if (!active) return;
-  const { sync, checkpoint, walPath } = active;
-  active = null; inFlight = null;
-  if (!stopping) { counters.failure = reason; log('error', 'ledger_durability_fallback', { reason }); }
+function fail(reason: string) {
+  if (!threads) return;
+  const { sync, checkpoint } = threads;
+  threads = null; inFlight = null;
+  counters.failure = reason;
+  log('error', 'ledger_durability_thread_failed', { reason, waiters: waiters.length, restart_ms: RESTART_AFTER_MS });
   void sync.terminate(); void checkpoint.terminate();
-  try {
-    db.exec('PRAGMA synchronous = FULL');
-    db.exec('PRAGMA wal_autocheckpoint = 1000');
-    if (totalChanges() > synced) owedSync = walPath;
-    if (waiters.length) syncOwed();
-    synced = totalChanges();
-    settle();
-  } catch (error) {
-    log('critical', 'ledger_durability_fallback_failed', errorFields(error));
-    settle(error instanceof Error ? error : new Error(String(error)));
-  }
+  restartLater();
 }
 
-export function startLedgerDurability(stateDir: string): () => void {
-  if (active || process.platform !== 'linux') return () => {};
-  const databasePath = join(stateDir, 'state.db');
+/** Durability has no fallback that keeps the loop free, so a failed thread is replaced for as long
+ * as it takes; each failure is logged at error level for the repair agent. */
+function restartLater() { setTimeout(startThreads, RESTART_AFTER_MS).unref(); }
+
+function startThreads() {
+  if (threads) return;
   const start = (role: 'sync' | 'checkpoint') => {
     const worker = new Worker(releaseWorkerPath('ledger-durability-worker'), { workerData: { role, databasePath, ...CHECKPOINT } });
     worker.unref();
-    worker.on('error', error => fallBack(`${role} worker error: ${error.message}`));
-    worker.on('exit', code => { if (active?.[role] === worker) fallBack(`${role} worker exited with ${code}`); });
+    worker.on('error', error => { if (threads?.[role] === worker) fail(`${role} thread error: ${error.message}`); });
+    worker.on('exit', code => { if (threads?.[role] === worker) fail(`${role} thread exited with ${code}`); });
     return worker;
   };
-  const sync = start('sync'), checkpoint = start('checkpoint');
-  active = { sync, checkpoint, walPath: `${databasePath}-wal` };
-  sync.on('message', (reply: { id: number; ms?: number; error?: string }) => {
-    if (!inFlight || active?.sync !== sync) return;
-    if (reply.error) { fallBack(`log sync failed: ${reply.error}`); return; }
+  let sync: Worker, checkpoint: Worker;
+  try { sync = start('sync'); checkpoint = start('checkpoint'); }
+  catch (error) {
+    log('error', 'ledger_durability_thread_failed', { reason: error instanceof Error ? error.message : String(error), restart_ms: RESTART_AFTER_MS });
+    restartLater();
+    return;
+  }
+  threads = { sync, checkpoint };
+  sync.on('message', (reply: { ready?: boolean; id?: number; ms?: number; error?: string }) => {
+    if (threads?.sync !== sync) return;
+    if (reply.ready) {
+      // The sync thread holds its descriptor before any commit skips the sync, so a writeback
+      // error after this point reaches it.
+      if (!deferred) {
+        synced = totalChanges();
+        db.exec('PRAGMA synchronous = NORMAL');
+        db.exec('PRAGMA wal_autocheckpoint = 0');
+        deferred = true;
+        log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes });
+      } else {
+        counters.restarts++; counters.failure = null;
+        log('warn', 'ledger_durability_thread_restarted', { waiters: waiters.length });
+      }
+      pump();
+      return;
+    }
+    if (!inFlight) return;
+    if (reply.error) { fail(`log sync failed: ${reply.error}`); return; }
     const ms = performance.now() - inFlight.since;
     synced = Math.max(synced, inFlight.changes);
     inFlight = null;
@@ -124,24 +128,27 @@ export function startLedgerDurability(stateDir: string): () => void {
     counters.slowestCheckpointMs = Math.max(counters.slowestCheckpointMs, Math.round(result.ms));
     log(result.error ? 'warn' : 'info', 'ledger_checkpoint', { ...result, ms: Math.round(result.ms) });
   });
-  // The owner's connection stops syncing only after both threads exist, and every row written
-  // before this point was synced by SQLite itself.
-  synced = totalChanges();
-  db.exec('PRAGMA synchronous = NORMAL');
-  db.exec('PRAGMA wal_autocheckpoint = 0');
-  const periodic = setInterval(pump, PERIODIC_SYNC_MS);
-  periodic.unref();
-  // Stays installed after stop: it then settles any sync the stop left owed.
+}
+
+/** Starts once per process and lasts for it: stopping the request API leaves the threads to the
+ * process's exit, so commits made while it drains are still synced and still gate what leaves. */
+export function startLedgerDurability(stateDir: string): void {
+  if (databasePath || process.platform !== 'linux') return;
+  databasePath = join(stateDir, 'state.db');
   installLedgerBarrier(durable);
-  log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes });
-  return () => {
-    clearInterval(periodic);
-    if (active?.sync !== sync) return;
-    fallBack('stopping', true);
-  };
+  startThreads();
+  setInterval(() => {
+    pump();
+    // A sync that does not return is the disk not answering; it is reported, never assumed done.
+    if (inFlight && performance.now() - inFlight.loggedAt >= STALLED_SYNC_LOG_MS) {
+      inFlight.loggedAt = performance.now();
+      log('error', 'ledger_durability_sync_stalled', { ms: Math.round(performance.now() - inFlight.since), waiters: waiters.length });
+    }
+  }, PERIODIC_SYNC_MS).unref();
 }
 
 export function ledgerDurabilityCounters() {
-  return { mode: active ? 'deferred' : 'synchronous', ...counters, waiters: waiters.length,
-    inFlightMs: inFlight ? Math.round(performance.now() - inFlight.since) : null, pendingChanges: active ? totalChanges() - synced : 0 };
+  return { mode: deferred ? 'deferred' : 'synchronous', threads: threads ? 'running' : 'restarting', ...counters,
+    waiters: waiters.length, inFlightMs: inFlight ? Math.round(performance.now() - inFlight.since) : null,
+    pendingChanges: deferred ? totalChanges() - synced : 0 };
 }

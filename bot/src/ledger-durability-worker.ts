@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { closeSync, fdatasyncSync, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
+import { fdatasyncSync, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { ledgerWriteResults } from './ledger-write-results';
 
@@ -16,20 +16,17 @@ const walPath = `${setup.databasePath}-wal`;
 if (setup.role === 'sync') {
   // One descriptor for the log's lifetime: Linux reports a writeback error to a descriptor
   // opened before the error, so reopening per sync could hide a failed write.
-  let fd: number | null = null, inode = -1;
-  const current = () => {
-    const now = statSync(walPath).ino;
-    if (fd === null || now !== inode) {
-      if (fd !== null) closeSync(fd);
-      fd = openSync(walPath, 'r');
-      inode = fstatSync(fd).ino;
-    }
-    return fd;
-  };
+  // It is opened before the owner stops syncing, so no write it must vouch for predates it. The
+  // log is never replaced while the checkpoint thread holds the database open; if it were, this
+  // descriptor could not vouch for the new file, and the sync fails rather than guessing.
+  const fd = openSync(walPath, 'r');
+  const inode = fstatSync(fd).ino;
+  port.postMessage({ ready: true });
   port.on('message', (message: { id: number }) => {
     const started = performance.now();
     try {
-      fdatasyncSync(current());
+      if (statSync(walPath).ino !== inode) throw new Error('the write-ahead log was replaced');
+      fdatasyncSync(fd);
       port.postMessage({ id: message.id, ms: performance.now() - started });
     } catch (error) {
       port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });
@@ -39,9 +36,11 @@ if (setup.role === 'sync') {
   // Synchronous FULL: the checkpoint syncs the log before copying it and the database after,
   // which is what lets the owner's connection skip those syncs.
   // A ledger connection that writes no rows: it only copies the log into the database file.
-  const connection = ledgerWriteResults(new Database(setup.databasePath));
-  connection.exec('PRAGMA busy_timeout = 5000');
-  connection.exec('PRAGMA synchronous = FULL');
+  // The lock wait is set before the first statement: preparing one reads the schema.
+  const raw = new Database(setup.databasePath);
+  raw.exec('PRAGMA busy_timeout = 5000');
+  raw.exec('PRAGMA synchronous = FULL');
+  const connection = ledgerWriteResults(raw);
   const pressure = () => {
     try { return Number(/^some avg10=([0-9.]+)/m.exec(readFileSync('/proc/pressure/io', 'utf8'))?.[1] ?? 0); }
     catch { return 0; }

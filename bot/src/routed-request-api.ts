@@ -119,7 +119,7 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
       return response;
     },
   });
-  const stopDurability=owner?startLedgerDurability(stateDir):()=>{};
+  if(owner)startLedgerDurability(stateDir);
   let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
   let stopGateway:((force?:boolean)=>Promise<void>)|undefined;
   try {
@@ -139,12 +139,11 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
   } catch(error) {
     await server.stop(true);
     await stopPresentation?.();
-    stopDurability();
     throw error;
   }
   let stopping:Promise<void>|null=null;
   return {stop:(closeActiveConnections=false)=>stopping??=(async()=>{
     try {await stopGateway?.(closeActiveConnections);await server.stop(closeActiveConnections);}
-    finally {await stopPresentation?.();stopDurability();}
+    finally {await stopPresentation?.();}
   })()};
 }

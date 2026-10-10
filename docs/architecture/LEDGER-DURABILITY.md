@@ -35,7 +35,7 @@ Linux only) changes where the disk is waited for, not what is written or when it
   `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
   uncopied from the documented wal-index header in `state.db-shm` (frames written minus frames
   copied), and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
-  or at 1 GB regardless. It never copies a small log.
+  or at 4 GB regardless (50 GB was free on 2026-10-10). It never copies a small log.
 
 ## What still waits on the loop
 
@@ -51,13 +51,19 @@ operations, and this change removes the measured wait without changing any trans
 
 ## Failure handling
 
-If either thread errors or exits, or a sync fails, the owner returns to `synchronous=FULL` with
-automatic checkpoints, syncs the log once on its own thread before releasing any waiter, and logs
-`ledger_durability_fallback` at error level. Stopping the request API does the same quietly; when
-nothing is waiting, that one sync is left to the next caller of the barrier, so a shutdown under
-disk load does not hold the loop.
-`meaning-index.db` (a derived, rebuildable index) commits with `synchronous=OFF` and is rebuilt
-from the ledger if it cannot be opened after a crash.
+The owner's connection switches to NORMAL only after the sync thread has opened its descriptor on
+the log, so a writeback error after that point reaches the descriptor that vouches for it. From
+then on it never returns to synchronous commits: that would put the disk wait back on the loop.
+If either thread errors or exits, or a sync fails (including a replaced log file), both threads are
+replaced after five seconds, for as long as it takes, each failure logged as
+`ledger_durability_thread_failed` (error). Waiters are never released without a confirmed sync and
+the barrier never rejects, so outbound effects wait (fail closed) while durability is unproven. A
+sync that has not returned for a minute is logged as `ledger_durability_sync_stalled` (error) each
+minute and is never treated as done. Stopping the request API leaves the threads running until the
+process exits, so commits made while it drains still gate what leaves. `meaning-index.db` (a derived,
+rebuildable index) commits with `synchronous=OFF` and is rebuilt from the ledger if it cannot be
+opened after a crash; a power loss can leave it missing recent passages, which only narrows search
+until those passages are indexed again.
 
 ## Signals
 
@@ -65,4 +71,4 @@ from the ledger if it cannot be opened after a crash.
   time, waiters, age of the sync in flight, unsynced changes, checkpoint counts. This is database
   completion latency, kept apart from the owner's loop lag (`owner_event_loop_lag`).
 - `ledger_durability_slow_sync` (warn, sync ≥ 1 s), `ledger_checkpoint` (each checkpoint, with
-  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_fallback`.
+  bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_thread_failed`, `ledger_durability_thread_restarted`, `ledger_durability_sync_stalled`.
