@@ -1,5 +1,5 @@
 import {db,executionChanged,finishTurn,getSessionById} from './state';
-import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {enqueueSessionInput,getAcceptedSessionInput,recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {newWorkCapacity} from './provider-start-choice';
 import {log} from './log';
 
@@ -25,7 +25,9 @@ const incident:ReadonlyArray<readonly [number,readonly string[],string,string,re
   [4166,[],codexDuty,'Nightly review',['saved-repeat:5174:3']],
   [4863,['request:f52849fb-7d4f-4787-987c-2064e8e73fa8'],inboxReconciliation,'4863'],
   [4780,['request:136e826c-8be5-4c6f-a3d1-8fd8f9c93dfd'],inboxReconciliation,'4780'],
-  [4026,['saved-repeat:4787:11'],codexDuty,'Adidas watch'],
+  // The Codex check was at 5:03 AM. This firing became due at 5:58 AM and is
+  // the next check, not a duplicate of the completed one.
+  [4026,[],codexDuty,'Adidas watch',['saved-repeat:4787:11']],
   [4572,['saved-repeat:5679:1'],codexDuty,'Daily journal review'],
 ];
 
@@ -59,9 +61,14 @@ export function recoverOctoberBudgetPauses():number {
           .all(sessionId) as {id:number;accepted_input_id:string|null;saved_kind:string|null}[];
         if(queued.some(turn=>!turn.accepted_input_id||(!covered.includes(turn.accepted_input_id)&&!preserved.includes(turn.accepted_input_id))))return false;
         if(preserved.some(id=>!queued.some(turn=>turn.accepted_input_id===id&&turn.saved_kind==='scheduled')))return false;
-        if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','parked','interrupted','delivery_parked') LIMIT 1`).get(sessionId))return false;
-        if(db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND kind IN ('input','create') AND turn_id IS NULL
-          AND receipt_json IS NULL LIMIT 1`).get(sessionId))return false;
+        // Interrupted turns are terminal historical evidence. The owner does
+        // not claim them again; later accepted inputs may run past them.
+        if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','parked','delivery_parked') LIMIT 1`).get(sessionId))return false;
+        const orphaned=db.query(`SELECT id FROM session_inputs WHERE session_id=? AND kind IN ('input','create')
+          AND turn_id IS NULL AND receipt_json IS NULL ORDER BY rowid`).all(sessionId) as {id:string}[];
+        const expectedOrphan=sessionId===4923?'watch:a2045cc2f32b:expired'
+          :sessionId===4543?'repair-notice:outside-monitor:f16bfc4e-3e1e-4e99-b261-dc6fdfb7d061:reopened:9':null;
+        if(orphaned.some(input=>input.id!==expectedOrphan))return false;
         if(db.query(`SELECT 1 FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL LIMIT 1`).get(sessionId))return false;
         if(db.query(`SELECT 1 FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL LIMIT 1`).get(sessionId))return false;
         for(const id of [...covered,...preserved]){
@@ -99,8 +106,18 @@ export function recoverOctoberBudgetPauses():number {
             .run(evidence,discarded.input_id);
           recordSessionEvent({eventId:'october-budget-covered-continuation:6454',sessionId,inputId:discarded.input_id,
             turnId:6454,kind:'provider_recovery',payload:{reason:'covered_discarded_continuation',coverageEvidence:evidence}});
+          if(orphaned.length){
+            const retired=db.query(`UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),
+              '$.state','canceled','$.coverageEvidence',?),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND receipt_json IS NULL`)
+              .run(evidence,expectedOrphan);
+            if(retired.changes!==1)throw new Error('The obsolete watch result changed before incident reconciliation.');
+            recordSessionEvent({eventId:'october-budget-covered-watch-expiry:4923',sessionId,inputId:expectedOrphan!,
+              kind:'provider_recovery',payload:{reason:'superseded_review_watch',coverageEvidence:evidence}});
+          }
         }
         updateSessionMetadata(sessionId,{suspended:false});
+        if(sessionId===4543&&orphaned.length&&!enqueueSessionInput(expectedOrphan!).turn_id)
+          throw new Error('The retained repair notice did not become runnable.');
         recordSessionEvent({eventId:`october-budget-pause-released:${sessionId}`,sessionId,kind:'provider_recovery',
           payload:{reason:'budget_pause_stale_after_fresh_capacity',pauseActionId:payload.clientActionId,coveredInputIds:covered,
             preservedInputIds:preserved,coverageEvidence:evidence}});
