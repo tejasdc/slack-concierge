@@ -40,6 +40,15 @@ candidate can be built.
 `bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
+The production native request owner starts serving independently of the retired Slack
+Socket Mode connection. Slack's WebSocket can remain in its own connection attempt or
+fail its TLS handshake without preventing the owner socket, capture intake, or queued
+work from starting. The Slack sandbox still waits for its socket as its acceptance
+condition. This separation was required when a failed Slack TLS handshake on October
+10 held native startup in `slack_connection` and left the owner sockets absent while
+accepted work waited. The application retains and logs the Slack connection outcome;
+it does not discard historical Slack work.
+
 ## Coordinated responsiveness release: dependency order
 
 The responsiveness candidate spans remote-box, Concierge, Thinkering and the Mac. Prepare and

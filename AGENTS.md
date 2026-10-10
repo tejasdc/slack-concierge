@@ -14,6 +14,9 @@ session queue and preserve each accepted capture's identity; see [waiting captur
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
 
+Production native startup does not wait for the retired Slack socket; see
+[deployment](docs/runbooks/DEPLOYMENT.md).
+
 Codex's App Server starts only under its native disabled-updater preference on both
 machines; installation and activation are separate, and a running listener is never
 restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
