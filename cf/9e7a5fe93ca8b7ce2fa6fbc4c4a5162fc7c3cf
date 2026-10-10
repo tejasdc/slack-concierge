@@ -1,0 +1,1 @@
+Oversized logs and a broken logging connection cannot grow an unlimited queue or crash the app.
