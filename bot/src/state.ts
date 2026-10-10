@@ -3733,6 +3733,8 @@ export function listInterruptedInputContext(turnId: number): InterruptedInputCon
       AND prior.provider_input_acknowledged_at IS NULL
       AND prior.input_context_received_by_turn_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM provider_recovery_inputs recovery WHERE recovery.source_turn_id=prior.id)
+      AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=prior.accepted_input_id
+        AND json_extract(coalesce(input.receipt_json,'{}'),'$.state')='canceled')
     ORDER BY prior.id
   `).all(turnId) as InterruptedInputContext[];
 }
@@ -5088,6 +5090,10 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
+    AND json_extract(coalesce(input.receipt_json,'{}'),'$.state')='canceled')
+  AND NOT EXISTS (SELECT 1 FROM session_communication_requests request
+    WHERE request.target_input_id=turn.accepted_input_id AND request.outcome='canceled')
   AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
   AND NOT EXISTS (
     SELECT 1 FROM turn_dependencies dependency

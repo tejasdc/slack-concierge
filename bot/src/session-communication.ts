@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
+import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
@@ -768,6 +768,7 @@ export class SessionCommunicationCoordinator {
             return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id);
         const row=this.row(input.request_id);
         if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
+        let stoppedQueuedTarget=false;
         db.transaction(()=>{
             if(actor.inputId) {
                 const retained=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'cancel',origin:'agent',
@@ -776,13 +777,28 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
             }
             if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker is told to stop.');
-            // A request never handed to its recipient must not reach it later through another path.
-            if(row.target_input_id)db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(row.target_input_id);
+            // A paused or usage-held worker can already have a queued turn. Withdrawing its
+            // request revokes that turn before a later account reset or Continue can claim it.
+            if(this.row(row.request_id).outcome==='canceled')stoppedQueuedTarget=this.cancelQueuedWithdrawnTarget(row);
         })();
         // A worker already holding it is told to stop (the FIPA cancel reaches the participant).
-        if(!row.outcome&&row.target_input_id&&this.row(row.request_id).outcome==='canceled')
+        if(!stoppedQueuedTarget&&!row.outcome&&row.target_input_id&&this.row(row.request_id).outcome==='canceled')
             tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:sessionLabel(row.source_session_id)});
         return this.receipt(this.row(row.request_id));
+    }
+    private cancelQueuedWithdrawnTarget(request:RequestRow):boolean {
+        if(!request.target_input_id)return false;
+        const target=getAcceptedSessionInput(request.target_input_id);
+        if(target?.turn_id){
+            const queued=db.query("SELECT status,saved_kind FROM turns WHERE id=?").get(target.turn_id) as {status:string;saved_kind:string|null}|null;
+            if(queued?.status!=='queued'||queued.saved_kind!==null)return false;
+            finishTurn(target.turn_id,'cancelled','The requesting session withdrew this work before it resumed.');
+            settleTurnDependencies(target.turn_id);
+            db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(target.id);
+            return true;
+        }
+        db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(request.target_input_id);
+        return false;
     }
     private receipt(row: RequestRow, withTarget = true) {
         const binding = this.binding(row);
@@ -1885,6 +1901,12 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             this.reconciliationDirty = false;
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
+            // A cancellation that arrived while a session was paused must revoke its already
+            // queued turn. Reconcile historical cancellations too, before any account wake.
+            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
+                JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
+                WHERE r.outcome='canceled' AND t.status='queued' AND t.saved_kind IS NULL AND r.rowid<=? AND r.rowid>?
+                ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>this.cancelQueuedWithdrawnTarget(request))());
             await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?

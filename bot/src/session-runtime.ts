@@ -32,6 +32,7 @@ import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
+import {recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -132,14 +133,14 @@ export async function startSessionRuntime() {
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null);
   host.markOwnerServing();
-  recoverExhaustedClaudeWork();
+  recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
   if(peering.listen)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
-    onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();recoverExhaustedClaudeWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+    onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);

@@ -1581,6 +1581,12 @@ export class SessionOwner {
     const action=object(input.action);only(action,['kind','value','generation']);
     const allowed=['title','summary','outcome','read','dismiss','archive','restore','pause','continue','pin','save','model'];
     if(!allowed.includes(action.kind))throw new SessionOwnerError('Unknown session action.');
+    // A usage decision belongs to the provider hold, which has an account-specific release.
+    // The October 10 outside steering action used a generic Pause and stranded thirteen
+    // conversations after their allowance returned. Do not accept that shape again.
+    if(action.kind==='pause'&&(action.value==='usage'||action.value==='budget'
+      ||/^budget-pause(?:-|$)/.test(input.clientActionId)))
+      throw new SessionOwnerError('Usage limits are managed by the account hold; a session Pause has no automatic release.',409,'BUDGET_PAUSE_REFUSED');
     const operation=this.saveControl(session,'action',input,()=>{
       const meta=sessionMetadata(session);
       if(['title','summary','model'].includes(action.kind)) {
