@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { writeSync } from 'node:fs';
+import { realpathSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { db } from './state-database';
 import { installLedgerBarrier } from './ledger-durability-barrier';
@@ -153,7 +153,8 @@ function startThreads() {
  * process's exit, so commits made while it drains are still synced and still gate what leaves. */
 export function startLedgerDurability(stateDir: string): void {
   if (databasePath || process.platform !== 'linux') return;
-  databasePath = join(stateDir, 'state.db');
+  // The ledger may be a link to its own filesystem; SQLite keeps the log beside the real file.
+  databasePath = realpathSync(join(stateDir, 'state.db'));
   installLedgerBarrier(durable);
   startThreads();
   setInterval(() => {
