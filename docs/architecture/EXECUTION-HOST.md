@@ -160,7 +160,10 @@ are command hooks in `--settings`, held by the unchanged process).
   host, live at once). A Concierge restart leaves it running. The next coordinator takes it back at
   startup like any execution and follows it (`follow` in `session-capability-client.ts`): it asks for
   that run with `reconcile`, then observes from the first event, so messages already recorded are
-  matched by their event ids and nothing is typed again. A run still unfinished at takeover is
+  matched by their event ids and nothing is typed again, except in one case: when Thinkering has no
+  run under that id, the restart came between recording the send and Thinkering accepting it, so the
+  send was never made and is made once (Thinkering keeps one run per id and re-checks the admitted
+  prompt digest and files before typing). A run still unfinished at takeover is
   recorded as `adopted_live`. The follow waits until this owner's request API is listening
   (`markOwnerServing`), because Thinkering verifies every call against this owner's receipt; the
   first live takeover (7:26 PM, 2026-10-09) followed before the API was up and ended the run as an

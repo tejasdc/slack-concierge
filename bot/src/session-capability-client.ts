@@ -584,10 +584,18 @@ export class SessionCapabilityClient {
       }
       if (context.signal?.aborted) throw new SessionCapabilityError("CAPABILITY_OWNER_LOST", "The owner ended this admission before capability dispatch.", 409);
       mayHaveStarted = true;
+      const send = () => this.startWhenOwnerAnswers(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
+        model: admission.model, attachments: context.attachments, policy: admission.policy, nativeBinding: admission.nativeBinding }, context.signal);
+      // A restart between recording the send and Thinkering accepting it leaves no run there: that one
+      // send was never made, and Thinkering keeps at most one per run id (it re-checks the run, the
+      // admitted prompt digest and the files before typing), so it is made now, once. Any other answer
+      // is the run's own state and is followed (ChatGPT Pro second opinion, 2026-10-10).
       const receipt = context.follow
-        ? await this.reconcile(run, context.signal)
-        : await this.startWhenOwnerAnswers(run, { id: run.runId, prompt: input.prompt, purpose: admission.purpose,
-          model: admission.model, attachments: context.attachments, policy: admission.policy, nativeBinding: admission.nativeBinding }, context.signal);
+        ? await this.reconcile(run, context.signal).catch(error => {
+          if (error instanceof SessionCapabilityError && error.code === "CHATGPT_EFFECT_NOT_FOUND") return send();
+          throw error;
+        })
+        : await send();
       effectRecorded = true;
       if (context.follow && (receipt.state === "recorded" || receipt.state === "running")) context.follow.onLive();
       terminalConfirmed = receipt.state === "failed" || receipt.state === "canceled" || receipt.state === "completed";
