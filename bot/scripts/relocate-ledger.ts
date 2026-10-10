@@ -5,6 +5,7 @@
 // See docs/architecture/LEDGER-DURABILITY.md (The ledger's own filesystem).
 import { Database } from 'bun:sqlite';
 import { ledgerWriteResults } from '../src/ledger-write-results';
+import { otherHolders } from './ledger-file-holders';
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, realpathSync, renameSync, rmSync,
   statSync, statfsSync, symlinkSync, writeSync } from 'node:fs';
@@ -17,13 +18,6 @@ const stamp = new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15) + 'Z';
 const say = (line: string) => writeSync(1, `ledger ${back ? 'rollback' : 'move'}: ${line}\n`);
 
 const fsyncPath = (path: string) => { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } };
-/** Processes other than this one holding any of the paths open. */
-const otherHolders = (paths: string[]) => {
-  const present = paths.filter(path => existsSync(path));
-  if (!present.length) return [];
-  const result = spawnSync('fuser', present, { encoding: 'utf8' });
-  return [...new Set((result.stdout ?? '').split(/\s+/).filter(Boolean).map(Number).filter(pid => pid && pid !== process.pid))];
-};
 // Compared by a separate process: closing a descriptor this process opened on the database file
 // would release every POSIX lock this process holds on it, including the writer fence below.
 const sameBytes = (a: string, b: string) => spawnSync('cmp', ['-s', a, b]).status === 0;

@@ -1,5 +1,5 @@
 import {spawn,type ChildProcess} from 'node:child_process';
-import {existsSync,rmSync} from 'node:fs';
+import {existsSync,realpathSync,rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {inflateRawSync} from 'node:zlib';
 import {Database} from 'bun:sqlite';
@@ -136,7 +136,10 @@ export class MeaningIndex {
         this.store.close();
         if(attempt)throw error;
         log('warn','meaning_index_rebuilt',{reason:error instanceof Error?error.message:String(error)});
-        for(const suffix of ['','-wal','-shm'])rmSync(path+suffix,{force:true});
+        // The index may live on the ledger's own filesystem behind a link: rebuild it there, never
+        // in place of the link.
+        const real=existsSync(path)?realpathSync(path):path;
+        for(const suffix of ['','-wal','-shm'])rmSync(real+suffix,{force:true});
         this.keys=[];this.rowOf=new Map();this.scales=[];this.count=0;this.targets=[];this.texts=[];this.times=[];
       }
     }
