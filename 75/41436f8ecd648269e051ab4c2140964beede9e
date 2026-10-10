@@ -1,0 +1,1 @@
+Checks launched by older running agents now use isolated temporary storage instead of competing with your live work.
