@@ -667,6 +667,18 @@ operator deployment.
 
 ## State migration and backups
 
+A normal update copies the ledger only when the release being installed would change its
+schema. The runner calls that release's own migrator with `--backup-if-needed` before the
+coordinator stops: it builds the release's schema in a scratch database and compares it with the
+live ledger (missing tables or columns, and indexes, triggers or views that are missing or whose
+SQL differs). With no difference it prints `no_schema_change` and copies nothing, and the
+schema phase (`--schema-only` with no backup path) re-checks with the coordinator stopped,
+copies first if a difference has appeared, and otherwise exits `unchanged` without the
+whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
+filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Automatic copies are pruned
+before each new copy, so at most eight exist even when later steps of an update fail.
+A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
+
 `bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only,
 runs integrity checks, creates a consistent `VACUUM INTO` backup under
 `/root/.local/state/concierge/backups/`, verifies that output, and returns its exact path.

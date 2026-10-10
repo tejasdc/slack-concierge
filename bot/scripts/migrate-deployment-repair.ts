@@ -1,23 +1,78 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { ledgerWriteResults } from "../src/ledger-write-results";
+
+/**
+ * The schema this release's code builds, read from a database it creates from nothing. Run in a
+ * child whose state directory is a scratch folder, because opening the ledger module binds to the
+ * state directory at import. Tables are described by their columns (an added column changes a
+ * table's stored SQL text differently on a fresh build and on an upgraded ledger); indexes,
+ * triggers and views by their SQL.
+ */
+type SchemaShape = { tables: Record<string, string[]>; objects: Record<string, string> };
+function schemaShape(database: Database): SchemaShape {
+  const rows = database.query("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'").all() as { type: string; name: string; sql: string }[];
+  const tables: Record<string, string[]> = {}, objects: Record<string, string> = {};
+  for (const row of rows) {
+    if (row.type === "table") tables[row.name] = (database.query("SELECT name FROM pragma_table_info(?)").all(row.name) as { name: string }[]).map(column => column.name).sort();
+    else objects[`${row.type}:${row.name}`] = row.sql.replace(/\s+/g, " ").trim();
+  }
+  return { tables, objects };
+}
+if (process.argv.includes("--empty-schema")) {
+  const { db: scratch } = await import("../src/state-database");
+  await import("../src/state");
+  await import("../src/deployment-state");
+  console.log(JSON.stringify(schemaShape(scratch as unknown as Database)));
+  process.exit(0);
+}
 
 const stateDirectory = process.env.CONCIERGE_STATE_DIR;
 if (!stateDirectory) throw new Error("CONCIERGE_STATE_DIR is required.");
 const statePath = join(stateDirectory, "state.db");
 if (!existsSync(statePath)) throw new Error(`Concierge state database does not exist: ${statePath}`);
 const backupOnly = process.argv.includes('--backup-only');
+const backupIfNeeded = process.argv.includes('--backup-if-needed');
 const schemaOnly = process.argv.includes('--schema-only');
-if (backupOnly && schemaOnly) throw new Error('Choose backup-only or schema-only, never both.');
+if ([backupOnly, backupIfNeeded, schemaOnly].filter(Boolean).length > 1) throw new Error('Choose one of backup-only, backup-if-needed or schema-only.');
 const backupArgument = process.argv.indexOf('--backup-path');
-const backupPath = (backupArgument >= 0 ? process.argv[backupArgument + 1] : undefined)
-  || process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP
-  || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
+const namedBackup = (backupArgument >= 0 ? process.argv[backupArgument + 1] : undefined) || process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP || '';
+const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
+
+/**
+ * What this release's schema step would add to the live ledger: missing tables, columns, indexes,
+ * triggers or views, or one whose SQL differs. Nothing means the step only re-runs what every
+ * Concierge start already runs, so a full copy of the ledger protects nothing. Copying 2.3 GB on
+ * every update anyway filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes) and added
+ * gigabytes of writes an hour on the disk that stalls the owner.
+ */
+function schemaChanges(): string[] {
+  const scratch = mkdtempSync(join(tmpdir(), "concierge-schema-plan-"));
+  try {
+    const { CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP: _drop, ...environment } = process.env;
+    const child = spawnSync(process.execPath, [Bun.main, "--empty-schema"], {
+      encoding: "utf8", timeout: 120_000, env: { ...environment, CONCIERGE_STATE_DIR: scratch } });
+    if (child.status !== 0) throw new Error(`The release's schema could not be built for comparison: ${(child.stderr || String(child.error ?? "")).slice(-1500)}`);
+    const wanted = JSON.parse(child.stdout.trim().split("\n").at(-1)!) as SchemaShape;
+    const live = new Database(statePath, { readonly: true });
+    let have: SchemaShape;
+    try { live.exec("PRAGMA busy_timeout=5000"); have = schemaShape(live); } finally { live.close(); }
+    const changes: string[] = [];
+    for (const [table, columns] of Object.entries(wanted.tables)) {
+      const present = have.tables[table];
+      if (!present) { changes.push(`table ${table}`); continue; }
+      for (const column of columns) if (!present.includes(column)) changes.push(`column ${table}.${column}`);
+    }
+    for (const [key, sql] of Object.entries(wanted.objects)) if (have.objects[key] !== sql) changes.push(key);
+    return changes;
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
 
 /**
  * Every deployment writes a full copy of the ledger (1.4 GB on 2026-10-07) and nothing removed
@@ -29,14 +84,17 @@ mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
  * day of rollbacks at the usual pace of releases for 15 GB.
  */
 const AUTOMATIC_COPIES_KEPT = 8;
-function pruneAutomaticCopies(): number {
+// Pruned before each new copy is written (keeping room for it), not only after a migration that
+// succeeded: copies from updates that failed later were never pruned, and ten stood on the disk
+// against a limit of eight on 2026-10-10.
+function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
   const folder = dirname(backupPath);
   const copies = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
     .sort((a, b) => Number(b.split(".")[2]) - Number(a.split(".")[2]));
-  for (const name of copies.slice(AUTOMATIC_COPIES_KEPT))
+  for (const name of copies.slice(keep))
     for (const suffix of ["", "-wal", "-shm"]) rmSync(join(folder, name + suffix), { force: true });
-  return Math.max(0, copies.length - AUTOMATIC_COPIES_KEPT);
+  return Math.max(0, copies.length - keep);
 }
 
 function quotedSqlPath(path: string) {
@@ -54,7 +112,7 @@ function checks(database: Database) {
   }
 }
 
-if (!backupOnly) {
+if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
   // An admission drain preserves agent hosts; it does not stop the serving owner's writes.
   // Schema work requires the coordinator fully stopped, including its prestart recovery.
   const service = process.env.CONCIERGE_SERVICE || 'concierge-bot.service';
@@ -65,7 +123,8 @@ if (!backupOnly) {
     throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
 }
 
-if (!schemaOnly) {
+function backUp() {
+  pruneAutomaticCopies(AUTOMATIC_COPIES_KEPT - 1);
   // The live backup is a read-only snapshot; it does not reserve the service's writer.
   const source = new Database(statePath, { readonly: true });
   try {
@@ -75,7 +134,33 @@ if (!schemaOnly) {
   } finally { source.close(); }
   const backup = new Database(backupPath, { readonly: true });
   try { checks(backup); } finally { backup.close(); }
-} else if (!existsSync(backupPath)) throw new Error(`Verified migration backup is missing: ${backupPath}`);
+}
+
+if (process.argv.includes('--plan')) {
+  // Read-only: what this release's schema step would add to the live ledger.
+  console.log(JSON.stringify({ status: 'planned', changes: schemaChanges() }));
+  process.exit(0);
+}
+if (backupIfNeeded) {
+  // Run from the release being installed, before the coordinator stops: its own code says what its
+  // schema step would add, and only then is the ledger copied.
+  const changes = schemaChanges();
+  if (changes.length) backUp();
+  console.log(JSON.stringify(changes.length ? { status: 'backed_up', backup_path: backupPath, changes }
+    : { status: 'no_schema_change', backup_path: null, changes }));
+  process.exit(0);
+}
+if (schemaOnly && !namedBackup) {
+  // No copy was taken because the release would change nothing. Confirm that with the coordinator
+  // stopped; if it no longer holds, copy now rather than change the schema without one.
+  const changes = schemaChanges();
+  if (!changes.length) {
+    console.log(JSON.stringify({ status: 'unchanged', backup_path: null }));
+    process.exit(0);
+  }
+  backUp();
+} else if (!schemaOnly) backUp();
+else if (!existsSync(backupPath)) throw new Error(`Verified migration backup is missing: ${backupPath}`);
 
 if (backupOnly) {
   console.log(JSON.stringify({ status: 'backed_up', backup_path: backupPath }));

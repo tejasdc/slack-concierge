@@ -963,13 +963,19 @@ deploy() {
   install_candidate_dependencies
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
-    echo "=== verify and back up deployment state without reserving the writer ==="
+    echo "=== back up deployment state if this release changes its schema ==="
     CURRENT_DEPLOY_STAGE=state-migration
     DEPLOY_FAILURE_REASON="The deployment database backup failed."
-    local migration_backup
-    migration_backup=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only)
+    local migration_backup candidate_migration="$REPO/bot/scripts/migrate-deployment-repair.ts"
+    # The release being installed decides from its own schema whether the ledger needs a copy; a
+    # release whose migrator predates that decision is copied unconditionally, as before.
+    if grep -q -- '--backup-if-needed' "$candidate_migration" 2>/dev/null; then
+      migration_backup=$(cd "$REPO/bot" && CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$candidate_migration" --backup-if-needed)
+    else
+      migration_backup=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only)
+    fi
     echo "$migration_backup"
-    MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -er '.backup_path')
+    MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -r '.backup_path // empty')
     DEPLOY_FAILURE_REASON="No verified immutable last-known-good release was available for rollback."
     require_last_known_good_release
   fi
@@ -1081,8 +1087,11 @@ deploy() {
   systemctl stop "$SERVICE"
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then
     DEPLOY_FAILURE_REASON="Offline additive schema migration failed."
+    # No path means no copy was needed: the schema step re-checks with the coordinator stopped and
+    # copies then if the release would change the schema after all.
     CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
-      "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only --backup-path "$MIGRATION_BACKUP_PATH"
+      "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only \
+      ${MIGRATION_BACKUP_PATH:+--backup-path "$MIGRATION_BACKUP_PATH"}
     MIGRATION_DONE=1
   fi
   DEPLOY_FAILURE_REASON="The migrated coordinator could not start or adopt surviving agents."
