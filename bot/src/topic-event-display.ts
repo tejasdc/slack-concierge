@@ -43,6 +43,7 @@ export function topicEventSentence(payload:any):string {
     case 'request_closed':return `Request ${payload.request?.title??''} closed as ${payload.request?.disposition??''}: ${payload.reason??''}`;
     case 'request_reopened':return `Request ${payload.request?.title??''} reopened: ${payload.reason??''}`;
     case 'reconciled':return `Questions updated (${payload.questions?.length??0}).`;
+    case 'answer_rehomed':return 'An earlier answer was filed with the request it answered.';
     case 'settled':return `Question settled as ${payload.questions?.[0]?.state??''}${payload.reason?`: ${payload.reason}`:''}`;
     case 'filed':return `Filed here: ${payload.questions?.[0]?.brief?.decision??''}`;
     case 'recovered':return `${payload.questions?.length??0} earlier attention ${(payload.questions?.length??0)===1?'entry':'entries'} filed as questions${payload.reason?` (${payload.reason})`:''}.`;
