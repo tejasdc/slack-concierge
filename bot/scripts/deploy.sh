@@ -660,7 +660,7 @@ prepare_candidate_release() {
   printf '%s\n' "$output"
   if [ "$status" -ne 0 ]; then
     if candidate_advanced; then return 0; fi
-    DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output: -600}"
+    DEPLOY_FAILURE_REASON="The candidate release cannot take back agents that are still running in execution hosts: ${output:0:2400}"
     # Nothing was activated: the running release stays exactly as it is (no restore, no restart).
     PREFLIGHT_REFUSED=1
     return "$status"

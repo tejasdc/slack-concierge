@@ -17,6 +17,18 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 
+/**
+ * What a failed isolated check says, for the run record and its repair. Bun prints an uncaught
+ * error as a source excerpt, then `error: <message>`, then the message's own long tail (the
+ * fixture's stderr and stdout). Cutting from either end lost the message: the start is the
+ * excerpt, the end is fixture output (three updates on 2026-10-09/10 recorded no cause, and a
+ * repair parked for it). The message is taken from its own line.
+ */
+export function failedCheckSummary(output: string, max = 2000): string {
+  const at = output.search(/^error: /m);
+  return (at >= 0 ? output.slice(at) : output.slice(-max)).slice(0, max);
+}
+
 export interface ReleaseManifest {
   format: 2;
   git_commit: string;
@@ -293,10 +305,8 @@ export class TrustedRootReleaseManager {
         this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
       ],{cwd:join(sourceRoot,'bot')}):null;
-      // The end of the output names the step and its deadline; the start is Bun's source excerpt.
-      // Keeping the start left two failed updates (2026-10-09 7:16 PM, 2026-10-10 12:10 AM) unexplained.
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
-        `Candidate presentation cost check failed: ${Buffer.from(presentationCheck.stderr).toString('utf8').slice(-2000)}`);
+        `Candidate presentation cost check failed: ${failedCheckSummary(Buffer.from(presentationCheck.stderr).toString('utf8'))}`);
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });

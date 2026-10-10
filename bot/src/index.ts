@@ -3594,6 +3594,13 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "--property=Type=exec",
     "--property=Restart=on-failure",
     "--property=RestartSec=10",
+    // The runner's isolated checks time the candidate owner's own startup and reads, so they run
+    // at the owner's CPU weight (concierge-bot.service is 1000) rather than an equal share beside a
+    // dozen agent runs: at load 70-140 on 12 cores they missed their deadlines three times
+    // (2026-10-09/10) with nothing wrong in the candidate. Weight only orders contention; an idle
+    // host is unchanged and agents still get the CPU the runner leaves.
+    "--property=CPUWeight=1000",
+    "--property=IOWeight=1000",
     `--setenv=HOME=${process.env.HOME || "/root"}`,
     `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "2"}`,
     "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
