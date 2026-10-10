@@ -168,6 +168,9 @@ authorization or a change to the default rapid-iteration policy.
 - Prepared receipt lists use one shared status policy for the owner and the presentation
   worker; live retry observations expire with the owner incarnation. See
   [prepared receipts](docs/architecture/PREPARED-RECEIPTS.md).
+- The Mac runs source with Bun's compile cache off, because the cache is keyed by contents
+  while folding environment reads, and a read worker's copy crash-looped the Mac owner
+  (2026-10-10); see [install or update the Mac instance](docs/runbooks/PEER-INSTANCES.md#install-or-update-the-mac-instance).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
   private `tejasdc` repository before retaining a peer setup order; `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never

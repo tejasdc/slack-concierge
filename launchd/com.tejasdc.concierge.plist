@@ -44,6 +44,11 @@
     <key>CONCIERGE_AGENT_HOST_LAUNCHER</key><string>@HOST_LAUNCHER@</string>
     <!-- Agent helpers built for the installed commit; never changed under a running agent. -->
     <key>CONCIERGE_PINNED_HELPERS_DIR</key><string>@HELPERS@</string>
+    <!-- This Mac runs source, and Bun's compile cache is keyed by file contents alone while it
+         folds environment reads into the compiled copy. A read worker's copy, with its
+         read-worker check baked in as true, crash-looped this owner on 2026-10-10. Every child
+         inherits this, so each process compiles with its own environment. -->
+    <key>BUN_RUNTIME_TRANSPILER_CACHE_PATH</key><string>0</string>
   </dict>
 </dict>
 </plist>

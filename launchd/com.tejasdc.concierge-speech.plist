@@ -23,6 +23,8 @@
     <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>LANG</key><string>en_US.UTF-8</string>
     <key>CONCIERGE_STATE_DIR</key><string>@STATE@</string>
+    <!-- Same source as Concierge with a different environment; see com.tejasdc.concierge.plist. -->
+    <key>BUN_RUNTIME_TRANSPILER_CACHE_PATH</key><string>0</string>
   </dict>
 </dict>
 </plist>

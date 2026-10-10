@@ -50,6 +50,16 @@ presentation protocol on both peers and observing a refresh, sleep and wake on t
 cd ~/workspace/slack-concierge && git pull --ff-only && scripts/install-mac.sh
 ```
 
+**The Mac runs source, so Bun's compile cache is off** (`BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`
+in the Concierge and speech launchd jobs, inherited by every child). Bun keys that cache by file
+contents alone, yet folds `process.env` comparisons into the compiled copy; the owner, its read
+workers, gateway and execution hosts load the same files under different environments. On
+2026-10-10 a read worker's copy of `session-owner.ts`, with `CONCIERGE_READ_WORKER==='1'` baked
+in as true, was served to the owner and every start died with `INBOX_NOT_READY` (122 runs). The
+server is unaffected: each sealed bundle is compiled once by `bun build`. To confirm a suspected
+recurrence, compare a start with and without the variable; a stale cache lives in
+`~/Library/Caches/bun/@t@`.
+
 **Updating later, including from an agent on the Mac:** run
 `launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update`. That separate one-shot
 launchd job pulls `main` (refusing a dirty checkout or another branch), reinstalls and
