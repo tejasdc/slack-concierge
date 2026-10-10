@@ -88,7 +88,13 @@ and refuses a live listener; the gateway never takes a socket from another proce
 `native-read-routes.ts` assigns each registered GET to a readonly executor, genuinely live owner
 dependency or event stream. Two persistent read executors provide independent capacity when one
 reader blocks. A finite response owns its slot through body completion; event streams have a
-separate domain. The queue retains at most 64 read requests, and admission plus response share
+separate domain. Historical attribution (`/work-thread`) searches provider transcripts and is
+classified as archival work. At most one reader can serve that class, and interactive reads
+pass queued archives. Each class has its own 64-request admission budget: an archive flood
+cannot consume the interactive queue or both executors. Health exposes class occupancy,
+queue size and oldest waiting age. This reuses the two readers instead of adding another
+process: installed evidence showed both slots scanning transcripts while a history read waited
+about three seconds for admission. The queue retains at most 128 requests in total, and admission plus response share
 the existing 20-second read deadline. A departing caller cancels its queued admission or drops
 its response; already executing work retains its slot until it finishes. Only executor deadline
 expiry retires that readonly executor, so its still-running synchronous call cannot capture the

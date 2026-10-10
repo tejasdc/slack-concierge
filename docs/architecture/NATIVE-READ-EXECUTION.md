@@ -35,7 +35,8 @@ those counters, logger health and child PID so the supervisor can reject an unre
 Shutdown closes the listener and the history client.
 
 The route classification is the executable manifest. Its `source` identifies prepared,
-canonical, provider, filesystem, account, or control reads; `domain` identifies the read
+canonical, provider, filesystem, account, archive, or control reads. Archive attribution may
+occupy only one reader and cannot consume the interactive queue; `domain` identifies the read
 executor, live owner, or stream owner. `assertNativeReadRouteCoverage` fails when a registered
 GET exception or prepared route lacks a classification. The budget for a cold direct Inbox
 topic-list fallback is unchanged: its full-ledger scan can exceed the prepared read contract

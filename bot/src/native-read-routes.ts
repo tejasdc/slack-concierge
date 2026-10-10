@@ -3,7 +3,7 @@ import {PRESENTATION_READERS} from './presentation-reader-contracts';
 
 export type NativeReadRoute=Readonly<{
   domain:'read-worker'|'live-owner'|'stream-owner';
-  source:'prepared'|'canonical'|'provider'|'filesystem'|'account'|'control';
+  source:'prepared'|'canonical'|'provider'|'filesystem'|'account'|'archive'|'control';
   /** Canonical pathname after the same legacy alias resolution as SessionOwner.handle. */
   path:string;
   pattern:string;
@@ -39,6 +39,7 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
   if(liveOwner.has(pattern))return {domain:'live-owner',source:'control',
     path,pattern,maxResponseBytes:policy.maxResponseBytes};
   if(account.has(pattern))return {domain:'read-worker',source:'account',path,pattern,maxResponseBytes:policy.maxResponseBytes};
+  if(pattern==='/work-thread')return {domain:'read-worker',source:'archive',path,pattern,maxResponseBytes:policy.maxResponseBytes};
   if(provider.has(pattern))return {domain:'read-worker',source:'provider',path,pattern,maxResponseBytes:policy.maxResponseBytes};
   if(filesystem.has(pattern))return {domain:'read-worker',source:'filesystem',path,pattern,maxResponseBytes:policy.maxResponseBytes};
   // Every remaining exact exception is a canonical or control read with no live

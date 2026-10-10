@@ -24,7 +24,7 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
   const entry=join(root,'executor.ts');
   await Bun.write(entry,`process.argv.push('--executor'); await import(${JSON.stringify(import.meta.path)});`);
   const pool=new ForegroundReadPool(root,join(root,'unused-owner.sock'),entry);
-  const request=(path:string,signal?:AbortSignal)=>pool.request(new Request('http://fixture'+path,{signal}),path,crypto.randomUUID());
+  const request=(path:string,signal?:AbortSignal,readClass:'interactive'|'archive'='interactive')=>pool.request(new Request('http://fixture'+path,{signal}),path,crypto.randomUUID(),readClass);
   try {
     await pool.start();
     const readerPid=pool.snapshot().readers[0]!.pid;
@@ -55,7 +55,25 @@ if(process.env.CONCIERGE_READ_SOCKET&&process.argv.includes('--executor')) {
     assert.equal(pool.snapshot().readers[0]!.pid,readerPid);
     assert.equal(pool.snapshot().readers[0]!.active,null);
     const after=await request('/after-cancel');assert.equal(after.status,200);await after.body?.cancel();
+    const archiveAbort=new AbortController();
+    const archive=request('/block',archiveAbort.signal,'archive');
+    await Bun.sleep(50);
+    const archiveQueueAbort=new AbortController();
+    const backlog=Array.from({length:64},()=>request('/archive-queued',archiveQueueAbort.signal,'archive'));
+    await Bun.sleep(10);
+    assert.equal(pool.snapshot().classes.archive.active,1);
+    assert.equal(pool.snapshot().classes.archive.waiting,64);
+    const foregroundAt=performance.now();
+    const foreground=await request('/interactive-past-archive-flood');
+    assert.equal(foreground.status,200);await foreground.json();
+    const archiveFloodLatency=performance.now()-foregroundAt;
+    assert.ok(archiveFloodLatency<500,`Archive flood held interactive read ${archiveFloodLatency}ms`);
+    assert.equal(pool.snapshot().classes.archive.active,1);
+    archiveQueueAbort.abort();
+    assert.ok((await Promise.all(backlog)).every(response=>response.status===503));
+    archiveAbort.abort();await archive;
+    assert.equal(pool.snapshot().classes.archive.waiting,0);
     console.log(JSON.stringify({fixture:'foreground-pool',status:'passed',blocked_executor_requested_ms:1000,callerCancellationPreservedReader:true,
-      independent_reads:latencies.length,independent_max_ms:Math.max(...latencies),independent_total_ms:performance.now()-started}));
+      independent_reads:latencies.length,independent_max_ms:Math.max(...latencies),archiveQueued:64,archiveFloodInteractiveMs:archiveFloodLatency,independent_total_ms:performance.now()-started}));
   } finally {await pool.stop();await rm(root,{recursive:true,force:true});}
 }

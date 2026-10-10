@@ -26,7 +26,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     const headers=new Headers(request.headers);headers.set('x-concierge-admission-id',id);
     request=new Request(request,{headers});
     const read=classifyNativeReadRoute(request.method,url.pathname);
-    if(read?.domain==='read-worker')return pool.request(request,read.pattern,id);
+    if(read?.domain==='read-worker')return pool.request(request,read.pattern,id,read.source==='archive'?'archive':'interactive');
     const nativePath=url.pathname==='/sessions/v1'||url.pathname.startsWith('/sessions/v1/');
     if(request.method==='GET'&&nativePath&&!read)
       return unavailable('UNREGISTERED_READ_ROUTE','This read has no registered execution boundary.');

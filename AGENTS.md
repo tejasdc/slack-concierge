@@ -142,6 +142,7 @@ authorization or a change to the default rapid-iteration policy.
   and deployment seal refuse missing coverage. Unknown owner GET routes also refuse by default;
   named control and legacy exceptions live in the [read boundary](docs/architecture/STORAGE-OBSERVATION.md).
   The root socket and peer listener use a storage-free gateway and readonly executors;
+  archival attribution cannot consume both readers or the interactive admission budget.
   commands retain one canonical writer. Route classification and the accepting import graph
   are release gates. See [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;

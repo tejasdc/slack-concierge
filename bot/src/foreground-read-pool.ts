@@ -9,9 +9,10 @@ const READERS=2;
 const MAX_WAITING=64;
 // Existing owner/peer reads have a 20 second response deadline. Do not multiply it
 // by queueing and execution, or retain work after its caller has already left.
+type ReadClass='interactive'|'archive';
 type Slot={id:number;socket:string;child:ReturnType<typeof Bun.spawn>|null;ready:boolean;
-  active:{id:string;route:string;since:number}|null;restart:ReturnType<typeof setTimeout>|null};
-type Waiter={resolve:(slot:Slot|null)=>void;signal:AbortSignal;abort:()=>void};
+  active:{id:string;route:string;since:number;readClass:ReadClass}|null;restart:ReturnType<typeof setTimeout>|null};
+type Waiter={resolve:(slot:Slot|null)=>void;signal:AbortSignal;abort:()=>void;readClass:ReadClass;since:number};
 
 export class ForegroundReadPool {
   private slots:Slot[];
@@ -52,6 +53,11 @@ export class ForegroundReadPool {
   }
   snapshot() {
     return {ready:this.slots.filter(slot=>slot.ready).length,waiting:this.waiting.length,
+      classes:Object.fromEntries((['interactive','archive'] as const).map(readClass=>{
+        const queued=this.waiting.filter(waiter=>waiter.readClass===readClass);
+        return [readClass,{active:this.slots.filter(slot=>slot.active?.readClass===readClass).length,waiting:queued.length,
+          oldestWaitingMs:queued.length?Math.round(performance.now()-queued[0]!.since):0}];
+      })),
       readers:this.slots.map(slot=>({id:slot.id,pid:slot.child?.pid??null,ready:slot.ready,active:slot.active}))};
   }
   async health() {
@@ -67,21 +73,27 @@ export class ForegroundReadPool {
     const ordered=Array.from({length:this.slots.length},(_,offset)=>this.slots[(this.nextReader+offset)%this.slots.length]!);
     for(const slot of ordered) {
       if(!slot.ready||slot.active)continue;
-      let waiter:Waiter|undefined;
-      while((waiter=this.waiting.shift())) {
+      while(this.waiting.length) {
+        // Historical attribution searches can scan entire provider transcripts.
+        // They may own only one reader; interactive work passes their backlog.
+        const interactive=this.waiting.findIndex(waiter=>waiter.readClass==='interactive');
+        const index=interactive>=0?interactive:this.slots.some(reader=>reader.active?.readClass==='archive')?-1:0;
+        if(index<0)break;
+        const waiter=this.waiting.splice(index,1)[0]!;
         waiter.signal.removeEventListener('abort',waiter.abort);
         if(waiter.signal.aborted){waiter.resolve(null);continue;}
         // Reserve synchronously so another arrival cannot claim this same worker.
-        slot.active={id:'assigning',route:'assigning',since:performance.now()};
+        slot.active={id:'assigning',route:'assigning',since:performance.now(),readClass:waiter.readClass};
         this.nextReader=(slot.id+1)%this.slots.length;
         waiter.resolve(slot);break;
       }
     }
   }
-  private acquire(signal:AbortSignal):Promise<Slot|null> {
-    if(signal.aborted||this.stopped||this.waiting.length>=MAX_WAITING)return Promise.resolve(null);
+  private acquire(signal:AbortSignal,readClass:ReadClass):Promise<Slot|null> {
+    // Archive floods cannot consume the interactive admission budget either.
+    if(signal.aborted||this.stopped||this.waiting.filter(waiter=>waiter.readClass===readClass).length>=MAX_WAITING)return Promise.resolve(null);
     return new Promise(resolve=>{
-      const waiter:Waiter={resolve,signal,abort:()=>{
+      const waiter:Waiter={resolve,signal,readClass,since:performance.now(),abort:()=>{
         const i=this.waiting.indexOf(waiter);if(i>=0)this.waiting.splice(i,1);
         resolve(null);
       }};
@@ -89,18 +101,18 @@ export class ForegroundReadPool {
       this.waiting.push(waiter);this.dispatch();
     });
   }
-  async request(request:Request,route:string,id:string) {
+  async request(request:Request,route:string,id:string,readClass:ReadClass='interactive') {
     const began=performance.now();
     const timeout=AbortSignal.timeout(OWNER_READ_RESPONSE_MS);
     const admissionSignal=AbortSignal.any([request.signal,timeout]);
     const occupied=this.snapshot().readers.filter(slot=>slot.active);
-    const slot=await this.acquire(admissionSignal);
+    const slot=await this.acquire(admissionSignal,readClass);
     const waited=performance.now()-began;
     if(!slot) {
-      log('warn','foreground_read_unavailable',{request_id:id,route,admission_ms:Math.round(waited),occupied,capacity:this.snapshot()});
+      log('warn','foreground_read_unavailable',{request_id:id,route,read_class:readClass,admission_ms:Math.round(waited),occupied,capacity:this.snapshot()});
       return unavailable('READ_CAPACITY_UNAVAILABLE','Read capacity is unavailable. No command was submitted.');
     }
-    slot.active={id,route,since:performance.now()};
+    slot.active={id,route,since:performance.now(),readClass};
     const running=slot.child;
     let released=false;
     const release=()=>{
@@ -122,7 +134,7 @@ export class ForegroundReadPool {
       // Cancellation while waiting for a slot is still immediate above.
       const response=await forwardPrivateRequest(request,slot.socket,timeout);
       if(waited>=200||performance.now()-began>=2000)
-        log('warn','foreground_read_delayed',{request_id:id,route,reader:slot.id,admission_ms:Math.round(waited),headers_ms:Math.round(performance.now()-began),occupied});
+        log('warn','foreground_read_delayed',{request_id:id,route,read_class:readClass,reader:slot.id,admission_ms:Math.round(waited),headers_ms:Math.round(performance.now()-began),occupied});
       if(request.signal.aborted){await response.body?.cancel();release();return unavailable('READ_CANCELLED','The caller cancelled this read.');}
       if(!response.body){release();return response;}
       const reader=response.body.getReader();
