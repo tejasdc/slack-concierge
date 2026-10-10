@@ -78,7 +78,8 @@ any provider refusal has been cached, and a continuation with no reset instant. 
 not finished in one minute, Concierge requests cancellation, waits briefly for settlement, and
 keeps the work held; a still-running check prevents another one on that machine. For a proved
 Claude account whose usage bar still reads 100%, only the exact released turns carry one-use
-admission proof into account selection. That proof is consumed on their first dispatch and
+admission proof into account selection. Their first dispatch uses that same proved account;
+the proof is consumed then and
 disappears on a service restart; an unrelated turn still follows the ordinary reading.
 Opening Accounts and the ordinary background usage readings never spend model tokens or override a refusal. A successful
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
