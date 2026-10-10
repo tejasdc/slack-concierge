@@ -44,6 +44,9 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   }
   // His thread reply carried to the agent: the owner writes where it stands (`followForwardedReply`).
   if(saved.forwardedTo&&['waiting','queued','running'].includes(saved.state))return saved.statusDetail??null;
+  if(typeof saved.movedTo==='string'&&typeof saved.continuedAs==='string')return {
+    code:'CONTINUED_ON_CODEX',message:`Claude ran out of usage before this work started. It continues in ${saved.movedTo} on Codex; the original request and its return are preserved.`,
+    clearsAt:null,automaticRetry:false};
   if(saved.state==='failed'||state==='failed'||state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted'){
     const raw=saved.error?.message??saved.error??steering?.error??turn?.agent_text;
     const message=typeof raw==='string'?raw.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''):null;

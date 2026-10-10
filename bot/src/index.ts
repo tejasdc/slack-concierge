@@ -243,6 +243,7 @@ import { handleAgentSessionStop } from "./agent-session-stop";
 import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
 import { claimAdoptableExecutions, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
+import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {
   ensureChannelList,
 } from "./lists";
@@ -573,7 +574,7 @@ function turnsThatEndWithThisProcess() {
 // A run that gains independent custody (its host is now recorded) no longer ends with this
 // process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
 // The queue also re-reads admission here: a Codex restart releases its admission hold this way.
-observeExecutionChanges(() => { resolveDrainIfIdle(); sessionTurnQueue?.wake(); });
+observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue)recoverExhaustedClaudeWork(); sessionTurnQueue?.wake(); });
 
 function resolveDrainIfIdle() {
   // Checked first: execution changes call this often, and only a waiting shutdown needs the count.
@@ -2482,6 +2483,7 @@ function startSessionTurnQueue() {
   if (resumedTurnIds.length > 0) {
     log("info", "parked_head_turns_resumed", { reason: "startup", turn_ids: resumedTurnIds });
   }
+  recoverExhaustedClaudeWork();
   sessionTurnQueue.wake();
 }
 
@@ -3935,7 +3937,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, onReading: () => { recoverExhaustedClaudeWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);

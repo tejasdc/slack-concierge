@@ -108,6 +108,48 @@ from the executing host.
 
 ### The default provider
 
+#### Recovery of accepted Claude work at an allowance wall
+
+
+The server's canonical session owner also checks existing Claude queues on startup, after
+an execution changes, and when fresh allowance readings arrive. When every usable Claude
+account is exhausted and the signed-in Codex account has verified room, it transfers
+eligible accepted work into a linked, independent Codex session. The Inbox router is
+excluded and stays bound to Claude. No provider or account is switched inside a running
+conversation.
+
+Eligibility is deliberately narrower than a usage hold. The source session must be active
+and unsuspended, with no running or unresolved execution, outgoing helper, dependency,
+artifact delivery, or earlier open request. All its queued turns must be ordinary,
+unscheduled inputs. Each must either be untouched or have a recorded usage refusal that
+the executor classified as safe to replay before any acknowledged input, output, tool
+effect, or artifact delivery. Ambiguous and partially worked turns stay with Claude and
+keep their visible hold. The thirteen externally paused sessions in the October 10
+incident were not inferred to be safe from their pause action names.
+
+One owner transaction creates a linked Codex successor and new accepted input identities,
+retains the original accepted rows and history, records a unique source-to-successor map,
+retargets each still-open request's reply authority, and terminates the superseded source
+executions. A lost acceptance response still retries to the original accepted identity;
+reconciliation finds the same successor rather than creating a second one. Source queue
+claims and transfer serialize on the same ledger writer. Later Claude context assembly
+excludes transferred source turns, so they cannot reappear as work to replay after reset.
+The successor receives the exact original payload and attachments and an instruction to
+read the retained source conversation and completed effects before acting; provider-private
+Claude state is not claimed to transfer. Results for agent requests follow their original
+request and source return path. The original input receipt and successor lineage show the
+move. This is a bounded safe-subset handoff, not automatic replay of uncertain work.
+
+Capture custody remains independent of the router's provider. An accepted capture stays in
+the Inbox waiting list while Claude cannot route it. The existing provider hold signal now
+says explicitly when Inbox routing is paused, gives the provider's reported reset, and says
+whether Codex has verified room for safe queued work. The thnkr.ing notification opens the
+Inbox waiting view. It is one hold notice per provider, not a forecast or a replacement
+Codex router. This choice avoids changing the router's model while making the backlog and
+its reason visible. Agent-written task copies were rejected because they do not transfer
+canonical reply authority or prevent duplicate execution; automatic in-place provider
+switching was rejected because running sessions retain their provider binding.
+
 #### Automatic starts for new work
 
 New unbound coding work defaults to Automatic when an agent names a project without a provider;

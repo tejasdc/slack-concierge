@@ -351,6 +351,11 @@ authorization or a change to the default rapid-iteration policy.
   `slack-concierge` for Concierge code and `thinkering` for Thinkering code.
   `D0BMWUJ3RD5` is a retired DM workspace, never a substitute project.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
+- At a confirmed Claude allowance wall, the owner transfers only provably safe queued
+  accepted work to linked Codex sessions with original request authority preserved. The
+  Inbox stays Claude; captures remain visible in Waiting and its hold notice says routing
+  is paused. Suspended, started, ambiguous, and dependent work remains held. See
+  [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#recovery-of-accepted-claude-work-at-an-allowance-wall).
 - What reaches Tejas and where work runs are enforced by the owner, not asked of agents
   (`session-roles.ts`, `answers-to-tejas.ts`, from the 2026-09-29 retrospective in
   `docs/retrospectives/2026-09-29-avoidable-failures/`). A session in a writing project

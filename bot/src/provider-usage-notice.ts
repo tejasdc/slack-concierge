@@ -107,6 +107,8 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
     // reset from another's: which is out, and until when.
     const accounts = accountAvailability(input.provider).map(room => ({ account: room.account, hasRoom: room.hasRoom,
       freeAt: room.freeAt === null ? null : new Date(room.freeAt).toISOString() }));
+    const inbox=input.provider==='claude-code'?inboxSession():null;
+    const inboxClaudeExhausted=!!inbox&&inbox.provider_id==='claude-code'&&alternatives.length===0;
     const held = heldInputCount(input.clearsAtMs);
     record({
       eventId, sessionId: turn.session_id, inputId, turnId: input.turnId,
@@ -120,6 +122,8 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
         usage: {
           account, clearsAt: new Date(input.clearsAtMs).toISOString(),
           heldInputs: held, accountsWithRoom: alternatives, accounts,
+          inboxClaudeExhausted,
+          codexRoom: input.provider==='claude-code' ? (()=>{const codex=newWorkCapacity('codex');return codex?codex.used<100?'yes':'no':'unknown';})() : null,
           // The moment a banked reset is worth most: work is stopped, and this ends it now
           // rather than at the reset instant above.
           resetCredit: availableResetCredit(input.provider),

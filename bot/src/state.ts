@@ -3732,6 +3732,7 @@ export function listInterruptedInputContext(turnId: number): InterruptedInputCon
           AND input.kind IN ('input','create','consultation','request'))))
       AND prior.provider_input_acknowledged_at IS NULL
       AND prior.input_context_received_by_turn_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM provider_recovery_inputs recovery WHERE recovery.source_turn_id=prior.id)
     ORDER BY prior.id
   `).all(turnId) as InterruptedInputContext[];
 }

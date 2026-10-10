@@ -33,6 +33,7 @@ export type NativeSessionMetadata = {
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
   lineage?:{boundary:string;sourceVersion:string|null};
+  recovery?:{sourceAddress:string;reason:'claude_usage_exhausted'};
   /** Native continuation stays on its owning machine; archive resurrection remains a distinct copy. */
   resurrection?:{peer:string;sessionId:string;address:string;threadId:string;archivedAt:string;archivePath:string;resurrectedAt:string;kind?:'continued-in-place'|'archive-copy'};
 };

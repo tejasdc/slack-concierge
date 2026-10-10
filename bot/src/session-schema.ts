@@ -108,6 +108,24 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY(scope, action_id)
         );
+        CREATE TABLE IF NOT EXISTS provider_recovery_sessions (
+          source_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          generation INTEGER NOT NULL,
+          successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(source_session_id,generation)
+        );
+        CREATE TABLE IF NOT EXISTS provider_recovery_inputs (
+          source_input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          source_turn_id INTEGER NOT NULL UNIQUE REFERENCES turns(id),
+          source_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          successor_input_id TEXT NOT NULL UNIQUE REFERENCES session_inputs(id),
+          successor_turn_id INTEGER NOT NULL UNIQUE REFERENCES turns(id),
+          successor_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          reason TEXT NOT NULL CHECK(reason='claude_usage_exhausted'),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS provider_recovery_inputs_successor ON provider_recovery_inputs(successor_session_id,successor_turn_id);
         CREATE UNIQUE INDEX IF NOT EXISTS turns_accepted_input ON turns(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS turns_native_run ON turns(native_run_id) WHERE native_run_id IS NOT NULL;
         -- Prepared session cards ask only for a session's latest turn and bounded current
