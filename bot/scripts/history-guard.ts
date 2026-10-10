@@ -16,6 +16,10 @@
  * Tejas; agents read texts through `router-actions.sh messages`, which withholds those. Each such
  * refusal is recorded (bot/src/messages-read-log.ts).
  *
+ * It refuses a raw copy of a live Concierge database (bot/src/live-store-copy-policy.ts): one
+ * such copy wrote 52.8 GB and stalled his pages on 2026-10-10; copies go through
+ * scripts/diagnostic-sqlite-snapshot.py.
+ *
  * The same pass, when it refuses nothing, tells an agent about to open a website in a browser
  * where that website's runbook is (bot/src/site-runbook-notice.ts), as `additionalContext` beside
  * the call. It rides this hook because both machines already run it before every call, so no new
@@ -27,6 +31,7 @@ import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type 
 import { siteRunbookNotices } from '../src/site-runbook-notice';
 import { messagesDatabaseRefusal } from '../src/messages-database-policy';
 import { recordMessagesRead } from '../src/messages-read-log';
+import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -91,7 +96,7 @@ try {
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {
-    reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {
