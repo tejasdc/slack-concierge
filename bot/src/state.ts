@@ -72,7 +72,9 @@ const codexRemoteMirrorEventsSchema = `(
   UNIQUE(provider_thread_uuid, provider_item_id)
 )`;
 
-if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`
+// A fresh ledger must not durably commit each DDL statement separately. Reserve the
+// writer once and commit the base schema together, retaining SQLite's durability policy.
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.transaction(() => db.exec(`
 CREATE TABLE IF NOT EXISTS channels (
   slack_channel_id   TEXT PRIMARY KEY,
   slack_channel_name TEXT NOT NULL,
@@ -521,7 +523,7 @@ CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
   observed_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(provider_thread_uuid, provider_item_id)
 );
-`);
+`)).immediate();
 
 function migrateLegacyCodexRemoteMirrorEvents() {
   const currentColumns = columns("codex_remote_mirror_events");
@@ -588,6 +590,7 @@ function migrateLegacyCodexRemoteMirrorEvents() {
 }
 
 if (process.env.CONCIERGE_READ_WORKER !== "1") {
+db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
 
 addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
@@ -832,6 +835,9 @@ db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_request
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
+}).immediate();
+// This schema owner changes foreign_keys before its own transaction. Keep it outside
+// the legacy-upgrade batch so that SQLite can apply that connection-level setting.
 initializeSessionOwnerSchema(db);
 // Older continuations used retryable for a time deliberately chosen by the agent.
 // Preserve that intent before normalizing the old retry vocabulary. Session inputs

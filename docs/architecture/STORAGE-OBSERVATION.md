@@ -1,5 +1,33 @@
 # Storage work attribution
 
+## Startup transaction ownership
+
+`state.ts` creates the base ledger schema in one immediate transaction and applies
+legacy column/index upgrades in a second immediate transaction. Multi-statement
+`db.exec` alone does not group SQLite commits: without these boundaries, a fresh
+ledger pays a durable commit for each schema mutation. Nested migration transactions
+remain savepoints, including when the deployment migrator already owns the writer.
+Read executors skip both batches. No journal or synchronous setting is weakened.
+
+The legacy batch ends before `initializeSessionOwnerSchema`, which switches foreign
+keys before entering its own transaction for table rebuilds. Wrapping that call in
+the new batch would make SQLite ignore its foreign-key setting. Search initialization
+also retains its existing transaction owner.
+
+On October 10, candidate `48b5b4208f0ade861458d47ab59adcd634e6b4d9` failed its
+45-second topic projection lifecycle deadline. The retained deployment journal shows
+owner imports consuming 36,836 ms and 41,065 ms on two preparations; the latter
+started its worker at 41,785 ms. The earlier attempt projected creation and rename,
+then reached the restart checkpoint too late to wait for the existing ten-second lease.
+The confirmed startup defect is per-statement schema commits; their contribution to
+those import intervals was not separately timed. Batching removes that amplification
+without extending deadlines, changing scratch isolation, or skipping lifecycle work.
+This repair was committed without tests or reviews under the incident's explicit
+policy; the external supervisor and detached controller own subsequent validation
+and activation evidence.
+
+## Write results and observation
+
 Ledger writes pass through `ledgerWriteResults` before observation. Its mutation result counts
 only directly changed rows, using SQLite `changes()` synchronously on the same connection.
 Bun's raw `.run().changes` also counts trigger writes: presentation journaling made one claimed
