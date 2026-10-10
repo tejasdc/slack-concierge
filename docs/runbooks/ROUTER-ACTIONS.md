@@ -243,6 +243,8 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A --wor
   --hand-back not-my-subject -- "<what context I can give>"
 # One answer to several requests from the same asker: one command, the same words to each.
 # The owner gives byte-identical answers one return and one post in a thread (one notification).
+# Each later request gets a bounded, owner-valid action identity derived from the command and request;
+# a failed later delivery can be retried without replaying the first answer.
 router-actions.sh sessions reply <request-id> --also <request-id> --also <request-id> <source-flags> --action-id A \
   --work-disposition completed --summary "<one line>" --all-done --checked "<what you saw>" -- <text>
 ```

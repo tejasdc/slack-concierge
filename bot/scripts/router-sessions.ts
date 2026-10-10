@@ -2,6 +2,7 @@
 import { requestApiResponse } from "./router-request-client";
 import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
+import {createHash} from 'node:crypto';
 import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,CHATGPT_THINKING_LEVELS} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 
@@ -637,7 +638,9 @@ export async function runRouterSessions(request: SessionCommunicationRequest) {
   const { also, ...first } = request.body;
   const answers = [];
   for (const [index, requestId] of [first.request_id, ...also].entries()) {
-    const response = await requestApiResponse('/session-communication/reply', index === 0 ? first : { ...first, request_id: requestId, action_id: `${first.action_id}:${requestId}` });
+    // The owner accepts only short alphanumeric action IDs; a literal request-ID suffix broke the second reply.
+    const actionId=index===0?first.action_id:`reply_${createHash('sha256').update(first.action_id).update('\0').update(requestId).digest('hex').slice(0,40)}`;
+    const response = await requestApiResponse('/session-communication/reply', { ...first, request_id: requestId, action_id: actionId });
     if (!response.ok) return response;
     answers.push(response.result);
   }
