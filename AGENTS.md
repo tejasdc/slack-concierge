@@ -16,6 +16,8 @@ repair belong to the canonical owner; see [provider sessions](docs/architecture/
 
 Production native startup does not wait for the retired Slack socket; see
 [deployment](docs/runbooks/DEPLOYMENT.md).
+Deployment backs up online, then applies additive schema only after its normal drain
+stops the coordinator; surviving agent hosts are adopted on startup. The same deployment runbook owns this boundary.
 
 Codex's App Server starts only under its native disabled-updater preference on both
 machines; installation and activation are separate, and a running listener is never
@@ -158,6 +160,8 @@ authorization or a change to the default rapid-iteration policy.
   Ledger commits on the owner's loop never wait for the disk: two worker threads sync and checkpoint the log,
   and command answers, provider input and peer requests await `ledgerDurable()` until their rows are on disk;
   see [ledger durability](docs/architecture/LEDGER-DURABILITY.md).
+  Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
+  inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
   Ledger startup batches base schema and legacy upgrades; presentation worker schema setup

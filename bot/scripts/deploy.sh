@@ -76,6 +76,7 @@ PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
 MIGRATION_DONE=0
+MIGRATION_BACKUP_PATH=""
 CURRENT_DEPLOY_STAGE=starting
 LAST_FAILED_COMMAND=unknown
 LAST_FAILURE_LINE=0
@@ -918,18 +919,12 @@ deploy() {
   fi
   if [ -z "$DEPLOY_RUN_ID" ] && [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" != "1" ]; then
     echo "=== create durable operator deployment run ==="
-    CURRENT_DEPLOY_STAGE=state-migration
-    DEPLOY_FAILURE_REASON="The deployment database could not be migrated before creating an operator run."
-    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
-    MIGRATION_DONE=1
     local operator_request
     DEPLOY_FAILURE_REASON="The durable operator deployment run could not be created."
     operator_request=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" operator-request)
     echo "$operator_request"
     DEPLOY_FAILURE_REASON="The durable operator deployment response was invalid."
     DEPLOY_RUN_ID=$(printf '%s\n' "$operator_request" | jq -er '.run_id')
-  fi
-  if [ -n "$DEPLOY_RUN_ID" ] && [ "$CURRENT_DEPLOY_STAGE" = "state-migration" ]; then
     claim_run_and_enable_recovery
   fi
   DEPLOY_FAILURE_REASON="The capture service identity or its state directories could not be prepared."
@@ -968,13 +963,13 @@ deploy() {
   install_candidate_dependencies
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
-    echo "=== back up and migrate additive deployment-repair state ==="
+    echo "=== verify and back up deployment state without reserving the writer ==="
     CURRENT_DEPLOY_STAGE=state-migration
-    if [ "$MIGRATION_DONE" != "1" ]; then
-      DEPLOY_FAILURE_REASON="The deployment database backup or additive migration failed."
-      CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
-      MIGRATION_DONE=1
-    fi
+    DEPLOY_FAILURE_REASON="The deployment database backup failed."
+    local migration_backup
+    migration_backup=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only)
+    echo "$migration_backup"
+    MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -er '.backup_path')
     DEPLOY_FAILURE_REASON="No verified immutable last-known-good release was available for rollback."
     require_last_known_good_release
   fi
@@ -1078,12 +1073,21 @@ deploy() {
     hold_capture_gate
   fi
 
-  echo "=== systemctl restart $SERVICE ==="
+  echo "=== stop coordinator, migrate state, then adopt surviving agents ==="
   CURRENT_DEPLOY_STAGE=candidate-restart-and-health
   DEPLOY_FAILURE_REASON="The durable verification checkpoint could not be recorded."
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
+  DEPLOY_FAILURE_REASON="The drained coordinator could not be stopped before schema migration."
+  systemctl stop "$SERVICE"
+  if [ -n "$DEPLOY_RUN_ID" ] && [ "$MIGRATION_DONE" != "1" ]; then
+    DEPLOY_FAILURE_REASON="Offline additive schema migration failed."
+    CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
+      "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only --backup-path "$MIGRATION_BACKUP_PATH"
+    MIGRATION_DONE=1
+  fi
+  DEPLOY_FAILURE_REASON="The migrated coordinator could not start or adopt surviving agents."
   local candidate_failure="" candidate_failure_class=""
-  if ! restart_unit "$SERVICE"; then
+  if ! start_unit "$SERVICE"; then
     candidate_failure="Candidate systemd restart failed for commit $DEPLOYED_COMMIT."
     candidate_failure_class=systemd-restart
   elif ! probe_service; then
@@ -1153,7 +1157,9 @@ recover_control() {
   DEPLOY_RUN_ID="$CONCIERGE_CONTROL_RECOVERY_RUN_ID"
   cd "$REPO"
   verify_git_origin
-  "$BUN_BIN" run "$MIGRATION_SCRIPT"
+  local migration_backup
+  migration_backup=$("$BUN_BIN" run "$MIGRATION_SCRIPT" --backup-only)
+  MIGRATION_BACKUP_PATH=$(printf '%s\n' "$migration_backup" | jq -er '.backup_path')
   receipt=$("$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" recovery-claim --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
   if [ "$(printf '%s' "$receipt" | jq -r '.status // empty')" = succeeded ]; then return 0; fi
   DEPLOYED_COMMIT=$(printf '%s' "$receipt" | jq -er '.healthyCommit')
@@ -1185,7 +1191,10 @@ recover_control() {
   CONTROL_RECOVERY_ACTIVATED=1
   "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
   record_deployment_phase restarting
-  restart_unit "$SERVICE"
+  systemctl stop "$SERVICE"
+  CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
+    "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only --backup-path "$MIGRATION_BACKUP_PATH"
+  start_unit "$SERVICE"
   record_deployment_phase verifying
   CURRENT_DEPLOY_STAGE=control-recovery-health
   probe_service

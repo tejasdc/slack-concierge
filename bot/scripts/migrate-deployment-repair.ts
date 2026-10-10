@@ -3,13 +3,19 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { spawnSync } from 'node:child_process';
 import { ledgerWriteResults } from "../src/ledger-write-results";
 
 const stateDirectory = process.env.CONCIERGE_STATE_DIR;
 if (!stateDirectory) throw new Error("CONCIERGE_STATE_DIR is required.");
 const statePath = join(stateDirectory, "state.db");
 if (!existsSync(statePath)) throw new Error(`Concierge state database does not exist: ${statePath}`);
-const backupPath = process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP
+const backupOnly = process.argv.includes('--backup-only');
+const schemaOnly = process.argv.includes('--schema-only');
+if (backupOnly && schemaOnly) throw new Error('Choose backup-only or schema-only, never both.');
+const backupArgument = process.argv.indexOf('--backup-path');
+const backupPath = (backupArgument >= 0 ? process.argv[backupArgument + 1] : undefined)
+  || process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP
   || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
 
@@ -48,13 +54,33 @@ function checks(database: Database) {
   }
 }
 
-const source = ledgerWriteResults(new Database(statePath));
-// PASSIVE: a FULL checkpoint blocks the live service's writers while it waits for readers, and
-// VACUUM INTO copies a consistent snapshot whatever the WAL holds.
-source.exec("PRAGMA busy_timeout=5000; PRAGMA wal_checkpoint(PASSIVE)");
-checks(source);
-source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
-source.close();
+if (!backupOnly) {
+  // An admission drain preserves agent hosts; it does not stop the serving owner's writes.
+  // Schema work requires the coordinator fully stopped, including its prestart recovery.
+  const service = process.env.CONCIERGE_SERVICE || 'concierge-bot.service';
+  const status = spawnSync('systemctl', ['show', service, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID', '-p', 'ControlPID'], { encoding: 'utf8' });
+  const values = Object.fromEntries(status.stdout.trim().split('\n').map(line => line.split('=')));
+  if (status.status !== 0 || values.LoadState !== 'loaded' || !['inactive', 'failed'].includes(values.ActiveState)
+    || values.MainPID !== '0' || values.ControlPID !== '0')
+    throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
+}
+
+if (!schemaOnly) {
+  // The live backup is a read-only snapshot; it does not reserve the service's writer.
+  const source = new Database(statePath, { readonly: true });
+  try {
+    source.exec('PRAGMA busy_timeout=5000');
+    checks(source);
+    source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
+  } finally { source.close(); }
+  const backup = new Database(backupPath, { readonly: true });
+  try { checks(backup); } finally { backup.close(); }
+} else if (!existsSync(backupPath)) throw new Error(`Verified migration backup is missing: ${backupPath}`);
+
+if (backupOnly) {
+  console.log(JSON.stringify({ status: 'backed_up', backup_path: backupPath }));
+  process.exit(0);
+}
 
 const { db: migrationDatabase } = await import("../src/state-database");
 try {
@@ -92,3 +118,4 @@ try {
   process.exit(1);
 }
 console.log(JSON.stringify({ status: "migrated", backup_path: backupPath, pruned: pruneAutomaticCopies() }));
+migrationDatabase.close();

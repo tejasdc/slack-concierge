@@ -33,9 +33,23 @@ Linux only) changes where the disk is waited for, not what is written or when it
   row that was lost, which repeats or orphans a notice but never replays provider work.
 - A **checkpoint thread** (role `checkpoint`, its own `synchronous=FULL` connection) runs
   `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
-  uncopied from the documented wal-index header in `state.db-shm` (frames written minus frames
-  copied), and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
+  uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
+  `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
   or at 4 GB regardless (50 GB was free on 2026-10-10). It never copies a small log.
+
+SQLite must own opening and closing its database and shared-memory lock files in this process.
+The former raw `readFileSync(state.db-shm)` in the checkpoint thread closed a descriptor on
+the shared lock inode every five seconds. POSIX close releases every lock this process holds
+on that inode, including locks held by the accepting thread. SQLite cannot know its locks were
+released; another process can enter a writer transaction concurrently. This is a confirmed
+source defect and SQLite's [documented corruption hazard](https://sqlite.org/howtocorrupt.html#_posix_advisory_locks_canceled_by_a_separate_thread_doing_close_),
+not proof of the exact writer overlap that damaged the database on October 10 at 12:24 ET.
+The existing WAL sync descriptor remains open for the process lifetime; no lock file is
+opened or closed to inspect checkpoint progress. NOOP requires SQLite 3.51.0 or newer;
+the worker refuses older versions rather than letting an unrecognized mode run a checkpoint.
+The installed server's Bun embeds SQLite 3.53.2. The candidate's existing SQLite constructor
+gate also constrains this worker's filesystem calls to the lifetime WAL sync descriptor and
+the unrelated pressure file; raw SHM inspection refuses the release.
 
 ## What still waits on the loop
 

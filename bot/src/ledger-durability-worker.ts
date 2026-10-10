@@ -41,18 +41,20 @@ if (setup.role === 'sync') {
   raw.exec('PRAGMA busy_timeout = 5000');
   raw.exec('PRAGMA synchronous = FULL');
   const connection = ledgerWriteResults(raw);
+  const version = (connection.query('SELECT sqlite_version() AS version').get() as { version: string }).version.split('.').map(Number);
+  if (version[0] < 3 || version[0] === 3 && version[1] < 51)
+    throw new Error('Checkpoint inspection requires SQLite 3.51.0 or newer; older versions treat NOOP as PASSIVE.');
   const pressure = () => {
     try { return Number(/^some avg10=([0-9.]+)/m.exec(readFileSync('/proc/pressure/io', 'utf8'))?.[1] ?? 0); }
     catch { return 0; }
   };
-  // The log file keeps its size after SQLite rewinds it, so its length says nothing about
-  // what is left to copy. The documented wal-index header does: frames written (mxFrame, offset
-  // 16, after the page size at 14) less frames already copied (nBackfill, offset 96).
+  // SQLite owns every open/close of its lock files. Reading SHM with readFileSync here closes
+  // that inode and drops ALL of this process's POSIX locks, including the owner's writer lock
+  // on another thread. NOOP reports uncopied frames without copying or bypassing SQLite.
+  const pageSize = (connection.query('PRAGMA page_size').get() as { page_size: number }).page_size;
   const pendingBytes = () => {
-    const header = readFileSync(`${setup.databasePath}-shm`).subarray(0, 100);
-    if (header.length < 100) return 0;
-    const pageSize = header.readUInt16LE(14) === 1 ? 65536 : header.readUInt16LE(14);
-    return Math.max(0, header.readUInt32LE(16) - header.readUInt32LE(96)) * (pageSize + 24);
+    const result = connection.query('PRAGMA wal_checkpoint(NOOP)').get() as { log: number; checkpointed: number };
+    return Math.max(0, result.log - result.checkpointed) * (pageSize + 24);
   };
   const tick = () => {
     let bytes = 0;

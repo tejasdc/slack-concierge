@@ -566,7 +566,11 @@ the five-second busy timeout and rolled back before candidate activation. The
 ledger connection is now opened without application-schema side effects, and the
 migrator reserves one outer writer transaction before loading either schema owner.
 Nested schema transactions remain savepoints inside that reservation, so there is
-no unlocked interval between the two migrations. Standalone deployment commands
+no unlocked interval between the two migrations. On October 10 this reservation
+was observed competing with live owner writes, so schema migration now requires the
+coordinator fully stopped after the existing admission drain. Backup and candidate
+building remain online; execution hosts remain alive and are adopted on startup.
+Standalone deployment commands
 also no longer initialize unrelated application schema merely to read or update
 deployment ownership. Journald remains the source for the exact SQLite error and
 stage; a repair commit alone is not activation evidence.
@@ -663,11 +667,22 @@ operator deployment.
 
 ## State migration and backups
 
-`bot/scripts/migrate-deployment-repair.ts` checkpoints SQLite (PASSIVE), runs integrity
-checks, creates a `VACUUM INTO` backup under
-`/root/.local/state/concierge/backups/`, applies only additive columns/tables
-inside one `BEGIN IMMEDIATE`, and after `COMMIT` checks integrity and foreign keys
-again on a read transaction. The writer reservation covers only the schema change:
+`bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only,
+runs integrity checks, creates a consistent `VACUUM INTO` backup under
+`/root/.local/state/concierge/backups/`, verifies that output, and returns its exact path.
+The deploy runner keeps the coordinator available during this copy and candidate build.
+After the existing provider/capture drain and candidate compatibility checks, it stops
+only the coordinator, then runs the candidate migrator with `--schema-only --backup-path`
+and that exact backup. The migrator checks systemd's loaded unit, inactive/failed state,
+zero main PID and zero control PID before opening a writable connection. An admission
+gate alone is insufficient: continuing agent executions still write through the owner.
+The schema phase applies only additive columns/tables inside one `BEGIN IMMEDIATE`,
+checks integrity and foreign keys after `COMMIT`, closes the migrator, then the runner
+starts the coordinator and checks health and adoption. Execution hosts are never stopped.
+Control recovery uses the same ordering. The combined manual command also requires the
+coordinator fully stopped; it cannot run schema work against a serving owner.
+
+The writer reservation covers only the schema change:
 the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and, held inside
 the reservation, made every live owner write fail with `SQLITE_BUSY`; a FULL
 checkpoint likewise blocked writers. A post-commit check failure exits

@@ -50,6 +50,14 @@ function compact(source: string): string { return source.replace(/\s+/g, ''); }
 function isSqliteModule(node: ts.Expression): boolean {
   return ts.isStringLiteral(node) && node.text === 'bun:sqlite';
 }
+
+// The durability thread shares the owner's POSIX lock namespace. An unrelated open/close of
+// a SQLite lock inode releases the owner's locks too. Keep its raw I/O capability exact: the
+// sync descriptor lives until process exit, and pressure is read from a different inode.
+const DURABILITY_FILE_CALLS = new Set([
+  "openSync(walPath,'r')", 'fstatSync(fd)', 'statSync(walPath)', 'fdatasyncSync(fd)',
+  "readFileSync('/proc/pressure/io','utf8')",
+].map(compact));
 function isLiteralReadonly(node: ts.NewExpression): boolean {
   const options = node.arguments?.[1];
   if (!options || !ts.isObjectLiteralExpression(options)) return false;
@@ -76,7 +84,16 @@ export function checkLedgerConstructors(root: string): { files: number; openings
     }
     const aliases = new Set(['Database']); // Also catches a conventional constructor from a local re-export.
     const namespaces = new Set<string>();
+    const durabilityFsAliases = new Map<string, string>();
     for (const statement of tree.statements) {
+      if (name === 'src/ledger-durability-worker.ts' && ts.isImportDeclaration(statement)
+        && ts.isStringLiteral(statement.moduleSpecifier) && /^(?:node:)?fs(?:\/|$)/.test(statement.moduleSpecifier.text)) {
+        const bindings = statement.importClause?.namedBindings;
+        if (statement.importClause?.name || !bindings || !ts.isNamedImports(bindings))
+          errors.push(`${name}: durability file access requires checked named imports`);
+        else for (const binding of bindings.elements)
+          durabilityFsAliases.set(binding.name.text, binding.propertyName?.text ?? binding.name.text);
+      }
       if (ts.isImportDeclaration(statement) && isSqliteModule(statement.moduleSpecifier)) {
         if (statement.importClause?.name) aliases.add(statement.importClause.name.text);
         const bindings = statement.importClause?.namedBindings;
@@ -94,7 +111,29 @@ export function checkLedgerConstructors(root: string): { files: number; openings
       || ts.isPropertyAccessExpression(expression) && expression.name.text === 'Database'
         && ts.isIdentifier(expression.expression) && namespaces.has(expression.expression.text);
     const visit = (node: ts.Node): void => {
+      if (name === 'src/ledger-durability-worker.ts' && ts.isVariableDeclaration(node)
+        && ts.isIdentifier(node.name) && node.name.text === 'walPath'
+        && (compact(node.getText(tree)) !== 'walPath=`${setup.databasePath}-wal`'
+          || !ts.isVariableDeclarationList(node.parent) || !(node.parent.flags & ts.NodeFlags.Const)))
+        errors.push(`${name}: lifetime sync descriptor must name the WAL, never a SQLite lock file`);
+      if (ts.isIdentifier(node) && durabilityFsAliases.has(node.text)
+        && !ts.isImportSpecifier(node.parent)
+        && !(ts.isCallExpression(node.parent) && node.parent.expression === node))
+        errors.push(`${name}: filesystem capability alias bypasses durability lock checks: ${node.text}`);
       if (ts.isCallExpression(node)) {
+        if (name === 'src/ledger-durability-worker.ts' && ts.isPropertyAccessExpression(node.expression)
+          && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'Bun'
+          && ['file', 'write'].includes(node.expression.name.text))
+          errors.push(`${name}: Bun file access bypasses durability lock checks`);
+        if (ts.isIdentifier(node.expression) && durabilityFsAliases.has(node.expression.text)) {
+          const operation = durabilityFsAliases.get(node.expression.text)!;
+          const call = compact(`${operation}(${node.arguments.map(arg => arg.getText(tree)).join(',')})`);
+          if (!DURABILITY_FILE_CALLS.has(call)) errors.push(`${name}: raw SQLite file access can release owner locks: ${call}`);
+        }
+        if (name === 'src/ledger-durability-worker.ts'
+          && (node.expression.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(node.expression) && node.expression.text === 'require')
+          && node.arguments.some(arg => ts.isStringLiteral(arg) && /^(?:node:)?fs(?:\/|$)/.test(arg.text)))
+          errors.push(`${name}: dynamic filesystem access bypasses durability lock checks`);
         if ((node.expression.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(node.expression) && node.expression.text === 'require')
           && node.arguments.some(isSqliteModule)) errors.push(`${name}: dynamic bun:sqlite import bypasses constructor check`);
         if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'open'
