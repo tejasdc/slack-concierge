@@ -1,0 +1,1 @@
+Receiving requests is separated from background work while one owner still keeps every change in order.
