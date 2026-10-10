@@ -67,8 +67,12 @@ export function recoverOctoberBudgetPauses():number {
         const orphaned=db.query(`SELECT id FROM session_inputs WHERE session_id=? AND kind IN ('input','create')
           AND turn_id IS NULL AND receipt_json IS NULL ORDER BY rowid`).all(sessionId) as {id:string}[];
         const expectedOrphan=sessionId===4923?'watch:a2045cc2f32b:expired'
-          :sessionId===4543?'repair-notice:outside-monitor:f16bfc4e-3e1e-4e99-b261-dc6fdfb7d061:reopened:9':null;
-        if(orphaned.some(input=>input.id!==expectedOrphan))return false;
+          :null;
+        // Alert intake kept accepting notices while the repair conversation was
+        // suspended. An unattached, unsettled notice was never submitted, and
+        // the owner can admit those exact retained inputs in their original order.
+        if(orphaned.some(input=>sessionId===4543
+          ? !input.id.startsWith('repair-notice:') : input.id!==expectedOrphan))return false;
         if(db.query(`SELECT 1 FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL LIMIT 1`).get(sessionId))return false;
         if(db.query(`SELECT 1 FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL LIMIT 1`).get(sessionId))return false;
         for(const id of [...covered,...preserved]){
@@ -116,8 +120,10 @@ export function recoverOctoberBudgetPauses():number {
           }
         }
         updateSessionMetadata(sessionId,{suspended:false});
-        if(sessionId===4543&&orphaned.length&&!enqueueSessionInput(expectedOrphan!).turn_id)
-          throw new Error('The retained repair notice did not become runnable.');
+        if(sessionId===4543)for(const input of orphaned){
+          if(!enqueueSessionInput(input.id).turn_id)
+            throw new Error('A retained repair notice did not become runnable.');
+        }
         recordSessionEvent({eventId:`october-budget-pause-released:${sessionId}`,sessionId,kind:'provider_recovery',
           payload:{reason:'budget_pause_stale_after_fresh_capacity',pauseActionId:payload.clientActionId,coveredInputIds:covered,
             preservedInputIds:preserved,coverageEvidence:evidence}});
