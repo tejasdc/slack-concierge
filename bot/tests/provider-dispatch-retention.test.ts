@@ -63,7 +63,7 @@ describe("durable provider dispatch retention", () => {
     const noReset=makeHeld('usage-no-reset','claude-opus-5','usage_wait');
     const other=makeHeld('usage-other-model','claude-sonnet-5','backoff');
     const attempt=usageAttempt('claude-code','claude-opus-5','test@example.com');
-    expect(releaseProvenUsageHolds(attempt,'test@example.com')).toBe(2);
+    expect(releaseProvenUsageHolds(attempt,'test@example.com')).toMatchObject({released:2,turnIds:[timed,noReset]});
     const read=(id:number)=>db.query('SELECT dispatch_failure_class,dispatch_next_attempt_ms FROM turns WHERE id=?').get(id);
     expect(read(timed)).toMatchObject({dispatch_failure_class:'backoff',dispatch_next_attempt_ms:0});
     expect(read(noReset)).toMatchObject({dispatch_failure_class:'backoff',dispatch_next_attempt_ms:0});

@@ -84,7 +84,7 @@ import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
-import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome} from './provider-account-dispatch';
+import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome,admitProvenClaudeWaitingTurn} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {storedUsage} from './provider-usage-forecast';
@@ -392,7 +392,11 @@ export class SessionExecutionHost {
         if(provider==='claude-code'&&!actualModel)return {status:'unconfirmed',provider,account:accountLabel,
           model:null,detail:'The provider answered but did not identify the model it used.'};
         const provenAttempt=usageAttempt(provider,actualModel??undefined,accountLabel);
-        const released=releaseProvenUsageHolds(provenAttempt,accountLabel,provider==='claude-code'&&!waiting.model);
+        const {released,turnIds}=releaseProvenUsageHolds(provenAttempt,accountLabel,provider==='claude-code'&&!waiting.model);
+        if(provider==='claude-code'&&released){
+          const revision=claudeAccountSelection()?.revision??0;
+          for(const turnId of turnIds)admitProvenClaudeWaitingTurn(turnId,accountLabel,revision);
+        }
         if(released)this.options.wake();
         return {status:'available',provider,account:accountLabel,model:actualModel,released};
       }catch(error){

@@ -237,16 +237,26 @@ export function claudeEveryAccountClearsAt():number|null{
   catch(error) { return error instanceof ProviderDispatchError?error.clearsAtMs:null; }
 }
 
+// A successful manual check is proof for the exact waiting turns it released. Account usage
+// readings can still be stale at 100%; these one-shot entries let those turns reach Claude once.
+const provenWaitingTurns=new Map<number,{account:string;selectionRevision:number}>();
+export function admitProvenClaudeWaitingTurn(turnId:number,account:string,selectionRevision:number):void {
+  provenWaitingTurns.set(turnId,{account,selectionRevision});
+}
+
 /** Held for a sign-in, never run on the main folder's login instead (the message is a sign-in refusal on purpose). */
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
-export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+  const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
+  if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
   const ownHomes=claudeRunsFromOwnHomes();
   // Never the main folder's login where accounts have homes of their own; see claudeRunsFromOwnHomes.
   const defaultAccount=ownHomes?null:currentAccount('claude-code')?.label??usage?.accounts.find(account=>account.current)?.label??null;
   const selection=claudeAccountSelection();
+  const provenAccount=proof&&proof.selectionRevision===(selection?.revision??0)?proof.account:null;
   const selectedAccount=selection&&selection.revision>seenSelectionRevision?selection.label:null;
   const selected=selectedClaudeHome()?.label??null;
   // Without a reading of the selected account (none at all, or the usage reader does not know an
@@ -275,10 +285,10 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0)
     const trusted=ownHomes&&account.label===selected&&!!home;
     return {
       account:account.label,
-      tightestUsedPercent:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account)??(trusted?0:null),
       home,
       isDefault:account.label===defaultAccount,
-      problem:trusted?null:account.problem,
+      problem:trusted||account.label===provenAccount?null:account.problem,
     };
   });
   // Where his work runs when nothing else decides: the account he selected in Provider accounts,
