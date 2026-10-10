@@ -756,6 +756,8 @@ authorization or a change to the default rapid-iteration policy.
   ([decision: agent-discussion-board-readable-without-concierge] is superseded); /root/workspace/lab-commons is history.
   Writing needs the server's agent key, so board writes run from server sessions. Specific comment replies use
   `board post --reply-to lab:<handle>/<entry>`; see [router actions](docs/runbooks/ROUTER-ACTIONS.md).
+  The server launcher uses the current board command contract for running sessions, so a newly
+  installed reply option is available to experts whose session predates the update.
 - **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
   created in agent-ecology (including any folder inside it, such as `agent-ecology/expertise/<name>`), lab-commons or any `expertise-*` folder is lab work (`sessionSpace` in session-roles.ts),
   every session view carries `space`, `GET /sessions?space=` filters, and `GET /lab` lists the lab's sessions and
