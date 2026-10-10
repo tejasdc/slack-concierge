@@ -105,7 +105,7 @@ custody are specified in [native-inbox.md](native-inbox.md). They reuse these se
 history, operation and attachment primitives; they are not model human-admission tools.
 
 Agent `POST /sessions/v1/requests` creation accepts `targetProvider` from the existing
-alias table (or `chatgpt`), `effort?`, `project?`, `title?`, `text`, `files?` with exact
+alias table (or `chatgpt`), `effort?`, `project?`, `title?`, `summary?`, `text`, `files?` with exact
 `{name,contentType,base64}` bytes, `captureId?`, and the existing source/action/request
 fields. Coding providers require a registered project, resolved at the owner, never
 an arbitrary caller cwd. Addressed requests cannot change model/effort/project. The
@@ -245,6 +245,12 @@ with a `replyToMessage` that resolves into a topic that owns every named questio
 otherwise 409 `QUESTION_TOPIC_MISMATCH` or `ROOT_UNPLACED` — and it is retained on the
 input and shown to the router inside its `<topic>` block. `validateMessageReference` is
 unchanged.
+
+For a newly created session, `summary` is the request's one-line description of the work and
+is retained with the session metadata. When a creator supplies only a title, that title is also
+the initial summary, so regular, service-created and scheduled sessions never lose the intent
+their creator did provide. A later summary action may replace it. Peer creation carries the same
+field; an older peer may omit it and still creates the named session.
 
 ### Session names
 
@@ -486,7 +492,7 @@ additive to everything above, carry a request between two instances' ledgers:
 | `GET /sessions/v1/peers/operations/:orderId` | Sender pulls the receiver's retained outcome; this complements the push. |
 | `POST /sessions/v1/peers/operations/:orderId/outcome` | Receiver pushes `{outcome}` to the origin. Sender retains one terminal result and returns it to the requesting session when source identity exists. |
 | `POST /sessions/v1/peers/project-notices` | A Mac owner without a local Inbox forwards one retained project notice `{orderId,sourcePeer,kind,text}` to the cloud owner. The cloud owner uses the existing provider-free notice and topic filing path; the sender retries until acknowledged. |
-| `POST /sessions/v1/peers/requests` | Origin → target: `{requestId, origin:{peer,sessionId,inputId,runId,originatingHuman?,effectScope?}, provider|address, effort?, project?, title?, text, requestedEffect, files?}`. The target creates the session (or retains a `request:<requestId>` input on the addressed session), retains the delivery and dispatches. Returns `{sessionId, address, operationId}`; a repeated `requestId` returns the existing delivery. |
+| `POST /sessions/v1/peers/requests` | Origin → target: `{requestId, origin:{peer,sessionId,inputId,runId,originatingHuman?,effectScope?}, provider|address, effort?, project?, title?, summary?, text, requestedEffect, files?}`. For a new session, `summary` is its one-line work description; an older sender may omit it. The target creates the session (or retains a `request:<requestId>` input on the addressed session), retains the delivery and dispatches. Returns `{sessionId, address, operationId}`; a repeated `requestId` returns the existing delivery. |
 | `GET /sessions/v1/peers/requests/:requestId` | Target → origin facts: `{requestId, sessionId, address, inputState, inputError, stillWorking, execution:{turnId,runId,status,settled,acknowledged,acknowledgedAt,stopped,dedicated,steeringStatus,text,error,sha256}|null, replies:[{eventId,kind,status,text,workDisposition,createdAtMs,completion}]}`. The origin, never the target, decides the outcome from these. |
 | `POST /sessions/v1/peers/requests/:requestId/replies` | Target → origin: `{eventId, kind:"progress"|"final", text, workDisposition?, evidence?, completionTurnId?, files?:[{name,contentType,base64}], responder:{peer,sessionId,inputId,runId}}`; idempotent by `eventId`. `files` are the reply's attachments read from the target's custody at forward time, because the origin cannot reach it; the origin admits them into its own custody keyed by request ID, event ID and position, so a re-forward reuses it, and records those origin-side IDs on the peer event and its return. `text` may be empty when the reply carries a file. Returns `{outcome}`. |
 | `POST /sessions/v1/peers/requests/:requestId/notify` | Target → origin: the request's execution or replies changed; the origin re-reads the facts and returns `{outcome}`. |
