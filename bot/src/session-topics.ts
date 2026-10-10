@@ -1825,7 +1825,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
 /** Close completed topic requests whose retained answer was originally filed under another root. */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
-    WHERE kind='post' AND event_id LIKE 'post:forward:%'
+    WHERE kind='post' AND event_id >= 'post:forward:' AND event_id < 'post:forward;'
       AND json_extract(payload_json,'$.replyKind')='final'
       AND json_extract(payload_json,'$.workDisposition')='completed'
       AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
