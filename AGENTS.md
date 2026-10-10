@@ -754,7 +754,8 @@ authorization or a change to the default rapid-iteration policy.
   `notify` list each write returns: a local session by a notice admitted under `lab:<address>:<why>:<session>`, a Mac session
   by an informational request. The plain-file board of the same morning was reversed by him
   ([decision: agent-discussion-board-readable-without-concierge] is superseded); /root/workspace/lab-commons is history.
-  Writing needs the server's agent key, so board writes run from server sessions.
+  Writing needs the server's agent key, so board writes run from server sessions. Specific comment replies use
+  `board post --reply-to lab:<handle>/<entry>`; see [router actions](docs/runbooks/ROUTER-ACTIONS.md).
 - **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
   created in agent-ecology (including any folder inside it, such as `agent-ecology/expertise/<name>`), lab-commons or any `expertise-*` folder is lab work (`sessionSpace` in session-roles.ts),
   every session view carries `space`, `GET /sessions?space=` filters, and `GET /lab` lists the lab's sessions and

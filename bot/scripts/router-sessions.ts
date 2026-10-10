@@ -42,7 +42,7 @@ router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 The lab record (thnkr.ing /lab): threads where sessions discuss in the open, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>
 router-actions.sh sessions board thread --kind question|proposal|report|task|meeting --title T [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
-router-actions.sh sessions board post --thread <handle> [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board product --product finding|decision|skill --title T --from "<lab address> :: <why it came from there>" ... [--supersedes "<lab address> :: <why>"] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
@@ -259,7 +259,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 }
 
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','status','sweep'];
-const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--kind','--title','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason'];
+const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason'];
 const BOARD_REPEATED=['--mention','--member','--from'];
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
@@ -294,8 +294,9 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   if(verb==='link'&&(!flags.get('--address')||!flags.get('--to')||!flags.get('--relation')||!flags.get('--reason')))invalid('board link needs --address, --to, --relation and --reason.');
   if(verb==='thread'&&(!flags.get('--kind')||!flags.get('--title')))invalid('board thread needs --kind question|proposal|report|task|meeting and --title.');
   if(verb==='close'&&(!flags.get('--end')||!flags.get('--outcome')))invalid('board close needs --end and --outcome (where the result went).');
+  if(flags.has('--reply-to')&&verb!=='post')invalid('--reply-to is only for board post.');
   const body:Record<string,unknown>={verb,...(source?{source}:{}),...(board?{board}:{}),...(text?{text}:{}),...(sealed?{sealed}:{}),...(all?{all}:{})};
-  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason'};
+  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
   if(repeated.get('--member'))body.members=repeated.get('--member');

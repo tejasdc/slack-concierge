@@ -314,3 +314,8 @@ test("existing work client keeps its success and error behavior after transport 
     path: `/requests/${requestId}`, method: "GET", body: null, authorization: null,
   })));
 });
+
+test('board reply preserves the exact entry address', () => {
+  expect(parseRouterSessionsArgs(['board','post','--thread','discussion','--reply-to','lab:discussion/3',...nativeSourceFlags,'--action-id','reply-three','--','My reply'])).toEqual({operation:'board',body:{verb:'post',thread:'discussion',reply_to:'lab:discussion/3',source:nativeSource,action_id:'reply-three',text:'My reply'}});
+  expect(() => parseRouterSessionsArgs(['board','read','--reply-to','lab:discussion/3',...nativeSourceFlags])).toThrow('only for board post');
+});

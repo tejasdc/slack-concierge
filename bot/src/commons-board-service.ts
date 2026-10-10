@@ -15,7 +15,7 @@ import {log} from './log';
 export class BoardError extends Error {}
 export type BoardVerb='read'|'thread'|'post'|'claim'|'reveal'|'close'|'product'|'cite'|'link'|'status'|'sweep';
 export type BoardInput={
-  verb:BoardVerb; board?:string; thread?:string; action_id?:string; kind?:string; title?:string; text?:string;
+  verb:BoardVerb; board?:string; thread?:string; reply_to?:string; action_id?:string; kind?:string; title?:string; text?:string;
   members?:string[]; decider?:string; mentions?:string[]; sealed?:boolean; end?:string; outcome?:string; all?:boolean;
   /** product: finding|decision|skill; from: "<address> :: <reason>" each; supersedes: "<address> :: <reason>". */
   product?:string; from?:string[]; supersedes?:string;
@@ -67,9 +67,9 @@ function noticeText(notice:Notice,writer:string,summary:string) {
   const open=`${ORIGIN()}/lab`;
   return [`Lab ${notice.why==='mention'?'mention':'record replaced'} from ${writer}: ${summary}`,'',
     `Read it: router-actions.sh sessions board read --address ${notice.address} <source-flags> (or ${open}).`,
-    notice.why==='mention'
-      ? `Answer in it: router-actions.sh sessions board post --thread ${notice.address.split('/')[0]} <source-flags> --action-id <stable id> -- <your words>`
-      : 'A record you wrote has been replaced by this one; read the reason there.',
+    notice.why==='mention'&&notice.address.includes('/')
+      ? `Answer in it: router-actions.sh sessions board post --thread ${notice.address.split('/')[0].replace(/^lab:/,'')} --reply-to ${notice.address} <source-flags> --action-id <stable id> -- <your words>`
+      : notice.why==='mention' ? 'Read this record and continue its linked discussion if you have something to add.' : 'A record you wrote has been replaced by this one; read the reason there.',
     'This is a notice: it owes no sessions reply. Read it when your current work reaches a stopping point.'].join('\n');
 }
 
@@ -109,6 +109,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     return lab('GET','',actor);
   }
   if(!input.action_id?.trim())throw new BoardError('Changing the board needs a stable --action-id.');
+  if(input.reply_to&&input.verb!=='post')throw new BoardError('--reply-to is only for board post.');
   const actionId=input.action_id.trim(),text=input.text??'';
   const mentions=input.mentions?.map(identityOf);
   let written:{id:string;address:string;duplicate:boolean;notify:Notice[]};
@@ -127,7 +128,14 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   } else {
     if(!input.thread)throw new BoardError(`board ${input.verb} needs --thread <thread handle>.`);
     if(input.verb==='post'&&!text.trim())throw new BoardError('A post needs words after --.');
-    written=await lab('POST',`/records/${encodeURIComponent(input.thread)}/entries`,actor,{actionId,act:input.verb,text,
+    let replyToEntryId:string|undefined;
+    if(input.reply_to) {
+      const target=await lab('GET',`/resolve?address=${encodeURIComponent(input.reply_to)}`,actor);
+      if(target.handle!==input.thread.replace(/^lab:/,'')||!target.entryId)throw new BoardError('--reply-to must name an entry in this thread.');
+      replyToEntryId=target.entryId;
+    }
+    written=await lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
+      ...(replyToEntryId?{replyToEntryId}:{}),
       ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
   }
   const summary=(input.title??text).trim().split('\n')[0]!.slice(0,200);
