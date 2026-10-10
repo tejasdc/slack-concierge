@@ -72,10 +72,15 @@ import type {ProjectSetup} from './project-setup';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
+import {chooseProviderForNewWork} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
+}
+function automaticProvider(canStart: (provider: 'claude-code' | 'codex') => boolean): 'claude-code' | 'codex' {
+  try { return chooseProviderForNewWork(canStart); }
+  catch (error) { throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN'); }
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
@@ -1348,7 +1353,8 @@ export class SessionOwner {
       if(!thinking)throw new SessionOwnerError(`ChatGPT's thinking level is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
       return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
-    const selector=parseProviderSelector(input.provider);
+    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):null;
+    const selector=parseProviderSelector(selectedProvider==='codex'?'cx-sol':selectedProvider==='claude-code'?'cc-opus':input.provider);
     if(!selector)throw new SessionOwnerError('Select a supported provider alias.');
     if(input.effort!==undefined) {
       const effort=normalizeReasoningEffort(input.effort);
@@ -1369,9 +1375,10 @@ export class SessionOwner {
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
-    if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Select an explicit supported provider.');
+    if(!['codex','claude-code','chatgpt','auto'].includes(input.provider))throw new SessionOwnerError('Select a supported provider or Automatic.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
     if(input.provider==='chatgpt'&&(input.project!==undefined||input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('ChatGPT sessions do not accept a code project, model, or reasoning effort.');
+    if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
     if(input.model!==undefined){
@@ -1383,7 +1390,7 @@ export class SessionOwner {
       if(typeof input.reasoningEffort!=='string'||!normalizeReasoningEffort(input.reasoningEffort))throw new SessionOwnerError('Select a supported reasoning effort.');
       input.reasoningEffort=normalizeReasoningEffort(input.reasoningEffort);
     }
-    if(savedWork&&!this.runtime.available(input.provider))throw new SessionOwnerError(`${input.provider} start unavailable; saved work was not created.`,409);
+    if(savedWork&&input.provider!=='auto'&&!this.runtime.available(input.provider))throw new SessionOwnerError(`${input.provider} start unavailable; saved work was not created.`,409);
     if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -1393,11 +1400,13 @@ export class SessionOwner {
       }
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
-      const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
-      const preferred=project&&input.provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
+      const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):input.provider as ProviderId;
+      const codexDefault=provider==='codex'?resolveProviderDefault('codex'):null;
+      const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
-      const defaults=selected?.provider===input.provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
-      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
+      const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
+      if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
+      const session=createNativeSession(provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
         ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
@@ -1409,7 +1418,7 @@ export class SessionOwner {
       }
       return getAcceptedSessionInput(recorded.id)!;
     })();
-    if(input.firstInput&&this.runtime.available(input.provider)&&!saved.receipt_json) this.dispatch(saved);
+    if(input.firstInput&&this.runtime.available(getSessionById(saved.session_id)!.provider_id)&&!saved.receipt_json) this.dispatch(saved);
     return {session:this.view(getSessionById(saved.session_id)!),operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
   }
   submit(id:string,body:unknown) {

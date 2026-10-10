@@ -366,9 +366,12 @@ authorization or a change to the default rapid-iteration policy.
   default provider to Opus after Codex credits ran out on a second account. One
   authority owns it: `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts`, resolved through
   `configuredProviderDefault()` wherever a stored project/channel default is read. A
-  project that selected its own provider keeps that selection, an explicit human
-  provider/model/effort choice wins, and a running session keeps its binding. Do not add
-  a fallback chain or automatic provider switching. When a session hands work down
+  project's selected provider remains available as an explicit choice; a human's
+  provider/model/effort choice wins, and a running session keeps its binding. New unbound work
+  uses `--provider auto` to select from current usable allowance at creation; this does not
+  switch an existing session or retry one provider's work on another. See
+  [provider starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
+  When a session hands work down
   to a cheaper model or escalates a stuck problem up to a stronger investigator is
   owned by the global instructions' Model selection section; the per-turn prompt in
   `session-input-context.ts` carries its summary to resumed sessions, and Concierge

@@ -108,13 +108,36 @@ from the executing host.
 
 ### The default provider
 
-`DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` is the single place that answers
-"which provider does a session take when nothing has chosen one". It is
-`cc-opus` — Claude Code on `claude-opus-5-5`. Everything that resolves a default
-reads it: `sessions projects` reports it as a project's `defaultProvider`, the
-Thinkering create path applies its model to a new session, the router help tells
-callers to pass `--provider cc-opus`, and the retained Slack channel-default path
-resolves through the same helper.
+#### Automatic starts for new work
+
+New unbound coding work can request `--provider auto`. At creation, the session owner reads
+recent allowance data for accounts this machine can actually launch. Claude remains the
+ordinary choice while its roomiest usable account is below the existing 90% warning level.
+Once Claude reaches that level, the owner starts the new session on whichever provider has
+more headroom. An explicitly chosen provider, model or effort is never replaced. An existing
+session keeps its provider; this is a creation decision, not a fallback or replay chain.
+
+The owner ignores stale or unreadable allowance as proof of room. If both providers are spent,
+it binds the new request to the provider whose spent window refills first, so the existing
+provider usage hold retains the input and wakes it at that reset. If neither provider has a
+usable reading or reset, automatic creation refuses instead of guessing. The 90% provider-free
+warning names the risk that both providers may stall when both have reached that level;
+one combined provider-free warning also fires when both have already crossed 90% before
+the release is installed, and closes at the first allowance reset. A
+real usage hold retains its ordinary notification. A ChatGPT Pro consultation remains an
+explicit informational request: it has no coding workspace and cannot silently replace a
+coding session.
+
+The agent request path and Thinkering's Automatic new-conversation choice enter this same
+owner decision. Native provider child processes spawned directly by a provider are outside
+the owner, so their model selection follows the provider's own tools; work delegated as a
+new Concierge session uses `--provider auto`.
+
+`DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` remains the static preference for
+legacy callers and project defaults that name no provider. It is `cc-opus` — Claude
+Code on `claude-opus-5-5`. New work entering through `auto` uses the owner's live
+allowance choice above; `sessions projects` still reports the configured project
+default, and explicit selections still use the alias table.
 
 The Codex allowance is [account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md)
 and was exhausted on a second account on September 16, 2026, so starting every

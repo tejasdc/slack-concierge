@@ -10,6 +10,7 @@ import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./p
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
+import { newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
@@ -323,10 +324,20 @@ function windowLabel(name: string): string {
  */
 export function publishUsageForecastNotices(_record?: RecordEvent): void {
   let published = false;
+  const capacity = (provider: 'claude-code' | 'codex') => {
+    try { return newWorkCapacity(provider); } catch { return null; }
+  };
+  const claudeCapacity = capacity('claude-code');
+  const codexCapacity = capacity('codex');
+  const bothNear = !!claudeCapacity && !!codexCapacity
+    && claudeCapacity.used >= NOTICE_AT_PERCENT && codexCapacity.used >= NOTICE_AT_PERCENT
+    && (claudeCapacity.used < 100 || codexCapacity.used < 100)
+    && !!claudeCapacity.windowResetAt && !!codexCapacity.windowResetAt;
   for (const provider of ["claude-code", "codex"] as const) {
     let nearlySpent: UsageForecast[];
     try { nearlySpent = accountsNearlySpent(provider); } catch { continue; }
     for (const reading of nearlySpent) {
+      if (bothNear) continue;
       if (!reading.resetsAt) continue;
       // A fresh key: a pace notice already sent this period must not suppress the 90% one.
       const key = `usage-at-${NOTICE_AT_PERCENT}:${provider}:${reading.account}:${reading.window}:${allowancePeriod(reading.resetsAt)}`;
@@ -351,6 +362,19 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
       }
     }
   }
+  try {
+    const claude = claudeCapacity;
+    const codex = codexCapacity;
+    if (bothNear && claude && codex && claude.windowResetAt && codex.windowResetAt) {
+      const key = `both-providers-at-${NOTICE_AT_PERCENT}:${allowancePeriod(new Date(claude.windowResetAt).toISOString())}:${allowancePeriod(new Date(codex.windowResetAt).toISOString())}`;
+      published ||= publishProviderFreeNotice(db, {key,kind:'provider_usage_warning',
+        text:'Both Claude and Codex are at or above 90% on the accounts that can start new work. Automatic new work uses whichever still has room. If both run out, new requests wait for the first usable allowance reset; work already running keeps its provider.',
+        payload:{providers:['claude-code','codex'],thresholdPercent:NOTICE_AT_PERCENT,
+          claudeUsedPercent:claude.used,codexUsedPercent:codex.used,
+          resetsAt:new Date(Math.min(claude.windowResetAt,codex.windowResetAt)).toISOString()}});
+    }
+  } catch (error) { log('error','combined_provider_usage_notice_failed',
+    {error:error instanceof Error?error.message:String(error)}); }
   // The notice has its thread before its notification can be tapped.
   if (published) fileServiceNotices();
   settleRefilledUsageWarnings();
@@ -369,7 +393,16 @@ function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare
       ? ` When it runs out, new ${name} work moves to ${spare.join(" or ")} by itself; nothing to do.`
       : ` When it runs out, ${name} work stops until it refills unless you switch to ${spare.join(" or ")} on the Accounts page.`
     : ` No other ${name} account has room, so when it runs out ${name} work waits until it refills.`;
-  return head + next;
+  const other = provider === 'codex' ? 'claude-code' : 'codex';
+  const otherUsed = newWorkHeadroom(other);
+  const thisUsed = newWorkHeadroom(provider);
+  const bothNear = thisUsed !== null && thisUsed >= NOTICE_AT_PERCENT
+    && otherUsed !== null && otherUsed >= NOTICE_AT_PERCENT;
+  const automaticElsewhere = otherUsed !== null && otherUsed < 100
+    ? ` Automatic new work can start on ${other === 'codex' ? 'Codex' : 'Claude'} while it has room.` : '';
+  return head + next + automaticElsewhere + (bothNear
+    ? ' Both Claude and Codex are at or above 90% on the accounts that can take new work. If both reach their limits, new work waits for an allowance reset; work already running keeps its provider.'
+    : '');
 }
 
 /**
@@ -383,7 +416,7 @@ function settleRefilledUsageWarnings(): void {
     .all(SERVICE_NOTICE_SCOPE) as { id: string; payload_json: string }[];
   for (const row of rows) {
     try {
-      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string; thresholdPercent?: number };
+      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string; providers?: string[]; thresholdPercent?: number };
       // Pace warnings sent before 2026-10-08 are withdrawn rather than left waiting to be read.
       if (payload.thresholdPercent === undefined) {
         settleServiceNotice({ inputId: row.id,
@@ -393,7 +426,9 @@ function settleRefilledUsageWarnings(): void {
       const resetsAtMs = Date.parse(payload.resetsAt ?? "");
       if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
-        text: `${payload.account ?? "The account"} refilled at ${noticeTime(db, resetsAtMs)}. Nothing waits on you.` });
+        text: payload.providers
+          ? `The first allowance refilled at ${noticeTime(db, resetsAtMs)}. The both-providers warning has ended.`
+          : `${payload.account ?? "The account"} refilled at ${noticeTime(db, resetsAtMs)}. Nothing waits on you.` });
     } catch (error) {
       log("error", "provider_usage_warning_settle_failed", { input_id: row.id, error: String(error) });
     }
