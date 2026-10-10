@@ -300,7 +300,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   // Where he would expect this turn to run, which is the one thing a notice is measured against.
   const expected=selectedAccount??prefer??usual;
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)):null;
-  if(proved)return {account:proved.account,home:proved.home,because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
+  if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected});
   if(choice.account===null){
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
