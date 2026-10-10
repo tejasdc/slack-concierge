@@ -5,6 +5,7 @@ import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {logSinkCounters} from './log';
 import {log} from './log';
 import {observeStorageOperation,type StorageWork} from './storage-observation';
+import {exitWithin,exitWithParent,PARENT_GONE_EXIT_MS} from './exit-with-parent';
 
 if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
 const socket=process.env.CONCIERGE_READ_SOCKET;
@@ -190,5 +191,7 @@ function stop(){
   stopping??=(async()=>{await server.stop(true);await composition.close();})();
   return stopping;
 }
-process.on('disconnect',()=>{void stop().finally(()=>process.exit(0));});
-process.on('SIGTERM',()=>{void stop().finally(()=>process.exit(0));});
+const stopAndExit=()=>{exitWithin(PARENT_GONE_EXIT_MS);void stop().finally(()=>process.exit(0));};
+process.on('disconnect',stopAndExit);
+process.on('SIGTERM',stopAndExit);
+exitWithParent(stopAndExit);

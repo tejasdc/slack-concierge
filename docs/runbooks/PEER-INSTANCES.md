@@ -456,6 +456,20 @@ by one of the functions above, never by a second, peer-only projection.
   A request still waiting on the sleeping peer at its 30-minute due time gets one overdue
   note to the requesting agent, which decides whether Tejas needs to know; the request
   stays recorded and resumes by itself.
+- A peer that is awake but whose Concierge is down is not asleep, and is announced. A sleeping
+  machine never answers, so the connection times out; a refused connection is the machine
+  itself saying nothing listens on the port. Only a refusal sets `announce` on the peer breaker,
+  so when the breaker stops retrying the notice goes to the repair agent (its kind is
+  `retry_stopped`), which reaches Tejas only if it cannot fix it. To fix it from the server:
+  `/root/workspace/agent-scripts/mac-ssh.sh 'launchctl print gui/$(id -u)/com.tejasdc.concierge'`
+  (a large `runs` count with `last exit code = 1` is a crash loop) and the end of
+  `~/Library/Application Support/concierge/logs/concierge.err`. On 2026-10-10 an update
+  restarted the Mac's Concierge while its request gateway was finishing a graceful stop; the
+  gateway and its two readers outlived it, held the read sockets, and every restart for two
+  hours failed with "Read API already has a live listener" while he used the Mac. Killing those
+  leftovers (`kill -9`, they ignore a plain stop) restored it at once. The gateway and readers
+  now exit by a deadline once a stop begins and within five seconds of losing their parent on
+  any platform (`exit-with-parent.ts`), because macOS has no parent-death signal.
 - A peer request whose work ended on the peer without a final reply, with nothing there
   still working on it, closes as `unanswered` (stalled) once past its due time or when the
   peer reports it stalled, using the last status read from the peer. The requester gets

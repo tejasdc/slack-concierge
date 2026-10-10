@@ -61,6 +61,8 @@ export class PeerError extends Error {
   constructor(message:string,readonly kind:'unreachable'|'unauthorized'|'refused',readonly status:number|null=null,readonly code:string|null=null){super(message);}
 }
 class PeerReplyContractError extends Error {}
+/** Bun names a refused connection `ConnectionRefused`; Node names it `ECONNREFUSED`. */
+const peerAnsweredRefused=(error:unknown)=>['ConnectionRefused','ECONNREFUSED'].includes(String((error as {code?:unknown})?.code??''));
 export class PeerClient {
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
   async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal):Promise<T> {
@@ -72,8 +74,15 @@ export class PeerClient {
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
       // flickered awake and asleep in his bag and produced one notice and one "running again"
       // per flicker (2026-09-27). Work waiting on it reports to its requester instead.
-      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,announce:false,
-        failure:{kind:'unknown',reason:`Peer ${this.name} is unreachable.`,waitForSignal:`${this.name} next contacts this instance`,restartSignal:`${this.name} next contacts this instance`}});
+      // A sleeping machine never answers, so the connection times out. A refused connection is
+      // the machine itself answering that nothing listens: it is awake and its Concierge is down.
+      // That is a real outage and is announced (to the repair agent first): on 2026-10-10 the
+      // Mac's Concierge failed to restart for two hours while he used the Mac, and was treated
+      // as asleep the whole time.
+      const awake=peerAnsweredRefused(error);
+      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,announce:awake,
+        failure:{kind:'unknown',reason:awake?`${this.name} is awake and answering, but its Concierge is not running, so work sent to it is waiting.`:`Peer ${this.name} is unreachable.`,
+          waitForSignal:`${this.name} next contacts this instance`,restartSignal:`${this.name} next contacts this instance`}});
       throw new PeerError(`Peer ${this.name} is unreachable.`,'unreachable',null,'PEER_UNREACHABLE');
     }
     let value:any=null;

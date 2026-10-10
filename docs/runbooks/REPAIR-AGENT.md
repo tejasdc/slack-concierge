@@ -58,6 +58,13 @@ password: he signs in once in that Chrome window on the server desktop). The ses
 channel, `session:WzIsNDYyMiwxXQ`, can be asked for context. Tejas, 2026-10-09: "the agent should
 not stop there ... talk with the agent who built that ... so no other agents are blocked".
 
+## The Mac is awake but its Concierge is down (`retry_stopped`, "Requests to mac")
+
+The server announces the Mac only when it refuses the connection, which a sleeping Mac never
+does. Reach it with `/root/workspace/agent-scripts/mac-ssh.sh`, find why its Concierge will not
+start, fix it, and confirm `curl http://100.90.183.122:8788/` answers (401 is healthy). The
+steps and the 2026-10-10 crash loop are in [peer instances](PEER-INSTANCES.md#when-a-peer-is-down).
+
 ## Never
 
 - Never stop, pause (SIGSTOP), kill or restart the production Concierge to test something; use
