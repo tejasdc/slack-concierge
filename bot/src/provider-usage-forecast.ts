@@ -265,7 +265,8 @@ export function accountsNearlySpent(provider: ProviderKey): UsageForecast[] {
  * reset among its spent windows, or the reset Claude stated when it last refused that account
  * (a refusal is newer than any reading). `freeAt` is null when it has room, or when a spent
  * window does not say when it refills. Unreadable accounts are left out, never counted as
- * having room, and so are accounts only the other machine could read: work here cannot run on them.
+ * having room. An account the other machine read for this one still counts: the Mac runs on accounts
+ * whose usage only the server can read, and leaving them out made it see no account at all.
  *
  * This is the one place that answers "is this account out, and until when". Holds, notices,
  * the room lists and dispatch all read it, so none of them can state a time another disagrees
@@ -276,7 +277,7 @@ export type AccountAvailability = Readonly<{ account: string; selected: boolean;
 export function accountAvailability(provider: ProviderKey): AccountAvailability[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
-  return usage.accounts.filter(account => account.label && !account.viaPeer).flatMap(account => {
+  return usage.accounts.filter(account => account.label).flatMap(account => {
     const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
     if (account.problem || !account.windows.length)
@@ -287,6 +288,24 @@ export function accountAvailability(provider: ProviderKey): AccountAvailability[
     const freeAt = hasRoom || resets.some(reset => reset === null) ? null : Math.max(...resets as number[]);
     return [{ account: account.label, selected: account.current, hasRoom, freeAt }];
   });
+}
+
+/**
+ * Whether some window of this account now reads lower than it did at or before `sinceMs`. Usage only
+ * falls when an allowance resets, so a fall proves a reset happened after that moment. A reading that
+ * merely lags behind a refusal (still 98% after Claude said "limit") does not fall, so it proves nothing.
+ */
+export function usageFellSince(provider: ProviderKey, account: string, sinceMs: number): boolean {
+  const rows = db.query(`SELECT window_name, used_percent, observed_at_ms FROM provider_usage_readings
+    WHERE provider=? AND account=? ORDER BY observed_at_ms`).all(provider, account) as
+    { window_name: string; used_percent: number; observed_at_ms: number }[];
+  const before = new Map<string, number>(), latest = new Map<string, number>();
+  for (const row of rows) (row.observed_at_ms <= sinceMs ? before : latest).set(row.window_name, row.used_percent);
+  for (const [window, now] of latest) {
+    const then = before.get(window);
+    if (then !== undefined && now < then) return true;
+  }
+  return false;
 }
 
 /** The earliest moment any account of this provider can take work: now when one has room, null when unknown. */

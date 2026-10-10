@@ -73,6 +73,34 @@ export function claudeAccountCachedReset(account:string):number|null {
   return resets.length?Math.max(...resets):null;
 }
 
+const claudeAccountScopePrefix=(account:string)=>`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
+
+/** When the oldest refusal still blocking this Claude account was observed, or null when none blocks it. */
+export function claudeAccountRefusedSince(account:string):number|null {
+  const prefix=claudeAccountScopePrefix(account);
+  const since=Object.entries(read('claude-code').limits)
+    .filter(([scope,limit])=>scope.startsWith(prefix)&&limit.resetAt!==null&&limit.resetAt>Date.now())
+    .map(([,limit])=>limit.observedAt);
+  return since.length?Math.min(...since):null;
+}
+
+/**
+ * Forgets every refusal recorded against one Claude account, because a later reading proves its
+ * allowance was reset. A refusal is otherwise cleared only by a successful run on that account, and
+ * no run is tried while the refusal stands: on 2026-10-10 the Mac held all Claude work for a refusal
+ * "until Oct 11, 11 PM" that his 2:05 AM reset had already ended.
+ */
+export function forgetClaudeAccountRefusals(account:string):number {
+  const prefix=claudeAccountScopePrefix(account);
+  return db.transaction(()=>{
+    const state=read('claude-code');
+    const scopes=Object.keys(state.limits).filter(scope=>scope.startsWith(prefix));
+    for(const scope of scopes)delete state.limits[scope];
+    if(scopes.length){state.revision++;write('claude-code',state);}
+    return scopes.length;
+  }).immediate();
+}
+
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {
   // The limit is recorded against this account, so signing into a different one
   // in Provider accounts lifts it immediately. No cache command is involved.

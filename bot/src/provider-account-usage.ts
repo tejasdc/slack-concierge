@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
+import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { releaseUsageHeldWork } from "./provider-usage";
+import { claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
@@ -405,6 +405,15 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       const current=usage.accounts.find(account=>account.current);
       const activeHasRoom=!!current && !current.problem && current.windows.length>0
         && current.windows.every(window=>window.usedPercent<100);
+      // A refusal is cleared only by a run that succeeds on that account, and none is tried while it
+      // stands. A reading that shows the account with room and lower usage than when it was refused
+      // proves a reset in between, so the refusal is forgotten here (the Mac held all work on 2026-10-10).
+      if(provider==='claude-code')for(const account of usage.accounts){
+        const refusedAt=claudeAccountRefusedSince(account.label);
+        if(refusedAt===null||account.problem||!account.windows.length||account.windows.some(window=>window.usedPercent>=100))continue;
+        if(!usageFellSince(provider,account.label,refusedAt))continue;
+        log("info","provider_usage_refusal_overruled_by_reset",{provider,forgotten:forgetClaudeAccountRefusals(account.label)});
+      }
       const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null);
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
