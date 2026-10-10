@@ -90,6 +90,14 @@ case "${1:-}" in
     ;;
   sessions)
     shift
+    # A new outbound request belongs to the current session owner. Long-running agents keep
+    # their pinned hooks, but creation must see today's allowance choice after an update.
+    if [ "$(uname -s)" != Darwin ] && [ "${1:-}" = ask ]; then
+      CURRENT_BOT_DIR=/var/lib/slack-concierge-deployment/current/control/bot
+      if [ -f "$CURRENT_BOT_DIR/scripts/router-sessions.js" ]; then
+        exec bun run "$CURRENT_BOT_DIR/scripts/router-sessions.js" "$@"
+      fi
+    fi
     exec bun run "$BOT_DIR/scripts/router-sessions.$ROUTER_SUFFIX" "$@"
     ;;
   external)

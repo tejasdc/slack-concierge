@@ -245,7 +245,11 @@ A running turn holds an update only if it would end with the coordinator. One ru
   again at the next interval. The survival rule is per machine and per supervisor
   (`claude-code/launchd`), so a Mac update stops waiting for Claude runs only after one was seen alive
   across a Mac restart.
-- A run never has its helpers changed under it. `install-mac.sh` builds the agent helpers (the same
+- A run keeps its hook and recovery helpers pinned. On the server, the stable
+  `router-actions.sh sessions ask` entrance uses the current installed helper for a new
+  outbound request, because a run admitted before an update may still create new work and
+  that creation must use the current owner's allowance decision. All other helper calls
+  keep the run's pinned bundle. `install-mac.sh` builds the agent helpers (the same
   bundles a server release carries) for the installed commit into `$STATE/helpers/<commit>`, never
   changed or pruned, and the service names it (`CONCIERGE_PINNED_HELPERS_DIR`); each run's
   `CONCIERGE_ROUTER_BOT_DIR` is that folder. The machine-wide hook wrappers in `/etc/codex/hooks`

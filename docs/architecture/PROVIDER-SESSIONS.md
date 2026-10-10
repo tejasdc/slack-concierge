@@ -132,7 +132,9 @@ coding session.
 The agent request path and Thinkering's Automatic new-conversation choice enter this same
 owner decision. Native provider child processes spawned directly by a provider are outside
 the owner, so their model selection follows the provider's own tools; work delegated as a
-new Concierge session defaults to Automatic.
+new Concierge session defaults to Automatic. On the server, an agent whose run predates
+an update still uses the current installed request helper for a *new* outbound ask; its
+run hooks and recovery helpers remain pinned to their original release.
 
 `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` remains the static preference for
 legacy callers and project defaults that name no provider. It is `cc-opus` — Claude
