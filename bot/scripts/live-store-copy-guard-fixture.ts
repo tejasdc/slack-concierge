@@ -18,7 +18,7 @@ try {
   const end=installer.indexOf('\n}\nwrite_wrapper "$hook"',start);
   check(start>=0&&end>start,'installer write_wrapper function not found');
   const wrapperFunction=installer.slice(start,end+2);
-  const release=join(root,'release-a');
+  const release=join(root,'releases/release-a');
   const bot=join(release,'control/bot');
   const scriptDir=join(bot,'scripts');
   mkdirSync(scriptDir,{recursive:true});
@@ -30,19 +30,25 @@ try {
   check(privateBuild.exitCode===0,`private command bundle failed: ${privateBuild.stderr.toString()}`);
   const current=join(root,'current');
   symlinkSync(release,current);
-  const old=join(root,'old/bot');
+  const old=join(root,'releases/release-old/control/bot');
   mkdirSync(join(old,'scripts'),{recursive:true});
   writeFileSync(join(old,'scripts/history-guard.js'),`const command=JSON.parse((await Bun.stdin.text())||'{}').tool_input?.command||'';
-const hookSpecificOutput=command.includes('router-actions.sh sessions reply')&&command.includes('install a package')
-  ? {hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'Refused: this would copy a live Concierge database with a raw command. Old pinned check.'}
-  : command.includes('PINNED_OTHER_REFUSAL')
-    ? {hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'A different pinned semantic refusal.'}
-    : {hookEventName:'PreToolUse',additionalContext:'PINNED_OLD_SEMANTIC'};
+const start=''; const probe={};
+const liveStoreCopyRefusal=(value)=>value.includes('router-actions.sh sessions reply')&&value.includes('install a package')?'Refused: this would copy a live Concierge database with a raw command. Old pinned check.':null;
+const selfMatchingWaitRefusal=(value)=>value.includes('PINNED_OTHER_REFUSAL')?'A different pinned semantic refusal.':null;
+const historyRewriteRefusal=()=>null;
+let reason=null;
+reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+const hookSpecificOutput=reason?{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}:{hookEventName:'PreToolUse',additionalContext:'PINNED_OLD_SEMANTIC'};
 process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   const destination=join(root,'concierge-history-guard');
   const template=join(root,'template');
-  const env={marker:'# test installer',dispatch:'# dispatch: per-run v2',tmp:template,bot:join(current,'control/bot'),suffix:'js',current_guard:guard,current_private:privateCommand,state:join(root,'state'),bun,guard:destination};
-  run('bash',['-c',`${wrapperFunction}\nwrite_wrapper "$guard" history-guard "fixture" "" ""`],env);
+  const compatStart=installer.indexOf('compat_dir="$etc/hooks/history-compat"');
+  const compatEnd=installer.indexOf('# write_wrapper',compatStart);
+  check(compatStart>=0&&compatEnd>compatStart,'installer compatibility builder not found');
+  const compatBuilder=installer.slice(compatStart,compatEnd);
+  const env={marker:'# test installer',dispatch:'# dispatch: per-run v2',tmp:template,bot:join(current,'control/bot'),suffix:'js',current_guard:guard,current_private:privateCommand,state:join(root,'state'),bun,guard:destination,etc:root,release};
+  run('bash',['-c',`${compatBuilder}\n${wrapperFunction}\nwrite_wrapper "$guard" history-guard "fixture" "" ""`],env);
   const wrapper=readFileSync(destination,'utf8');
   check(wrapper.includes(guard),'wrapper did not pin physical guard path');
   const execute=(command:string)=>{
@@ -71,6 +77,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   const reply='/root/.local/bin/router-actions.sh sessions reply request-id --summary "Please install a package" -- "tar is mentioned as text"';
   check(execute(reply).permissionDecision!== 'deny','old pinned copy policy still refused quoted reply text');
   check(execute('echo PINNED_OTHER_REFUSAL').permissionDecision==='deny','a different pinned semantic refusal was lost');
+  check(execute(reply.replace('install a package','install a package PINNED_OTHER_REFUSAL')).permissionDecision==='deny','old copy refusal masked a later pinned semantic refusal');
   check(execute(reply+'; cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','router command hid a chained live copy');
   check(execute('echo "install a package" /root/.local/state/concierge/state.db').additionalContext==='PINNED_OLD_SEMANTIC','quoted prose was mistaken for a copy command');
   check(execute('timeout 10 cp /root/.local/state/concierge/state.db /tmp/blocked-copy.db').permissionDecision==='deny','wrapped live copy was not refused');

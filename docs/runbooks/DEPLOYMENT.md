@@ -740,8 +740,11 @@ The raw-copy check recognizes copy tools in command position, so words such as
 `install` in a quoted reply are ordinary message text. A standalone session helper
 call is handled as an owner API call; a chained shell copy is still checked.
 The machine wrapper makes this current check authoritative before invoking an
-older running agent's pinned semantic hook. If that old hook repeats only the
-superseded raw-copy refusal, the wrapper drops it; other pinned refusals remain.
+older running agent's pinned semantic hook. At installation it derives a compatibility
+copy from each retained, recognized bundled hook, removing exactly its duplicate
+raw-copy decision. Dispatch keys that copy to the unchanged original's SHA-256;
+unrecognized bundles retain their original fail-closed behavior. This keeps later
+semantic refusals and notices reachable for old runs rather than suppressing a result.
 New semantic hooks skip their duplicate raw-copy pass after the wrapper check.
 Claude's launch settings use that same machine wrapper when installed, so their
 additional hook runs the same current decision before its pinned semantic pass.

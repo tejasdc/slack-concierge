@@ -89,6 +89,30 @@ fi
 #   2. a run Concierge started in a host: its own CONCIERGE_ROUTER_BOT_DIR;
 #   3. any other agent: the installed copy.
 dispatch='# dispatch: per-run v2'
+# Retained release bundles are self-contained. Preserve each pinned bundle byte-for-byte
+# except for its one duplicate machine-policy expression. The digest ties dispatch to
+# the exact original; an unfamiliar shape retains its original fail-closed behavior.
+compat_dir="$etc/hooks/history-compat"
+mkdir -p "$compat_dir"
+if [ -n "$release" ]; then
+  for original in "$(dirname "$release")"/*/control/bot/scripts/history-guard.js; do
+    [ -f "$original" ] || continue
+    old='reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);'
+    [ "$(grep -Fc "$old" "$original" || true)" = 1 ] || continue
+    digest=$(shasum -a 256 "$original" | cut -d ' ' -f 1)
+    compatible="$compat_dir/$digest.js"
+    [ -f "$compatible" ] && continue
+    staged=$(mktemp "$compat_dir/.compat.XXXXXX")
+    sed 's/reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);/reason = selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);/' "$original" > "$staged"
+    if cmp -s "$original" "$staged" || grep -Fq "$old" "$staged"; then
+      rm -f "$staged"
+      echo "Could not isolate duplicate live-copy check in $original" >&2
+      exit 1
+    fi
+    chmod 0644 "$staged"
+    mv "$staged" "$compatible"
+  done
+fi
 # write_wrapper <path> <hook script name> <description> <environment prefix> <arguments>
 write_wrapper() {
   cat > "$tmp" <<EOF
@@ -120,15 +144,12 @@ if [ -n "\$run" ]; then
   elif [ -f "\$run/scripts/$2.ts" ]; then dir=\$run suffix=ts; fi
 fi
 if [ '$2' = history-guard ]; then
-  # The current machine check above owns raw live-store copy decisions. An older
-  # running agent may still have that check in its pinned semantic hook; discard
-  # only that stale decision after the current check has allowed the command.
-  if pinned_decision=\$(printf '%s' "\$input" | CONCIERGE_CURRENT_LIVE_COPY_CHECKED=1 '$bun' run "\$dir/scripts/$2.\$suffix"); then :
-  else exit \$?; fi
-  case "\$pinned_decision" in
-    *'"permissionDecision":"deny","permissionDecisionReason":"Refused: this would copy a live Concierge database with a raw command.'*) ;;
-    *) if [ -n "\$pinned_decision" ]; then printf '%s\n' "\$pinned_decision"; fi ;;
-  esac
+  semantic="\$dir/scripts/$2.\$suffix"
+  if [ "\$suffix" = js ]; then
+    digest=\$(shasum -a 256 "\$semantic" | cut -d ' ' -f 1)
+    if [ -f '$compat_dir/'"\$digest"'.js' ]; then semantic='$compat_dir/'"\$digest"'.js'; fi
+  fi
+  printf '%s' "\$input" | CONCIERGE_CURRENT_LIVE_COPY_CHECKED=1 '$bun' run "\$semantic"
 else
   printf '%s' "\$input" | $4'$bun' run "\$dir/scripts/$2.\$suffix"$5
 fi
