@@ -675,13 +675,21 @@ SQL differs). With no difference it prints `no_schema_change` and copies nothing
 schema phase (`--schema-only` with no backup path) re-checks with the coordinator stopped,
 copies first if a difference has appeared, and otherwise exits `unchanged` without the
 whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
-filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Automatic copies are pruned
-before each new copy, so at most eight exist even when later steps of an update fail.
+filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Only copies with matching
+verification records qualify for automatic retention. The newest eight verified copies are
+kept after a new copy is durably published, including when a later deployment step fails.
+Unverified legacy files and incident evidence are not counted or automatically removed;
+insufficient space refuses the new backup instead of deleting the last recovery evidence.
 A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
 
-`bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only,
-runs integrity checks, creates a consistent `VACUUM INTO` backup under
-`/root/.local/state/concierge/backups/`, verifies that output, and returns its exact path.
+`bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only and
+creates a consistent `VACUUM INTO` backup in a private `.publishing` directory. It checks
+integrity and foreign keys on that output, closes SQLite, makes the copy read-only, fsyncs
+the file, renames it to the final backup path and fsyncs the directory. A separately atomic,
+fsynced verification record binds the verified file identity, size and modification time.
+A crash before that record leaves an uncounted copy, never one eligible to evict a verified
+backup. Failed temporary output is removed; an existing destination is never replaced.
+A backup from an older controller is verified before the new migrator uses it.
 The deploy runner keeps the coordinator available during this copy and candidate build.
 After the existing provider/capture drain and candidate compatibility checks, it stops
 only the coordinator, then runs the candidate migrator with `--schema-only --backup-path`
@@ -693,6 +701,28 @@ checks integrity and foreign keys after `COMMIT`, closes the migrator, then the 
 starts the coordinator and checks health and adoption. Execution hosts are never stopped.
 Control recovery uses the same ordering. The combined manual command also requires the
 coordinator fully stopped; it cannot run schema work against a serving owner.
+
+The canonical connection assigns schema ownership from the actual entrypoint. Deployment
+helpers skip journal-mode changes and application/deployment schema initialization; read
+commands open physically read-only connections. On Linux, a live schema entrance also proves
+it is the systemd coordinator or a migrator with the coordinator fully stopped. Ad-hoc source
+rehearsals are refused before opening the canonical live ledger, including path aliases.
+Empty-schema rehearsals require the migrator's private temporary directory. The candidate
+checks additionally run under bubblewrap with the live state directory inaccessible and
+capabilities dropped, inherited by their descendants. Raw SQLite or file-copy code in a
+fixture therefore cannot reach production. These are executable boundaries, not a claim
+that unrestricted root operators cannot bypass operating-system policy deliberately.
+
+The candidate's `database-safety-fixture.ts` exercises failed backup verification, publication,
+retention with an incomplete newest filename, raw-script command refusal, and the real release
+read command while a separate connection holds the writer. The accepted-input fixture owns
+the F1/F2 admission checks. The key-change watcher opens the ledger only when a key changed;
+its ordinary minute check has no ledger connection.
+The gate exercises the packaged controller separately against private state at the canonical
+path. Inside an already isolated check, descendants inherit the inaccessible directory rather
+than trying to create another user namespace. The wrapper supplies its own device directory,
+which Bun requires to start. Owner startup and the checkpoint worker report their actual
+SQLite version and source identity through the existing bounded application log.
 
 The writer reservation covers only the schema change:
 the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and, held inside

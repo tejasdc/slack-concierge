@@ -130,3 +130,55 @@ the SHM and online migration fixes exhausted the incident. The exact competing
 writer for this interval is not yet attributed; neither test fixtures nor the
 later transient readonly CLI process may be called the cause from timing alone.
 A bounded kernel lock census is recording the next held writer's PID and byte.
+
+## Continued repair and exact reconciliation
+
+A 180-second kernel census starting around 17:22 UTC observed 271 acquisitions and releases.
+Live release helpers took the SHM writer lock even for `lkg` (1.159 seconds) and
+`install-runtime` (0.825 seconds), because importing deployment state initialized schema and
+the canonical connection set journal mode. A periodic key watcher also opened a writable
+connection on no-change checks. These are confirmed unnecessary competing actors; no sample
+from 17:01 identifies that interval's exact holder. Removing their initialization is a supported
+fix, not proof of the historical PID or of eliminating every possible future SQLite busy result.
+
+The continued patch gives schema setup to supervised coordinator startup and the stopped
+migrator; ordinary helpers use existing schema and read commands use read-only connections.
+The key watcher opens the database only for an actual change. Release fixtures hide the live
+state directory in a private mount namespace with capabilities dropped. Canonical source
+rehearsals refuse live state, and the existing command guard inspects named raw-copy scripts.
+Verified staged backup publication and retention are described in the deployment runbook.
+
+One bounded diagnostic snapshot of the restored owner was compared offline against the
+unchanged preserved original by stable identities. The restored snapshot passed full
+`integrity_check` and `foreign_key_check`. The 16:20:33–16:24:19 UTC gap has 18 exact input
+identities absent from the restored snapshot (5 input, 4 action, 4 cancel, 3 reply, 2 request).
+Of the 77 previously exported owner-event identities, 37 are present and 40 absent. Reused
+integer IDs were not treated as proof of identity, and nothing was reinserted or replayed.
+
+- Claude UUID `d628760e-bab4-4a3c-b056-3a34673b8f02`, input `saved-repeat:5865:2`,
+  execution `299556185c7dab11`: exact result text and result-event bytes match and the restored
+  owner marks completion delivered. Its original outcome action was lost and its timestamps
+  reconstructed; the replacement outcome is `unsaid`.
+- Codex request `dafe928e-5eb0-403e-af4a-5bd244c27ba3` completed in provider history.
+  Its parent `870dd429-afb4-4108-8ff8-2977976144d7` was subsequently canceled by an agent,
+  with a received cancellation result. The child result stays preserved, without replay or a
+  new post into that canceled request. This is not evidence that the human withdrew the work.
+- Requests `f6f6ca17-45e4-416e-9948-6fc10a2e49ce` and
+  `f82a69ee-3502-4cdf-b885-9e8291ccf8a0` retain canceled outcomes. Their missing queued
+  cancellation returns were not replayed.
+- Request `22f2fe29-a253-4cc8-8b97-75909049c5e9`'s missing 16:23 event
+  `50f8bb80-3490-4d27-bdee-19b4601b58cd` was progress. Its later final event
+  `513452b0-f6a6-4e9e-b0e5-f486a229ff7c` is received and the request answered. The text
+  differs; the missing progress is historical loss, not a pending final reply. The exact
+  child exchange `1ff092f4-c175-4484-8d4c-f07d001cc279` is also absent; equivalence to the
+  later parent answer is unknown.
+
+The actual F1/F2 predicates found no incident-window human unbound input or waiting forwarded
+reply without a request. The restored snapshot has six human inputs since the cut, all bound
+to turns, and no waiting forwarded reply candidate. F1/F2 are confirmed source defects, not
+demonstrated causes of this data gap. Their repair commits local acceptance with the queued
+turn/request and retains explicit peer intent. Recovery refuses uncertain prior custody;
+private fixtures exercise failures, exact retries, changed payloads and one queue claim.
+Exact row evidence remains private under `/root/workspace/agent-scripts/dblock-reconciliation/`.
+Final review and installed observation evidence are appended to the incident's working report;
+this source record does not substitute for terminal deployment evidence.

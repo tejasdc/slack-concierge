@@ -1,7 +1,7 @@
 import { initializeSessionOwnerSchema } from "./session-schema";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
-import { db } from "./state-database";
+import { db, initializeLedgerSchema } from "./state-database";
 import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
 import { isolatedSessionThread, resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import {
@@ -17,7 +17,7 @@ import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
-if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
+if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
@@ -74,7 +74,7 @@ const codexRemoteMirrorEventsSchema = `(
 
 // A fresh ledger must not durably commit each DDL statement separately. Reserve the
 // writer once and commit the base schema together, retaining SQLite's durability policy.
-if (process.env.CONCIERGE_READ_WORKER !== "1") db.transaction(() => db.exec(`
+if (initializeLedgerSchema) db.transaction(() => db.exec(`
 CREATE TABLE IF NOT EXISTS channels (
   slack_channel_id   TEXT PRIMARY KEY,
   slack_channel_name TEXT NOT NULL,
@@ -589,7 +589,7 @@ function migrateLegacyCodexRemoteMirrorEvents() {
   })();
 }
 
-if (process.env.CONCIERGE_READ_WORKER !== "1") {
+if (initializeLedgerSchema) {
 db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
 

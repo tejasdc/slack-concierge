@@ -272,11 +272,13 @@ export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;input
  * names it, and the Timeline says where it went. The request that carries his words is opened by
  * the communication layer (`forwardReply`), never here.
  */
-export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessionInput,target:{sessionId:string;title:string|null;topicId:string;root:string}) {
+export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessionInput,target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}) {
   const payload=JSON.parse(input.payload_json);
   const to={sessionId:target.sessionId,title:target.title};
   recordSessionEvent({eventId:`forwarded:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'accepted',payload:{origin:'human',text:payload.text??'',forwardedTo:to}});
-  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'waiting',forwardedTo:to}),input.id);
+  // The exact destination is a durable forwarding intent. A peer may accept the request
+  // before our request row is recorded, so recovery must use the same identity and address.
+  db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'waiting',forwardedTo:to,forwardTarget:target}),input.id);
   recordSessionEvent({eventId:`topic-forward:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'topic',
     payload:{change:'forwarded',topicId:target.topicId,by:{kind:'human'},to,inputId:input.id}});
 }

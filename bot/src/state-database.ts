@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { observedDatabase } from './storage-observation';
 import { ledgerWriteResults } from './ledger-write-results';
+import { ledgerAccess } from './ledger-access-policy';
 
 // Opening the ledger is separate from initializing application schema so the
 // deployment migrator can reserve SQLite's writer before either schema owner runs.
@@ -47,13 +48,15 @@ if (testInvocation) {
 }
 
 const readWorker = process.env.CONCIERGE_READ_WORKER === "1";
-export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, readWorker ? { readonly: true } : { create: true })));
-if (readWorker) db.exec("PRAGMA query_only = ON");
+const access = ledgerAccess(canonicalDir, Bun.main, readWorker);
+export const initializeLedgerSchema = access.schema;
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { create: !access.live || access.schema })));
+if (access.readonly) db.exec("PRAGMA query_only = ON");
 // Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
 // update restart, the retiring coordinator can still hold that lock for a moment; configuring
 // the timeout afterwards made the recovery preflight fail immediately instead of waiting.
 db.exec("PRAGMA busy_timeout = 5000");
-if (!readWorker) db.exec("PRAGMA journal_mode = WAL");
+if (initializeLedgerSchema) db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 // Sorts and temporary tables stay in memory. On disk each one was a file created in /var/tmp and
 // deleted again, about three a second on the owner's event loop, and every create and delete waited

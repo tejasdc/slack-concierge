@@ -163,9 +163,11 @@ export function answerView(request:{request_id:string;payload_json:string},answe
 
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
+    private readonly forwarding = new Set<string>();
     private readonly again = new Set<string>();
     private reconciliation: Promise<void> | null = null;
     private reconciliationDirty = false;
+    private pendingAcceptedRecovery = false;
     private startupReconciled = false;
     private stopped = true;
     private disarm: (() => void) | null = null;
@@ -1103,6 +1105,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             // answers post into the thread exactly as a server agent's do (SessionPeers.deliver).
             const {peer,address}=input.target.peer;
             const id=peerRequestId(input.inputId,actionId);
+            if(this.forwarding.has(id))return id;
+            this.forwarding.add(id);
             void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
                 ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId}})
               .then(receipt=>{
@@ -1111,10 +1115,14 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,peer,target_address:address,topic_id:input.target.topicId,queued:receipt.status==='queued_offline'});
               })
               .catch(error=>{
-                db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'failed',forwardedTo:{sessionId:input.target.sessionId,title:input.target.title},
-                    error:{code:'FORWARDED_REPLY_NOT_SENT',message:String((error as Error)?.message??error)}}),input.inputId);
+                // The peer may have committed the stable request before our answer was lost.
+                // Keep the exact target as a recoverable intent, never claim it was not sent.
+                const detail={code:'FORWARD_DELIVERY_UNCONFIRMED',message:'Delivery to the other machine is unconfirmed; the same request will be checked again.',clearsAt:null,automaticRetry:true};
+                db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=? AND json_extract(receipt_json,'$.state')='waiting'")
+                    .run(JSON.stringify(detail),input.inputId);
                 log('warn','inbox_reply_forward_failed',{request_id:id,input_id:input.inputId,peer,error:String((error as Error)?.message??error).slice(0,300)});
-              });
+              }).finally(()=>this.forwarding.delete(id));
+            this.wake();
             return id;
         }
         const target=getSessionById(input.target.local!);
@@ -1905,6 +1913,19 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             this.reconciliationDirty = false;
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
+            let pendingAcceptedRecovery=false;
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
+                WHERE scope='surface:thinkering' AND origin='human' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
+                  AND request_id IS NULL AND (json_extract(receipt_json,'$.admissionIntent')='queue'
+                    OR json_extract(receipt_json,'$.state')='waiting' AND json_extract(receipt_json,'$.forwardTarget') IS NOT NULL)
+                  AND NOT EXISTS (SELECT 1 FROM session_communication_requests r WHERE r.source_input_id=session_inputs.id)
+                  AND NOT EXISTS (SELECT 1 FROM session_peer_requests p WHERE p.source_input_id=session_inputs.id)
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`, input=>{
+                pendingAcceptedRecovery=true;
+                try{this.dependencies.owner.recoverAcceptedInput(input);}
+                catch(error){log('warn','accepted_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
+            });
+            this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already
             // queued turn. Reconcile historical cancellations too, before any account wake.
             await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
@@ -1966,9 +1987,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         const next = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL`).get() as {
             due: number | null;
         };
-        if (next.due === null)
+        if (next.due === null && !this.pendingAcceptedRecovery)
             return;
-        const delay = Math.min(24 * 60 * 60_000,Math.max(0, next.due - this.now()));
+        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,Math.max(0, (next.due??Infinity) - this.now()));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
         else {

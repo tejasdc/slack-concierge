@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
-import { ledgerWriteResults } from "../src/ledger-write-results";
+import { checkSqliteBackup as checks, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -25,6 +25,9 @@ function schemaShape(database: Database): SchemaShape {
   return { tables, objects };
 }
 if (process.argv.includes("--empty-schema")) {
+  const scratchDirectory = process.env.CONCIERGE_STATE_DIR;
+  if (!scratchDirectory || !realpathSync(scratchDirectory).startsWith(`${realpathSync(tmpdir())}/concierge-schema-plan-`))
+    throw new Error('Schema rehearsal requires its private temporary state directory.');
   const { db: scratch } = await import("../src/state-database");
   await import("../src/state");
   await import("../src/deployment-state");
@@ -84,32 +87,11 @@ function schemaChanges(): string[] {
  * day of rollbacks at the usual pace of releases for 15 GB.
  */
 const AUTOMATIC_COPIES_KEPT = 8;
-// Pruned before each new copy is written (keeping room for it), not only after a migration that
-// succeeded: copies from updates that failed later were never pruned, and ten stood on the disk
-// against a limit of eight on 2026-10-10.
+// Failed or legacy unverified names cannot evict a proven recovery copy. Prune only after
+// the replacement is verified and durably published, including when later release checks fail.
 function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
-  const folder = dirname(backupPath);
-  const copies = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
-    .sort((a, b) => Number(b.split(".")[2]) - Number(a.split(".")[2]));
-  for (const name of copies.slice(keep))
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(join(folder, name + suffix), { force: true });
-  return Math.max(0, copies.length - keep);
-}
-
-function quotedSqlPath(path: string) {
-  return `'${path.replaceAll("'", "''")}'`;
-}
-
-function checks(database: Database) {
-  const integrity = database.query("PRAGMA integrity_check").all() as Array<{ integrity_check: string }>;
-  const foreignKeys = database.query("PRAGMA foreign_key_check").all();
-  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
-    throw new Error(`SQLite integrity_check failed: ${JSON.stringify(integrity)}`);
-  }
-  if (foreignKeys.length !== 0) {
-    throw new Error(`SQLite foreign_key_check failed: ${JSON.stringify(foreignKeys)}`);
-  }
+  return pruneVerifiedBackups(dirname(backupPath), keep);
 }
 
 if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
@@ -124,16 +106,8 @@ if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
 }
 
 function backUp() {
-  pruneAutomaticCopies(AUTOMATIC_COPIES_KEPT - 1);
-  // The live backup is a read-only snapshot; it does not reserve the service's writer.
-  const source = new Database(statePath, { readonly: true });
-  try {
-    source.exec('PRAGMA busy_timeout=5000');
-    checks(source);
-    source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
-  } finally { source.close(); }
-  const backup = new Database(backupPath, { readonly: true });
-  try { checks(backup); } finally { backup.close(); }
+  publishSqliteBackup(statePath, backupPath);
+  pruneAutomaticCopies();
 }
 
 if (process.argv.includes('--plan')) {
@@ -160,7 +134,7 @@ if (schemaOnly && !namedBackup) {
   }
   backUp();
 } else if (!schemaOnly) backUp();
-else if (!existsSync(backupPath)) throw new Error(`Verified migration backup is missing: ${backupPath}`);
+else verifyMigrationBackup(backupPath);
 
 if (backupOnly) {
   console.log(JSON.stringify({ status: 'backed_up', backup_path: backupPath }));
@@ -193,8 +167,8 @@ try {
 // The whole-ledger integrity and foreign-key checks run after COMMIT, on a read transaction. Run
 // inside the writer reservation they held the live service's writer for 32 s at 18:28 on
 // 2026-10-09 (1.9 GB ledger): every owner write, heartbeats included, waited out its busy timeout
-// and failed. The schema change is additive, the same checks already passed on the source before
-// the backup, and a failure here stops the deployment with that backup named.
+// and failed. The schema change is additive, the same checks already passed on the completed
+// backup, and a failure here stops the deployment with that backup named.
 try {
   checks(migrationDatabase);
 } catch (error) {
