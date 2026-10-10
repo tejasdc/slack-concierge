@@ -804,11 +804,11 @@ export function inboxDismiss(session:SessionRow,generation:number) {
 }
 
 /** The thread list computed from the ledger, for while the prepared list is being rebuilt. Complete by construction. */
-export function directTopicList(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
+export function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
   const offset=/^\d+$/.test(options.cursor??'')?options.cursor:null;
   return {...listTopics({...options,cursor:offset,limit:Math.min(20,Number(options.limit)||20)}),coverage:{complete:true,code:null,source:'ledger'}};
 }
-export function listTopics(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
+export function listTopics(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
   const session=inboxOrThrow();
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const state=options.state??'open';
@@ -826,7 +826,10 @@ export function listTopics(options:{state?:string|null;query?:string|null;cursor
   // dumped on the main page here. Clean it up.").
   const band=(_topic:ReturnType<typeof topicSummary>)=>0;
   const recency=(topic:ReturnType<typeof topicSummary>)=>state==='closed'?String(topic.closedAt??topic.lastEntryAt):String(topic.lastEntryAt);
-  summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||recency(second).localeCompare(recency(first)));
+  // Started order from the ledger is by the thread record's creation; the prepared list, which
+  // serves every read once built, uses the first message's arrival instead.
+  if(options.order==='started')summaries.sort((first,second)=>String(second.createdAt).localeCompare(String(first.createdAt)));
+  else summaries.sort((first,second)=>(state==='closed'?0:band(first)-band(second))||recency(second).localeCompare(recency(first)));
   const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
   const offset=Math.max(0,Number(options.cursor)||0);
   const page=summaries.slice(offset,offset+limit);
