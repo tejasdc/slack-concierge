@@ -30,12 +30,12 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/bot/scripts/private-code-command.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
   bot="$release/control/bot"
   updater_policy="$release/control/ensure-codex-updater-disabled.js"
   suffix=js
 else
-  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/private-code-command.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
   updater_policy="$bot/scripts/ensure-codex-updater-disabled.ts"
   suffix=ts
 fi
@@ -68,12 +68,16 @@ if [ "$suffix" = js ]; then
   # Resolve the release symlink now. A later rollback can move /current to an older
   # artifact without removing the machine policy already installed for running agents.
   current_guard=$(cd "$(dirname "$bot/scripts/live-store-copy-guard.js")" && pwd -P)/live-store-copy-guard.js
+  current_private=$(cd "$(dirname "$bot/scripts/private-code-command.js")" && pwd -P)/private-code-command.js
 else
   # The Mac installs from a checkout that updates in place; seal this one check under
   # the machine hook directory so a checkout rollback cannot replace it mid-run.
   current_guard="$etc/hooks/concierge-live-store-copy.js"
+  current_private="$etc/hooks/concierge-private-code.js"
   "$bun" build "$bot/scripts/live-store-copy-guard.ts" --target bun --outfile "$tmp"
   install -m 0644 "$tmp" "$current_guard"
+  "$bun" build "$bot/scripts/private-code-command.ts" --target bun --outfile "$tmp"
+  install -m 0644 "$tmp" "$current_private"
 fi
 # Both wrappers dispatch per run (marker line "dispatch: per-run v2", HOOK_DISPATCH_MARKER in
 # bot/src/hook-pins.ts): the hook runs from the helper folder of the version that started the run,
@@ -100,7 +104,7 @@ if [ '$2' = history-guard ]; then
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"The current live-store copy guard is unavailable; retry after Concierge hook installation."}}'
     exit 0
   fi
-  if decision=\$(printf '%s' "\$input" | '$bun' run "\$current"); then :
+  if decision=\$(printf '%s' "\$input" | CONCIERGE_PRIVATE_CODE_PATH='$current_private' CONCIERGE_PRIVATE_CODE_BUN='$bun' '$bun' run "\$current"); then :
   else
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"The current live-store copy guard could not run; retry after Concierge hook installation."}}'
     exit 0

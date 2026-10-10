@@ -14,6 +14,7 @@
     "control/bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
     "control/bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
     "control/bot/scripts/live-store-copy-guard.js": "bot/scripts/live-store-copy-guard.ts",
+    "control/bot/scripts/private-code-command.js": "bot/scripts/private-code-command.ts",
     "control/ensure-codex-updater-disabled.js": "bot/scripts/ensure-codex-updater-disabled.ts",
     "control/bot/scripts/messages-read.js": "bot/scripts/messages-read.ts",
     "control/bot/scripts/service-notice.js": "bot/scripts/service-notice.ts",

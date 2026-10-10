@@ -727,6 +727,16 @@ is pinned to the verified installed artifact so rolling back the application can
 it; a missing or failed guard refuses commands. The Mac source installer seals that small
 guard under its machine hook directory. Neither installation restarts provider turns.
 
+Older providers can still inherit the live ledger setting. The current machine guard
+refuses their code/build/check launches and names the sealed `private-code-command`
+entrance in its refusal. That entrance creates fresh temporary ledger and capture paths
+before executing any requested code and applies the same Linux mount isolation as release
+checks. Use the exact installed command printed by the guard, followed by `--` and the
+check command. Router API commands and ordinary shell inspection remain available. This
+closes the observed old archive-check import path; shell text checks are not a security
+boundary against arbitrary root code. The private command's inaccessible live mount is
+the execution boundary for approved rehearsals.
+
 The candidate's `database-safety-fixture.ts` exercises failed backup verification, publication,
 retention with an incomplete newest filename, raw-script command refusal, and the real release
 read command while a separate connection holds the writer. The accepted-input fixture owns
