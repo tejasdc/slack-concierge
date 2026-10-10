@@ -677,6 +677,9 @@ authorization or a change to the default rapid-iteration policy.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.
 - ChatGPT uses the existing private profile, transcript custody and browser capability.
+  Thinkering installs the browser channel's public package and owns its private account
+  recovery; Concierge calls Thinkering's authenticated capability, so it must not keep a
+  second browser or receipt implementation. See [the router runbook](docs/runbooks/ROUTER-ACTIONS.md).
   Deliberate provider choice and same-provider failures remain visible. Operator-owned
   daily refresh and explicit refresh use the common owner; no competing browser or index.
   The browser is remote-box's always-running real Chrome, which Thinkering keeps signed in

@@ -382,6 +382,11 @@ so the admission names it and Thinkering's browser sets ChatGPT's power slider t
 sending. `--file` attaches any file type. A Pro answer can take an hour; the request returns when
 ChatGPT finishes. The browser is remote-box's always-running real Chrome
 (`docs/chatgpt-browser.md` there), which Thinkering keeps signed in.
+Thinkering installs the reusable `chatgpt-browser-channel` package for browser effects,
+durable receipts and answer reads. Its private recovery hook stays in Thinkering, while
+Concierge owns admission, requests, result notices and retries across the capability socket.
+This route is the only Concierge entrance to that package; a standalone CLI or HTTP server
+must use its own state directory and browser owner, not Thinkering's production state.
 
 The exact Slack source pair works too. The owner atomically creates one native
 ChatGPT session and agent-origin first input with the existing request/return
