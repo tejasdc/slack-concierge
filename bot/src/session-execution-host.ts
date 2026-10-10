@@ -353,7 +353,7 @@ export class SessionExecutionHost {
       const runner=this.options.providers[provider];
       if(!runner)return {status:'unconfirmed',provider,account:accountLabel,detail:'The provider is not available on this machine.'};
       try{
-        let cancel:(()=>Promise<void>)|null=null;
+        const cancellation:{stop:(()=>Promise<void>)|null}={stop:null};
         let expired=false;
         let deadline:ReturnType<typeof setTimeout>|null=null;
         this.usageProbeRunning=true;
@@ -361,7 +361,7 @@ export class SessionExecutionHost {
           prompt:'Reply OK. Do not use tools.',cwd:this.options.defaultCwd,additionalDirs:[],sessionUUID:null,
           model:waiting.model??undefined,accountLabel,interactionPolicy:'consultation-only',usageProbe:true,
           ...(home?{environment:{CLAUDE_CONFIG_DIR:home.home}}:{}),
-          onCancellationReady:stop=>{cancel=stop;if(expired)void stop().catch(()=>{});},
+          onCancellationReady:stop=>{cancellation.stop=stop;if(expired)void stop().catch(()=>{});},
         })).then(answer=>({kind:'success' as const,answer}),error=>({kind:'failure' as const,error}))
           .finally(()=>{this.usageProbeRunning=false;});
         const timeout=new Promise<{kind:'timeout'}>(resolve=>{
@@ -372,7 +372,7 @@ export class SessionExecutionHost {
         if(deadline)clearTimeout(deadline);
         if(result.kind==='timeout'){
           expired=true;
-          if(cancel)void cancel().catch(()=>{});
+          if(cancellation.stop)void cancellation.stop().catch(()=>{});
           let stopWait:ReturnType<typeof setTimeout>|null=null;
           await Promise.race([execution,new Promise<void>(resolve=>{
             stopWait=setTimeout(resolve,10_000);
