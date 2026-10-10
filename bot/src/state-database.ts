@@ -55,3 +55,7 @@ if (readWorker) db.exec("PRAGMA query_only = ON");
 db.exec("PRAGMA busy_timeout = 5000");
 if (!readWorker) db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
+// Sorts and temporary tables stay in memory. On disk each one was a file created in /var/tmp and
+// deleted again, about three a second on the owner's event loop, and every create and delete waited
+// on the filesystem journal under agent disk load (2026-10-10). See docs/architecture/LEDGER-DURABILITY.md.
+db.exec("PRAGMA temp_store = MEMORY");

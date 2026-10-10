@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { accountFilesView, forgetAccountFiles } from "./account-files-memo";
 import { log } from "./log";
 // Type-only in the other direction, so this is a one-way dependency at runtime.
 import { storedProviderAccountLabels } from "./provider-account-usage";

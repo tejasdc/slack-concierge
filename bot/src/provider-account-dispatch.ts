@@ -10,6 +10,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
 import {log} from './log';
+import {accountFilesView,forgetAccountFiles} from './account-files-memo';
 import {accountAvailability} from './provider-usage-forecast';
 import {claudeKeychainHasLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
@@ -59,6 +60,12 @@ export function claudeHomeHasLogin(home:string):boolean {
 }
 
 export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false,claim=prepare):string|null {
+  if(!prepare)return accountFilesView(`claude-home:${account}:${home}`,()=>inspectClaudeHome(account,home,false,false));
+  forgetAccountFiles();
+  try {return inspectClaudeHome(account,home,prepare,claim);}
+  finally {forgetAccountFiles();}
+}
+function inspectClaudeHome(account:string,home:string,prepare:boolean,claim:boolean):string|null {
   let names:string[];
   try {
     if(!claudeHomeHasLogin(home))return null;

@@ -29,6 +29,9 @@ LimitNOFILE=1048576
 CPUWeight=1000
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+# SQLite scratch files (sorts, temporary tables) go to memory-backed storage: on the root
+# filesystem each create and delete waited on its journal under agent disk load (2026-10-10).
+Environment=SQLITE_TMPDIR=/dev/shm
 Environment=CONCIERGE_REPO=/var/lib/slack-concierge-deployment/source
 Environment=CONCIERGE_REPOSITORY_ROOT=/var/lib/slack-concierge-deployment/source
 Environment=CONCIERGE_SESSION_CAPABILITY_SOCKET=/run/thinkering/session-capabilities.sock

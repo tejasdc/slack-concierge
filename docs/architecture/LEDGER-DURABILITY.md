@@ -53,15 +53,28 @@ the unrelated pressure file; raw SHM inspection refuses the release.
 
 ## What still waits on the loop
 
-After a complete checkpoint the owner's next commit rewinds the log, and SQLite syncs the log
-header on that thread (NORMAL keeps this sync; it is what prevents stale frames being replayed
-after a power loss, so it is not removed). The checkpoint policy makes it rare (once per 64 MB of
-ledger writes, roughly every few minutes at today's rate) and places it after quiet-disk
-checkpoints. Ordinary `write()` and `read()` calls on the ledger can still wait briefly on the
-journal for timestamp updates (6 of the 85 samples) and on page-cache misses. A complete removal
-of ledger I/O from the loop is the serialized database executor in the 2026-10-10 boundary review;
-it was not built because it converts ~90 files of synchronous ledger code to asynchronous
-operations, and this change removes the measured wait without changing any transaction.
+Measured on 2026-10-10 12:55 ET after this change, under agent disk load (IO pressure 17-58%):
+the owner's main thread was in uninterruptible wait 27% of a three-minute sample, with no
+commit-sync waits left. Three causes, and what was done:
+
+- **Scratch files.** SQLite sorts and temporary tables wrote files in `/var/tmp`, about three a
+  second, and each create and delete waited on the root filesystem's journal (about 220 of 982
+  blocked samples). The ledger connection uses `temp_store=MEMORY`, and the service sets
+  `SQLITE_TMPDIR=/dev/shm` for every other connection in the process.
+- **Account folder rescans.** Each usage read relisted every kept login and checked about thirty
+  entries of `~/.claude` per account, 188 times in 15 s; path lookups waited on directory reads
+  (177 samples). `account-files-memo.ts` serves those reads for two seconds; Concierge's own
+  sign-in, switch and home preparation clear it at once.
+- **Timestamp updates on ledger writes.** Every write to the log changes the file's modification
+  time and version counter, and ext4 records that in its journal (`file_modified` →
+  `ext4_dirty_inode` → `wait_transaction_locked`, about 465 samples). `lazytime` does not skip it
+  on this kernel because the version counter forces an immediate inode update. Nothing inside
+  SQLite avoids it. It ends only when ledger writes leave the owner's thread (the serialized
+  executor) or the ledger's journal stops being shared with agents' writes (a filesystem of its
+  own, for example an ext4 image on a loop device).
+
+The rare log-rewind header sync after a complete checkpoint also remains, placed after
+quiet-disk checkpoints.
 
 ## Failure handling
 

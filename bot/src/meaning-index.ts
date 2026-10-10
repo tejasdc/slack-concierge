@@ -121,7 +121,7 @@ export class MeaningIndex {
     for(let attempt=0;;attempt++) {
       this.store=new Database(path,{create:true});
       try {
-        this.store.exec('PRAGMA synchronous=OFF');
+        this.store.exec('PRAGMA synchronous=OFF');this.store.exec('PRAGMA temp_store=MEMORY');
         this.store.exec(`PRAGMA journal_mode=WAL;
           CREATE TABLE IF NOT EXISTS passages(key TEXT PRIMARY KEY,target_json TEXT NOT NULL,text TEXT NOT NULL,at TEXT,scale REAL NOT NULL,vector BLOB NOT NULL) STRICT;
           CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;`);
