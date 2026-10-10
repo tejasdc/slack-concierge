@@ -10,6 +10,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
+import {latestWorkerProgress} from './worker-progress';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
@@ -489,8 +490,11 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:Entr
   // since. That is the router's job, shown to him so nobody has to read logs to know it is owed.
   const unrelayed=unrelayedFinal(roots,entries);
   if(unrelayed)return {kind:'result_waiting' as const,text:'An agent\'s answer came back and has not been relayed to you',returnInputId:unrelayed.inputId,since:unrelayed.at};
-  const dispatch=index.dispatches.find(item=>item.root&&roots.includes(item.root));
-  if(dispatch)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:dispatch.sessionId};
+  // Every agent working the thread, each with the newest progress it reported, so the Brief can
+  // say what is happening without anyone relaying it (see worker-progress.ts).
+  const working=index.dispatches.filter(item=>item.root&&roots.includes(item.root));
+  if(working.length)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:working[0]!.sessionId,
+    workers:working.map(item=>({sessionId:item.sessionId,title:item.title,progress:latestWorkerProgress(db,item.requestId)}))};
   return {kind:'idle' as const,text:''};
 }
 /**
