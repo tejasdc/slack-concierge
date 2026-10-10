@@ -39,6 +39,13 @@ and retains it in the failed run and repair incident. Shell fail-fast handling
 must not exit from the command substitution before that evidence is recorded.
 Without the builder's error, repair can prove only the failed stage and must not
 guess at an application correction or repeat the candidate for diagnostics.
+The presentation release gate starts its exact dispatch-claim check before spawning
+the other lifecycle workers and reader growth checks. On October 10, the four
+lifecycle checks started together on a heavily loaded host; the claim child did
+not finish importing its owner modules before its startup deadline, while that
+same check passed alone in under a second and the full gate passed in a later
+isolated run. Serializing this one startup removes the gate's own import burst;
+the remaining independent checks still run together within the same envelope.
 
 The SQLite constructor gate parses every scanned TypeScript source before inspecting
 database openings. Its `cannot parse TypeScript` error identifies invalid source,
