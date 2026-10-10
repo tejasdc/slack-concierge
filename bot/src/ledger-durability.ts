@@ -50,7 +50,10 @@ function durable(): Promise<void> {
     // Sample after the current synchronous task: a caller inside a transaction callback must
     // not count rows that are not committed yet.
     queueMicrotask(() => {
-      if (!active) { resolve(); return; }
+      if (!active) {
+        try { syncOwed(); resolve(); } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+        return;
+      }
       const changes = totalChanges();
       if (!waiters.length && changes <= synced) { resolve(); return; }
       waiters.push({ changes, resolve, reject });
@@ -59,8 +62,19 @@ function durable(): Promise<void> {
   });
 }
 
-/** The worker is gone: return to SQLite's own synchronous commits and make what was written so
- * far durable here, once, so no waiter is released on an unsynced row. */
+/** Rows committed while the threads ran, not yet synced when they stopped; synced on this thread
+ * the next time anything needs them, because the barrier no longer sees them. */
+let owedSync: string | null = null;
+function syncOwed() {
+  if (!owedSync) return;
+  const fd = openSync(owedSync, 'r');
+  try { fdatasyncSync(fd); } finally { closeSync(fd); }
+  owedSync = null;
+}
+
+/** The threads are gone: return to SQLite's own synchronous commits. Waiters are released only
+ * after one sync here; with none waiting, that sync waits for the next caller, so stopping under
+ * disk load does not hold the loop. */
 function fallBack(reason: string, stopping = false) {
   if (!active) return;
   const { sync, checkpoint, walPath } = active;
@@ -70,8 +84,8 @@ function fallBack(reason: string, stopping = false) {
   try {
     db.exec('PRAGMA synchronous = FULL');
     db.exec('PRAGMA wal_autocheckpoint = 1000');
-    const fd = openSync(walPath, 'r');
-    try { fdatasyncSync(fd); } finally { closeSync(fd); }
+    if (totalChanges() > synced) owedSync = walPath;
+    if (waiters.length) syncOwed();
     synced = totalChanges();
     settle();
   } catch (error) {
@@ -117,11 +131,11 @@ export function startLedgerDurability(stateDir: string): () => void {
   db.exec('PRAGMA wal_autocheckpoint = 0');
   const periodic = setInterval(pump, PERIODIC_SYNC_MS);
   periodic.unref();
-  const uninstall = installLedgerBarrier(durable);
+  // Stays installed after stop: it then settles any sync the stop left owed.
+  installLedgerBarrier(durable);
   log('info', 'ledger_durability_started', { checkpoint_quiet_bytes: CHECKPOINT.quietBytes, checkpoint_force_bytes: CHECKPOINT.forceBytes });
   return () => {
     clearInterval(periodic);
-    uninstall();
     if (active?.sync !== sync) return;
     fallBack('stopping', true);
   };

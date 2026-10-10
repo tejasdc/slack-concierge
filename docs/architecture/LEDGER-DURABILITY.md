@@ -52,8 +52,10 @@ operations, and this change removes the measured wait without changing any trans
 ## Failure handling
 
 If either thread errors or exits, or a sync fails, the owner returns to `synchronous=FULL` with
-automatic checkpoints, syncs the log once on its own thread, releases the waiters, and logs
-`ledger_durability_fallback` at error level. Stopping the request API does the same quietly.
+automatic checkpoints, syncs the log once on its own thread before releasing any waiter, and logs
+`ledger_durability_fallback` at error level. Stopping the request API does the same quietly; when
+nothing is waiting, that one sync is left to the next caller of the barrier, so a shutdown under
+disk load does not hold the loop.
 `meaning-index.db` (a derived, rebuildable index) commits with `synchronous=OFF` and is rebuilt
 from the ledger if it cannot be opened after a crash.
 
