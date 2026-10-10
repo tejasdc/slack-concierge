@@ -155,11 +155,11 @@ export function clearProviderUsage(provider: UsageProvider) {
  * activating a different account releases anything waiting on the old one's reset.
  * Called where a credential change becomes effective; it schedules, it does not replay.
  */
-export function releaseUsageHeldWork(provider: UsageProvider): number {
+export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
   const released = releaseScheduledProviderRetries(provider);
   if (released > 0) {
     log("info", "provider_usage_hold_released", { provider, released });
-    announceUsageHoldEnded(provider, "account_switch", released);
+    announceUsageHoldEnded(provider, releasedBy, released);
   }
   return released;
 }

@@ -5014,15 +5014,19 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
 
 /**
  * Lets work held for an allowance reset run now, because the reason it was waiting is
- * gone: a different account was activated, or the operator cleared the cache after a
- * top-up. Only the scheduled instant moves; nothing is replayed, and a paused, archived
- * or stopped input stays exactly as it was. Returns how many turns were released.
+ * gone: a different account was activated, a fresh reading found a usable account,
+ * or the operator cleared the cache after a top-up. Only usage-held queued inputs
+ * move; ordinary timed retries and paused, archived or stopped inputs stay as they
+ * were. Returns the number of actual turn rows released.
  */
 export function releaseScheduledProviderRetries(providerId: ProviderId): number {
-  return db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='backoff'
+  const released = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
       AND COALESCE(dispatch_next_attempt_ms,0)>0
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
+    RETURNING id`).all(providerId) as {id:number}[]).length;
+  if (released) executionChanged();
+  return released;
 }
 
 /** Release only the provider inputs that were refused before any work for lack of sign-in. */

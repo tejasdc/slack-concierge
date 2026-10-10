@@ -908,7 +908,8 @@ authorization or a change to the default rapid-iteration policy.
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
   That command remains for a genuine top-up on the same account; clearing it, and
   activating a different account, now also release work that was waiting on the old
-  account's reset.
+  account's reset. Fresh Claude usage readings also release only usage-held queued work when
+  the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - An input the provider never received is not failed work, and a refusal that states when
   it clears is a wait rather than a death. A usage refusal carries that instant
   (`clearsAtMs`), the turn waits in its own queue for it under every existing

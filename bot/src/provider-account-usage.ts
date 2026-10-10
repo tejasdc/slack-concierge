@@ -3,11 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { accountsWithRoom, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
+import { recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
-import { proveClaudeHomesAhead } from "./provider-account-dispatch";
+import { claudeAccountWithRoomBesides, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 
 /**
@@ -405,8 +405,10 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       const current=usage.accounts.find(account=>account.current);
       const activeHasRoom=!!current && !current.problem && current.windows.length>0
         && current.windows.every(window=>window.usedPercent<100);
-      if(activeHasRoom || (provider==='claude-code' && accountsWithRoom(provider).length>0))
+      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null);
+      if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
+      if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
       log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
         unreadable: usage.accounts.filter(account => account.problem).length, problem: !!usage.problem });
     } catch (error) {
