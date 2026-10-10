@@ -999,8 +999,9 @@ authorization or a change to the default rapid-iteration policy.
   2026-09-23 ("we don't have to switch to our cheaper model suddenly"). Delegation should
   cross providers: a session low on one is told where the other has room. Each Claude turn
   now chooses among this machine's readable accounts with shared conversation history, while
-  a running process keeps its own home and credentials untouched. The last account is a
-  preference, never a permanent binding; only banked work can bind to one account. A
+  a running process keeps its own home and credentials untouched. The last account breaks
+  equal-weekly-room ties after comparing eligible accounts; a newly selected account wins the next
+  turn. Only banked work can bind to one account. A
   one-home machine retains its existing dispatch path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - **Nothing is said to him about which account a turn runs on.** Not a start, not a switch that

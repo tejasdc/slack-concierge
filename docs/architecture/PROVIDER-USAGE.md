@@ -360,9 +360,14 @@ The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usa
 fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
 reads with its own copies of each login, so its failure says nothing about the login in the
 account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
-recorded only when Claude reports that the process started, and is a preference on the next
-turn. The session view exposes that account; an account event carries the rule's existing
-one-time chosen or moved sentence. A confirmed usage refusal on one account is cached under
+recorded only when Claude reports that the process started. It breaks ties between eligible accounts
+with equal weekly room after the latest readable usage comparison. A new Accounts selection wins the
+next turn, and a banked turn stays bound to its saved account. This preserves weekly room: at
+07:22 Eastern on 2026-10-10 Inbox stayed on an account with about 13% weekly room even though
+another launchable account had about 83%, because the older rule always preferred its last
+account while it had any room. The session view exposes the actual account; an account event
+carries the rule's existing one-time chosen or moved sentence. A confirmed usage refusal on one
+account is cached under
 that account, allowing a safe queued retry to choose another immediately. When none has
 room, the existing timed usage hold keeps the input for the earliest readable reset.
 Each fresh Claude usage reading also asks the actual dispatch chooser whether an account can
@@ -411,13 +416,16 @@ For Claude, the account is decided **fresh at every dispatch**:
 1. Only accounts this machine can actually launch as are candidates — one with its own home,
    or the default login. An account with neither is unreachable, because reaching it would
    mean writing over the shared credential, which is the thing that broke on 2026-09-22.
-2. A conversation prefers the account it last ran on and keeps it while that account has room.
-   Staying is free, and a conversation that hops accounts for no reason makes his usage harder
-   to read.
-3. When its account has no room it **moves**, and continues there with its context. This is
-   "never wait for a refill while another account has room", and it is behaviour rather than a
-   goal only because continuation is proven.
-4. A new conversation goes to the candidate with the most room in its tightest window.
+2. A fresh selection in Accounts wins the next turn if that account can run. Afterwards every
+   ordinary turn goes to the eligible account with the most primary weekly room. All of its
+   windows must have room; a full five-hour window makes it ineligible. If a weekly reading is
+   unavailable, its tightest readable window is used for ranking. Equal weekly room keeps the
+   previous account, avoiding a needless hop. This uses the roomier weekly allowance after a
+   reset instead of continuing to spend a nearly exhausted week.
+3. A conversation **moves** when another eligible account has more room, and continues there
+   with its context. This can happen before the former account is completely spent because
+   continuation across homes has been proven.
+4. A new conversation also goes to the eligible account with the most primary weekly room.
 5. Only a **banked release** is bound: it exists to spend one named account's allowance before
    it lapses, so landing elsewhere spends the wrong subscription and lapses the allowance
    anyway. `provider-account-choice.ts` carries this rule.
@@ -453,7 +461,7 @@ vanish from his Accounts screen until the next deployment.
 **What the Accounts surface does afterwards.** It lists every account with its address and
 usage. Pressing a Claude account records which home new work should launch from; it never
 copies that home's credential into the default login. The choice is durable, and the next
-turn uses it as a preference before ordinary conversation stickiness resumes. The default
+turn uses it as a preference before ordinary room-based account choice resumes. The default
 login is selectable without an override. The current-account mark follows this choice,
 not the credential sitting in the default home. Codex still uses its existing activation.
 The in-app sign-in already covers

@@ -286,22 +286,21 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     return {
       account:account.label,
       tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      weeklyUsedPercent:account.windows.find(window=>window.name==='Weekly')?.usedPercent??null,
       home,
       isDefault:account.label===defaultAccount,
       problem:trusted||account.label===provenAccount?null:account.problem,
     };
   });
-  // Where his work runs when nothing else decides: the account he selected in Provider accounts,
-  // else this machine's default login. A conversation that has never run anywhere prefers it, so
-  // it starts where everything starts instead of on whichever account happens to be roomiest —
-  // which is what makes "started somewhere else" true whenever it is said, rather than a sentence
-  // the caller has to reason its way to.
+  // The selected account or default login is the continuity expectation for new work. A fresh
+  // selection wins the next turn; otherwise the chooser ranks eligible weekly room and uses
+  // this expectation only to break a tie.
   const usual=selection?.label??defaultAccount;
   // Where he would expect this turn to run, which is the one thing a notice is measured against.
   const expected=selectedAccount??prefer??usual;
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected});
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
   if(choice.account===null){
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
     const resets=accountAvailability('claude-code').filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
