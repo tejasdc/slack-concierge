@@ -103,6 +103,22 @@ if [ -e "$guard" ] && ! grep -Fq "$marker" "$guard"; then
   exit 1
 fi
 write_wrapper "$guard" history-guard "Codex and Claude run this before every command; it refuses one that rewrites pushed history." "" ""
+
+# A machine-local check the host deploy may provide (remote-box installs it on the server): before
+# a command touches an agent worktree whose packages its daily cleanup removed, it reinstalls them,
+# so a resumed or new session never depends on what the cleanup took. It never refuses a command.
+# Registered only when present, so a machine without it gets exactly the hooks above.
+restore="$etc/hooks/remote-box-worktree-restore"
+restore_codex='' restore_claude=''
+if [ -x "$restore" ]; then
+  restore_codex=$(printf '%s\n' '' \
+    '# Reinstalls packages the worktree cleanup removed before a command uses that worktree' \
+    '# (remote-box scripts/worktree-restore-hook.sh). A first npm reinstall takes about 20 seconds.' \
+    '[[hooks.PreToolUse]]' '[[hooks.PreToolUse.hooks]]' 'type = "command"' \
+    "command = \"$restore\"" 'timeout = 900' \
+    "statusMessage = \"Reinstalling packages this worktree's cleanup removed\"")
+  restore_claude=',{"matcher":"Bash","hooks":[{"type":"command","command":"'"$restore"'","timeout":900}]}'
+fi
 cat > "$tmp" <<EOF
 $marker Do not edit by hand.
 # Concierge's end-of-turn check for every Codex agent on this machine: an agent that tries to end
@@ -130,6 +146,7 @@ type = "command"
 command = "$guard"
 timeout = 20
 statusMessage = "Checking this does not rewrite pushed history"
+$restore_codex
 EOF
 install -m 0644 "$tmp" "$requirements"
 echo "Installed Codex managed hooks: $requirements -> $hook, $guard"
@@ -152,7 +169,7 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}'"$restore_claude"']}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"
