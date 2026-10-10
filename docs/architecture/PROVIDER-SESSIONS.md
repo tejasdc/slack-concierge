@@ -177,10 +177,23 @@ the repair agent's retained, never-submitted notices become runnable in their ac
 order. Historical interrupted turns
 remain visible and terminal rather than being replayed. An unrecognized new input,
 newer Pause, active or uncertain run, or still-open request makes that conversation stay
-stopped. The taste-mining conversation
-with an open original request is intentionally outside this repair until that request's
-result authority is reconciled. This is an exact historical migration, not a prefix-based
-policy for future pauses. It does not spend reset credits or change account bindings.
+stopped. The taste-mining conversation first needs its original request reconciled.
+This is an exact historical migration, not a prefix-based policy for future pauses.
+It does not spend reset credits or change account bindings.
+
+The taste-mining obligation has its own exact reconciliation. The accepted October 10
+6 AM Claude firing was still queued with no provider admission. The Codex overnight
+request had an explicit completed reply, a published taste ledger and profile update,
+and a collection watermark through 5 AM; a source scan found no human messages between
+that watermark and the scheduled firing. The owner verifies both retained requests,
+the explicit Codex final, the untouched Claude input, and the incident Pause before
+one transaction records a final coverage result on the original request and cancels
+only that firing. The coverage result carries the actual Codex reply and its event
+identity; it never claims the Claude target replied. The normal request return goes
+to the original asking session, naming Codex as the worker. The existing budget
+repair can then clear the stale Pause when a fresh Claude account reading has room.
+The repeating schedule creates its next firing through the ordinary queue rule.
+Any changed or incomplete evidence leaves the request and Pause untouched.
 
 This choice reuses the existing provider hold and FIFO owner instead of adding a
 second scheduler. An unconditional Continue was rejected because several original

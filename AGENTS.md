@@ -13,6 +13,8 @@ session queue and preserve each accepted capture's identity; see [waiting captur
 
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
+That repair credits the exact covered taste-mining request to the retained Codex result
+before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 
 Production native startup does not wait for the retired Slack socket; see
 [deployment](docs/runbooks/DEPLOYMENT.md).

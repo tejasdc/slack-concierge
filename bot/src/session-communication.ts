@@ -1728,12 +1728,16 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             recoverUnsentSteeredInput(`return:${event.event_id}`);
             // A retry dispatches the input already recorded; its text named the requests it closed then.
             const existing = getAcceptedSessionInput(`return:${event.event_id}`);
+            const coveredResponder=declared.coverage?.kind==='completed_elsewhere'
+                && typeof declared.responding_session_id==='string'
+                && /^concierge:\d+$/.test(declared.responding_session_id)
+                ? Number(declared.responding_session_id.slice('concierge:'.length)):request.target_session_id;
             const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:answerNotice({responder:sessionLabel(request.target_session_id),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
+                text:answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
                     deliveryNote:payload.output?.delivery_note??null,files:Array.isArray(payload.attachments)?payload.attachments.length:0,
-                    followUp:(()=>{const responder=getSessionById(request.target_session_id);return responder?sessionAddress(responder):null;})()}),
+                    followUp:(()=>{const responder=getSessionById(coveredResponder);return responder?sessionAddress(responder):null;})()}),
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
             for (const joined of group.joining)

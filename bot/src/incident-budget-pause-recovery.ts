@@ -5,10 +5,13 @@ import {log} from './log';
 
 // The October 10 outside budget intervention used ordinary, indefinite Pause actions.
 // Covered inputs have retained Codex or Inbox evidence; future and unmatched due
-// firings remain queued. The still-open taste-mining request is deliberately absent: its requester has
-// not settled the original obligation, so releasing that conversation could duplicate it.
+// firings remain queued. The taste-mining request is settled separately from retained
+// Codex evidence before its session can join this pause repair.
 const inboxReconciliation='request:9e48c7e7-029c-4a39-928b-8a62ce267dcf';
 const codexDuty='request:51c8eb6e-280a-4526-9d9a-4dc0048df623';
+const tasteRequest='63885d87-11d6-4bb6-8832-4601b61d48a0';
+const tasteInput=`request:${tasteRequest}`;
+const tasteCoverageEvent=`october-taste-coverage:${tasteRequest}`;
 const incident:ReadonlyArray<readonly [number,readonly string[],string,string,readonly string[]?]>=[
   // The scheduled fallback was due after Codex checked the watch queue. It remains
   // the session's next real check; only the two earlier watch firings were covered.
@@ -29,7 +32,92 @@ const incident:ReadonlyArray<readonly [number,readonly string[],string,string,re
   // the next check, not a duplicate of the completed one.
   [4026,[],codexDuty,'Adidas watch',['saved-repeat:4787:11']],
   [4572,['saved-repeat:5679:1'],codexDuty,'Daily journal review'],
+  [4966,[tasteInput],codexDuty,'Taste mining'],
 ];
+
+/** Credit the original request to the actual Codex answer and retire only its untouched
+ * October 10 firing. No reply is attributed to Claude. A failed precondition leaves its
+ * pause, request and queue intact for human investigation. */
+export function reconcileCoveredTasteRequest():boolean {
+  try {
+    const reconciled=db.transaction(()=>{
+      const request=db.query('SELECT * FROM session_communication_requests WHERE request_id=?')
+        .get(tasteRequest) as {source_session_id:number;source_input_id:string|null;target_session_id:number;
+          target_input_id:string|null;target_turn_id:number|null;outcome:string|null;payload_json:string}|null;
+      if(!request||request.outcome!==null||request.source_session_id!==4626||request.target_session_id!==4966
+        ||request.target_input_id!==tasteInput||request.target_turn_id!==6428
+        ||request.source_input_id!=='request:7326362a-4f04-46ff-b313-40206bc986b3')return false;
+      const requested=JSON.parse(request.payload_json);
+      if(requested.requestedEffect!=='work'||requested.text!=='Run ~/workspace/skills/interface-decisions-skill/references/mining-runbook.md exactly, start to finish.'
+        ||requested.saved?.atMs!==1791626400000||requested.saved?.repeatEveryMs!==86400000)return false;
+      const source=getAcceptedSessionInput(request.source_input_id);
+      const accepted=getAcceptedSessionInput(tasteInput);
+      if(!source||source.session_id!==4626||!accepted||accepted.session_id!==4966
+        ||accepted.kind!=='create'||accepted.turn_id!==6428||accepted.request_id!==tasteRequest
+        ||accepted.source_input_id!==request.source_input_id||accepted.source_run_id!== '247140db-c150-454d-bacb-c8b237919319'
+        ||accepted.receipt_json!==null)return false;
+      const turn=db.query('SELECT * FROM turns WHERE id=?').get(6428) as {session_id:number;status:string;
+        accepted_input_id:string|null;saved_kind:string|null;saved_root_id:number|null;saved_sequence:number|null;
+        saved_fire_at_ms:number|null;saved_repeat_ms:number|null;dispatch_attempt:number;
+        provider_admission_intended_at:string|null;provider_started_at:string|null;provider_turn_id:string|null;
+        provider_input_acknowledged_at:string|null}|null;
+      if(!turn||turn.session_id!==4966||turn.status!=='queued'||turn.accepted_input_id!==tasteInput
+        ||turn.saved_kind!=='scheduled'||turn.saved_root_id!==6428||turn.saved_sequence!==0
+        ||turn.saved_fire_at_ms!==1791626400000||turn.saved_repeat_ms!==86400000
+        ||turn.dispatch_attempt!==0||turn.provider_admission_intended_at||turn.provider_started_at
+        ||turn.provider_turn_id||turn.provider_input_acknowledged_at)return false;
+      const session=getSessionById(4966);
+      if(!session||session.provider_id!=='claude-code'||session.status==='archived'||!sessionMetadata(session).suspended)return false;
+      const latest=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=4966 AND kind='action'
+        AND json_extract(payload_json,'$.action.kind') IN ('pause','continue') ORDER BY sequence DESC LIMIT 1`)
+        .get() as {payload_json:string}|null;
+      if(!latest||JSON.parse(latest.payload_json).clientActionId!=='budget-pause-2026-10-10-4966')return false;
+      if(db.query("SELECT 1 FROM turns WHERE session_id=4966 AND status='queued' AND id<>6428 LIMIT 1").get()
+        ||db.query("SELECT 1 FROM turns WHERE session_id=4966 AND status IN ('running','delivering','parked','interrupted','delivery_parked') LIMIT 1").get()
+        ||db.query('SELECT 1 FROM turn_dependencies WHERE prerequisite_turn_id=6428 AND satisfied_at IS NULL LIMIT 1').get()
+        ||db.query("SELECT 1 FROM session_communication_requests WHERE target_session_id=4966 AND outcome IS NULL AND request_id<>? LIMIT 1").get(tasteRequest)
+        ||db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='final' LIMIT 1").get(tasteRequest))return false;
+      const codex=db.query('SELECT outcome,result_json,target_session_id,target_input_id,target_turn_id FROM session_communication_requests WHERE request_id=?')
+        .get(codexDuty.slice('request:'.length)) as {outcome:string|null;result_json:string|null;
+          target_session_id:number;target_input_id:string|null;target_turn_id:number|null}|null;
+      if(!codex||codex.outcome!=='answered'||!codex.result_json||codex.target_session_id!==5014
+        ||codex.target_input_id!==codexDuty||codex.target_turn_id!==6504)return false;
+      const result=JSON.parse(codex.result_json);
+      const final=db.query("SELECT payload_json FROM session_communication_events WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL")
+        .get(result.event_id,codexDuty.slice('request:'.length)) as {payload_json:string}|null;
+      const worker=db.query('SELECT status,provider_input_acknowledged_at FROM turns WHERE id=6504 AND session_id=5014')
+        .get() as {status:string;provider_input_acknowledged_at:string|null}|null;
+      const taste=result.text?.match(/- Taste mining: ([^\n]+)/)?.[1];
+      if(!final||!worker||worker.status!=='done'||!worker.provider_input_acknowledged_at
+        ||result.workDisposition!=='completed'||result.responding_session_id!=='concierge:5014'
+        ||result.completionTurnId!==6504||result.event_id!=='ec9f5762-cba0-4c06-a662-7225decdc204'
+        ||JSON.parse(final.payload_json).text!==result.text||!taste
+        ||!taste.includes('screened 117 new human messages through 5:00 AM Eastern')
+        ||!taste.includes('recorded 91 feedback points'))return false;
+      const text=`The October 10 taste pass was completed by the Codex overnight worker: ${taste} The queued Claude firing was retired before provider admission. Later daily firings remain scheduled.`;
+      const payload={text,summary:'October 10 taste pass completed by Codex; Claude duplicate retired and daily schedule preserved',
+        final:true,workDisposition:'completed',responding_session_id:'concierge:5014',
+        coverage:{kind:'completed_elsewhere',requestId:codexDuty.slice('request:'.length),
+          resultEventId:result.event_id,completionTurnId:6504,sourceResult:result}};
+      finishTurn(6428,'cancelled','Covered by the retained October 10 Codex taste pass; Claude was not invoked.');
+      db.query("UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(JSON.stringify({state:'canceled',coverageEvidence:result.event_id}),tasteInput);
+      recordSessionEvent({eventId:`october-budget-covered:${tasteInput}`,sessionId:4966,inputId:tasteInput,
+        turnId:6428,kind:'provider_recovery',payload:{reason:'covered_overnight_run',coverageEvidence:result.event_id}});
+      db.query(`INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,created_at_ms)
+        VALUES(?,?,'final',?,?)`).run(tasteCoverageEvent,tasteRequest,JSON.stringify(payload),Date.now());
+      db.query("UPDATE session_communication_requests SET outcome='answered',status='settled',result_json=? WHERE request_id=?")
+        .run(JSON.stringify({...payload,event_id:tasteCoverageEvent}),tasteRequest);
+      recordSessionEvent({eventId:tasteCoverageEvent,sessionId:4626,inputId:request.source_input_id,
+        kind:'response',payload:{requestId:tasteRequest,kind:'final',...payload}});
+      const requester=getSessionById(4626)!;
+      updateSessionMetadata(4626,{generation:(sessionMetadata(requester).generation??0)+1});
+      return true;
+    }).immediate();
+    if(reconciled){log('warn','october_taste_request_covered',{request_id:tasteRequest,evidence_event_id:'ec9f5762-cba0-4c06-a662-7225decdc204'});executionChanged();}
+    return reconciled;
+  } catch(error){log('error','october_taste_request_reconciliation_failed',{error:error instanceof Error?error.message:String(error)});return false;}
+}
 
 function completedEvidence(requestId:string,anchor:string):boolean {
   const row=db.query('SELECT outcome,result_json FROM session_communication_requests WHERE request_id=?')
@@ -84,7 +172,10 @@ export function recoverOctoberBudgetPauses():number {
           if(preserved.includes(id)&&(turn.status!=='queued'||JSON.parse(input.receipt_json??'{}').state==='canceled'))return false;
           if(db.query(`SELECT 1 FROM session_communication_requests WHERE target_input_id=? AND outcome IS NULL LIMIT 1`).get(id))return false;
           if(input.kind==='create'&&input.request_id&&!db.query(`SELECT 1 FROM session_communication_requests
-            WHERE target_input_id=? AND outcome='canceled' LIMIT 1`).get(id))return false;
+            WHERE target_input_id=? AND (outcome='canceled' OR (request_id=? AND outcome='answered'
+              AND json_extract(result_json,'$.coverage.kind')='completed_elsewhere'
+              AND json_extract(result_json,'$.coverage.resultEventId')=?)) LIMIT 1`)
+              .get(id,tasteRequest,'ec9f5762-cba0-4c06-a662-7225decdc204'))return false;
         }
         const coveredTurns=queued.filter(turn=>covered.includes(turn.accepted_input_id!));
         for(const turn of coveredTurns){
