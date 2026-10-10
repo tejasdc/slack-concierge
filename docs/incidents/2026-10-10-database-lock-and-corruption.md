@@ -66,6 +66,16 @@ for reconciliation. The original request row is absent from the restored ledger;
 gap is retained, not claimed recovered. Some commands acknowledged between backup and
 damage may also have uncertain effects.
 
+The exact tail was exported read-only to `accepted-tail-private.json` in that private
+incident directory (mode 0600): three turns, three inputs, 77 events, the communication
+request and its target session. Read-only `thread/read` of the retained Codex thread
+found the exact admitted provider turn completed with 129 items; it was checking an
+unmerged draft session-history handoff, not an interrupted implementation. Its exact
+completed provider record is preserved in `admitted-provider-turn-private.json`.
+The other two inputs contain cancellation notices. None of the three exact inputs
+exists in the restored ledger; this remains a retained history gap, not permission to
+replay or overwrite its newer numeric identities.
+
 ## Repair boundary
 
 Checkpoint progress now uses SQLite's NOOP query, which reports frames without copying
@@ -79,4 +89,23 @@ next start. This removes the observed long migration writer while preserving exi
 external recovery ownership; it does not claim all external controls are owner-socket
 commands. See [migration ordering](../runbooks/DEPLOYMENT.md#state-migration-and-backups).
 
-Deployment and final live evidence remain pending.
+## First normal installation
+
+Run `6dab65b4-b878-447a-92bf-2ba028dceb4a` accepted the repair at 12:49:08 ET,
+incorporated the later descendant `daa667b634bd63771d5520887de5df1b069860bd`
+before activation, and succeeded at 12:54:09. Runtime manifest and systemd invocation
+`fb123893fd284f62aad70e5cb98a53cf` agree on that installed commit, main PID 3459679.
+The installed sealed checkpoint worker contains `wal_checkpoint(NOOP)` and no SHM
+file access. Three continuing executions were adopted; the existing Inbox host PID
+3239692 and provider PID 3239718 remained alive and attached.
+
+At 12:54:32, the new invocation had five successful request completions, zero
+request-database errors, no lock or malformed-database error and no durability-worker
+failure. The waiting-capture route also answered successfully. This short window is
+installation proof, not the final observation interval.
+
+The predecessor immutable controller necessarily performed its old online migration
+on this first upgrade. The next normal documentation delivery will exercise the new
+controller's readonly backup → coordinator stop → schema-only → start ordering.
+Final live evidence will be retained in the directly dispatched report and journal;
+do not issue another rollout only to commit a final timestamp.
