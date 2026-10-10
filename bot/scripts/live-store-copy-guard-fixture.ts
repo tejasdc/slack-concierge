@@ -47,7 +47,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   const compatEnd=installer.indexOf('# write_wrapper',compatStart);
   check(compatStart>=0&&compatEnd>compatStart,'installer compatibility builder not found');
   const compatBuilder=installer.slice(compatStart,compatEnd);
-  const env={marker:'# test installer',dispatch:'# dispatch: per-run v2',tmp:template,bot:join(current,'control/bot'),suffix:'js',current_guard:guard,current_private:privateCommand,state:join(root,'state'),bun,guard:destination,etc:root,release};
+  const env={marker:'# test installer',dispatch:'# dispatch: per-run v2',tmp:template,bot:join(current,'control/bot'),suffix:'js',current_guard:guard,current_private:privateCommand,state:join(root,'state'),bun,guard:destination,etc:root,release:current};
   run('bash',['-c',`${compatBuilder}\n${wrapperFunction}\nwrite_wrapper "$guard" history-guard "fixture" "" ""`],env);
   const wrapper=readFileSync(destination,'utf8');
   check(wrapper.includes(guard),'wrapper did not pin physical guard path');

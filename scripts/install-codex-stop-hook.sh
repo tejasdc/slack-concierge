@@ -95,7 +95,8 @@ dispatch='# dispatch: per-run v2'
 compat_dir="$etc/hooks/history-compat"
 mkdir -p "$compat_dir"
 if [ -n "$release" ]; then
-  for original in "$(dirname "$release")"/*/control/bot/scripts/history-guard.js; do
+  release_parent=$(dirname "$(cd "$release" && pwd -P)")
+  for original in "$release_parent"/*/control/bot/scripts/history-guard.js; do
     [ -f "$original" ] || continue
     old='reason = liveStoreCopyRefusal(command, start) ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);'
     [ "$(grep -Fc "$old" "$original" || true)" = 1 ] || continue
