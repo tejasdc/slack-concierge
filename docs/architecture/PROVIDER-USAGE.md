@@ -66,8 +66,16 @@ an explicit model. Direct external CLI invocations outside these adapters do not
 Concierge's cache. Existing dispatch provenance and comparison counterpart selection
 remain with their owners.
 
-The chosen early invalidation mechanism is **explicit clear**. It is available from the
-operator shell even when neither model can run. From the Concierge repository, with
+The chosen early invalidation mechanism is **explicit retry**. The Accounts window's Refresh
+press asks each reachable machine to clear the refusal for a provider with queued usage-held
+work and release only those turns for one new attempt, then rereads the account usage. The
+provider turn itself proves whether work is possible; another refusal restores the hold. A
+usage percentage is not used as proof, since it read zero while Claude refused real work on
+2026-10-10. Opening Accounts and the
+ordinary background usage readings never spend model tokens or override a refusal. A successful
+Codex reset-credit use on the account running agents also clears its old refusal and wakes held
+work as part of that action. The operator shell remains available for recovery even when the
+app cannot open. From the Concierge repository, with
 `CONCIERGE_STATE_DIR` set to the owning runtime's existing state directory:
 
 ```bash
@@ -76,7 +84,7 @@ bun bot/scripts/provider-usage.ts clear codex
 bun bot/scripts/provider-usage.ts clear claude-code
 ```
 
-Clear requires an operator-requested top-up/reset/account change; an agent must not clear
+Shell clear requires an operator-requested top-up/reset/account change; an agent must not clear
 the cache merely to force another attempt at a known exhausted provider. It clears that
 provider's entries atomically and advances its generation. Already-running attempts retain
 their original generation, so a late error from before the clear cannot restore stale

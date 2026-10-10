@@ -5,7 +5,7 @@ import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./stat
 import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { releaseUsageHeldWork } from "./provider-usage";
+import { cachedUsageLimit, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
@@ -409,6 +409,8 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
+      if(provider==='codex'&&activeHasRoom&&!cachedUsageLimit(usageAttempt('codex')))
+        releaseUsageHeldWork('codex','usable_account_observed');
       // Still none with room: held work waits only until the first account frees up, by this reading.
       const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt():earliestRoomAt(provider);
       if(firstRoomAt!==null&&firstRoomAt>Date.now()){

@@ -377,6 +377,7 @@ export type SessionOwnerRuntime = {
     saveProfile(provider:string,label:string):unknown;
     switchProfile(provider:string,profileId:string):Promise<unknown>;
     useResetCredit(provider:string,account:string):Promise<unknown>;
+    retryHeldUsage():Promise<unknown>;
   };
 };
 export function parseSessionId(value:string):number {
@@ -639,6 +640,9 @@ export class SessionOwner {
    */
   useResetCredit(provider:string,account:string,machine?:unknown){
     return this.authAction(machine,'reset-credit/use',{provider,account},30_000,()=>this.localAuth().useResetCredit(provider,account));
+  }
+  retryHeldUsage(machine?:unknown){
+    return this.authAction(machine,'usage/retry',{},30_000,()=>this.localAuth().retryHeldUsage());
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
@@ -2878,6 +2882,10 @@ export class SessionOwner {
         const input=object(body);only(input,['provider','account','machine']);
         if(typeof input.provider!=='string'||typeof input.account!=='string'||!input.account.trim())throw new SessionOwnerError('Provider and account are required.');
         result=await this.useResetCredit(input.provider,input.account,input.machine);
+      }
+      else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='usage'&&parts[2]==='retry'&&parts.length===3) {
+        const input=object(body);only(input,['machine']);
+        result=await this.retryHeldUsage(input.machine);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);

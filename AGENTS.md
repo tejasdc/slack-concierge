@@ -914,8 +914,10 @@ authorization or a change to the default rapid-iteration policy.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
-  That command remains for a genuine top-up on the same account; clearing it, and
-  activating a different account, now also release work that was waiting on the old
+  That command remains for recovery; Accounts Refresh now makes one user-requested retry
+  of queued usage-held work, and a successful Codex reset-credit
+  use wakes usage-held work on its active account. Clearing it, and
+  activating a different account, also release work that was waiting on the old
   account's reset. Fresh Claude usage readings also release only usage-held queued work when
   the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md). Whether each account is out and until when has one answer (`accountAvailability`); a hold waits until
   the first launchable account frees up, never only the refusing account's reset.
@@ -1151,9 +1153,10 @@ commit does not change immutable LKG control until proven promotion; use the
 failures, and never enroll its detached owner alongside an active normal runner.
 
 Provider exhaustion and early top-up/reset invalidation use the shared
-[usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
-use its clear command for the affected provider; never bypass a known usage limit merely
-to force another attempt. Clear does not authorize replay or resume stopped work.
+[usage cache](docs/architecture/PROVIDER-USAGE.md). Accounts Refresh retries held work
+once on his press; the shell clear remains for operator recovery.
+Never bypass a known usage limit merely to force another attempt. Clear does not
+authorize replay or resume stopped work.
 The separate [usage breakdown](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance)
 reads provider transcripts off the owner event loop and stores its cursor outside the ledger.
 

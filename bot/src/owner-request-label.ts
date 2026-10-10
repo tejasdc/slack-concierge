@@ -9,7 +9,7 @@ const mutationPaths=[
  '/inbox','/inbox/topics','/inbox/topics/:id/actions','/operations/:id/cancel',
  '/search','/context','/imports','/sources/refresh',
  '/attachments','/attachments/:id/transcription','/attachments/:id/transcription/start',
- '/auth/refresh','/auth/refresh/complete','/auth/profiles/save','/auth/profiles/switch','/auth/reset-credit/use',
+ '/auth/refresh','/auth/refresh/complete','/auth/profiles/save','/auth/profiles/switch','/auth/reset-credit/use','/auth/usage/retry',
  '/requests','/requests/:id/replies','/requests/:id/cancel',
  '/saved-work/settings','/saved-work/:id/start','/saved-work/:id/time','/saved-work/:id/schedule','/saved-work/:id/drop',
  '/projects/new','/projects/share','/projects/cancel','/projects/:id/default','/projects/:id/todos',
