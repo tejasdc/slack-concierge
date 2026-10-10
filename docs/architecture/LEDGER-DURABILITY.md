@@ -99,6 +99,12 @@ The image's own writes to its backing file still pass through the root filesyste
 device's kernel thread, not in the writer. Operation, growth and rollback are in remote-box's README
 (Concierge ledger filesystem).
 
+Rollout on 2026-10-10: remote-box's mount unit was deployed first and the image prepared (32 GB
+sparse, loop device with direct I/O); the release that installed the move step went live at 18:49
+UTC, and the update after it performs the move. The original files stay beside their links as
+`*.before-own-filesystem-<time>` until the move has run for a day, then they are removed to return
+their space (the root filesystem was at 98% that day).
+
 The rare log-rewind header sync after a complete checkpoint also remains, placed after
 quiet-disk checkpoints.
 
