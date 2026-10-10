@@ -271,6 +271,8 @@ named an older topic. The Conversation shows the original request text as its ro
 the answer keeps its exact source and author. Linking a dispatch to a topic refuses a mismatch
 unless that topic contains the dispatch root or the named thread. This rule also projects
 already retained answers under their request's placed root without changing their bytes.
+Both server and Mac startup reconcile requests placed after their answers arrived: they close
+the answered request and move its existing reading item without notifying twice.
 A post's `--topic` must be the
 topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
 a thread other than its own input's, and `answeredByPost` when it posted into its own thread.

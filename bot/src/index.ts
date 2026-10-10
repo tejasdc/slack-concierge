@@ -344,7 +344,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,wakeDeferredQuestions} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
@@ -525,6 +525,7 @@ installSessionProjection(sessionExecutionHost.owner);
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
 try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+try {reconcilePlacedRequestAnswers();} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
 try {migrateInboxAttention();} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
 try {expireUnreadableReadingItems();} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
