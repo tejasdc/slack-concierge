@@ -1,0 +1,1 @@
+The database repair remains running; a later update safely refused activation when its release checks exceeded their deadlines under disk pressure.
