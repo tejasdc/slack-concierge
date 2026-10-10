@@ -48,11 +48,15 @@ for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixt
 }
 const results=[];
 checkReaderRefusals();
+// Prove the one authoritative dispatch claim before this check starts its
+// independent worker fixtures. Their simultaneous module loads can starve
+// the short child startup boundary on a busy production host.
+const dispatchClaim=await checkDispatchClaim();
 // Each lifecycle owns a distinct scratch directory and child process group.
 // Run their independent waits alongside growth checks, within the existing
 // 90-second release envelope rather than extending the deployment deadline.
 const lifecycleChecks=Promise.allSettled([
-  checkTopicProjectionLifecycle(),checkNativeOwnerProjectionLifecycle(),checkDispatchClaim(),
+  checkTopicProjectionLifecycle(),checkNativeOwnerProjectionLifecycle(),
   runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'foreground-composed-fixture.ts')],
     env:{...process.env},deadlineMs:80_000,fixture:'foreground-composed'}),
 ]);
@@ -68,5 +72,5 @@ try {for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
 const lifecycleResults=await lifecycleChecks;
 const failures=lifecycleResults.filter(result=>result.status==='rejected');
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
-const [topicProjection,nativeOwnerProjection,dispatchClaim,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
+const [topicProjection,nativeOwnerProjection,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
 console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));
