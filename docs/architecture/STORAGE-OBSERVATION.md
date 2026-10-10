@@ -26,6 +26,36 @@ This repair was committed without tests or reviews under the incident's explicit
 policy; the external supervisor and detached controller own subsequent validation
 and activation evidence.
 
+### Presentation worker startup
+
+The presentation worker installs its base schema, compatibility upgrades and all
+five prepared-store schemas in one immediate transaction on `presentation.db`.
+Its busy timeout and WAL selection precede that transaction. Constructor-local
+transactions remain savepoints; any failure rolls back the entire schema batch.
+The canonical ledger connection remains physically readonly, and lease acquisition,
+page processing and ready checkpoints retain their existing boundaries. Neither
+SQLite durability settings nor lifecycle deadlines change.
+
+Candidate `17db53ff96cad321132414617d30cae5f040a1db` reached owner-loaded at
+2,669 ms, started the worker at 2,704 ms, then exhausted the 20-second first-checkpoint
+wait at 22,715 ms. The retained journal error was `Projection did not reach canonical
+head 1; worker=running` with empty worker stderr. SIGKILL came from fixture cleanup
+after the timeout, not a preceding worker crash. The worker still performed its
+schema mutations as individual autocommits, including the five projection constructors.
+That confirmed write amplification is removed by the shared transaction rather than
+by extending the wait or relaxing durability. Nearby owner journal records also show
+low-CPU storage stalls, but the failed child discarded stdout and retained no schema
+or syscall timings: attribution of its full wait to schema commits remains an inference.
+
+The worker emits bounded, content-free `presentation_worker_schema` records at
+`starting` and `ready`, with its PID and completion elapsed milliseconds. These
+separate schema startup from the existing lease/projection health observations in
+the application journal; they do not claim that a prepared generation is ready.
+The lifecycle fixture currently discards worker stdout, so those records are not
+part of its retained failure stderr. This correction was committed without running
+tests or reviews; integration and activation proof remain with the external supervisor
+and detached controller.
+
 ## Write results and observation
 
 Ledger writes pass through `ledgerWriteResults` before observation. Its mutation result counts

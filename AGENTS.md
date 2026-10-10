@@ -150,7 +150,8 @@ authorization or a change to the default rapid-iteration policy.
   are release gates. See [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
-  Ledger startup batches base schema and legacy upgrades without weakening durability;
+  Ledger startup batches base schema and legacy upgrades; presentation worker schema setup
+  is one atomic transaction with startup timing, without weakening durability;
   see [startup transaction ownership](docs/architecture/STORAGE-OBSERVATION.md#startup-transaction-ownership).
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
   an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.

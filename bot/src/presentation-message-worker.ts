@@ -19,80 +19,89 @@ const stateDir=realpathSync(directory);
 const source=new Database(join(stateDir,'state.db'),{readonly:true});
 source.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
 const prepared=new Database(join(stateDir,'presentation.db'),{create:true});
-prepared.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
-  CREATE TABLE IF NOT EXISTS presentation_message_meta(
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,
-    event_watermark INTEGER NOT NULL,source_head INTEGER NOT NULL,ready INTEGER NOT NULL
-  );
-  INSERT OR IGNORE INTO presentation_message_meta(singleton,generation,event_watermark,source_head,ready) VALUES(1,0,0,0,0);
-  CREATE TABLE IF NOT EXISTS presentation_worker_lease(
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1),token TEXT,heartbeat_ms INTEGER NOT NULL DEFAULT 0
-  );
-  INSERT OR IGNORE INTO presentation_worker_lease(singleton) VALUES(1);
-  CREATE TABLE IF NOT EXISTS presentation_messages(
-    generation INTEGER NOT NULL,session_id INTEGER NOT NULL,root_input_id TEXT NOT NULL,
-    topic_id TEXT,event_sequence INTEGER NOT NULL,message_id TEXT NOT NULL,input_id TEXT NOT NULL,created_at TEXT NOT NULL,
-    entry_kind TEXT NOT NULL DEFAULT 'other',
-    PRIMARY KEY(generation,event_sequence)
-  );
-  CREATE INDEX IF NOT EXISTS presentation_messages_root_page
-    ON presentation_messages(generation,session_id,root_input_id,event_sequence DESC);
-  CREATE INDEX IF NOT EXISTS presentation_messages_topic_page
-    ON presentation_messages(generation,topic_id,event_sequence DESC);
-  CREATE INDEX IF NOT EXISTS presentation_messages_input
-    ON presentation_messages(generation,session_id,input_id,event_sequence);
-  CREATE INDEX IF NOT EXISTS presentation_messages_global_id
-    ON presentation_messages(generation,message_id,event_sequence);
-  CREATE INDEX IF NOT EXISTS presentation_messages_return_input
-    ON presentation_messages(generation,input_id,event_sequence);
-  CREATE UNIQUE INDEX IF NOT EXISTS presentation_messages_exact
-    ON presentation_messages(generation,session_id,message_id);
-  CREATE TABLE IF NOT EXISTS presentation_message_display(
-    generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,
-    PRIMARY KEY(generation,event_sequence)
-  );
-  CREATE TABLE IF NOT EXISTS presentation_message_detail_chunks(
-    generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,part INTEGER NOT NULL,content TEXT NOT NULL,
-    digest TEXT NOT NULL,
-    PRIMARY KEY(generation,event_sequence,part)
-  );
-  CREATE TABLE IF NOT EXISTS presentation_topic_events(
-    generation INTEGER NOT NULL,topic_id TEXT NOT NULL,event_sequence INTEGER NOT NULL,
-    session_id INTEGER NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(generation,event_sequence)
-  );
-  CREATE INDEX IF NOT EXISTS presentation_topic_events_page
-    ON presentation_topic_events(generation,topic_id,event_sequence DESC);
-  CREATE TABLE IF NOT EXISTS presentation_owner_messages(
-    generation INTEGER NOT NULL,session_id INTEGER NOT NULL,message_id TEXT NOT NULL,
-    first_sequence INTEGER NOT NULL,last_sequence INTEGER NOT NULL,
-    PRIMARY KEY(generation,session_id,message_id)
-  );
-  CREATE INDEX IF NOT EXISTS presentation_owner_messages_page
-    ON presentation_owner_messages(generation,session_id,first_sequence DESC);
-  CREATE TABLE IF NOT EXISTS presentation_owner_message_versions(
-    generation INTEGER NOT NULL,session_id INTEGER NOT NULL,message_id TEXT NOT NULL,
-    event_sequence INTEGER NOT NULL,event_id TEXT NOT NULL,
-    PRIMARY KEY(generation,session_id,message_id,event_sequence)
-  );
-  CREATE INDEX IF NOT EXISTS presentation_owner_versions_delta
-    ON presentation_owner_message_versions(generation,session_id,event_sequence);`);
-const hadEntryKind=(prepared.query('PRAGMA table_info(presentation_messages)').all() as {name:string}[])
-  .some(column=>column.name==='entry_kind');
-if(!hadEntryKind){
-  prepared.exec("ALTER TABLE presentation_messages ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'other'");
-  prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
-}
-const hadRequestRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
-  .some(column=>column.name==='request_roots_version');
-if(!hadRequestRoots)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN request_roots_version INTEGER NOT NULL DEFAULT 0');
-prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
-  ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
-const search=new PreparedSearchIndex(prepared);
-const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
-  {...row,native_metadata_json:row.native_metadata_json??'{}'}));
-const receipts=new PreparedReceipts(source,prepared);
-const topics=new PreparedTopics(source,prepared);
-const labRequests=new PreparedLabRequests(source,prepared);
+prepared.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL');
+const schemaStarted=performance.now();
+writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'starting',worker_pid:process.pid}));
+// One atomic schema install avoids a durable commit per DDL statement on cold starts.
+const {search,cards,receipts,topics,labRequests}=prepared.transaction(()=>{
+  prepared.exec(`
+    CREATE TABLE IF NOT EXISTS presentation_message_meta(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,
+      event_watermark INTEGER NOT NULL,source_head INTEGER NOT NULL,ready INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO presentation_message_meta(singleton,generation,event_watermark,source_head,ready) VALUES(1,0,0,0,0);
+    CREATE TABLE IF NOT EXISTS presentation_worker_lease(
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),token TEXT,heartbeat_ms INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO presentation_worker_lease(singleton) VALUES(1);
+    CREATE TABLE IF NOT EXISTS presentation_messages(
+      generation INTEGER NOT NULL,session_id INTEGER NOT NULL,root_input_id TEXT NOT NULL,
+      topic_id TEXT,event_sequence INTEGER NOT NULL,message_id TEXT NOT NULL,input_id TEXT NOT NULL,created_at TEXT NOT NULL,
+      entry_kind TEXT NOT NULL DEFAULT 'other',
+      PRIMARY KEY(generation,event_sequence)
+    );
+    CREATE INDEX IF NOT EXISTS presentation_messages_root_page
+      ON presentation_messages(generation,session_id,root_input_id,event_sequence DESC);
+    CREATE INDEX IF NOT EXISTS presentation_messages_topic_page
+      ON presentation_messages(generation,topic_id,event_sequence DESC);
+    CREATE INDEX IF NOT EXISTS presentation_messages_input
+      ON presentation_messages(generation,session_id,input_id,event_sequence);
+    CREATE INDEX IF NOT EXISTS presentation_messages_global_id
+      ON presentation_messages(generation,message_id,event_sequence);
+    CREATE INDEX IF NOT EXISTS presentation_messages_return_input
+      ON presentation_messages(generation,input_id,event_sequence);
+    CREATE UNIQUE INDEX IF NOT EXISTS presentation_messages_exact
+      ON presentation_messages(generation,session_id,message_id);
+    CREATE TABLE IF NOT EXISTS presentation_message_display(
+      generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,
+      PRIMARY KEY(generation,event_sequence)
+    );
+    CREATE TABLE IF NOT EXISTS presentation_message_detail_chunks(
+      generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,part INTEGER NOT NULL,content TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      PRIMARY KEY(generation,event_sequence,part)
+    );
+    CREATE TABLE IF NOT EXISTS presentation_topic_events(
+      generation INTEGER NOT NULL,topic_id TEXT NOT NULL,event_sequence INTEGER NOT NULL,
+      session_id INTEGER NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(generation,event_sequence)
+    );
+    CREATE INDEX IF NOT EXISTS presentation_topic_events_page
+      ON presentation_topic_events(generation,topic_id,event_sequence DESC);
+    CREATE TABLE IF NOT EXISTS presentation_owner_messages(
+      generation INTEGER NOT NULL,session_id INTEGER NOT NULL,message_id TEXT NOT NULL,
+      first_sequence INTEGER NOT NULL,last_sequence INTEGER NOT NULL,
+      PRIMARY KEY(generation,session_id,message_id)
+    );
+    CREATE INDEX IF NOT EXISTS presentation_owner_messages_page
+      ON presentation_owner_messages(generation,session_id,first_sequence DESC);
+    CREATE TABLE IF NOT EXISTS presentation_owner_message_versions(
+      generation INTEGER NOT NULL,session_id INTEGER NOT NULL,message_id TEXT NOT NULL,
+      event_sequence INTEGER NOT NULL,event_id TEXT NOT NULL,
+      PRIMARY KEY(generation,session_id,message_id,event_sequence)
+    );
+    CREATE INDEX IF NOT EXISTS presentation_owner_versions_delta
+      ON presentation_owner_message_versions(generation,session_id,event_sequence);`);
+  const hadEntryKind=(prepared.query('PRAGMA table_info(presentation_messages)').all() as {name:string}[])
+    .some(column=>column.name==='entry_kind');
+  if(!hadEntryKind){
+    prepared.exec("ALTER TABLE presentation_messages ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'other'");
+    prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
+  }
+  const hadRequestRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='request_roots_version');
+  if(!hadRequestRoots)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN request_roots_version INTEGER NOT NULL DEFAULT 0');
+  prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
+    ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
+  const search=new PreparedSearchIndex(prepared);
+  const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
+    {...row,native_metadata_json:row.native_metadata_json??'{}'}));
+  const receipts=new PreparedReceipts(source,prepared);
+  const topics=new PreparedTopics(source,prepared);
+  const labRequests=new PreparedLabRequests(source,prepared);
+  return {search,cards,receipts,topics,labRequests};
+}).immediate();
+writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'ready',worker_pid:process.pid,
+  elapsed_ms:Math.round(performance.now()-schemaStarted)}));
 const leaseToken=randomUUID();
 const leaseTimeoutMs=10_000;
 function claimLease():boolean {
