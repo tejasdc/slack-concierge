@@ -578,6 +578,9 @@ no unlocked interval between the two migrations. On October 10 this reservation
 was observed competing with live owner writes, so schema migration now requires the
 coordinator fully stopped after the existing admission drain. Backup and candidate
 building remain online; execution hosts remain alive and are adopted on startup.
+In the same stopped window, before migration, the runner moves the ledger onto its own
+filesystem once remote-box has mounted it, and does nothing on every later update; see
+[ledger durability](../architecture/LEDGER-DURABILITY.md#the-ledgers-own-filesystem).
 Standalone deployment commands
 also no longer initialize unrelated application schema merely to read or update
 deployment ownership. Journald remains the source for the exact SQLite error and

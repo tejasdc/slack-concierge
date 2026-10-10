@@ -169,7 +169,8 @@ authorization or a change to the default rapid-iteration policy.
   are release gates. See [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   Ledger commits on the owner's loop never wait for the disk: two worker threads sync and checkpoint the log,
   and command answers, provider input and peer requests await `ledgerDurable()` until their rows are on disk;
-  see [ledger durability](docs/architecture/LEDGER-DURABILITY.md).
+  see [ledger durability](docs/architecture/LEDGER-DURABILITY.md). The ledger itself lives on its own
+  loop-mounted filesystem (remote-box), moved there once by the update while the coordinator is stopped.
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;

@@ -73,6 +73,32 @@ commit-sync waits left. Three causes, and what was done:
   executor) or the ledger's journal stops being shared with agents' writes (a filesystem of its
   own, for example an ext4 image on a loop device).
 
+## The ledger's own filesystem
+
+The third cause is answered by giving the ledger a journal agents never write into. remote-box
+mounts a sparse ext4 image (`/var/lib/concierge-ledger.img`, loop device with direct I/O) at
+`/var/lib/concierge-ledger` before Concierge starts (`remote-box-concierge-ledger.service`), and
+Concierge's update moves `state.db` and `meaning-index.db` there once, while its drained
+coordinator is stopped (`relocate_ledger_to_own_filesystem` in `bot/scripts/deploy.sh`): checkpoint,
+copy, `quick_check` and page count against the original, then one rename swaps each file for a
+link, with the original kept as `*.before-own-filesystem-<time>`. SQLite follows the link, so its log
+and shared-memory files live beside the real file and every reader is unchanged. The step does
+nothing when the filesystem is not mounted, when a file is still open, or when the move is done.
+The empty mount point is immutable, so with the filesystem missing the link fails to open rather
+than SQLite creating an empty ledger.
+
+Measured before moving production (2026-10-10, scratch writers with the owner's settings, run side
+by side under the same live agent load, kernel stacks sampled every 50 ms for four minutes):
+
+| | own filesystem | root filesystem |
+|---|---|---|
+| preallocated image, IO pressure 19-62% | 0.4% blocked, no journal waits, p99 2 ms, 0 writes over 1 s | 35.2% blocked, 1,397 journal waits, p99 446 ms, 5 over 1 s |
+| sparse image, IO pressure 64-66% | 2.0% blocked (dirty-page throttling only), p99 3 ms, 0 over 1 s | 52.9% blocked, 2,083 journal waits, p99 634 ms, 14 over 1 s |
+
+The image's own writes to its backing file still pass through the root filesystem, but in the loop
+device's kernel thread, not in the writer. Operation, growth and rollback are in remote-box's README
+(Concierge ledger filesystem).
+
 The rare log-rewind header sync after a complete checkpoint also remains, placed after
 quiet-disk checkpoints.
 

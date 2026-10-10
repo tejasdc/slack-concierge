@@ -1,7 +1,8 @@
 [Unit]
 Description=Concierge Slack bot
-After=network-online.target agent-inbox.service
-Wants=network-online.target agent-inbox.service
+# The ledger lives on its own loop-mounted filesystem (remote-box); start after it is mounted.
+After=network-online.target agent-inbox.service remote-box-concierge-ledger.service
+Wants=network-online.target agent-inbox.service remote-box-concierge-ledger.service
 StartLimitIntervalSec=600
 StartLimitBurst=5
 OnFailure=concierge-service-failure@%n.service
