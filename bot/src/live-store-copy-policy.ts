@@ -23,13 +23,14 @@ const BARE_STORE = /\b[\w.-]+\.db\b/;
 const STATE_DIR = /\/\.local\/state\/concierge\/?$/;
 const SQLITE_COPY = /\.(?:backup|clone|save|dump)\b|\bVACUUM\s+INTO\b/i;
 const FILE_COPY = /(?:^|[\s;&|(])(?:cp|rsync|dd|tar|install|scp)\s/;
-const SCRIPT = /(?:^|\s|["'])([^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
+const SCRIPT = /(?:^|[\s;&|])(?:[^\s"']*\/)?(?:python[\d.]*|bun|node|bash|zsh|sh)\s+(?:run\s+)?(?:--?[\w-]+\s+)*["']?([^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
+const DIRECT_SCRIPT = /(?:^|[;&|]\s*)["']?((?:\/|\.\/|\.\.\/)[^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
 const SCRIPT_COPY = /\.backup\s*\(|\b(?:copyfile|copy2|copyFileSync|copyFile|copytree)\s*\(|\bVACUUM\s+INTO\b/i;
 const REHEARSAL = /\b(?:migrate-deployment-repair|rehears\w*|.*fixture)\.[cm]?[jt]s\b|\b(?:BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i;
 
 function mentionedScripts(command: string, cwd: string): string {
   let text = '';
-  for (const match of command.matchAll(SCRIPT)) {
+  for (const match of [...command.matchAll(SCRIPT), ...command.matchAll(DIRECT_SCRIPT)]) {
     const path = resolve(cwd || '.', match[1]);
     // The reviewed snapshot entrance is allowed as an executable, never as a blanket token
     // that exempts a second command on the same line.

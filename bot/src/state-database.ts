@@ -50,7 +50,7 @@ if (testInvocation) {
 const readWorker = process.env.CONCIERGE_READ_WORKER === "1";
 const access = ledgerAccess(canonicalDir, Bun.main, readWorker);
 export const initializeLedgerSchema = access.schema;
-export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { create: !access.live || access.schema })));
+export const db = observedDatabase(ledgerWriteResults(new Database(`${canonicalDir}/state.db`, access.readonly ? { readonly: true } : { readwrite: true, create: !access.live || access.schema })));
 if (access.readonly) db.exec("PRAGMA query_only = ON");
 // Set the wait before journal_mode: that pragma itself needs SQLite's writer lock. During an
 // update restart, the retiring coordinator can still hold that lock for a moment; configuring

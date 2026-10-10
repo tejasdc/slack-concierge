@@ -39,6 +39,7 @@ try {
   const script = join(root, 'raw.py');
   writeFileSync(script, 'import sqlite3\nsrc=sqlite3.connect("/root/.local/state/concierge/state.db")\nsrc.backup(dst)\n');
   assert(liveStoreCopyRefusal(`python3 ${script}`));
+  assert.equal(liveStoreCopyRefusal(`sed -n '1,95p' ${script}`), null);
   assert.equal(liveStoreCopyRefusal('python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py /root/.local/state/concierge/state.db /tmp/new.db'), null);
   assert.equal(liveStoreCopyRefusal('sqlite3 -readonly /root/.local/state/concierge/state.db "select 1"'), null);
 
@@ -72,6 +73,14 @@ try {
       assert.equal(compiled.exitCode,1,compiled.stderr.toString());
       assert(compiled.stdout.length,compiled.stderr.toString());
       assert.equal(JSON.parse(compiled.stdout.toString()).status,'missing');
+      // A writing helper also has to open an existing database without CREATE. An unknown
+      // command opens the connection but makes no mutation while our writer is held.
+      const writing = Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
+        '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
+        '--',process.execPath,join(control,'release-manager.js'),'fixture-unknown-command'],
+        {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
+      assert.equal(writing.exitCode,1,writing.stderr.toString());
+      assert.match(JSON.parse(writing.stdout.toString()).error,/usage: release-manager/);
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {
