@@ -313,7 +313,10 @@ export class PreparedTopics {
  private writeAttention(generation:number,scope:string,topicId:string|null,need:any){
   const value=Buffer.byteLength(json(need))<=4096?need:{...need,question:preview(need.question??''),reads:[],
    detailRef:this.retain(need),coverage:{complete:false,code:'attention_preview'}};
-  this.prepared.query('INSERT INTO presentation_inbox_attention VALUES(?,?,?,?,?,?,?)')
+  // The same question can move between topics before both dirty topics are rebuilt.
+  this.prepared.query(`INSERT INTO presentation_inbox_attention VALUES(?,?,?,?,?,?,?)
+   ON CONFLICT(generation,scope,event_id) DO UPDATE SET topic_id=excluded.topic_id,
+    need_generation=excluded.need_generation,order_key=excluded.order_key,value_json=excluded.value_json`)
    .run(generation,scope,need.eventId,topicId,need.generation??0,`${String(need.generation??0).padStart(16,'0')}:${need.eventId}`,json(value));
  }
  activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1,retained_after=0,inbox_session=? WHERE singleton=1').run(generation,sourceHead,this.inboxSession());}

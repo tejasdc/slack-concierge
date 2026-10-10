@@ -80,6 +80,8 @@ contains at most twenty items; large exact text is retrieved only through explic
 digest-addressed parts. Missing prepared values report indexing rather than returning a
 false empty result. Topic timelines combine prepared message and management displays,
 without parsing retained canonical event bodies on the request thread.
+An attention item keeps one identity while its question moves between topics; preparing
+the new topic updates that item before the old topic is refreshed.
 
 Legacy topic GET entrances resolve to these same prepared reads, so an older caller cannot
 reactivate full-history reconstruction. Agent `topics read` returns a bounded overview;
