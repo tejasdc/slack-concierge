@@ -201,3 +201,18 @@ whose `recover` then ran clean at 14:06:07, so the next start uses fixed control
 Until a release containing `5df2d22a` is current, the minute-by-minute native
 continuation bundled in `6f67b686` keeps failing with the same `SQLITE_MISUSE`.
 This entry's push is the fresh run that installs it.
+
+The repair continuation found that a fresh push alone was insufficient: the normal runner
+also calls `restore-lkg` before candidate startup, which restored the old controller pointer
+again. Normal restores now retain the verified controller (`--keep-control`), while explicit
+full-controller recovery keeps its separate behavior. A failed candidate remains failed;
+application activation, controller selection and final promotion are separate evidence.
+
+At 18:09:49 UTC a background-wait ledger update failed with `database is locked` on the
+rolled-back application. At 18:11:37 UTC a kernel sample directly caught an old agent's
+archive release fixture holding live SHM writer byte 120 for 1.158 seconds. Its provider
+inherited the production state setting, and its static import reached the ledger before
+selecting scratch state. That agent's earlier build overlapped the 18:09 failure; the exact
+18:09 holder was not sampled. The installed machine guard now refuses the observed code
+launches for inherited-live configurations and directs them to a sealed command that hides
+live state before execution. Candidate builds already use the same operating-system boundary.

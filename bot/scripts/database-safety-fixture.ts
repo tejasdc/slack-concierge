@@ -81,6 +81,15 @@ try {
         {env,stdout:'pipe',stderr:'pipe',timeout:3_000});
       assert.equal(writing.exitCode,1,writing.stderr.toString());
       assert.match(JSON.parse(writing.stdout.toString()).error,/usage: release-manager/);
+      // The repair supervisor is another legitimate writer, but must never initialize schema.
+      // Exercise just its entrypoint policy, without starting a repair agent.
+      const repair = join(control,'deployment-repair.js');
+      writeFileSync(repair,`import {ledgerAccess} from ${JSON.stringify(join(import.meta.dir,'../src/ledger-access-policy.ts'))}; console.log(JSON.stringify(ledgerAccess(process.env.CONCIERGE_STATE_DIR,import.meta.path,false)));`);
+      const repairPolicy=Bun.spawnSync(['/usr/bin/bwrap','--die-with-parent','--bind','/','/','--dev','/dev',
+        '--bind',root,join(homedir(),'.local/state/concierge'),'--unshare-user','--uid','0','--gid','0','--cap-drop','ALL',
+        '--',process.execPath,repair],{env,stdout:'pipe',stderr:'pipe',timeout:3_000});
+      assert.equal(repairPolicy.exitCode,0,repairPolicy.stderr.toString());
+      assert.deepEqual(JSON.parse(repairPolicy.stdout.toString()),{live:true,schema:false,readonly:false});
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {

@@ -506,7 +506,7 @@ cleanup_failed_deployment() {
 handoff_failed_deployment_to_repair() {
   local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
   local incident_output incident_id unit_name repair_status restored_health=0
-  lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg 2>/dev/null) || return 1
+  lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
   failed_commit=${FAILED_CANDIDATE_COMMIT:-${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}}
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
@@ -613,7 +613,7 @@ install_deployment_runtime() {
 }
 
 require_last_known_good_release() {
-  if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg >/dev/null; then
+  if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control >/dev/null; then
     echo "DEPLOY FAILED: no verified immutable last-known-good release exists. Run the documented one-time trusted-root repair cutover before deploying a candidate." >&2
     return 1
   fi
@@ -795,13 +795,13 @@ restore_last_known_good_and_start_repair() {
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
   restore_line=$((LINENO + 1))
-  restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg) || {
+  restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control) || {
     restore_status=$?
     record_deployment_ambiguity \
       "Candidate failed and no last-known-good release could be restored. $failure_error" \
       "The failed candidate could not be rolled back to the last-known-good release, so the live outcome could not be proven." \
       "$restore_status" \
-      "$RELEASE_MANAGER_SCRIPT restore-lkg" \
+      "$RELEASE_MANAGER_SCRIPT restore-lkg --keep-control" \
       "$restore_line"
     return 1
   }
@@ -1152,7 +1152,7 @@ control_recovery_failed() {
   set +e
   recovery_error="Controller recovery stopped at $CURRENT_DEPLOY_STAGE (exit $code)."
   if [ "$CONTROL_RECOVERY_ACTIVATED" = 1 ]; then
-    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && restart_unit "$SERVICE" && probe_service; then
+    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control && restart_unit "$SERVICE" && probe_service; then
       release_deployment_gate
     else
       recovery_error="$recovery_error Healthy release restoration requires explicit recovery."
@@ -1193,7 +1193,7 @@ recover_control() {
   hold_capture_gate
   if [ -n "$prior_activation" ]; then
     CONTROL_RECOVERY_ACTIVATED=1
-    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg
+    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control
     restart_unit "$SERVICE"
     probe_service
   fi

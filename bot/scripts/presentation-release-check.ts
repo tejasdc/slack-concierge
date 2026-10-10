@@ -18,6 +18,8 @@ if(loggingGuard.exitCode!==0)throw new Error(`Logging source guard failed: ${log
 const ledgerConstructors=checkLedgerConstructors(root);
 const safety=Bun.spawnSync([process.execPath,join(import.meta.dir,'database-safety-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(safety.exitCode!==0)throw new Error(`Database safety check failed: ${safety.stderr.toString().slice(-3000)}`);
+const runningGuard=Bun.spawnSync([process.execPath,join(import.meta.dir,'live-store-copy-guard-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:10_000});
+if(runningGuard.exitCode!==0)throw new Error(`Running agent copy guard failed: ${runningGuard.stderr.toString().slice(-3000)}`);
 const acceptance=Bun.spawnSync([process.execPath,join(import.meta.dir,'accepted-input-admission-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(acceptance.exitCode!==0)throw new Error(`Accepted input check failed: ${acceptance.stderr.toString().slice(-3000)}`);
 const scanner=new Bun.Transpiler({loader:'ts'});

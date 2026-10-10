@@ -17,14 +17,14 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const name = basename(main).replace(/\.[cm]?[jt]s$/, '');
   const readCommands: Record<string, readonly string[]> = {
     'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control'],
-    'deploy-state': ['status', 'get', 'active'],
+    'deploy-state': ['show', 'desired', 'repair-show'],
   };
   const readonly = readWorker || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
-  const command = new Set(['deploy-state', 'release-manager', 'recover-deployment', 'session-turn-queue',
+  const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',
     'native-pipeline-continuation', 'clear-stale-account-notices', 'repair-inbox-needs']);
   const schema = !readonly && (!live && !command.has(name) || name === 'index' || name === 'migrate-deployment-repair');
   if (live) {
-    const owners = new Set(['index', 'migrate-deployment-repair', 'deploy-state', 'release-manager',
+    const owners = new Set(['index', 'migrate-deployment-repair', 'deploy-state', 'release-manager', 'deployment-repair',
       'recover-deployment', 'session-turn-queue', 'native-pipeline-continuation',
       'clear-stale-account-notices', 'repair-inbox-needs', 'native-read-worker',
       'provider-history-page-worker', 'provider-history-sync-worker']);

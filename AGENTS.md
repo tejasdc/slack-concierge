@@ -179,6 +179,8 @@ authorization or a change to the default rapid-iteration policy.
   see [startup transaction ownership](docs/architecture/STORAGE-OBSERVATION.md#startup-transaction-ownership).
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
   an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.
+  The installed machine command check refuses raw live-store copies even for older running agents;
+  its safety check is independent of their pinned session hooks. See [database operations](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
   The same catalogue document owns the release gates.
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.

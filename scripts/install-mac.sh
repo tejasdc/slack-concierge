@@ -77,9 +77,11 @@ install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actio
 # v2 also follows shared Codex turns; Concierge reads that itself before letting an update proceed
 # past one (hook-pins.ts), and a terminal run installs it when only v1 is present.
 hooks_per_run() { grep -Eqs '# dispatch: per-run v[12]$' /etc/codex/hooks/concierge-owed-reply \
-  && grep -Eqs '# dispatch: per-run v[12]$' /etc/codex/hooks/concierge-history-guard; }
+  && grep -Eqs '# dispatch: per-run v[12]$' /etc/codex/hooks/concierge-history-guard \
+  && grep -Fqs '# current-live-store-copy v1' /etc/codex/hooks/concierge-history-guard; }
 hooks_current() { grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-owed-reply \
-  && grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-history-guard; }
+  && grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-history-guard \
+  && grep -Fqs '# current-live-store-copy v1' /etc/codex/hooks/concierge-history-guard; }
 if hooks_current && grep -Fqs "dir='$REPO/bot'" /etc/codex/hooks/concierge-owed-reply \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-history-guard"' /etc/codex/requirements.toml \
