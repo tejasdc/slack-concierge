@@ -109,3 +109,13 @@ on this first upgrade. The next normal documentation delivery will exercise the 
 controller's readonly backup → coordinator stop → schema-only → start ordering.
 Final live evidence will be retained in the directly dispatched report and journal;
 do not issue another rollout only to commit a final timestamp.
+
+The documentation rollout `86f4679d-2711-4495-ac12-e5436bc14839` completed the
+new read-only backup at 12:55:41 but refused activation at 12:57:41. The sealed
+application check's disposable topic-owner initialization took 41.84 seconds and
+both lifecycle fixtures hit their existing 45-second deadlines. Full host I/O
+pressure was about 39%; no lock or corruption error was recorded. The runner
+released both gates and retained the healthy repaired invocation; it never stopped
+the coordinator. Pressure subsequently fell below 7% without this task stopping
+another agent. This evidence delivery permits a normal fresh candidate assessment
+under the changed resource conditions, with all deadlines and checks unchanged.
