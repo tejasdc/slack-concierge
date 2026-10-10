@@ -22,6 +22,7 @@ import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './s
 import {noticeTime} from './provider-free-notice';
 import {answerNotice,requestLabel} from './session-notices';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
+import {ledgerDurable} from './ledger-durability-barrier';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -67,6 +68,8 @@ export class PeerClient {
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
   async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal):Promise<T> {
     let response:Response;
+    // A request to the peer carries ledger facts (its request, its answer); they reach the disk first.
+    if(method==='POST')await ledgerDurable();
     try {
       response=await fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
     } catch(error) {

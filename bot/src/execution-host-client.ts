@@ -14,6 +14,7 @@ import type { ClaudeCodeTransport, TransportFrameMeta } from "./claude-code";
 import { RETRY_POLICIES } from "./retry-policies";
 import { nextRetry } from "./retry-core";
 import { log } from "./log";
+import { ledgerDurable } from "./ledger-durability-barrier";
 
 import HOST_PROTOCOLS from "./host-protocols.json";
 /**
@@ -164,7 +165,9 @@ export class HostConnection {
   command(message: { op: string; id: string; [key: string]: unknown }): Promise<any> {
     return new Promise((resolve, reject) => {
       this.waiting.set(message.id, { resolve, reject });
-      try { this.send(message); } catch (error) { this.waiting.delete(message.id); reject(error as Error); }
+      // What the provider is told rests on ledger rows (its turn, its input); they reach the disk
+      // first. The barrier releases in call order, so commands keep their order.
+      void ledgerDurable().then(() => this.send(message)).catch(error => { this.waiting.delete(message.id); reject(error as Error); });
     });
   }
 
@@ -234,6 +237,8 @@ export async function startHost(input: {
   } catch (error) { throw new HostNotStartedError(error instanceof Error ? error.message : String(error)); }
   const runtime = input.runtime ?? process.execPath;
   const unit = executionUnit(input.executionId);
+  // The execution record and its turn must be on disk before a host can start working on them.
+  await ledgerDurable();
   if (process.platform === "linux") {
     const result = await supervisorCommand("systemd-run", [
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",

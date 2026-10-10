@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {ledgerDurable} from './ledger-durability-barrier';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -792,6 +793,9 @@ export class SessionExecutionHost {
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
         run:async prepared=>{
+          // The claimed turn, its execution record and its input are on disk before any provider
+          // (Claude, Codex or ChatGPT) is started or told anything.
+          await ledgerDurable();
           let actual=prepared;
           // New Codex turns always use the shared daemon. Retain the old host path only
           // to finish an execution recorded before this change.

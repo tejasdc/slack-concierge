@@ -9,6 +9,8 @@ import type {SessionOwner} from './session-owner';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
+import {ledgerDurable} from './ledger-durability-barrier';
+import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
 
 /** Routes shared by the root-only owner socket and the authenticated peer listener. */
 const startedAt=new Date().toISOString();
@@ -81,7 +83,7 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
       if(request.method==='POST'&&url.pathname==='/internal/auth-refresh'&&owner)
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
-        return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters()});
+        return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
         const input=await request.json() as any;
         if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');
@@ -105,11 +107,19 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
   const path = join(stateDir, "request-owner.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
   await removeUnboundSocket(path);
+  const handle=localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner);
   const server = Bun.serve({
     unix: path,
     idleTimeout: 0,
-    fetch: localOwnerRequestApiHandler(requestApiHandler(coordinator,workspaceUrl,sessions,owner),sessions,owner),
+    // A command's answer is its receipt, so it leaves only once the rows it reports are on disk.
+    // Reads answer at once: the supervisor's liveness ping must never wait for the disk.
+    fetch: async request=>{
+      const response=await handle(request);
+      if(request.method!=='GET')await ledgerDurable();
+      return response;
+    },
   });
+  const stopDurability=owner?startLedgerDurability(stateDir):()=>{};
   let stopPresentation:ReturnType<typeof startPresentationWorker>|undefined;
   let stopGateway:((force?:boolean)=>Promise<void>)|undefined;
   try {
@@ -129,11 +139,12 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
   } catch(error) {
     await server.stop(true);
     await stopPresentation?.();
+    stopDurability();
     throw error;
   }
   let stopping:Promise<void>|null=null;
   return {stop:(closeActiveConnections=false)=>stopping??=(async()=>{
     try {await stopGateway?.(closeActiveConnections);await server.stop(closeActiveConnections);}
-    finally {await stopPresentation?.();}
+    finally {await stopPresentation?.();stopDurability();}
   })()};
 }

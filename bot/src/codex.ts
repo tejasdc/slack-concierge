@@ -14,6 +14,7 @@ import { assertUsageAvailable, codexUsageReset, recordUsageExhaustion, recordUsa
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { SubprocessClaudeCodeTransport, type ClaudeCodeTransport, type TransportFrameMeta } from "./claude-code";
 import { webActivityDetails } from "./agent-progress";
+import { ledgerDurable } from "./ledger-durability-barrier";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
   CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
 
@@ -563,7 +564,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const pendingRequests = new Map<number, {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
-    timeout: ReturnType<typeof setTimeout>;
+    timeout: ReturnType<typeof setTimeout> | undefined;
     onAccepted?: (value: any) => void;
   }>();
   // An adopted run's predecessor's requests, by id, so their answers in the replay are understood.
@@ -598,8 +599,11 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   let resolveWriter!: () => void;
   const writerReady = new Promise<void>((resolve) => { resolveWriter = resolve; });
 
-  const writeMessage = async (message: unknown, meta?: TransportFrameMeta) => {
+  const writeMessage = async (message: unknown, meta?: TransportFrameMeta, beforeWrite?: () => void) => {
     await writerReady;
+    // Turn and steering rows reach the disk before Codex is told; the barrier keeps call order.
+    await ledgerDurable();
+    beforeWrite?.();
     if (processClosed || !writeLine) throw new Error("codex app-server stdin is closed");
     await writeLine(`${JSON.stringify(message)}\n`, meta);
   };
@@ -607,17 +611,22 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const request = (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
     const id = ++requestId;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      pendingRequests.set(id, { resolve, reject, timeout: undefined, onAccepted });
+      // Codex's answer time starts when the request is written, not while the ledger reaches disk:
+      // a timeout here reads as an ambiguous send, and nothing has been sent yet.
+      const armTimeout = () => {
         const pending = pendingRequests.get(id);
         if (!pending) return;
-        pendingRequests.delete(id);
-        pending.reject(new Error(`codex app-server ${method} timed out after ${requestTimeoutMs}ms`));
-      }, requestTimeoutMs);
-      pendingRequests.set(id, { resolve, reject, timeout, onAccepted });
+        pending.timeout = setTimeout(() => {
+          if (pendingRequests.get(id) !== pending) return;
+          pendingRequests.delete(id);
+          pending.reject(new Error(`codex app-server ${method} timed out after ${requestTimeoutMs}ms`));
+        }, requestTimeoutMs);
+      };
       const meta: TransportFrameMeta | undefined = method === "turn/steer" && typeof (params as any)?.clientUserMessageId === "string"
         ? { kind: "steering", clientMessageId: (params as any).clientUserMessageId, commandId: `steer-${(params as any).clientUserMessageId}` }
         : method === "turn/interrupt" ? { kind: "interrupt" } : undefined;
-      void writeMessage({ method, id, params }, meta).catch((error) => {
+      void writeMessage({ method, id, params }, meta, armTimeout).catch((error) => {
         const pending = pendingRequests.get(id);
         if (pending) clearTimeout(pending.timeout);
         pendingRequests.delete(id);
@@ -1102,6 +1111,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     params: unknown,
     onAccepted?: (value: any) => void,
   ) => {
+    // Turn and steering rows reach the disk before Codex is told, and before the answer timer
+    // starts; the barrier releases in call order, so requests keep theirs.
+    await ledgerDurable();
     const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
     resetInactivityTimeout();
     return result;

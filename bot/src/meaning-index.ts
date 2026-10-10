@@ -1,5 +1,5 @@
 import {spawn,type ChildProcess} from 'node:child_process';
-import {existsSync} from 'node:fs';
+import {existsSync,rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {inflateRawSync} from 'node:zlib';
 import {Database} from 'bun:sqlite';
@@ -108,23 +108,38 @@ export function meaningText(text:string) {
 type Row={key:string;target:MeaningHit['target'];text:string;at:string|null};
 
 export class MeaningIndex {
-  private readonly store:Database;
+  private store!:Database;
   private readonly engine=new EmbeddingEngine();
   private keys:string[]=[];private rowOf=new Map<string,number>();private scales:number[]=[];private matrix=new Int8Array(DIMENSIONS*4096);private count=0;
   private targets:MeaningHit['target'][]=[];private texts:string[]=[];private times:(string|null)[]=[];
   private searching=0;
   private timer:ReturnType<typeof setTimeout>|null=null;private caughtUp=false;private stopped=false;private failure:string|null=null;
   constructor(path:string,private readonly titleOf:(sessionId:number)=>string|null) {
-    this.store=new Database(path,{create:true});
-    this.store.exec(`PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS passages(key TEXT PRIMARY KEY,target_json TEXT NOT NULL,text TEXT NOT NULL,at TEXT,scale REAL NOT NULL,vector BLOB NOT NULL) STRICT;
-      CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;`);
-    if(this.watermark('ledger-format')!==LEDGER_FORMAT){
-      // Ledger passages are a rebuildable cache; re-read them under the current crediting rule.
-      this.store.exec("DELETE FROM passages WHERE key LIKE 'input:%' OR key LIKE 'said:%'");
-      this.setWatermark('ledger','0');this.setWatermark('ledger-format',LEDGER_FORMAT);
+    // The index is derived from the ledger and rebuilt from it, so its commits never wait for the
+    // disk: a sync here ran on the owner's event loop and stalled it under agent disk load
+    // (2026-10-10). A power loss can then leave it unreadable, which is answered by rebuilding.
+    for(let attempt=0;;attempt++) {
+      this.store=new Database(path,{create:true});
+      try {
+        this.store.exec('PRAGMA synchronous=OFF');
+        this.store.exec(`PRAGMA journal_mode=WAL;
+          CREATE TABLE IF NOT EXISTS passages(key TEXT PRIMARY KEY,target_json TEXT NOT NULL,text TEXT NOT NULL,at TEXT,scale REAL NOT NULL,vector BLOB NOT NULL) STRICT;
+          CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;`);
+        if(this.watermark('ledger-format')!==LEDGER_FORMAT){
+          // Ledger passages are a rebuildable cache; re-read them under the current crediting rule.
+          this.store.exec("DELETE FROM passages WHERE key LIKE 'input:%' OR key LIKE 'said:%'");
+          this.setWatermark('ledger','0');this.setWatermark('ledger-format',LEDGER_FORMAT);
+        }
+        for(const row of this.store.query('SELECT key,target_json,text,at,scale,vector FROM passages').all() as any[])this.remember(row.key,JSON.parse(row.target_json),row.text,row.at,new Int8Array(row.vector),row.scale);
+        break;
+      } catch(error) {
+        this.store.close();
+        if(attempt)throw error;
+        log('warn','meaning_index_rebuilt',{reason:error instanceof Error?error.message:String(error)});
+        for(const suffix of ['','-wal','-shm'])rmSync(path+suffix,{force:true});
+        this.keys=[];this.rowOf=new Map();this.scales=[];this.count=0;this.targets=[];this.texts=[];this.times=[];
+      }
     }
-    for(const row of this.store.query('SELECT key,target_json,text,at,scale,vector FROM passages').all() as any[])this.remember(row.key,JSON.parse(row.target_json),row.text,row.at,new Int8Array(row.vector),row.scale);
   }
   get installed(){return this.engine.installed();}
   private remember(key:string,target:MeaningHit['target'],text:string,at:string|null,values:Int8Array,scale:number) {
