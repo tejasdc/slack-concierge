@@ -1,5 +1,6 @@
 import { db } from "./state-database";
 import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import { log } from "./log";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
@@ -43,9 +44,33 @@ let episodeStartedAt: number | null = null;
 let lastBadAt = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * A laptop that sleeps is not a frozen owner. On battery the Mac sleeps and dark-wakes for upkeep
+ * about every 18 minutes; each wake reads as an 18–35 s stall with almost no CPU, and one opened a
+ * freeze notice on 2026-10-11 at 7:00 AM. The kernel records when it last slept and woke, so a
+ * stall within a minute of either is sleep: the lag clock leaves out time asleep, and the 7:00 AM
+ * stall began 5 s after its dark wake. Only long stalls pay for the one `sysctl` read.
+ */
+const SLEEP_CHECK_MIN_MS = 5_000;
+const SLEEP_MARGIN_MS = 60_000;
+function machineSleptSince(stallStartedAt: number): boolean {
+  if (process.platform !== "darwin") return false;
+  if (Date.now() - stallStartedAt < SLEEP_CHECK_MIN_MS) return false;
+  try {
+    const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.sleeptime", "kern.waketime"], { encoding: "utf8", timeout: 2_000 });
+    return [...output.matchAll(/sec = (\d+)/g)].some(match => Number(match[1]) * 1000 >= stallStartedAt - SLEEP_MARGIN_MS);
+  } catch {
+    return false;
+  }
+}
+
 /** One late tick of the owner's 250 ms timer: the loop was held for `ms`, `cpuMs` of it on the processor. */
 export function noteOwnerStall(ms: number, cpuMs: number | null = null): void {
   const now = Date.now();
+  if (machineSleptSince(now - ms)) {
+    log("info", "owner_stall_was_machine_sleep", { lag_ms: ms });
+    return;
+  }
   stalls.push({ at: now, ms, cpuMs });
   trim(now);
   // A long freeze ends with this tick; judge it now rather than a minute later.
