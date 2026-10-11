@@ -280,6 +280,26 @@ A running turn holds an update only if it would end with the coordinator. One ru
 
 ## Shutdown
 
+### Agent browser process ownership
+
+The `agent-browser` CLI detaches a controller and Chrome processes. A Codex tool launched
+through the shared App Server leaves that controller in the server's long-lived cgroup,
+so ending an agent turn does not end its browser. On October 11, 2026, 26 controllers
+from completed native turns held hundreds of processes until their exact run identities
+were matched and stopped.
+
+The existing Stop hook closes only agent-browser controller and Chrome executables whose
+process environment carries the native run ID the owner returned, or the Codex conversation
+ID in the hook input. It acts only when the turn may stop: a blocked reply reminder keeps
+its browser, as does a reported background task. This uses the existing trusted hook
+instead of a periodic process killer, and does not touch other runs' browsers or the
+shared App Server. A process that outlives a crashed or unhooked run remains visible to
+the host's aged-controller alert for owner investigation; the host observer never kills it.
+
+The host side exports processor wait and aged detached-controller counts. Its overload
+alert enters the standing Repair agent queue through the allowlisted Grafana condition;
+the alert's browser count is evidence to investigate, not proof a live browser is orphaned.
+
 Server (`drainAndStop`) waits only for turns that end with the process (`turnsThatEndWithThisProcess`)
 and exits; the Mac composition does not cancel hosted turns. Until the update gate is removed (design
 step 7) the deployment still waits for idle, so this matters for restarts outside deployments now and

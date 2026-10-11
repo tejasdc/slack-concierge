@@ -9,6 +9,7 @@ export const GRAFANA_CONDITIONS: Readonly<Record<string, string>> = {
   ThinkeringExternalUnavailable: "Thinkering HTTPS is unavailable or its external observations stopped.",
   ThinkeringBackupStale: "Thinkering backup success is stale or its evidence is unreadable.",
   AX41ResourcePressure: "AX41 has sustained disk, inode or memory pressure.",
+  AX41AgentWorkOverloaded: "AX41 has sustained queued work, processor wait or aged detached agent browsers.",
   ConciergeDegraded: "Concierge has sustained slow requests, blocked owner work or memory pressure.",
   ConciergeObservationUnavailable: "Concierge resource or latency evidence is missing or stale.",
   AX41JournalNotRecording: "The host journal is not recording its own heartbeat.",

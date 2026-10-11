@@ -35,6 +35,11 @@ restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/run
 
 Server application logs use a bounded stdout/stderr sink; its loss counters and standalone
 socket-pause check are described in [Bounded application logging](docs/architecture/BOUNDED-APPLICATION-LOGGING.md).
+The end-of-turn hook closes agent-browser processes carrying that exact run or Codex
+conversation identity after the agent is allowed to finish; a blocked turn keeps its
+browser. The host overload alert enters the standing repair queue. See
+[agent browser ownership](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
+and [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
 
 ## Current delivery policy
 

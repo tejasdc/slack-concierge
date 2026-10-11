@@ -17,6 +17,10 @@ alert. The old Slack design is historical reference only.
   external work-flow supervisor. Their Grafana receipt is retained, but firing/recovery
   do not write a human notice or a competing repair notice. The external occurrence
   owns investigation, terminal handoff and the existing unsolved escalation path.
+- `AX41AgentWorkOverloaded` enters the standing Repair agent's ordinary alert queue. Its
+  aged browser count identifies candidates, not confirmed orphans; the investigator
+  matches each process to its agent run before stopping it. This separate alert has a
+  two-minute hold so queued work is noticed before the fifteen-minute reserve warning.
 - Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
   thread, repair notice, or investigator starts.
 

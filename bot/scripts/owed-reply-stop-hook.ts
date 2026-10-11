@@ -21,6 +21,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
 import { requestApiResponse } from './router-request-client';
 import { RETRY_POLICIES } from '../src/retry-policies';
 
@@ -29,12 +30,34 @@ let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
 const conversation = typeof hook.session_id === 'string' ? hook.session_id : null;
 if (!provider || !conversation || (Array.isArray(hook.background_tasks) && hook.background_tasks.length)) process.exit(0);
+
+// agent-browser detaches its controller from a tool command, so the shared Codex daemon's
+// cgroup retains Chrome after the turn. The provider conversation (Codex) or the owner's exact
+// native run (Claude) is carried into that controller's environment. Stop only processes bearing
+// that identity, after the turn is allowed to finish; a blocked Stop still owns its browser.
+function closeRunBrowsers(runId: string | null) {
+  if (process.platform !== 'linux') return;
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    try {
+      const executable = readFileSync(`/proc/${pid}/cmdline`).toString().split('\0')[0];
+      if (executable !== '/usr/lib/node_modules/agent-browser/bin/agent-browser-linux-x64'
+        && !/^\/root\/\.agent-browser\/browsers\/chrome-[^/]+\/chrome(?:_crashpad_handler)?$/.test(executable)) continue;
+      const environment = readFileSync(`/proc/${pid}/environ`).toString().split('\0');
+      const owned = runId && environment.includes(`CONCIERGE_SOURCE_RUN_ID=${runId}`)
+        || provider === 'codex' && environment.includes(`CODEX_THREAD_ID=${conversation}`);
+      if (owned) process.kill(pid, 'SIGTERM');
+    } catch { /* A process may exit while /proc is being scanned. */ }
+  }
+}
 // The hook itself has 20 seconds (claude-code.ts), so a restart is waited out only within that.
 const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra }, RETRY_POLICIES.ownerRestartInHook);
 
 try {
   if (hook.stop_hook_active) {
-    await ask({ remind: true });
+    const response = await ask({ remind: true });
+    closeRunBrowsers(response.ok ? response.result?.source?.run_id ?? null : null);
     process.exit(0);
   }
   const response = await ask({});
@@ -50,6 +73,13 @@ try {
     ].join('\n') }) + '\n');
     // Only after the reminder is written: these exact requests were shown to the agent in this run.
     await ask({ offer: owed.map(request => request.request_id) });
+  } else {
+    closeRunBrowsers(source?.run_id ?? null);
   }
-} catch { /* let the turn end; a stranded request is still reported stalled */ }
+} catch {
+  // The owner may be restarting. Codex's own conversation identity is still enough to close
+  // this turn's browser; Claude has no independent identity here, so leave its process untouched.
+  if (provider === 'codex') closeRunBrowsers(null);
+  /* let the turn end; a stranded request is still reported stalled */
+}
 process.exit(0);
