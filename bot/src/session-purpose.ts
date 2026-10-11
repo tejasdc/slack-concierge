@@ -14,6 +14,12 @@ import {db,executionChanged} from './state';
  * 10 fallback copied the title into the summary, which still said nothing about the work.
  */
 export const PURPOSE_LIMIT=200;
+/** Standing sessions whose purpose is their role, not the first message they happened to receive. */
+export const INBOX_PURPOSE='Reads everything you send, files it into threads and hands each request to the agent that should do it.';
+export const REPAIR_AGENT_PURPOSE='Looks into Concierge health notices, repairs what it can and tells you only what needs you.';
+function rolePurpose(meta:{inbox?:boolean;repairAgent?:boolean}){
+  return meta.inbox?INBOX_PURPOSE:meta.repairAgent?REPAIR_AGENT_PURPOSE:undefined;
+}
 
 /** One line of at most 200 characters, cut at a word with an ellipsis, or undefined when empty. */
 export function purposeLine(value:unknown):string|undefined {
@@ -65,10 +71,10 @@ export function fillMissingSessionPurposes(stateDir:string):{written:number;from
     for(const row of rows){
       const meta=JSON.parse(row.meta||'{}');
       const stated=purposeLine(written[String(row.id)]);
-      const purpose=stated??purposeFromFirstWords(row.first)??purposeLine(meta.title??row.channel);
+      const purpose=rolePurpose(meta)??stated??purposeFromFirstWords(row.first)??purposeLine(meta.title??row.channel);
       if(!purpose||purpose===meta.summary)continue;
       db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({...meta,summary:purpose}),row.id);
-      count++;if(stated)fromFile++;
+      count++;if(stated&&purpose===stated)fromFile++;
     }
   })();
   if(count)executionChanged();

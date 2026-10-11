@@ -37,7 +37,7 @@ import {providerOwnerEnvironment} from './provider-owner-environment';
 import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
-import {purposeFromFirstWords} from './session-purpose';
+import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
@@ -951,7 +951,7 @@ export class SessionOwner {
       AND status!='archived' ORDER BY id DESC LIMIT 1`).get() as SessionRow|null;
     if(!session) {
       const {provider,...metadata}=target;
-      session=createNativeSession(provider,{title:REPAIR_AGENT_TITLE,summary:'Looks into Concierge health notices, repairs what it can and tells you only what needs you.',...metadata,repairAgent:true});
+      session=createNativeSession(provider,{title:REPAIR_AGENT_TITLE,summary:REPAIR_AGENT_PURPOSE,...metadata,repairAgent:true});
       const created=retainSessionInput({sessionId:session.id,scope:'service:repair-agent',actionId:`repair-agent:${session.id}`,kind:'create',origin:'service',
         payload:{...target,title:REPAIR_AGENT_TITLE}}).input;
       this.recordCreation(session,created,false);
@@ -1174,7 +1174,7 @@ export class SessionOwner {
     if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
     if(current?.provider_id==='claude-code'&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'&&meta.model==='opus[1m]')return current;
-    return createNativeSession('claude-code',{title:'Inbox',summary:'Reads everything you send, files it into threads and hands each request to the agent that should do it.',inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
+    return createNativeSession('claude-code',{title:'Inbox',summary:INBOX_PURPOSE,inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
   }
   inbox() {
     if(process.env.CONCIERGE_READ_WORKER==='1'){
