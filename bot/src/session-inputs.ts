@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
 import {resolveProviderDefault} from './aliases';
+import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 
@@ -89,12 +90,16 @@ export function humanNamedSession(sessionId:number):boolean {
   return !!db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND kind='action' AND origin='human'
     AND json_extract(payload_json,'$.action.kind')='title' LIMIT 1`).get(sessionId);
 }
-export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata):SessionRow {
-  // A named session always carries at least the intent expressed by its name. Request-created
-  // sessions replace this with the sender's fuller one-line summary when one was supplied.
-  const summary=metadata.summary?.trim()||metadata.title?.trim();
+/**
+ * A session exists only with its purpose (`session-purpose.ts`): the type makes every creation
+ * path state one. Paths typed loosely (peer resurrection) fall back to their name, which for a
+ * continued conversation is its opening words; a session with neither is refused.
+ */
+export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata&{summary:string|undefined}):SessionRow {
+  const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);
+  if(!summary)throw new Error('A session needs a purpose: say in one line what it is for.');
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
-    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...metadata,...(summary?{summary}:{})}));
+    VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...metadata,summary}));
   return getSessionById(Number(result.lastInsertRowid))!;
 }
 export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {

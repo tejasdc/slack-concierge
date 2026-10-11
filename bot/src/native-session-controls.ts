@@ -33,9 +33,9 @@ export function readNativeForkPin(operation: AcceptedSessionInput): NativeForkPi
  * would have given a fork of the Inbox the Inbox's own role, and a fork of a bound or
  * imported session someone else's binding and source.
  */
-export function forkedSessionMetadata(pin: NativeForkPin): NativeSessionMetadata {
+export function forkedSessionMetadata(pin: NativeForkPin): NativeSessionMetadata & { summary: string } {
   const parent = pin.metadata ?? {};
-  return { title: `Fork: ${parent.title ?? "Agent session"}`, summary: parent.summary, purpose: parent.purpose,
+  return { title: `Fork: ${parent.title ?? "Agent session"}`, summary: parent.summary ?? `Continues “${parent.title ?? "an agent session"}” separately from an earlier point.`, purpose: parent.purpose,
     cwd: parent.cwd, additionalDirs: parent.additionalDirs, project: parent.project,
     model: parent.model, reasoningEffort: parent.reasoningEffort, workflowId: parent.workflowId,
     origin: "native", suspended: false, pinned: false, saved: false, outcome: "open",

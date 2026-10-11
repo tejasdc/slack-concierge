@@ -346,6 +346,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
+import {fillMissingSessionPurposes} from './session-purpose';
 import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -524,6 +525,7 @@ sessionExecutionHost.owner.projectSetup=projectSetup;
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 installSessionProjection(sessionExecutionHost.owner);
+try {log('info','session_purposes_filled',fillMissingSessionPurposes(process.env.CONCIERGE_STATE_DIR!));} catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
 try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}

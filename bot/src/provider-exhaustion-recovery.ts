@@ -84,6 +84,7 @@ function transferSession(sessionId:number):number {
   let successor=current&&current.status!=='archived'&&!sessionMetadata(current).suspended?current:null;
   if(!successor){
     successor=createNativeSession('codex',{title:`${meta.title??'Claude work'} (continued on Codex)`,
+      summary:meta.summary??`Continues “${meta.title??'Claude work'}” on Codex while Claude's allowance is used up.`,
       purpose:meta.purpose??'develop',cwd:meta.cwd,project:meta.project??null,
       additionalDirs:meta.additionalDirs,origin:'native',recovery:{sourceAddress,reason:'claude_usage_exhausted'}});
     db.query('UPDATE sessions SET parent_session_id=?,parent_message_idx=? WHERE id=?')
