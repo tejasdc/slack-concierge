@@ -5,7 +5,7 @@ import {notificationRequest} from './session-notification-request';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
-import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
@@ -424,6 +424,8 @@ export function rebuildTopicProjections() {
 /* ------------------------------------------------------------------ mutation plumbing */
 
 type Change={kind:string;payload:any};
+const emptyRetainTiming=():RetainInputTiming=>({serializeMs:0,existingMs:0,cancellationMs:0,insertMs:0,readbackMs:0,transactionOtherMs:0});
+const roundedRetainTiming=(timing:RetainInputTiming)=>Object.fromEntries(Object.entries(timing).map(([key,value])=>[key,Math.round(value)]));
 function record(sessionId:number,inputId:string,turnId:number|null,change:Change) {
   recordSessionEvent({eventId:`topic-change:${inputId}`,sessionId,inputId,turnId:turnId??null,kind:change.kind,payload:change.payload});
   applyTopicChange(change.kind,change.payload);
@@ -433,12 +435,13 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
+  const retainTiming=emptyRetainTiming();
   let resultForTrace:T|null=null;
   let changeTopicId:string|null=null;
   try {
     const result=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
-        payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
+        payload,sourceInputId:actor.inputId,sourceRunId:actor.runId,timing:retainTiming});
       retainMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='compute';
       if(saved.duplicate){duplicate=true;phaseName='commit';return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};}
@@ -479,7 +482,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
       log('warn','inbox_topic_mutation_slow',{actor:'agent',action:typeof named?.kind==='string'?named.kind:'unknown',topic_id:topicId,
         ...(named?.kind==='topic-merge'&&typeof named.from==='string'?{source_topic_id:named.from}:{}),
         ...(named?.kind==='topic-merge'&&typeof named.into==='string'?{target_topic_id:named.into}:{}),
-        duration_ms:Math.round(totalMs),retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),
+        duration_ms:Math.round(totalMs),retain_ms:Math.round(retainMs),retain_detail_ms:roundedRetainTiming(retainTiming),compute_ms:Math.round(computeMs),
         record_ms:Math.round(recordMs),receipt_ms:Math.round(receiptMs),
         transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),duplicate,outcome:completed?'completed':'failed'});
     }
@@ -491,10 +494,11 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
+  const retainTiming=emptyRetainTiming();
   let resultForTrace:Record<string,any>|null=null;
   try {
     const result=db.transaction(()=>{
-      const saved=retainSessionInput({sessionId,scope:'surface:thinkering',actionId:clientActionId,kind:'topic-action',origin:'human',payload});
+      const saved=retainSessionInput({sessionId,scope:'surface:thinkering',actionId:clientActionId,kind:'topic-action',origin:'human',payload,timing:retainTiming});
       retainMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='compute';
       if(saved.duplicate){duplicate=true;phaseName='commit';return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};}
@@ -524,7 +528,7 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
       log('warn','inbox_topic_mutation_slow',{actor:'human',action:typeof named?.kind==='string'?named.kind:'unknown',
         topic_id:typeof named?.topicId==='string'?named.topicId:typeof createdId==='string'?createdId:null,duration_ms:Math.round(totalMs),
         ...((named?.kind==='topic-merge'||named?.kind==='topic-move')&&typeof named.action?.into==='string'?{target_topic_id:named.action.into}:{}),
-        retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),record_ms:Math.round(recordMs),
+        retain_ms:Math.round(retainMs),retain_detail_ms:roundedRetainTiming(retainTiming),compute_ms:Math.round(computeMs),record_ms:Math.round(recordMs),
         receipt_ms:Math.round(receiptMs),transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),
         duplicate,outcome:completed?'completed':'failed'});
     }

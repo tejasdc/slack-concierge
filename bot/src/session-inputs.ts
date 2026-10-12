@@ -206,32 +206,44 @@ export function recordSessionInputAttention(inputId:string) {
     return !resultNotified;
   })();
 }
-export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string}) {
- return db.transaction(()=>{
+export type RetainInputTiming={serializeMs:number;existingMs:number;cancellationMs:number;insertMs:number;readbackMs:number;transactionOtherMs:number};
+export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string;timing?:RetainInputTiming}) {
+ const started=performance.now();
+ let entered=0,exited=0;
+ const timed=<T>(key:keyof Omit<RetainInputTiming,'transactionOtherMs'>,work:()=>T):T=>{
+  if(!input.timing)return work();
+  const began=performance.now();
+  try{return work();}finally{input.timing[key]+=performance.now()-began;}
+ };
+ try{return db.transaction(()=>{
+  entered=performance.now();
+  try {
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
-  const rawPayload=stablePayload(input.payload);
+  const rawPayload=timed('serializeMs',()=>stablePayload(input.payload));
   const value=JSON.parse(rawPayload);
   const words=value?.firstInput?.text??value?.text;
   const mark=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
     ?notificationRequest(typeof words==='string'?words:''):null;
-  const payload=stablePayload(mark&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value);
-  const old=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId) as AcceptedSessionInput|null;
+  const payload=timed('serializeMs',()=>stablePayload(mark&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
+  const old=timed('existingMs',()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId)) as AcceptedSessionInput|null;
   if (old) {
     if (old.session_id!==input.sessionId || ![rawPayload,payload].includes(stablePayload(JSON.parse(old.payload_json))) || old.origin!==input.origin || old.kind!==input.kind
       || old.source_input_id!==(input.sourceInputId??null) || old.source_run_id!==(input.sourceRunId??null) || old.request_id!==(input.requestId??null)) throw new Error('Idempotency conflict: accepted action payload changed.');
     return {input:old,duplicate:true};
   }
   const id=input.id??randomUUID();
-  const cancellation=db.query('SELECT session_id,canceled_by_input_id FROM session_input_cancellations WHERE scope=? AND action_id=?')
-    .get(input.scope,input.actionId) as {session_id:number;canceled_by_input_id:string}|null;
+  const cancellation=timed('cancellationMs',()=>db.query('SELECT session_id,canceled_by_input_id FROM session_input_cancellations WHERE scope=? AND action_id=?')
+    .get(input.scope,input.actionId)) as {session_id:number;canceled_by_input_id:string}|null;
   if(cancellation&&(cancellation.session_id!==input.sessionId||input.origin!=='human'||!['input','create'].includes(input.kind)))
     throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
-  db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null);
+  timed('insertMs',()=>db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null));
   if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
     .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
-  return {input:getAcceptedSessionInput(id)!,duplicate:false};
- })();
+  return {input:timed('readbackMs',()=>getAcceptedSessionInput(id))!,duplicate:false};
+  } finally {exited=performance.now();}
+ })();}
+ finally {if(input.timing)input.timing.transactionOtherMs+=Math.max(0,performance.now()-started-(exited-entered));}
 }
 function reopenDoneSessionForExecutableInput(session:SessionRow,input:AcceptedSessionInput,turnId:number) {
   const metadata=sessionMetadata(session);
