@@ -1,0 +1,1 @@
+Google agent work now reports a blocked run when a requested action was denied, even if the agent wrote a final answer.
