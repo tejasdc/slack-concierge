@@ -1,0 +1,1 @@
+Slow Inbox topic actions now record where the delay happened, so the next pause can be traced to the exact storage step.
