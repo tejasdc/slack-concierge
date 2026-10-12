@@ -15,7 +15,8 @@ The coordinated responsiveness release follows the dependency checkpoints in
 remote-box, server Concierge, Thinkering, then the Mac, with installed-revision evidence.
 
 Concierge release commits enter `main` only after GitHub's required build and
-candidate check pass; parked autonomous repairs go to the standing repair agent.
+candidate check pass. The installed controller owns candidate-check timeouts and
+failure evidence; parked autonomous repairs go to the standing repair agent.
 See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 

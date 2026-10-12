@@ -18,16 +18,27 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 
-/**
- * What a failed isolated check says, for the run record and its repair. Bun prints an uncaught
- * error as a source excerpt, then `error: <message>`, then the message's own long tail (the
- * fixture's stderr and stdout). Cutting from either end lost the message: the start is the
- * excerpt, the end is fixture output (three updates on 2026-10-09/10 recorded no cause, and a
- * repair parked for it). The message is taken from its own line.
- */
-export function failedCheckSummary(output: string, max = 2000): string {
-  const at = output.search(/^error: /m);
-  return (at >= 0 ? output.slice(at) : output.slice(-max)).slice(0, max);
+// Normal preparation took about 47 seconds; the same check passed in 52 seconds under
+// load after a 90-second deploy timeout. Three minutes leaves room for disk contention
+// while retaining a finite guard against a stuck candidate.
+export const CANDIDATE_PRESENTATION_TIMEOUT_SECONDS = 180;
+
+export function failedCandidateCheck(result: {
+  exitCode: number | null;
+  signal?: string | number | null;
+  stdout?: string | Uint8Array | null;
+  stderr?: string | Uint8Array | null;
+  error?: Error | null;
+  timeoutSeconds?: number;
+}): string {
+  const timeout = result.timeoutSeconds &&
+    (result.exitCode === 124 || (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT');
+  const status = timeout ? `timed out after ${result.timeoutSeconds} seconds (exit status ${result.exitCode ?? 'none'})`
+    : result.signal ? `terminated by signal ${result.signal} (exit status ${result.exitCode ?? 'none'})`
+    : `exit status ${result.exitCode ?? 'none'}`;
+  const tail = (value?: string | Uint8Array | null) =>
+    Buffer.from(value ?? '').subarray(-2000).toString('utf8') || '(empty)';
+  return `${status}${result.error ? `; process error: ${result.error.message.slice(-500)}` : ''}\nstdout tail:\n${tail(result.stdout)}\nstderr tail:\n${tail(result.stderr)}`;
 }
 
 export interface ReleaseManifest {
@@ -301,13 +312,14 @@ export class TrustedRootReleaseManager {
       if(applicationDeclaration.applicationBundles.length&&!hasPresentationGate)
         throw new Error('Candidate application is missing its presentation release check.');
       const presentationCheck=hasPresentationGate?this.services.spawn(privateDatabaseCommand([
-        '/usr/bin/timeout','90','/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
+        '/usr/bin/timeout',String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
         `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
         this.environment.bunExecutable,
         join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
       ]),{cwd:join(sourceRoot,'bot')}):null;
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
-        `Candidate presentation cost check failed: ${failedCheckSummary(Buffer.from(presentationCheck.stderr).toString('utf8'))}`);
+        `Candidate presentation cost check failed: ${failedCandidateCheck({...presentationCheck,
+          timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS})}`);
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
