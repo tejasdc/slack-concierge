@@ -15,7 +15,8 @@ source.exec(`CREATE TABLE channels(slack_channel_id TEXT PRIMARY KEY,name TEXT,c
     scope TEXT DEFAULT 'surface:thinkering',action_id TEXT DEFAULT 'test',turn_id INTEGER,source_input_id TEXT,source_run_id TEXT);
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,event_id TEXT,input_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT,turn_id INTEGER);
   CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
-  CREATE TABLE session_communication_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT,target_input_id TEXT,target_session_id INTEGER,payload_json TEXT);
+  CREATE TABLE session_communication_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT,target_input_id TEXT,target_session_id INTEGER,payload_json TEXT,
+    action_id TEXT,created_at_ms INTEGER);
   CREATE TABLE session_peer_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT);
   CREATE TABLE session_external_requests(target_input_id TEXT,agent_name TEXT,text TEXT,request_id TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT,author_session_id INTEGER,reason TEXT,created_at TEXT);

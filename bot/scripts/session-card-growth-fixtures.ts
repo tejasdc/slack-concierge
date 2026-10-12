@@ -14,6 +14,12 @@ function fixture(count:number){
       saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
+    CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT);
+    CREATE INDEX session_inputs_session_kind ON session_inputs(session_id,kind);
+    CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);
+    CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,target_session_id INTEGER,
+      source_input_id TEXT,action_id TEXT,created_at_ms INTEGER);
+    CREATE INDEX session_communication_lab_target ON session_communication_requests(target_session_id,request_id);
     CREATE INDEX turns_session_latest ON turns(session_id,id DESC);
     CREATE INDEX turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
     CREATE INDEX turns_session_queued ON turns(session_id,id DESC) WHERE status='queued';

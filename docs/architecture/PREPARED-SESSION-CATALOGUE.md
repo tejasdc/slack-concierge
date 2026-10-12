@@ -64,6 +64,19 @@ and its attention membership between catalogue pages. The general presentation r
 also enforces route-specific row, result-byte and query budgets. Large canonical exports use a
 separate explicit operation; this catalogue route is never a full export.
 
+Cards also carry `touch.spokeAt` and `touch.requestedAt`, read from canonical inputs,
+author corrections and communication requests. The isolated card-growth source schema
+must include those tables and their per-session indexes even when no interaction rows
+are seeded; the standalone worker fixture also needs request action IDs and timestamps.
+Incident `33e99020-8140-447e-ac2b-6254d16f6acc` (October 12, 2026) failed candidate
+preparation because the new card projection queried `session_inputs` in the growth
+fixture's session-and-turn-only scratch database. This was a candidate-owned fixture
+schema mismatch, not evidence of a missing production table or an immutable controller
+gap. Aligning the scratch schemas preserves the projection and existing release gate;
+no production migration or missing-table fallback is needed. The autonomous repair did
+not run tests or reviews; integration and activation proof remain with the supervisor
+and detached deployment controller.
+
 The card projection must preserve the owner view's pure title and space rules; the label helper
 is shared with the existing owner. Runtime provider capabilities and selected-session obligations
 are deliberately resolved only for the exact detail requested. Any new field copied into a card
