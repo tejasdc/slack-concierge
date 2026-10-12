@@ -227,6 +227,8 @@ authorization or a change to the default rapid-iteration policy.
   It also keeps exact authenticated human commands until the canonical owner answers; a server
   custody receipt is never an owner receipt. Notification replies use the same intake, freeze their
   resolved owner target, and publish one Inbox notice if later refused. See [human command intake](docs/architecture/HUMAN-COMMAND-INTAKE.md).
+  Agent-marked Pebble delivery checks use the server-held Thinkering capture key because the
+  phone key is stored only as a verifier; see [agent test deliveries](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries).
 - An outside CLI agent uses `router-actions.sh external` for Inbox capture or an addressed request;
   its named authorship and pollable reply live in the owner ledger, with no invented requester session.
   Outside capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.

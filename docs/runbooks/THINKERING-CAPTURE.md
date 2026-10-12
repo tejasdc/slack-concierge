@@ -49,6 +49,12 @@ name and starts no Inbox turn; a reply is an agent input to its session. Naming 
 label something as an agent's, never as his. thnkr.ing refuses its agent test key without the
 header.
 
+The Pebble phone key is stored on the server as a one-way verifier, so the agent test
+entrance uses the existing server-held Thinkering capture key with its agent-source
+header. The Pebble route accepts that key only with the header; ordinary Pebble
+requests still use the phone key. The canonical owner validates the named input and
+run before it records an agent capture.
+
 His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
 the capture's recorded source or the door thnkr.ing names for its own screens.
