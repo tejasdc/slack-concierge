@@ -14,6 +14,7 @@ import {
 
 export { db } from "./state-database";
 import { survivableRunKinds as survivableRunKindsIn } from "./execution-survival";
+import { log } from "./log";
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -977,6 +978,11 @@ export function settleTurnDependencies(prerequisiteId?: number) {
   // An empty queue scan must not wake the same scanner again.
   if (changes > 0 || prerequisiteId !== undefined) executionChanged();
   return changes;
+}
+
+/** A claim only needs the selected turn's settled prerequisites, not a ledger-wide sweep. */
+function settleSelectedTurnDependencies(turnId: number) {
+  db.query(`${settleDependenciesSql} AND turn_id=?`).run(turnId);
 }
 
 export function hasUnsettledTurnDependencies(turnId: number): boolean {
@@ -5176,14 +5182,19 @@ export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly n
 }
 
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
-  return db.transaction(() => {
-    settleTurnDependencies();
+  const started = performance.now();
+  let survivabilityMs = 0, candidateMs = 0, dependencyMs = 0, mutationMs = 0, projectionMs = 0;
+  let outcome: 'empty' | 'claimed' | 'archived' | 'declined' | 'error' = 'error';
+  try { return db.transaction(() => {
     // While an update is being installed, only runs that are proven to survive the coordinator's
     // restart start; everything else waits for the install, as before. A model reply is never
     // held for an update when its kind can carry on through it.
+    let phase = performance.now();
     const survivable = currentClaimSurvivability();
-    if (survivable && !survivable.claude && !survivable.codexShared) return null;
+    survivabilityMs += performance.now() - phase;
+    if (survivable && !survivable.claude && !survivable.codexShared) { outcome='declined'; return null; }
     while (true) {
+      phase = performance.now();
       const candidate = db.query(`
         SELECT turn.id AS turn_id, turn.session_id, session.status AS session_status
         FROM turns turn
@@ -5192,9 +5203,15 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         ORDER BY turn.id
         LIMIT 1
       `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable)) as { turn_id: number; session_id: number; session_status: string } | null;
-      if (!candidate) return null;
+      candidateMs += performance.now() - phase;
+      if (!candidate) { outcome='empty'; return null; }
+
+      phase = performance.now();
+      settleSelectedTurnDependencies(candidate.turn_id);
+      dependencyMs += performance.now() - phase;
 
       if (candidate.session_status === "archived") {
+        phase = performance.now();
         const terminalStatusText = `Status: error - ${ARCHIVED_QUEUED_TURN_ERROR}`;
         const terminalized = db.query(`
           UPDATE turns
@@ -5210,9 +5227,12 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           throw new Error(`Archived queued turn ${candidate.turn_id} could not be terminalized.`);
         }
         queueTurnReactionCleanup(candidate.turn_id);
+        mutationMs += performance.now() - phase;
+        outcome='archived';
         continue;
       }
 
+      phase = performance.now();
       const claimed = db.query(`
         UPDATE turns
         SET status='running', owner_instance_id=?, dispatch_attempt=dispatch_attempt+1,
@@ -5246,15 +5266,29 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
               AND artifact.status IN ('pending', 'sending')
           )
       `).run(ownerInstanceId, candidate.turn_id);
-      if (claimed.changes !== 1) return null;
+      mutationMs += performance.now() - phase;
+      if (claimed.changes !== 1) { outcome='declined'; return null; }
+      phase = performance.now();
       restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);
       requestTurnWaitingReaction(candidate.turn_id, false);
       db.query(`UPDATE sessions SET status='running', last_turn_at=CURRENT_TIMESTAMP
                 WHERE id=?`).run(candidate.session_id);
 
+      projectionMs += performance.now() - phase;
+      outcome='claimed';
       return queuedTurnClaimRow(candidate.turn_id)!;
     }
-  })();
+  })(); }
+  finally {
+    const totalMs = performance.now() - started;
+    if (totalMs >= 100) log('warn','session_turn_claim_slow',{
+      duration_ms:Math.round(totalMs),outcome,
+      survivability_ms:Math.round(survivabilityMs),candidate_ms:Math.round(candidateMs),
+      dependency_ms:Math.round(dependencyMs),mutation_ms:Math.round(mutationMs),
+      projection_ms:Math.round(projectionMs),
+      transaction_other_ms:Math.round(Math.max(0,totalMs-survivabilityMs-candidateMs-dependencyMs-mutationMs-projectionMs))
+    });
+  }
 }
 
 /** A turn as the queue hands it to its runner; an adopted execution is handed over the same way. */
