@@ -221,7 +221,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   if (terminal.status !== "SUCCESS") {
     // ERROR says the run ended, not that it had no effects. Only zero-turn refusals are
     // replay-safe; an error after Google began a turn stays unconfirmed for inspection.
-    const beforeTurn = (terminal.num_turns === 0 || terminal.usage?.total_tokens === 0)
+    const beforeTurn = terminal.num_turns === 0 && terminal.usage?.total_tokens === 0
       && !observedOutput && toolsUsed.size === 0;
     const quotaRefusal = /RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(terminal.error ?? "");
     let clearsAtMs: number | null = null;

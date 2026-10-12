@@ -3844,6 +3844,8 @@ export function retryRunningTurnAfterProviderFailure(input: {
   authWait?: boolean;
   /** Held because no account has allowance left, until nextAttemptMs. */
   usageHold?: boolean;
+  /** A zero-work usage refusal whose reset is unreadable waits for a fresh proof of room. */
+  usageResetUnknown?: boolean;
 }): boolean {
   return db.transaction(() => {
     const boundary = getRunningTurnDispatchBoundary(
@@ -3883,11 +3885,11 @@ export function retryRunningTurnAfterProviderFailure(input: {
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(
       input.error,
-      input.authWait ? 'auth_wait' : 'backoff',
+      input.authWait ? 'auth_wait' : input.usageResetUnknown ? 'usage_wait' : 'backoff',
       // A refused banked attempt keeps the refusal's own clearance instant as a floor, so it
       // does not drop to a three-minute poll against an account that is still out.
       Math.max(Date.now()+3*60_000,input.nextAttemptMs),
-      input.authWait ? null : input.nextAttemptMs,
+      input.authWait || input.usageResetUnknown ? null : input.nextAttemptMs,
       input.usageHold && !input.authWait ? 'usage' : null,
       RETRYING_PROVIDER_TURN_STATUS_TEXT,
       input.turnId,

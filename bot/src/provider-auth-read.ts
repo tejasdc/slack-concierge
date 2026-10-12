@@ -1,4 +1,4 @@
-import {currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
+import {ACCOUNT_READING_MAX_AGE_MS,currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
 import {claudeAccountSelection} from './provider-account-selection';
@@ -26,7 +26,9 @@ export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly Provide
 
 function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
   const stored=providerAccountUsage('antigravity');
-  const usage=stored?{...stored,refreshing:ephemera.usageRefreshing}:null;
+  const fresh=stored!==null && Date.parse(stored.observedAt)>=Date.now()-ACCOUNT_READING_MAX_AGE_MS;
+  const usage=stored?fresh?{...stored,refreshing:ephemera.usageRefreshing}
+    :{...stored,accounts:[],problem:'Google account and allowance reading expired.',refreshing:ephemera.usageRefreshing}:null;
   const current=usage?.accounts.find(item=>item.current&&item.label===ephemera.antigravityAccount?.label)??null;
   const account=current?{id:current.label,label:current.label,detail:current.plan}:null;
   const signedIn=!!account&&!current?.signedOut;

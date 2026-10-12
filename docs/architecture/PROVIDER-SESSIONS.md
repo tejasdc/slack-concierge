@@ -74,9 +74,15 @@ only its currently signed-in Google account for explicit Google sessions and
 banked work. Banked work uses the same fresh-reading and reserve rule as the
 other providers. Automatic new-session choice remains Claude/Codex until a
 matched historical-task replay establishes a useful Google role; an existing
-session never changes its provider. A Google quota refusal is held to a reset
-only if the provider proved it did no work and a fresh structured quota reading
-names the exhausted window's reset.
+session never changes its provider. A Google quota refusal is replay-safe only
+when the CLI confirms both zero turns and zero tokens and there is no observed
+output or tool activity. If a fresh structured reading names the exhausted
+window's reset, the input waits until then. If the reset is unreadable, it
+remains on a usage hold until a later fresh reading proves room. Positive or
+contradictory work evidence is unconfirmed and never replayed. The owner
+advertises Google's execution capability independently of quota so an explicit
+choice can reach Google while a reading is unknown; Provider accounts expires
+both identity and allowance after six minutes.
 
 
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.

@@ -1079,7 +1079,7 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   async status() {
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity')&&!!currentAccount('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**

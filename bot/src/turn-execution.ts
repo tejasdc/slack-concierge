@@ -1052,6 +1052,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const refusalClearsAtMs=structuredFailure?.clearsAtMs??null;
       const heldUntilMs = replaySafe&&!switchClaudeAccount&&refusalClearsAtMs!==null
         ? Math.min(refusalClearsAtMs,everyAccountClearsAtMs??refusalClearsAtMs) : null;
+      // A zero-work Google quota refusal can have no readable reset. Hold it until a
+      // later fresh allowance reading proves room; a guessed timer could replay it early.
+      const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
+        &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
       if(isRefreshableAuthFailure(message)){
         markClaudeHomeRefused(runningClaudeHome);
         // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.
@@ -1063,11 +1067,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
       let retryable = replaySafe
-        && (authWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+        && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
-      if (replaySafe && !authWait && heldUntilMs === null && !switchClaudeAccount) {
+      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }
@@ -1094,7 +1098,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             dispatchAttempt,
             error: message,
             authWait,
-            usageHold: heldUntilMs !== null,
+            usageHold: heldUntilMs !== null || googleUsageWait,
+            usageResetUnknown: googleUsageWait,
             nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
@@ -1177,7 +1182,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
         failure_class: retryable
-          ? authWait ? "auth_wait" : "backoff"
+          ? authWait ? "auth_wait" : googleUsageWait ? "usage_wait" : "backoff"
           : ambiguous
           ? "parked_ambiguous"
           : structuredFailure?.failureClass || "parked_terminal",
