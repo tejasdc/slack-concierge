@@ -2867,18 +2867,18 @@ export class SessionOwner {
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[3]==='items'&&parts.length===4){
         const kind=url.searchParams.get('kind')??'questions',filter=url.searchParams.get('filter')??'open';
-        if(!['questions','requests','history'].includes(kind)||!['open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown thread section.');
+        if(!['questions','requests','history'].includes(kind)||!['asked','open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown thread section.');
         result=preparedTopicItems({topicId:parts[2]!,kind:kind as 'questions'|'requests'|'history',filter,inputId:url.searchParams.get('inputId')??undefined,
           cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===3){
         const filter=url.searchParams.get('filter')??'open';
-        if(!['open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown question filter.');
+        if(!['asked','open','reading','checking','deferred','history'].includes(filter))throw new SessionOwnerError('Unknown question filter.');
         result=preparedTopicOverview(parts[2]!,filter);
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='questions'&&parts.length===2){
         const state=url.searchParams.get('state')??'open';
-        if(!['open','reading','checking','deferred','history'].includes(state))throw new SessionOwnerError('Unknown question filter.');
+        if(!['asked','open','reading','checking','deferred','history'].includes(state))throw new SessionOwnerError('Unknown question filter.');
         result=preparedQuestions({state,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
       }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topic-details'&&parts.length===3){

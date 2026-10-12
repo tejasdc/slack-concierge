@@ -32,3 +32,8 @@ custody. Treating final work summaries as questions lost the original wording an
 partial answers; the `asked` kind keeps the question's identity separate from the
 agent's progress. The router and directly addressed worker make the semantic judgment
 that his message asks a question; the owner enforces the source and answer linkage.
+
+The session owner's presentation routes for the all-questions page, topic overview,
+and topic items admit the `asked` filter before the prepared reader runs. The first
+live Mac check on October 12 found that the reader supported it while the route
+guards still returned 400, leaving the page at its loading error.
