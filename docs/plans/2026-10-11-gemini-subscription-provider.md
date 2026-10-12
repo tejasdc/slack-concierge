@@ -42,3 +42,19 @@ Each arm used an isolated pre-fix checkout, the same prompt for that case, the s
 The dispatch replay also exposed a provider-contract risk: the CLI can label a bounded run `SUCCESS` while supplying no final reply after an edit. Concierge now treats a successful empty reply as **unconfirmed**, preserving the accepted input without declaring the work done or replaying it. Its production invocation uses no print timeout, but the empty-result refusal is still necessary for any future occurrence.
 
 Automatic new-session choice remains Claude/Codex. An explicit Google session and explicitly Google-bound saved work can use the included Gemini quota once the integrated route is installed and checked live. Existing sessions retain their provider. The two replays do not justify moving nightly reviews, banked work, bug fixes or the default model to Gemini. A later comparison on representative recurring reviews would be needed before adding that placement to model-selection rules.
+
+## CodexBar and the Mac
+
+[CodexBar's Antigravity provider](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md)
+can display Antigravity's Gemini five-hour and weekly quota locally. Its
+installed Mac version, 0.60.3, advertises `--provider antigravity`, but a live
+read on 2026-10-12 returned “Antigravity language server not detected. Launch
+Antigravity and retry.” The desktop app is installed but not running; `agy` is
+absent on that Mac, and local sign-in was not verified. Mac CodexBar is thus
+not a working source for the server subscription's current allowance.
+Concierge reads the server's own signed-in `agy` because that credential and
+quota govern server dispatch. Thinkering shows that owner projection on Mac
+and phone. Mac agents can request a server Google session through the existing
+peer route, but that agent has server files only; Mac-only work must send
+selected file bytes or move a Git project to the server. No credential is
+copied to the Mac.
