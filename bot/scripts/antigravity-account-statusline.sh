@@ -3,7 +3,11 @@
 # Keep only those nonsecret fields for the account reader; never retain the full payload.
 set -eu
 umask 077
-identity_dir="${CONCIERGE_ANTIGRAVITY_IDENTITY_DIR:-/root/.local/state/concierge}"
+case "$(uname -s)" in
+  Darwin) default_identity_dir="$HOME/Library/Application Support/concierge" ;;
+  *) default_identity_dir="$HOME/.local/state/concierge" ;;
+esac
+identity_dir="${CONCIERGE_ANTIGRAVITY_IDENTITY_DIR:-$default_identity_dir}"
 mkdir -p "$identity_dir"
 staging=$(mktemp "$identity_dir/antigravity-identity.XXXXXX")
 trap 'rm -f "$staging"' EXIT

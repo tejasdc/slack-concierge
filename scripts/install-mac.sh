@@ -114,6 +114,10 @@ fi
 HOST_LAUNCHER=""
 hooks_per_run && HOST_LAUNCHER=1
 
+# The Mac reads its own Google subscription and identity; the server's sign-in is never copied.
+"$REPO/bot/scripts/install-antigravity-account-hook.sh" \
+  "$REPO/bot/scripts/antigravity-account-statusline.sh"
+
 # Speech-to-text: Apple's on-device engine behind the same protocol as the box's Parakeet
 # (bot/src/speech-engine.ts). Rebuilt only when its source changes. Running it once with no
 # input installs the locale's speech assets now, so the first dictation does not wait on them.

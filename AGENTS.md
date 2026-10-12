@@ -17,8 +17,9 @@ That repair credits the exact covered taste-mining request to the retained Codex
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 
 Google Antigravity agent sessions use the existing durable execution host and retain the
-Google conversation ID for later turns. Its server-only sign-in, sanitized account identity,
-live Gemini quota, credit guard and banked-work rule are in
+Google conversation ID for later turns. Each machine running them has its own sign-in and
+quota reading; the Mac install path is in [peer instances](docs/runbooks/PEER-INSTANCES.md#google-sessions-on-the-mac).
+The sanitized account identity, live Gemini quota, credit guard and banked-work rule are in
 [Antigravity sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
 
 Accepted messages and local forwarded replies retain their next step atomically; recovery

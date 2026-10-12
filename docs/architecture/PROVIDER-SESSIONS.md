@@ -13,7 +13,7 @@ failure without substituting a different provider.
 
 ### Antigravity sessions
 
-The server can run Google's Antigravity CLI as a third native agent provider. A new
+Each Concierge instance can run Google's Antigravity CLI as a third native agent provider. A new
 turn starts in the same supervised execution host used for Claude subprocesses: the
 owner records the exact accepted input and launch intent first, then the host owns
 the CLI process and its append-only output. After an owner restart, Concierge adopts
@@ -45,15 +45,16 @@ disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.
 Deployment installs the sanitized account status-line command from the sealed
-release into the server's durable local hook slot. That slot survives a release
-rollback. Installation preserves the CLI's other settings and refuses to replace
-an unrelated status-line command.
+release into the server's durable local hook slot. The Mac installer does the same
+from its Git checkout before starting the updated owner. Both slots survive a release
+or checkout rollback. Installation preserves the CLI's other settings and refuses
+to replace an unrelated status-line command.
 
-The `google` alias selects Gemini 3.1 Pro through Antigravity. The Google AI Pro
-subscription belongs on the server; Thinkering and the Mac do not copy its
-credential. Google's old Gemini CLI refuses consumer subscriptions, so one
-interactive Antigravity CLI sign-in on the server is required. Its documented
-status-line payload supplies the account email and plan to a root-only file
+The `google` alias selects Gemini 3.1 Pro through Antigravity. Each machine using
+the subscription signs in to its own Antigravity CLI; no credential is copied
+between them or into Thinkering. Google's old Gemini CLI refuses consumer
+subscriptions, so an interactive Antigravity CLI sign-in on each machine is required.
+Its documented status-line payload supplies the account email and plan to an owner-only file
 containing only those fields. The quota reader first checks `agy models`, because
 unauthenticated `agy -p /usage` opens an OAuth prompt even with stdin closed.
 Once signed in, it reads `agy -p /usage --output-format json` without an agent
@@ -69,7 +70,7 @@ minutes as unknown, so an old snapshot never advertises current room.
 
 The owner stores Google's account reading and per-model refusal cache in
 additive tables, leaving the installed Claude and Codex schema intact.
-Thinkering reads that owner projection in Provider accounts; the server picks
+Thinkering reads that owner projection in Provider accounts; each instance picks
 only its currently signed-in Google account for explicit Google sessions and
 banked work. Banked work uses the same fresh-reading and reserve rule as the
 other providers. Automatic new-session choice remains Claude/Codex until a
