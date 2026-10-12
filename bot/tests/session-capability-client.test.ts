@@ -346,6 +346,23 @@ describe("ChatGPT adapter under the existing run executor", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("a retained never-sent result is retryable while an uncertain result stays parked", async () => {
+    for (const code of ["CHATGPT_NOT_SENT", "CHATGPT_SEND_FAILED"]) {
+      const body = structuredClone(startCase.response.body);
+      body.state = "failed";
+      body.result = { sessionId: body.nativeBinding.sessionId, turnId: null,
+        nativeBinding: body.nativeBinding, text: "", state: "failed", error: code };
+      body.error = { code, message: code };
+      const { client, calls } = await socketFixture((_input, _request, response) => respond(response, body));
+      const error = await client.createChatGptProvider(runContext(() => {})).run(providerInput()).catch(error => error);
+      expect(error).toBeInstanceOf(ChatGptDispatchError);
+      expect(error.evidence.code).toBe(code);
+      expect(error.failureClass).toBe("retryable");
+      expect(error.terminalConfirmed).toBe(true);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
   test("disconnected start preserves uncertainty and sends no second request", async () => {
     const evidence: CapabilityEvidence[] = [];
     const { client, calls } = await socketFixture((_input, request) => { request.socket.destroy(); });

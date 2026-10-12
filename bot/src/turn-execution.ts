@@ -301,6 +301,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     ?? 0;
   const providerBreakerKey = `provider:${input.providerId}:${input.providerId === 'chatgpt'
     ? 'profile' : currentAccount(input.providerId)?.label ?? 'unavailable'}`;
+  const chatGptNeverSentBreakerKey = `${providerBreakerKey}:turn:${input.turnId}`;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let attachmentRoot: string | null = null;
   let deliveryStarted = false;
@@ -642,6 +643,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
     clearRetryBreaker(providerBreakerKey);
+    if (input.providerId === 'chatgpt') clearRetryBreaker(chatGptNeverSentBreakerKey);
 
     if (artifactDirectory) {
       const artifacts = findTurnArtifacts(artifactDirectory);
@@ -1077,7 +1079,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               restartSignal: 'the account answers or a retry is requested' }
           : { kind: 'permanent' as const, reason: message,
               restartSignal: 'the request is corrected and retried' };
-        const decision = recordRetryFailure({ key: providerBreakerKey, site: 'provider',
+        // A proven never-sent turn has its own bounded retry episode. An older terminal
+        // refusal for another ChatGPT turn must not suppress this safe retry.
+        const retryKey = input.providerId === 'chatgpt' && structuredFailure?.failureClass === 'retryable'
+          ? chatGptNeverSentBreakerKey : providerBreakerKey;
+        const decision = recordRetryFailure({ key: retryKey, site: 'provider',
           what: `The ${input.providerId} account's work`, failure });
         if (decision.action === 'stop') retryable = false;
         if (decision.action === 'retry') policyRetryAtMs = decision.atMs;
