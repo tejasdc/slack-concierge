@@ -9,7 +9,7 @@ import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcriptio
 import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJobProgress,speechRoot,stageSpeechJob} from './speech-job-spool';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
-import {searchPrepared} from './presentation-search-client';
+import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
 import {isTransientDatabaseError} from './database-retry';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
@@ -39,7 +39,7 @@ import {STILL_WAITING_MINUTES} from './request-liveness';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
-import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
+import {getRouterThreadContext} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
@@ -2058,6 +2058,8 @@ export class SessionOwner {
     const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
     const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true).catch(()=>null);
+    const routingSearch=searchRouterThreadsRead({beforeTs:(Date.now()/1000).toFixed(6),...routingSource,
+      concepts:terms.slice(0,8),limit:Math.min(limit,10)});
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
     const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
     const add=(session:SessionRow,evidence:any[])=>{
@@ -2066,14 +2068,12 @@ export class SessionOwner {
       // The same words reach a session as an accepted input and again as the provider's echo; show them once.
       for(const item of evidence){const passage=hash(item.snippet??item.text??'');if(entry.passages.has(passage))continue;entry.passages.add(passage);entry.evidence.push(item);}
     };
-    let routing:ReturnType<typeof searchRouterThreads>|null=null;
+    let routing:Awaited<typeof routingSearch>|null=null;
     let routingFailure:string|null=null;
-    try {
-      routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:terms.slice(0,8),limit:Math.min(limit,10)});
-    } catch(error) {
-      if(!(error instanceof RouterSearchError))throw error;
+    try { routing=await routingSearch; }
+    catch(error) {
       // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
-      routingFailure=`Historical Slack routing evidence unavailable (${error.code}): ${error.message}`;
+      routingFailure=`Historical Slack routing evidence unavailable: ${error instanceof Error?error.message:String(error)}`;
     }
     const words=await wordSearch;
     for(const hit of words?.hits??[]) {

@@ -709,11 +709,35 @@ export class SessionCommunicationCoordinator {
      * — and session-topics.ts decides what that session is allowed to do with it.
      */
     topics(input:{source:CommunicationSource;verb:string;action_id?:string;[key:string]:any}) {
-        if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source);
-        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
-        this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
-        return topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input);
+        const started=performance.now();
+        let actorMs=0,sourceMs=0,commandMs=0,completed=false;
+        let phaseStart=started,phaseName:'actor'|'source'|'command'|'done'='actor';
+        try {
+            if(this.stopped)throw new Error('Session communication is not accepting requests.');
+            const actor=this.actor(input.source);
+            actorMs=performance.now()-phaseStart;
+            phaseStart=performance.now();phaseName='source';
+            const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+            this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            sourceMs=performance.now()-phaseStart;
+            phaseStart=performance.now();phaseName='command';
+            const result=topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input);
+            commandMs=performance.now()-phaseStart;
+            phaseName='done';
+            completed=true;
+            return result;
+        } finally {
+            const ended=performance.now(),totalMs=ended-started;
+            if(phaseName==='actor')actorMs=ended-phaseStart;
+            else if(phaseName==='source')sourceMs=ended-phaseStart;
+            else if(phaseName==='command')commandMs=ended-phaseStart;
+            if(totalMs>=250)log('warn','inbox_topic_command_slow',{
+                action:typeof input.verb==='string'?input.verb:'unknown',
+                topic_id:typeof input.topic_id==='string'?input.topic_id:null,
+                duration_ms:Math.round(totalMs),actor_ms:Math.round(actorMs),source_ms:Math.round(sourceMs),
+                command_ms:Math.round(commandMs),outcome:completed?'completed':'failed'
+            });
+        }
     }
     async note(input:{source:CommunicationSource;action_id:string;captureId:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');

@@ -35,6 +35,23 @@ status or fresh sign-in checks unavailable; it cannot hold an independent prepar
 history, or file read's event loop. A blocked read executor occupies only its own pool slot;
 the supervisor keeps another executor available and retires a timed-out one.
 
+Session search also reads retained historical routing evidence. That search now runs in the
+existing sealed search process with a physically read-only canonical connection and a ten-second
+process deadline; its ranked results return to the owner for session attribution. The prepared
+word index keeps its own independent read in that process. If historical evidence is unavailable,
+the owner returns the other search sources with incomplete coverage. The restart-time Inbox entry
+index stays in owner memory because thread commands use it, but its warm-up reads at most sixteen
+rows and stops processing a step after twelve milliseconds before yielding to other owner work.
+An individual SQLite call can exceed that target under storage contention, so installed lag
+records remain the acceptance check.
+
+An Inbox topic command taking at least 250 milliseconds logs its action, known topic ID and
+time spent resolving the caller, retaining its source and executing the command. A slow topic
+mutation also logs time spent retaining the action, computing its change, recording that change,
+writing the receipt and finishing the transaction. These records contain no topic text. The
+October 12 four-second topic-command transaction predates these fields, so its exact action
+cannot be recovered from that lag record alone.
+
 Failed and slow read completions, plus a one-percent ordinary sample, include the route template,
 status, duration, measured storage work and gateway admission ID without path or query data.
 Counters retain all completions, elapsed time and sampled-out logs. `/internal/ready` reports
