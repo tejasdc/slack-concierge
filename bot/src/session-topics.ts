@@ -4,7 +4,7 @@ import {answerLine,fragmentReason} from './answer-line';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
-import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
@@ -322,7 +322,7 @@ const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,to
   blocking:!!row.blocking,optional:!!row.optional,context:row.context,brief:JSON.parse(row.brief_json),
   owner:row.owner_json?JSON.parse(row.owner_json):null,sources:JSON.parse(row.sources_json),replaces:row.replaces,replacedBy:row.replaced_by,
   answer:row.answer_json?JSON.parse(row.answer_json):null,recovered:!!row.recovered,legacyNeedEventId:row.legacy_need_event_id,
-  kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
+  kind:row.kind==='reading'?'reading':row.kind==='asked'?'asked':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
   generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),
   createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
 
@@ -1243,7 +1243,7 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       if(existing.kind!=='reading'&&context==='ready'&&by.kind==='agent'&&briefChanged(existing.brief,brief)){
         try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
       const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context;
-      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner===undefined?existing.owner:owner,sources:sources.length?sources:existing.sources,
+      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner===undefined?existing.owner:owner,sources:existing.kind==='asked'?[...new Set([...existing.sources,...sources])]:sources.length?sources:existing.sources,
         state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
         revision:changed?existing.revision+1:existing.revision,updatedAt:at,
         ...(typeof item.changedBecause==='string'?{brief:{...brief,changedBecause:item.changedBecause}}:{})};
@@ -1260,7 +1260,13 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     const context=declaredContext??(missing.length?'agent_checking':'ready');
     // `from` files an unfiled attention entry with this full brief instead of a bare one.
     const filed=typeof item.from==='string'?fileNeed(session,topic,item.from,by,brief):null;
-    const kind:QuestionKind=item.kind==='reading'?'reading':filed?.kind??'decision';
+    const kind:QuestionKind=item.kind==='reading'?'reading':item.kind==='asked'?'asked':filed?.kind??'decision';
+    if(kind==='asked'){
+      if(sources.length!==1)throw new TopicError('A question Tejas asked needs its one source message.',400,'QUESTION_SOURCE_REQUIRED');
+      const source=getAcceptedSessionInput(sources[0]!);
+      if(!source||source.session_id!==session.id||!humanAuthored(source)||topicOfRoot(inboxThreadRoot(session.id,source.id)??source.id)!==topic.topicId)
+        throw new TopicError('The source must be Tejas’s message in this thread.',409,'QUESTION_SOURCE_MISMATCH');
+    }
     if(kind==='decision'&&context==='ready'&&by.kind==='agent'){
       try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
@@ -1676,7 +1682,7 @@ export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
 
 /* ------------------------------------------------------------------ human actions */
 
-const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request','file'];
+const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
 
 export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
@@ -1701,6 +1707,18 @@ export function topicHumanAction(topicId:string,body:any) {
     const topic=topicRow(topicId);
     const at=nowIso();
     switch(kind) {
+      case 'followup':{
+        const question=questionRow(text(action.questionId,'questionId',200));
+        if(question.topicId!==topicId||question.kind!=='asked')throw new TopicError('That question is not in this thread.',409,'QUESTION_TOPIC_MISMATCH');
+        const inputId=text(action.inputId,'inputId',200);
+        const input=getAcceptedSessionInput(inputId);
+        const repliedTo=input?JSON.parse(input.payload_json)?.replyToMessage?.messageId:null;
+        if(!input||input.session_id!==session.id||!humanAuthored(input)||!question.sources.includes(repliedTo))
+          throw new TopicError('The follow-up must be your accepted reply in this thread.',409,'FOLLOWUP_SOURCE_MISMATCH');
+        const written:StoredQuestion={...question,sources:[...new Set([...question.sources,inputId])],revision:question.sources.includes(inputId)?question.revision:question.revision+1,updatedAt:at};
+        const next=bumped(topic);
+        return {change:{kind:'topic_question',payload:{change:'followup',topicId,topic:next,questions:[written],by,revision:next.revision}},result:{question:written}};
+      }
       case 'rename':{
         const title=text(action.title,'title',200);
         const next=bumped(topic,{title,aliases:[...new Set([...topic.aliases,topic.title])]});

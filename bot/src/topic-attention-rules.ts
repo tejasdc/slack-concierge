@@ -1,6 +1,6 @@
 /** Shared decisions for both the canonical topic owner and its prepared read model. */
 export const OPEN_QUESTION_STATES=['open','partial'] as const;
-export type QuestionKind='decision'|'reading';
+export type QuestionKind='decision'|'reading'|'asked';
 export type QuestionOrigin='declared'|'marker'|'recovered';
 export function briefMissing(brief:any):string[]{
  const missing:string[]=[];

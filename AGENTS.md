@@ -1,5 +1,9 @@
 # Concierge agent guide
 
+The Inbox topic owner records questions Tejas asks separately from agents' decisions
+and reading items. Their source, reply linkage, partial answers and follow-up contract
+are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.

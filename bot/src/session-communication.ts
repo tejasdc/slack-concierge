@@ -1146,7 +1146,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             if(this.forwarding.has(id))return id;
             this.forwarding.add(id);
             void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
-                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin}})
+                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin,input.target.topicId,input.inputId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin}})
               .then(receipt=>{
                 if(receipt.status==='queued_offline')db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=?")
                     .run(JSON.stringify({code:'PEER_ASLEEP',message:`Queued until ${peer} wakes; the agent gets it the moment the Mac is back.`,clearsAt:null,automaticRetry:true}),input.inputId);
@@ -1167,7 +1167,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
-        const firstInput={text:forwardedReplyFraming(id,input.text,origin),...(attachments.length?{attachments}:{})};
+        const firstInput={text:forwardedReplyFraming(id,input.text,origin,input.target.topicId,input.inputId),...(attachments.length?{attachments}:{})};
         const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},promptAnswer:true,...(attachments.length?{attachments}:{})});
         db.transaction(()=>{
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
