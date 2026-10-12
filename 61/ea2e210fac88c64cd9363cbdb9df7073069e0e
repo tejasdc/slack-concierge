@@ -1,0 +1,1 @@
+Release checks now leave a short trail of their last completed step, so a timed-out update can be diagnosed without guessing.
