@@ -89,6 +89,18 @@ const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>
  ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
 
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
+ if(question.kind==='asked'){
+  const requestId=question.owner?.dispatchRequestId;
+  const sources=Array.isArray(question.sources)?question.sources:[];
+  const followups=typeof requestId==='string'&&requestId?sources.slice(1):sources;
+  const posts=context.source.query(`SELECT event_id FROM session_owner_events
+   WHERE session_id=? AND kind='post' AND (
+    (?<>'' AND json_extract(payload_json,'$.requestId')=?)
+    OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
+   ) ORDER BY sequence`).all(context.sessionId,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify(followups)) as {event_id:string}[];
+  return posts.flatMap(post=>{const message=messageById(context,post.event_id);
+   return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
+ }
  if(question.kind!=='reading')return [];
  const {source,sessionId,root}=context;
  for(const id of question.sources??[])roots.add(root(sessionId,id)??id);
@@ -128,7 +140,7 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
  const question={id:row.question_id,topicId:row.topic_id,revision:row.revision,state:row.state,blocking:!!row.blocking,
   optional:!!row.optional,context:row.context,brief:parse(row.brief_json,{}),owner:parse(row.owner_json),sources:parse(row.sources_json,[]),
   replaces:row.replaces,replacedBy:row.replaced_by,answer:parse(row.answer_json),recovered:!!row.recovered,
-  legacyNeedEventId:row.legacy_need_event_id,kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
+  legacyNeedEventId:row.legacy_need_event_id,kind:row.kind==='reading'?'reading':row.kind==='asked'?'asked':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
   generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
  const reading=[context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='exposed' AND revision=? ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id,question.revision),
@@ -154,13 +166,14 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   aliases:parse(row.aliases_json,[]),revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,
   closure:parse(row.closure_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
  const replies=roots.flatMap(root=>context.humanReplies.get(root)??[]).sort((a,b)=>b.at.localeCompare(a.at));
- const questions:any[]=[],requests:any[]=[],questionCounts={open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0};
+ const questions:any[]=[],requests:any[]=[],questionCounts={asked:0,open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0};
  const needItems:any[]=[],readItems:any[]=[];
  const item=(question:any)=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision,
   kind:question.kind,owner:question.owner?.sessionId??null,outcome:question.kind==='reading'?'response':'needs_you'});
  const retainOldest=(items:any[],question:any)=>{items.push(item(question));items.sort((a,b)=>a.at.localeCompare(b.at));if(sink&&items.length>3)items.length=3;};
  for(const row of topicRows(source,'inbox_questions',topicId)){
   const question=questionValue(context,row,roots,replies);sink?.question(question);
+  if(question.kind==='asked')questionCounts.asked++;
   if(awaitingHim(question)){questionCounts.open++;retainOldest(needItems,question);}
   if(toReadByHim(question)){questionCounts.reading++;retainOldest(readItems,question);}
   if(preparingForHim(question))questionCounts.checking++;

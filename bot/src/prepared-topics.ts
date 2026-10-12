@@ -16,6 +16,7 @@ const cursor=(value:unknown)=>Buffer.from(json(value)).toString('base64url');
 const decode=(value:string)=>{try{return JSON.parse(Buffer.from(value,'base64url').toString());}catch{return null;}};
 const preview=(text:string,size=240)=>{let result='',count=0;for(const character of text){if(count++===size)break;result+=character;}return result;};
 const questionSet=(q:any,state:string)=>state==='open'?q.waiting&&q.kind==='decision'
+ :state==='asked'?q.kind==='asked'
  :state==='reading'?q.waiting&&q.kind==='reading':state==='checking'?q.readiness==='preparing'&&['open','partial'].includes(q.state)&&q.kind==='decision'
  :state==='deferred'?q.state==='deferred':['answered','declined','withdrawn','superseded','read','expired'].includes(q.state);
 
@@ -298,12 +299,13 @@ export class PreparedTopics {
    question:question=>{
     const compact=writeItem(question,'questions');
     if(question.owner?.sessionId)depend('session',question.owner.sessionId);
+   if(question.kind==='asked'&&question.owner?.dispatchRequestId)depend('request',question.owner.dispatchRequestId);
     if(question.waiting)this.writeAttention(generation,'questions',topicId,{inputId:question.sources[0]??topicId,
      outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',generation:question.generation??0,
      at:question.createdAt,runId:question.owner?.runId??'',eventId:question.id,...(question.reads.length?{reads:question.reads}:{})});
-    for(const selected of ['open','reading','checking','deferred','history'])if(questionSet(question,selected))
+    for(const selected of ['asked','open','reading','checking','deferred','history'])if(questionSet(question,selected))
      this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?,?)')
-      .run(generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(0,question.createdAt,question.id),owner);
+      .run(generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),owner);
    },
    request:request=>{
     writeItem(request,'requests');
@@ -538,7 +540,7 @@ export function readPreparedTopicItems(db:Database,options:{topicId:string;kind:
  if(options.cursor&&(!old||old.g!==current.generation||json(old.identity)!==json(identity)||typeof old.key!=='string'))return {...reset(current),items:[]};
  let rows:{key:string;value_json:string}[];
  if(options.kind==='questions'){
-  const filter=options.filter??'open';if(!['open','reading','checking','deferred','history'].includes(filter))throw new Error('Unknown question filter');
+  const filter=options.filter??'open';if(!['asked','open','reading','checking','deferred','history'].includes(filter))throw new Error('Unknown question filter');
   rows=db.query(`SELECT q.question_id AS key,q.value_json FROM presentation_topic_questions q
    WHERE generation=? AND topic_id=? AND selected=? AND question_id>? ORDER BY question_id LIMIT ?`)
    .all(current.generation,options.topicId,filter,old?.key??'',limit+1) as typeof rows;
@@ -588,7 +590,7 @@ export function readPreparedInboxAttention(db:Database,sessionId:number,canonica
 }
 export function readPreparedQuestions(db:Database,options:{state:string;cursor?:string|null;limit?:number;canonicalHead:number}){
  const current=meta(db),selected=options.state,limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));
- if(!['open','reading','checking','deferred','history'].includes(selected))throw new Error('Unknown question filter');
+ if(!['asked','open','reading','checking','deferred','history'].includes(selected))throw new Error('Unknown question filter');
  const old=options.cursor?decode(options.cursor):null;
  if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.state!==selected||typeof old.key!=='string'))return reset(current);
  const rows=db.query(`SELECT topic_id,question_id,sort_key,value_json FROM presentation_topic_questions
@@ -604,8 +606,8 @@ export function readPreparedQuestions(db:Database,options:{state:string;cursor?:
   }
   group.questions.push(JSON.parse(row.value_json));
  }
- const counts={open:0,reading:0,checking:0,deferred:0,history:0};
- for(const row of db.query('SELECT selected,count FROM presentation_question_counts WHERE generation=? AND session_id=? LIMIT 5').all(current.generation,current.inbox_session) as {selected:keyof typeof counts;count:number}[])counts[row.selected]=row.count;
+ const counts={asked:0,open:0,reading:0,checking:0,deferred:0,history:0};
+ for(const row of db.query('SELECT selected,count FROM presentation_question_counts WHERE generation=? AND session_id=? LIMIT 6').all(current.generation,current.inbox_session) as {selected:keyof typeof counts;count:number}[])counts[row.selected]=row.count;
  return {topics:[...groups.values()],questionCounts:counts,nextCursor:rows.length>limit&&last?
   cursor({g:current.generation,inbox:current.inbox_session,state:selected,key:last.sort_key}):null,coverage:coverage(current,options.canonicalHead)};
 }
