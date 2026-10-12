@@ -26,4 +26,6 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Build and check candidate
         working-directory: bot
+        env:
+          CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
         run: bun run build
