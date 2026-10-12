@@ -1,0 +1,1 @@
+Accounts Refresh now checks work already held by a spent allowance and stops an unresponsive check after a minute.
