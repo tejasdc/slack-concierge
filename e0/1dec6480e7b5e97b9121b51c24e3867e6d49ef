@@ -1,0 +1,1 @@
+Busy work queues now release the app between small batches, keeping it responsive while the next conversations start.
