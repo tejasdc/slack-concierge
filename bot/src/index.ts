@@ -5,6 +5,7 @@ import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi } from "./routed-request-api";
 import { peerSettings, PeerClient, SessionPeers } from "./session-peers";
 import {ProjectSetup} from './project-setup';
+import {PeerLinks} from './peer-links';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
@@ -455,6 +456,7 @@ const routedRequests = new RoutedRequestCoordinator({
 });
 const peering = peerSettings();
 const projectSetup = new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>sessionExecutionHost.owner,()=>sessionPeers?.wake());
+const peerLinks = new PeerLinks(peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>sessionExecutionHost.owner);
 const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!, peer.paths, peer.archives)])),
   get owner() {return sessionExecutionHost.owner;},
   isOwnerAlive: ownerId => {
@@ -462,7 +464,7 @@ const sessionPeers = peering.self ? new SessionPeers({self: peering.self, client
     return Boolean(owner&&isProcessIdentityAlive(owner));
   },
   onError:error=>log('error','session_peer_failed',errorFields(error)),
-  onWake:()=>projectSetup.wake(),hasPendingOperations:()=>projectSetup.hasPending()}) : undefined;
+  onWake:()=>{projectSetup.wake();peerLinks.wake();},hasPendingOperations:()=>projectSetup.hasPending()||peerLinks.hasPending()}) : undefined;
 sessionCommunication = new SessionCommunicationCoordinator({
   get owner() {return sessionExecutionHost.owner;},
   ...(sessionPeers ? {peers: sessionPeers} : {}),
@@ -522,6 +524,7 @@ sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
 sessionExecutionHost.owner.projectSetup=projectSetup;
+sessionExecutionHost.owner.peerLinks=peerLinks;
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 installSessionProjection(sessionExecutionHost.owner);
@@ -4222,8 +4225,8 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             else void slackConnection.catch(error=>log('warn','slack_connection_unavailable',{
               error:error instanceof Error?error.message:String(error),
             }));
-            const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null));
+            const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
+            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null));
             sessionExecutionHost.markOwnerServing();
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
             startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);

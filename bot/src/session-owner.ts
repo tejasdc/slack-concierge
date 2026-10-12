@@ -71,6 +71,7 @@ import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-recei
 import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import type {ProjectSetup} from './project-setup';
+import type {PeerLinks} from './peer-links';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
@@ -479,6 +480,7 @@ export function readInputExecution(input:AcceptedSessionInput) {
 export class SessionOwner {
   private readonly historyDetails=new HistoryDetailCache();
   projectSetup?:ProjectSetup;
+  peerLinks?:PeerLinks;
   communication?:SessionCommunicationCoordinator;
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
   private readonly openStreams=new Set<()=>void>();
@@ -2785,7 +2787,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[1]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[2]!,url.searchParams.get('peer')??undefined);
-      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:this.projectSetup?['project.setup']:[]};
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup']:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
@@ -2961,6 +2963,7 @@ export class SessionOwner {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
         else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
+        else if(request.method==='POST'&&parts[1]==='links'&&parts.length===2&&this.peerLinks)result=await this.peerLinks.receive(body);
         else if(parts[1]==='operations'&&this.projectSetup){
           if(request.method==='POST'&&parts.length===2)result=await this.projectSetup.receive(body);
           else if(request.method==='GET'&&parts.length===3)result=this.projectSetup.receipt(parts[2]!);

@@ -202,6 +202,9 @@ authorization or a change to the default rapid-iteration policy.
 - The Mac runs source with Bun's compile cache off, because the cache is keyed by contents
   while folding environment reads, and a read worker's copy crash-looped the Mac owner
   (2026-10-10); see [install or update the Mac instance](docs/runbooks/PEER-INSTANCES.md#install-or-update-the-mac-instance).
+- Opening a link in his browser on the Mac is `sessions open <link>`, an order between the two
+  Concierges, never a new Mac session; queued while the Mac sleeps. See
+  [peer instances](docs/runbooks/PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
   private `tejasdc` repository before retaining a peer setup order; `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never

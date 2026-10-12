@@ -257,6 +257,25 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+### Opening a link on his Mac without a session
+
+`router-actions.sh sessions open <link> <source-flags> --action-id A` (optionally
+`--on <machine>`, default `mac`, and `--browser chrome|safari|default`, default Chrome) opens a
+link in his browser on the Mac. It is an order between the two Concierges, not an agent
+session: on 2026-10-11 a server agent started two Mac sessions ("Open TypeSafe API key form in
+Mac Chrome") only to run `open` on a credential form, and both appeared in his session list.
+
+How it runs (`bot/src/peer-links.ts`): the asking machine records the order in its ledger
+(`peer_link_opens`, identity from the source input and action ID) and posts it to the peer's
+`POST /sessions/v1/peers/links`. The Mac's Concierge runs `/usr/bin/open -a "Google Chrome"
+<link>` (LaunchServices; no Accessibility, Apple Events or clicking), keeps one receipt per order
+(`peer_link_receipts`) so a retry never opens a second tab, and answers opened or failed. A
+sleeping Mac leaves the order queued; the command says so, the peer retry timer and the Mac's
+next contact retry it, and the asking session receives one service result when it opens or,
+after a day, expires (a day covers a laptop closed overnight; anything older would appear out
+of context). Logs name only the site, because a link can carry a one-time token. A Mac without
+this route answers 404 and the order waits for its update the same way.
+
 ### Speech-to-text on the Mac
 
 A Mac on macOS 26 or later transcribes recordings with Apple's on-device SpeechTranscriber.

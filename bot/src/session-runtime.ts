@@ -13,6 +13,7 @@ import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity'
 import {startRoutedRequestApi} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers} from './session-peers';
 import {ProjectSetup} from './project-setup';
+import {PeerLinks} from './peer-links';
 import {GHOST_TURN_INTERRUPT_AGE_MS,reconcileRecoverableTurns,sweepGhostRunningTurns} from './turn-recovery';
 import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
@@ -81,8 +82,10 @@ export async function startSessionRuntime() {
   const peering=peerSettings();
   // Both runtime compositions carry project setup: this one is the Mac's, where a project order lands.
   const projectSetup=new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>host.owner,()=>peers?.wake());
-  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive,onWake:()=>projectSetup.wake(),hasPendingOperations:()=>projectSetup.hasPending()}):undefined;
+  const peerLinks=new PeerLinks(peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>host.owner);
+  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive,onWake:()=>{projectSetup.wake();peerLinks.wake();},hasPendingOperations:()=>projectSetup.hasPending()||peerLinks.hasPending()}):undefined;
   host.owner.projectSetup=projectSetup;
+  host.owner.peerLinks=peerLinks;
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
   for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
@@ -133,8 +136,8 @@ export async function startSessionRuntime() {
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
   await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
-  const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
-  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>projectSetup.wake()}:null);
+  const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
+  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null);
   host.markOwnerServing();
   reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
