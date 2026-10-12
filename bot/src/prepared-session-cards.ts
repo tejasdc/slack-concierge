@@ -29,7 +29,9 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
  * delivered to it; `requestedAt`, the last time it was sent work for a request of his, which is not
  * him talking to it.
  */
-export type SessionTouch=Readonly<{spokeAt:string|null;requestedAt:string|null}>;
+export type SessionTouch=Readonly<{spokeAt:string|null;requestedAt:string|null;rule:number}>;
+/** Raised whenever the rule changes, so cards written under an older rule are rewritten in the background. 2: imported conversations of his. */
+export const TOUCH_RULE=2;
 type CardRow={generation:number;session_id:number;sort_ms:number;space:SessionSpace;needs_attention:number|null;
   card_json:string;revision:number};
 const MAX_PAGE=40,MAX_BYTES=96*1024,MAX_CARD_BYTES=8*1024;
@@ -104,7 +106,7 @@ export class PreparedSessionCards {
    */
   backfillTouch(generation:number,sourceSequence:number,limit=40):boolean{
     const rows=this.prepared.query(`SELECT session_id FROM presentation_session_cards WHERE generation=?
-      AND json_type(card_json,'$.touch') IS NULL LIMIT ?`).all(generation,limit) as {session_id:number}[];
+      AND json_extract(card_json,'$.touch.rule') IS NOT ? LIMIT ?`).all(generation,TOUCH_RULE,limit) as {session_id:number}[];
     for(const row of rows)this.write(generation,row.session_id,sourceSequence,true);
     return rows.length===limit;
   }
@@ -157,7 +159,7 @@ export class PreparedSessionCards {
     const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
     const timed=active??latest;
-    const touch=sessionTouch(this.source,sessionId);
+    const touch=sessionTouch(this.source,sessionId,meta,session.last_turn_at??session.created_at);
     const projectName=labels.project?preview(basename(labels.project.replace(/\/+$/,'')),255):null;
     const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
       runtimeThreadId:session.agent_session_uuid,workflowId:typeof meta.workflowId==='string'?meta.workflowId:null,
@@ -292,7 +294,21 @@ export function readPreparedSessionChanges(database:Database,cursor:string,space
 const touchIso=(value:string|number|null|undefined)=>value===null||value===undefined?null
   :typeof value==='number'?new Date(value).toISOString():iso(value);
 /** Indexed by session (session_inputs_session_kind, session_communication_lab_target): a card write stays a few seeks. */
-export function sessionTouch(source:Database,sessionId:number):SessionTouch{
+/**
+ * An imported conversation has no Concierge inputs: its turns were typed elsewhere. His ChatGPT
+ * account's conversations are his; a Claude Code transcript is his when it is a main session
+ * (not a branch, which is how agent-team members and side chains arrive) whose opening is not an
+ * agent envelope such as `<teammate-message …>`. Codex imports stay unmarked: agents run `codex exec`
+ * as often as he does and the import does not say which.
+ */
+function importedByHim(meta:{origin?:string;title?:string;source?:{provider?:string;id?:string;title?:string}}|null|undefined){
+  if(meta?.origin!=='imported'||!meta.source)return false;
+  if(meta.source.provider==='chatgpt')return true;
+  if(meta.source.provider!=='claude-code')return false;
+  const title=String(meta.source.title??meta.title??'').trim();
+  return String(meta.source.id??'').startsWith('["native"')&&!!title&&!title.startsWith('<');
+}
+export function sessionTouch(source:Database,sessionId:number,meta?:Parameters<typeof importedByHim>[0],lastAt?:string|null):SessionTouch{
   const spoke=source.query(`SELECT MAX(created_at) AS at FROM session_inputs input
     WHERE session_id=? AND kind IN ('input','create','request','fork') AND origin='human'
       AND NOT EXISTS(SELECT 1 FROM session_input_author_corrections fix WHERE fix.input_id=input.id)`).get(sessionId) as {at:string|null};
@@ -301,6 +317,6 @@ export function sessionTouch(source:Database,sessionId:number):SessionTouch{
   const requested=source.query(`SELECT MAX(request.created_at_ms) AS at FROM session_communication_requests request
     JOIN session_inputs his ON his.id=request.source_input_id AND his.origin='human'
     WHERE request.target_session_id=? AND request.action_id NOT LIKE 'forward:%'`).get(sessionId) as {at:number|null};
-  const spokeAt=[touchIso(spoke.at),touchIso(forwarded.at)].filter((value):value is string=>!!value).sort().at(-1)??null;
-  return {spokeAt,requestedAt:touchIso(requested.at)};
+  const spokeAt=[touchIso(spoke.at),touchIso(forwarded.at),importedByHim(meta)?touchIso(lastAt??null):null].filter((value):value is string=>!!value).sort().at(-1)??null;
+  return {spokeAt,requestedAt:touchIso(requested.at),rule:TOUCH_RULE};
 }
