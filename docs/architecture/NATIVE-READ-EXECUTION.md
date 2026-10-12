@@ -49,7 +49,8 @@ An Inbox topic command taking at least 250 milliseconds logs its action, known t
 time spent resolving the caller, retaining its source and executing the command. A slow topic
 mutation, whether issued by the Inbox agent or through a human topic control, also logs who
 acted and time spent retaining the action, computing its change, recording that change,
-writing the receipt and finishing the transaction. These records contain no topic text. The
+writing the receipt and finishing the transaction; a merge names its source and destination
+topic IDs. These records contain no topic text. The
 October 12 four-second topic-command transaction predates these fields, so its exact action
 cannot be recovered from that lag record alone.
 

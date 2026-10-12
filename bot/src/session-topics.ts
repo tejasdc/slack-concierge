@@ -433,6 +433,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
   let resultForTrace:T|null=null;
+  let changeTopicId:string|null=null;
   try {
     const result=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
@@ -443,6 +444,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
       const {change,result}=run();
       computeMs=performance.now()-phaseStart;
       resultForTrace=result;
+      changeTopicId=typeof change.payload?.topicId==='string'?change.payload.topicId:null;
       phaseStart=performance.now();phaseName='record';
       record(actor.sessionId,saved.input.id,actor.turnId,change);
       recordMs=performance.now()-phaseStart;
@@ -461,8 +463,8 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
     else if(phaseName==='record')recordMs=ended-phaseStart;
     else if(phaseName==='receipt')receiptMs=ended-phaseStart;
     if(totalMs>=250) {
-      const named=payload as {kind?:unknown;topicId?:unknown;requestId?:unknown;questionId?:unknown};
-      let topicId=typeof named?.topicId==='string'?named.topicId:null;
+      const named=payload as {kind?:unknown;topicId?:unknown;requestId?:unknown;questionId?:unknown;from?:unknown;into?:unknown};
+      let topicId=typeof named?.topicId==='string'?named.topicId:changeTopicId??(typeof named?.from==='string'?named.from:null);
       if(!topicId&&resultForTrace&&'topic' in resultForTrace) {
         const topic=(resultForTrace as {topic?:{topicId?:unknown}}).topic;
         if(typeof topic?.topicId==='string')topicId=topic.topicId;
@@ -474,6 +476,8 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
           topicId=(db.query('SELECT topic_id FROM inbox_questions WHERE question_id=?').get(named.questionId) as {topic_id:string}|null)?.topic_id??null;
       } catch { /* Diagnostic attribution must never replace the command's result. */ }
       log('warn','inbox_topic_mutation_slow',{actor:'agent',action:typeof named?.kind==='string'?named.kind:'unknown',topic_id:topicId,
+        ...(named?.kind==='topic-merge'&&typeof named.from==='string'?{source_topic_id:named.from}:{}),
+        ...(named?.kind==='topic-merge'&&typeof named.into==='string'?{target_topic_id:named.into}:{}),
         duration_ms:Math.round(totalMs),retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),
         record_ms:Math.round(recordMs),receipt_ms:Math.round(receiptMs),
         transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),duplicate,outcome:completed?'completed':'failed'});
@@ -514,10 +518,11 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
     else if(phaseName==='record')recordMs=ended-phaseStart;
     else if(phaseName==='receipt')receiptMs=ended-phaseStart;
     if(totalMs>=250) {
-      const named=payload as {kind?:unknown;topicId?:unknown};
+      const named=payload as {kind?:unknown;topicId?:unknown;action?:{into?:unknown}};
       const createdId=resultForTrace?.topic?.topicId;
       log('warn','inbox_topic_mutation_slow',{actor:'human',action:typeof named?.kind==='string'?named.kind:'unknown',
         topic_id:typeof named?.topicId==='string'?named.topicId:typeof createdId==='string'?createdId:null,duration_ms:Math.round(totalMs),
+        ...((named?.kind==='topic-merge'||named?.kind==='topic-move')&&typeof named.action?.into==='string'?{target_topic_id:named.action.into}:{}),
         retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),record_ms:Math.round(recordMs),
         receipt_ms:Math.round(receiptMs),transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),
         duplicate,outcome:completed?'completed':'failed'});
