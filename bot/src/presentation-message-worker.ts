@@ -516,7 +516,7 @@ async function catchUp() {
   })();
 }
 
-let checkedDisplay=false,lastTopicCollection=0;
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -530,6 +530,11 @@ while(true){
       checkedDisplay=true;
     }
     await catchUp();observation.succeeded();
+    if(!touchBackfilled){
+      const current=meta();
+      if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
+        return cards.backfillTouch(current.generation,head());})();
+    }
   }}
   catch(error){observation.failed();writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
   // A retained message should appear in a warm thread inside the interactive read budget;

@@ -18,7 +18,18 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   timing:{startedAt:string|null;running:boolean}|null;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;startsAt:string|null;savedAt:string|null;
     expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
-  turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;revision?:number}>;
+  turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;
+  touch:SessionTouch;revision?:number}>;
+/**
+ * Whether Tejas has been in this conversation, so his own sessions can be found above the many
+ * agents only talk among themselves in (his words, 2026-10-12: "Sessions I have interacted and worked
+ * with, either directly in the session or through a thread, should rank above agent-to-agent
+ * sessions"). Two different facts, kept apart because the lab's design pass held they must not share
+ * one mark: `spokeAt`, the last time his own words reached it, typed into it or a thread reply
+ * delivered to it; `requestedAt`, the last time it was sent work for a request of his, which is not
+ * him talking to it.
+ */
+export type SessionTouch=Readonly<{spokeAt:string|null;requestedAt:string|null}>;
 type CardRow={generation:number;session_id:number;sort_ms:number;space:SessionSpace;needs_attention:number|null;
   card_json:string;revision:number};
 const MAX_PAGE=40,MAX_BYTES=96*1024,MAX_CARD_BYTES=8*1024;
@@ -86,6 +97,17 @@ export class PreparedSessionCards {
       changed.set(id,Math.max(changed.get(id)??0,changes.at(-1)?.sequence??0));
     for(const [id,sequence] of changed)this.write(generation,id,sequence,true);
   }
+  /**
+   * Cards written before `touch` existed get it in small pages, once per worker process, so the
+   * sidebar learns which sessions are his without a full rebuild of the presentation store.
+   * Answers whether any card still lacks it.
+   */
+  backfillTouch(generation:number,sourceSequence:number,limit=40):boolean{
+    const rows=this.prepared.query(`SELECT session_id FROM presentation_session_cards WHERE generation=?
+      AND json_type(card_json,'$.touch') IS NULL LIMIT ?`).all(generation,limit) as {session_id:number}[];
+    for(const row of rows)this.write(generation,row.session_id,sourceSequence,true);
+    return rows.length===limit;
+  }
   activate(generation:number,sourceHead:number){
     const changeBase=(this.prepared.query('SELECT COALESCE(MAX(change_id),0) AS n FROM presentation_session_changes WHERE generation=?')
       .get(generation) as {n:number}).n;
@@ -135,6 +157,7 @@ export class PreparedSessionCards {
     const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
     const timed=active??latest;
+    const touch=sessionTouch(this.source,sessionId);
     const projectName=labels.project?preview(basename(labels.project.replace(/\/+$/,'')),255):null;
     const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
       runtimeThreadId:session.agent_session_uuid,workflowId:typeof meta.workflowId==='string'?meta.workflowId:null,
@@ -157,7 +180,7 @@ export class PreparedSessionCards {
       reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null,
       turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'
         ?{outcome:meta.turnOutcome.outcome,inputId:meta.turnOutcome.inputId??null,at:meta.turnOutcome.at,
-          question:question?.text??null,questionTruncated:question?.truncated??false}:null};
+          question:question?.text??null,questionTruncated:question?.truncated??false}:null,touch};
     const encoded=JSON.stringify(card);
     if(Buffer.byteLength(encoded)>MAX_CARD_BYTES)throw new Error('SESSION_CARD_EXCEEDS_PREPARED_RECORD_BOUND');
     if(previous?.card_json===encoded)return;
@@ -264,4 +287,20 @@ export function readPreparedSessionChanges(database:Database,cursor:string,space
     asOf:encode({v:1,g:meta.generation,h:more?applied:head,space}),coverage:meta.source_head<canonicalHead
       ?{complete:false,code:'catching_up',appliedSequence:meta.source_head}:{complete:true,appliedSequence:meta.source_head}};
   })();
+}
+
+const touchIso=(value:string|number|null|undefined)=>value===null||value===undefined?null
+  :typeof value==='number'?new Date(value).toISOString():iso(value);
+/** Indexed by session (session_inputs_session_kind, session_communication_lab_target): a card write stays a few seeks. */
+export function sessionTouch(source:Database,sessionId:number):SessionTouch{
+  const spoke=source.query(`SELECT MAX(created_at) AS at FROM session_inputs input
+    WHERE session_id=? AND kind IN ('input','create','request','fork') AND origin='human'
+      AND NOT EXISTS(SELECT 1 FROM session_input_author_corrections fix WHERE fix.input_id=input.id)`).get(sessionId) as {at:string|null};
+  const forwarded=source.query(`SELECT MAX(created_at_ms) AS at FROM session_communication_requests
+    WHERE target_session_id=? AND action_id LIKE 'forward:%'`).get(sessionId) as {at:number|null};
+  const requested=source.query(`SELECT MAX(request.created_at_ms) AS at FROM session_communication_requests request
+    JOIN session_inputs his ON his.id=request.source_input_id AND his.origin='human'
+    WHERE request.target_session_id=? AND request.action_id NOT LIKE 'forward:%'`).get(sessionId) as {at:number|null};
+  const spokeAt=[touchIso(spoke.at),touchIso(forwarded.at)].filter((value):value is string=>!!value).sort().at(-1)??null;
+  return {spokeAt,requestedAt:touchIso(requested.at)};
 }
