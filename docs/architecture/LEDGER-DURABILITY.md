@@ -35,7 +35,13 @@ Linux only) changes where the disk is waited for, not what is written or when it
   `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
   uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
   `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
-  or at 4 GB regardless (50 GB was free on 2026-10-10). It never copies a small log.
+  or at 256 MB regardless. It never copies a small log. It is the ledger's only checkpointer on
+  Linux: every connection opened through `state-database.ts` sets `wal_autocheckpoint=0`. On
+  2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old ceiling was 4 GB),
+  and SQLite's default automatic checkpoint ran in the short-lived update-runner commands instead:
+  each one copied the log and synced the database file on the loaded disk while the owner's
+  commits busy-waited behind it for 0.3–0.9 s (sampled writer-lock holders: `deploy-state.js`,
+  `release-manager.js promote`, in `fsync` of `state.db`).
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
 The former raw `readFileSync(state.db-shm)` in the checkpoint thread closed a descriptor on

@@ -63,6 +63,11 @@ if (access.readonly) db.exec("PRAGMA query_only = ON");
 // update restart, the retiring coordinator can still hold that lock for a moment; configuring
 // the timeout afterwards made the recovery preflight fail immediately instead of waiting.
 db.exec("PRAGMA busy_timeout = 5000");
+// On Linux the owner's checkpoint thread is the ledger's only checkpointer. With SQLite's default,
+// the first commit by any short-lived writer (the update runner's state commands, release
+// promotion) copied the whole log into the database and synced it, holding the owner's commits
+// for seconds while builds loaded the disk (2026-10-12). See docs/architecture/LEDGER-DURABILITY.md.
+if (process.platform === "linux") db.exec("PRAGMA wal_autocheckpoint = 0");
 if (initializeLedgerSchema) db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 // Sorts and temporary tables stay in memory. On disk each one was a file created in /var/tmp and
