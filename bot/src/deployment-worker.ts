@@ -9,6 +9,7 @@ import {
   getDeploymentDesiredState,
   getDeploymentTurnReaction,
   getLastKnownGoodRelease,
+  getLatestDeploymentRun,
   getDeploymentNotice,
   listPendingDeploymentTurnReactions,
   listPendingDeploymentNotices,
@@ -31,6 +32,8 @@ import {
   type DeploymentTurnReactionState,
   type DeploymentRunRow,
 } from "./deployment-state";
+import { db } from "./state-database";
+import { recordRepairNotice } from "./repair-notices";
 import { deploymentReactionTargetsForCommitRange } from "./deployment-reaction-provenance";
 import { commitMainHas } from "./release-history";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
@@ -267,6 +270,24 @@ export async function reconcileDeploymentWork(input: {
         deployment_run_id: incident.run_id,
         deployment_repair_incident_id: incident.id,
       });
+    }
+  }
+
+  // The autonomous repair owns failures while it runs. A failed run with no repair owner,
+  // or a desired commit that never got a run, belongs to the standing repair agent.
+  const desired = getDeploymentDesiredState();
+  const latest = getLatestDeploymentRun();
+  if (desired && desired.desired_commit !== getLastKnownGoodRelease()?.git_commit && !getActiveDeploymentRun()) {
+    if (latest && (latest.status === "failed" || latest.status === "ambiguous") && !latest.repair_state) {
+      recordRepairNotice(db, { key: `deployment-unowned:${latest.id}`, kind: "deployment_parked",
+        text: `Concierge update run ${latest.id} ended ${latest.status} without an autonomous repair owner. `
+          + `Inspect its retained deployment failure and repair through the existing deployment owner. `
+          + `Tell Tejas only if the remaining action truly requires him.` });
+    } else if (Date.now() - sqlTimeMs(desired.observed_at) >= 15 * 60_000 && (!latest || latest.status === "succeeded")) {
+      recordRepairNotice(db, { key: `deployment-never-started:${desired.desired_commit}`, kind: "deployment_parked",
+        text: `Concierge desired update ${desired.desired_commit} has not started within fifteen minutes, `
+          + `and no deployment or repair owns it. Inspect the signed push intake and deployment wake, `
+          + `then fix the owner path. Tell Tejas only if the remaining action truly requires him.` });
     }
   }
 

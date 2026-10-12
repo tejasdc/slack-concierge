@@ -753,13 +753,14 @@ authorization or a change to the default rapid-iteration policy.
   readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
   an editor wraps a long sentence at the commit margin, and reading only its first line published
   half a sentence to him three times in one evening.
-- **An update that failed says so, until one succeeds.** `status.deploymentStuck` is every
-  deployment run since the last successful one, with where the runner stopped, whether a repair is
-  running or parked, and what the whole uninstalled gap brings; thnkr.ing shows it on the same one
-  update line. A fresh attempt does not retire it, because nothing is installed yet. Four failed
-  updates on 2026-09-23 were invisible to him for exactly that reason — nothing was waiting once
-  each one gave up, so the line showed only the app update ("why do I not see the Concierge update
-  notification at all?", capture `c60c6162`). **A deployment target that no branch has is abandoned, not chased.** A force-push leaves the
+- **Failed updates are retained and assigned to agents.** `status.deploymentStuck` still
+  reports every failed run since the last success for investigation; the autonomous repair
+  owns it first, and parked, unowned or never-started updates go to the standing repair
+  agent. The workspace update line shows pending changes waiting on his work, not raw
+  deployment failures; an agent reaches him through Needs attention only for an action
+  he alone can take (Oct 12 report `c5e7bda7`). The earlier 2026-09-23 request to
+  expose failures (`c60c6162`) is superseded for failures by that report; pending update
+  visibility remains. **A deployment target that no branch has is abandoned, not chased.** A force-push leaves the
   commit a webhook recorded on no branch; every deployment then installs main, ends with that
   commit still unmet and starts the next one. Nine ran in eleven minutes on 2026-09-23, each
   restarting the service and draining his sessions, while his update notice never cleared
@@ -812,7 +813,8 @@ authorization or a change to the default rapid-iteration policy.
   notifications and shows them in its Lab view. An experiment that changes Concierge itself runs on a separate
   instance. See [the lab space](docs/plans/2026-10-08-lab-space.md).
 - **A session can live in a folder inside a project** (Tejas, 2026-10-08: "Why do we have an expertise folder in the root workspace?" [decision: lab-work-lives-inside-agent-ecology]): `--project` on ask and create accepts `<project>/<folder>` or its absolute path (`sessionProject` in session-projects.ts; the folder must exist inside the project), and `sessions move <address> --project …` re-homes an idle session, whose next turn resumes the same conversation in the new folder (each turn reads the folder from the session record). Lab work lives inside agent-ecology, never as top-level projects.
-- Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
+- Concierge delivery sends a proposed commit to a topic branch; GitHub's required release
+  check must pass before it advances to `main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
   App Server. The established deployment/repair owner handles rollout and health.

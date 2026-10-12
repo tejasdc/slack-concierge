@@ -217,6 +217,7 @@ export interface DeploymentFailureDiagnostics {
 export interface DeploymentFailureOptions {
   diagnostics?: DeploymentFailureDiagnostics;
   noticeReason?: string;
+  repairAgentHandoff?: boolean;
 }
 
 export interface ClaimedDeploymentWake {
@@ -1310,14 +1311,14 @@ export function parkDeploymentRepair(
     "failed",
     options,
   );
-  recordRepairNotice(db, {
-    key: `deployment-parked:${incident.id}`,
-    kind: "deployment_parked",
-    text: `The autonomous Concierge update repair stopped. Incident ${incident.id}, run ${incident.run_id}. `
-      + `The previous working release remains available. Inspect the retained incident outcome and repair log, `
-      + `then fix or recover this update through the existing deployment owner. `
-      + `Tell Tejas only if the remaining action truly requires him. Blocker: ${error.slice(0, 2000)}`,
-  });
+  if (options.repairAgentHandoff !== false) recordRepairNotice(db, {
+      key: `deployment-parked:${incident.id}`,
+      kind: "deployment_parked",
+      text: `The autonomous Concierge update repair stopped. Incident ${incident.id}, run ${incident.run_id}. `
+        + `The previous working release remains available. Inspect the retained incident outcome and repair log, `
+        + `then fix or recover this update through the existing deployment owner. `
+        + `Tell Tejas only if the remaining action truly requires him. Blocker: ${error.slice(0, 2000)}`,
+    });
   return getDeploymentRepairIncident(incidentId)!;
 }
 
@@ -1710,6 +1711,7 @@ export function claimControlRecovery(runId: string, identity: { pid: number; boo
       const approval = intent.operatorAuthorityDigest ? "operator-authorized" : "reviewed";
       parkDeploymentRepair(incident.id, `Operator control recovery ${runId} takes over with ${approval} control ${intent.controlCommit}.`, {
         noticeReason: "Autonomous repair stopped. An explicit controller recovery is taking over; application changes remain pending.",
+        repairAgentHandoff: false,
       });
       const other = getActiveDeploymentRun(oldRun.target);
       if (other) throw new Error(`Another deployment ${other.id} owns this target.`);
