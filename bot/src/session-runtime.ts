@@ -20,7 +20,7 @@ import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions} from './session-topics';
+import {migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions,warmEntryIndex} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
@@ -164,6 +164,10 @@ export async function startSessionRuntime() {
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
+  // The Inbox thread index is filled now, in short steps, rather than inside his first tap.
+  void warmEntryIndex({stopped:()=>draining})
+    .then(warmed=>log('info','inbox_entry_index_warmed',warmed))
+    .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
     draining=true;clearInterval(ghostSweep);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();

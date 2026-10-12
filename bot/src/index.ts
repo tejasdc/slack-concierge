@@ -348,7 +348,7 @@ import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuatio
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
-import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
@@ -4259,6 +4259,10 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         });
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
+        // The Inbox thread index is filled now, in short steps, rather than inside his first tap.
+        void warmEntryIndex({ stopped: () => draining })
+          .then((warmed) => log("info", "inbox_entry_index_warmed", warmed))
+          .catch((error) => log("error", "inbox_entry_index_warm_failed", errorFields(error)));
         if (captureQueueToken) {
           grafanaAlerts = new GrafanaAlerts({
             db, destinationChannel: "native:inbox", ownerId: instanceId,

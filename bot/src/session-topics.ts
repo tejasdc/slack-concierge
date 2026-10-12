@@ -251,7 +251,35 @@ function entryKind(row:any):EntryKind {
 function entryIndex():EntryIndex {
   refreshRootMemo();
   const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
-  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence`).all(index.watermark) as any[];
+  extendEntryIndex(index,-1);
+  return index;
+}
+/**
+ * Fills the index after a restart in bounded steps that yield the owner between them. The
+ * whole build runs inside whichever read or human action comes first, and after each of the
+ * 75 restarts in the three days to 2026-10-12 that was his first tap on a thread: 2.9 s with
+ * 157 MB read inside its own write transaction, with every other read waiting behind it. A
+ * reader that arrives mid-warm finishes only what is left; a thread move that resets the memo
+ * mid-warm simply makes the next step start over. Nothing is written.
+ */
+export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
+  const batch=Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH);
+  const started=performance.now();
+  let rows=0,steps=0;
+  for(;;) {
+    if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
+    refreshRootMemo();
+    const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
+    const read=extendEntryIndex(index,batch);
+    rows+=read;steps+=1;
+    if(read<batch)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
+    await new Promise<void>(resolve=>setImmediate(resolve));
+  }
+}
+const ENTRY_INDEX_WARM_BATCH=250;
+/** Extends the index over the next rows past its watermark; `limit` bounds one step, -1 reads to the end. Returns the rows read. */
+function extendEntryIndex(index:EntryIndex,limit:number):number {
+  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(index.watermark,limit) as any[];
   for(const row of rows) {
     index.watermark=row.sequence;
     const messageId=inboxMessageId(row);
@@ -266,7 +294,7 @@ function entryIndex():EntryIndex {
     if(kind==='final'&&(index.finals.get(root)?.sequence??-1)<row.sequence)index.finals.set(root,{...record,inputId:messageId});
     if(kind==='post'&&(index.posts.get(root)?.sequence??-1)<row.sequence)index.posts.set(root,record);
   }
-  return index;
+  return rows.length;
 }
 /** After a thread link moved, only the messages in the threads it touched are resolved again. */
 function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {

@@ -230,6 +230,16 @@ into the tables and is idempotent; `bun run bot/scripts/migrate-inbox-topics.ts 
 runs it. Payloads carry only the titles, summaries, briefs and cited answer passages the
 router wrote — never transcript text, prompts or provider errors.
 
+The owner keeps one in-memory index of every Inbox message and its thread root
+(`entryIndex` in `session-topics.ts`), built once per process and extended only over new
+rows. After a restart it is filled by `warmEntryIndex` in bounded steps that yield the
+owner between them, started once the owner is online in both runtime compositions, and
+logged as `inbox_entry_index_warmed`; a read or human action that arrives before the warm
+finishes completes only what is left. Before this (2026-10-12) the whole build ran inside
+whichever read came first after each restart, which was his first tap on a thread: about
+3 s and 157 MB inside that action's own write transaction, with every other read behind
+it; see [the incident](../incidents/2026-10-12-thread-index-rebuilt-in-his-first-tap.md).
+
 Reads are measured, not argued: `CONCIERGE_STATE_DIR=<state dir> bun run
 bot/scripts/topics-read-timing.ts` times the list, background and question reads against a
 state directory (a copy of the live one, or the live one read-only). The first read after a
