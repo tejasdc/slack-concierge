@@ -2,7 +2,7 @@ import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,ren
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
-import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type AccountIdentityProvider,type ProviderKey} from './provider-accounts';
+import {ACCOUNT_READING_MAX_AGE_MS,accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type AccountIdentityProvider,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
@@ -203,7 +203,7 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
     const active=currentAccount(provider)?.label;
     const account=usage.accounts.find(item=>item.label===active);
     if(!account)return [];
-    const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;
+    const fresh=Date.parse(account.readAt??usage.observedAt)>=now-ACCOUNT_READING_MAX_AGE_MS&&!usage.problem;
     return [{account:account.label,home:null,isDefault:true,
       tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
       problem:!fresh?'Usage reading is stale.':account.problem}];

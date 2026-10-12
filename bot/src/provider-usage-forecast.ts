@@ -2,7 +2,7 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import type { AccountIdentityProvider } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { claudeAccountCachedReset } from "./provider-usage";
@@ -226,6 +226,8 @@ function forecastWindow(provider: AccountIdentityProvider, account: AccountUsage
 export function usageForecasts(provider: AccountIdentityProvider): UsageForecast[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
+  if (provider === "antigravity" && (usage.problem ||
+    (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
   return usage.accounts.flatMap(account => account.problem ? []
     : account.windows.map(window => forecastWindow(provider, account, window, usage.observedAt)));
 }
@@ -279,6 +281,8 @@ export function accountAvailability(provider: AccountIdentityProvider): AccountA
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
+    if (provider === "antigravity" && (usage.problem ||
+      (at(account.readAt ?? usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
     const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
     if (account.problem || !account.windows.length)
@@ -337,13 +341,15 @@ export function accountsWithRoom(provider: AccountIdentityProvider): string[] {
  */
 export function usageSignal(provider: AccountIdentityProvider) {
   const usage = storedUsage(provider);
+  const staleGoogle = provider === "antigravity" && (!usage || !!usage.problem ||
+    (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS);
   const tightest = tightestCurrentWindow(provider);
   const spare = accountsWithRoom(provider);
   return {
     provider,
     observedAt: usage?.observedAt ?? null,
-    problem: usage?.problem ?? null,
-    currentAccount: usage?.accounts.find(account => account.current)?.label ?? null,
+    problem: staleGoogle ? usage?.problem ?? "Google allowance has not been checked recently." : usage?.problem ?? null,
+    currentAccount: staleGoogle ? null : usage?.accounts.find(account => account.current)?.label ?? null,
     // Null means nothing on the current account is projected to run out before it resets.
     closestWall: tightest && {
       window: tightest.window, usedPercent: tightest.usedPercent, minutesLeft: tightest.minutesLeft,
@@ -359,7 +365,7 @@ export function usageSignal(provider: AccountIdentityProvider) {
     resetsBasis: "A reset is spent automatically only when work has actually stopped and no "
       + "other account of this provider has room; otherwise it waits for Tejas. Nothing an "
       + "agent does spends one.",
-    forecasts: usageForecasts(provider),
+    forecasts: staleGoogle ? [] : usageForecasts(provider),
     basis: "A forecast assumes the pace of the last readings continues. Agent work arrives in "
       + "bursts, so treat it as a heads-up and not a countdown. 'provider' is the provider's own "
       + "projection; 'observed' is a straight line through this machine's readings.",

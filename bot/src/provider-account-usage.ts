@@ -6,7 +6,7 @@ import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
-import { setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -344,20 +344,22 @@ async function readAntigravity(): Promise<ProviderUsage> {
   if (windows.length !== 2) return unavailable("Google did not report both Gemini allowance windows.");
   // An account label must come from Google's own reply. Guessing from the browser's
   // Google account would let a different CLI login inherit this account's capacity.
-  let statusIdentity: { email?: unknown; plan?: unknown } = {};
+  let statusIdentity: { email?: unknown; plan?: unknown; observedAt?: unknown } = {};
   try { statusIdentity = JSON.parse(readFileSync(join(process.env.CONCIERGE_ANTIGRAVITY_IDENTITY_DIR ??
     "/root/.local/state/concierge", "antigravity-identity.json"), "utf8")); }
   catch { /* a headless quota reply may still identify its own account */ }
+  const statusAt = iso(statusIdentity.observedAt);
+  const statusFresh = statusAt !== null && Date.parse(statusAt) >= Date.now() - ACCOUNT_READING_MAX_AGE_MS;
   const envelopeEmail = [payload?.command?.data?.email, payload?.command?.data?.account?.email,
     payload?.data?.email, payload?.email].find((value: unknown) => typeof value === "string" && /.+@.+\..+/.test(value));
-  const email = typeof envelopeEmail === "string" ? envelopeEmail : statusIdentity.email;
-  if (typeof envelopeEmail === "string" && typeof statusIdentity.email === "string"
+  const email = typeof envelopeEmail === "string" ? envelopeEmail : statusFresh ? statusIdentity.email : null;
+  if (statusFresh && typeof envelopeEmail === "string" && typeof statusIdentity.email === "string"
     && envelopeEmail.toLowerCase() !== statusIdentity.email.toLowerCase())
     return unavailable("Google's account identity changed; its allowance needs a fresh sign-in check.");
   if (typeof email !== "string" || !/^[^@]+@[^@]+\.[^@]+$/.test(email))
     return unavailable("Google reported allowance but did not identify the signed-in account.");
   const plan = [payload?.command?.data?.subscription?.plan, payload?.command?.data?.plan_tier,
-    payload?.plan_tier, statusIdentity.plan].find((value: unknown) => typeof value === "string" && value.trim());
+    payload?.plan_tier, statusFresh ? statusIdentity.plan : null].find((value: unknown) => typeof value === "string" && value.trim());
   return { observedAt, accounts: [{ label: email, plan: typeof plan === "string" ? plan : null,
     current: true, windows, problem: null, readAt: observedAt }], problem: null };
 }

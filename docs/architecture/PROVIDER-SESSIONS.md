@@ -59,6 +59,10 @@ numeric remaining fractions and a valid account identity. A failed, stale, or
 mismatched reading is unknown capacity, not zero use. Google's included quota
 and optional AI credits are different pools; Concierge refuses dispatch while
 automatic AI-credit use is enabled.
+An identity from the status-line file is usable only for six minutes after its
+observation. The quota reply's own account identity takes precedence. The
+dashboard and banked-work choice likewise treat a reading older than six
+minutes as unknown, so an old snapshot never advertises current room.
 
 The owner stores Google's account reading and per-model refusal cache in
 additive tables, leaving the installed Claude and Codex schema intact.
