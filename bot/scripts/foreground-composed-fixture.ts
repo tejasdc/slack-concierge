@@ -29,7 +29,7 @@ async function ownerMode(root:string){
     import('../src/release-worker')]);
   const session=createNativeSession('claude-code',{title:'Composed foreground fixture',cwd:workspace});
   const ephemera=()=>({observedAtMs:Date.now(),checking:false,usageRefreshing:false,
-    codexSignIn:'unknown' as const,accountFallback:{codex:null,'claude-code':null},
+    codexSignIn:'unknown' as const,antigravityAccount:null,accountFallback:{codex:null,'claude-code':null},
     codexPending:false,claudePending:false,claudePendingFor:null,claudePendingUrl:null,
     lastSignIn:{codex:null,'claude-code':null}});
   const owner=new SessionOwner({available:()=>true,wake:()=>{},steer:()=>false,stop:async()=>false,
@@ -196,7 +196,8 @@ async function main(){
       const peerRight=await fetch(`http://127.0.0.1:${peerPort}/sessions/v1/models`,{headers:{authorization:`Bearer ${peerToken}`}});
       assert.equal(peerRight.status,200);
       const auth=await check('/sessions/v1/auth/providers?machine=cloud');
-      assert.equal(auth.providers.length,2);
+      assert.deepEqual(auth.providers.map((item:{provider:string})=>item.provider).sort(),
+        ['antigravity','claude-code','codex']);
       const writeProbe=Bun.spawn([process.execPath,'-e',
         `import {db} from ${JSON.stringify(resolve(import.meta.dir,'../src/state-database.ts'))};`+
         `try{db.exec('CREATE TABLE fixture_forbidden_write (id INTEGER)');process.exit(1)}`+

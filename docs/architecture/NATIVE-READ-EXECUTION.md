@@ -19,6 +19,13 @@ the executor assembles the account view. If that live state is unavailable, Acco
 unavailable instead of inventing a sign-in state. Peer account and file reads use the existing
 peer API, with the same target identity and timeout semantics.
 
+The composed foreground release fixture requires the Accounts response to contain exactly
+Claude, Codex and Antigravity by provider identity, independent of ordering. Its scratch
+owner supplies a null Antigravity account alongside the other empty sign-in state. The
+October 12 candidate failed before activation because this fixture still asserted two
+providers after Antigravity was added; the identity assertion preserves missing, duplicate
+and unexpected-provider detection without hiding a changed response behind a count.
+
 The read executor does not own command custody, provider dispatch, background reconciliation,
 or ledger writes. Its Inbox read expects the canonical owner to have created the Inbox at
 startup. Its transcription-status read can inspect a completed speech spool result but only
