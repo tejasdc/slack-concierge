@@ -12,6 +12,7 @@ import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {latestWorkerProgress} from './worker-progress';
+import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
@@ -1222,6 +1223,8 @@ function questionBrief(item:any) {
     ...(typeof item.hisWords==='string'&&item.hisWords.trim()?{hisWords:item.hisWords.trim()}:{}),
     ...(typeof item.whyNotSettled==='string'&&item.whyNotSettled.trim()?{whyNotSettled:item.whyNotSettled.trim()}:{}),
     ...(typeof item.onlyHeCan==='string'&&item.onlyHeCan.trim()?{onlyHeCan:item.onlyHeCan.trim()}:{}),
+    ...(typeof item.decisionId==='string'&&item.decisionId.trim()?{decisionId:item.decisionId.trim()}:{}),
+    ...(typeof item.approvalAction==='string'&&item.approvalAction.trim()?{approvalAction:item.approvalAction.trim()}:{}),
     // A reading item may name the exact messages he is to read; otherwise they are resolved
     // from the declaring run's own posts into this thread.
     ...(item.reads!==undefined?{reads:idList(item.reads,'reads')}:{})};
@@ -1234,8 +1237,12 @@ function questionBrief(item:any) {
  */
 function withHisWords(brief:any,by:TopicBy):any {
   const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
-  const {hisWords,why}=requireHisWords({actorInputId:by.inputId??'',hisWords:brief.hisWords,whyNotAnswered:brief.whyNotSettled},THREAD_QUESTION_FIELDS_REQUIRED);
-  const line=`${hisWordsLine(hisWords,why)}\nOnly you can: ${ONLY_HE_CAN[kind]}`;
+  if(kind!=='approval'&&(brief.decisionId!==undefined||brief.approvalAction!==undefined))
+    throw new TopicError('decisionId and approvalAction belong to onlyHeCan approval.');
+  const decision=kind==='approval'?approvalDecision(brief.decisionId,brief.approvalAction):undefined;
+  const {hisWords,why}=requireHisWords({actorInputId:by.inputId??'',hisWords:brief.hisWords,whyNotAnswered:brief.whyNotSettled},THREAD_QUESTION_FIELDS_REQUIRED,decision);
+  const citation=decision?`\nRequired by permanent decision: ${decision} (${brief.approvalAction})`:'';
+  const line=`${hisWordsLine(hisWords,why)}\nOnly you can: ${ONLY_HE_CAN[kind]}${citation}`;
   return brief.why.text.includes(line)?brief:{...brief,why:{...brief.why,text:`${brief.why.text.trim()}\n\n${line}`.trim()}};
 }
 /** `ready`, `agent_checking`, its plain spelling `checking`, or nothing; anything else is a mistake, not a default. */
@@ -2102,7 +2109,7 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
-export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision is only for what no agent can do: it carries "onlyHeCan" (sign-in, secret, device or ambiguous), "hisWords" copied exactly from his message and "whyNotSettled"; the owner refuses it otherwise. Never ask him for permission or approval: do the work, have missing abilities built, and tell him afterwards. A request he made closes completed only when the work sent for it answered as done. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
+export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. A ready decision is for what no agent can do or a permanent rule reserves for him: it carries "onlyHeCan" (sign-in, secret, device, ambiguous or approval), "hisWords" copied exactly from his message and "whyNotSettled"; the owner refuses it otherwise. Approval also carries "decisionId" and "approvalAction", which the owner verifies against the permanent record. Other permission questions are refused; do the work and tell him afterwards. A request he made closes completed only when the work sent for it answered as done. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
 const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
 export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {

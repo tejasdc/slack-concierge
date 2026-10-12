@@ -665,7 +665,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -673,10 +673,10 @@ export class SessionCommunicationCoordinator {
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
-        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined))
-            throw new Error('--his-words, --why-not-answered and --only-he-can belong to needs_you: they say why only he can answer.');
+        if(input.outcome!=='needs_you'&&(input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined))
+            throw new Error('Question fields belong to needs_you: they say why only he can answer.');
         const content=input.outcome==='needs_you'
-            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can}):stated;
+            ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
         // Silence about his own message is never the router's judgement alone: `done` on a turn
@@ -1251,6 +1251,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         his_words?:string;
         why_not_answered?:string;
         only_he_can?:string;
+        decision_id?:string;
+        approval_action?:string;
         checked?:string;
         not_checked?:string;
         all_done?:boolean;
@@ -1267,8 +1269,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
-        if((input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined)&&input.workDisposition!=='needs_decision')
-            throw new Error('--his-words, --why-not-answered and --only-he-can belong to --work-disposition needs_decision.');
+        if((input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined)&&input.workDisposition!=='needs_decision')
+            throw new Error('Question fields belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
@@ -1288,7 +1290,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         }
         const outsideRequest=!!db.query('SELECT 1 FROM session_external_requests WHERE request_id=?').get(input.request_id);
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
-            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can})};
+            input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
         else if(input.workDisposition==='completed')
             input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
         if(outsideRequest)
