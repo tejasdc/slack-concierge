@@ -1,0 +1,1 @@
+Queued work now spends less time holding up the app when many requests arrive together.
