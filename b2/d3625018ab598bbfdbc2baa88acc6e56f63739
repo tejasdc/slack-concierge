@@ -1,0 +1,1 @@
+Concierge updates now allow extra time when the machine is busy and record what a failed check said, so a slow or failed update is easier to diagnose.
