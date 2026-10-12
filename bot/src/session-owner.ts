@@ -832,7 +832,7 @@ export class SessionOwner {
       // people read the retained message itself, the same text its history row shows.
       text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
       notificationRequest:input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
-        ?notificationRequest(String(parsed.text??parsed.firstInput?.text??'')):null,
+        ?parsed.notificationRequest??notificationRequest(String(parsed.text??parsed.firstInput?.text??'')):null,
       // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.
       ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
         return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),

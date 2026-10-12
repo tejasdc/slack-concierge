@@ -1,7 +1,7 @@
 # Requested phone delivery
 
-The owner receipt for a retained human request exposes `notificationRequest` as `result`,
-`scheduled`, or `null`. This is derived from the exact human words, never an agent outcome or
+The owner stores `notificationRequest` with a retained human request and exposes it on the receipt as `result`,
+`scheduled`, or `null`. This is derived at admission from the exact human words, never an agent outcome or
 quoted agent text. “Let me know”, “tell me when”, and “notify me” select `result`; “remind me”
 selects `scheduled`. The thnkr.ing notifier reads this property at response time and pushes only
 explicit `result` requests to the iPhone. Routine results remain quiet.
