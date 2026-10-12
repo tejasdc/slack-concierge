@@ -3,6 +3,8 @@
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.
+Explicit requests for phone delivery are carried on the retained human input receipt;
+see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 
 The coordinated responsiveness release follows the dependency checkpoints in
 [Deployment](docs/runbooks/DEPLOYMENT.md#coordinated-responsiveness-release-dependency-order):
