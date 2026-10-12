@@ -1153,8 +1153,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (troubleStatus !== null) void offerOutageChoices({ turnId: input.turnId, status: troubleStatus }, recordSessionEvent);
       // An account out of allowance stops every session on this machine, so it is told once
       // for the whole episode rather than per message, and it names no model to switch to.
-      if (heldUntilMs !== null && input.providerId !== "chatgpt") {
-        const hold = { provider: (input.providerId === "codex" ? "codex" : "claude-code") as "codex" | "claude-code",
+      if (heldUntilMs !== null && (input.providerId === "codex" || input.providerId === "claude-code")) {
+        const hold = { provider: input.providerId,
           model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs,
           account:input.boundAccount?.account??null };
         noticeUsageHold(hold, recordSessionEvent);
@@ -1168,7 +1168,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
-      if (authWait) noticeAuthHold({provider: input.providerId as 'codex'|'claude-code',
+      if (authWait && (input.providerId === 'codex' || input.providerId === 'claude-code')) noticeAuthHold({provider: input.providerId,
         model: input.model ?? null, turnId: input.turnId,
         account: input.providerId==='claude-code'?runningClaudeAccount:null}, recordSessionEvent);
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {

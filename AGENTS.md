@@ -16,6 +16,9 @@ repair belong to the canonical owner; see [provider sessions](docs/architecture/
 That repair credits the exact covered taste-mining request to the retained Codex result
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 
+Google Antigravity agent sessions use the existing durable execution host and retain the
+Google conversation ID for later turns; see [Antigravity sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
+
 Accepted messages and local forwarded replies retain their next step atomically; recovery
 requires explicit intent and checks prior custody. See [waiting captures and replies](docs/contracts/native-inbox.md)
 and the [October 10 reconciliation](docs/incidents/2026-10-10-database-lock-and-corruption.md).
