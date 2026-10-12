@@ -1,0 +1,1 @@
+A timed-out account check now retains which account it checked, so Concierge can report its outcome accurately.
