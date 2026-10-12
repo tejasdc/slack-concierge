@@ -11,6 +11,7 @@ import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn
 import type {TurnSteeringController} from './steering';
 import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
 import type {AgentProvider} from './providers';
+import {antigravityExecutable} from './antigravity';
 import type {ProviderId} from './state';
 import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
 import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-session-controls';
@@ -872,9 +873,13 @@ export class SessionExecutionHost {
           // New Codex turns always use the shared daemon. Retain the old host path only
           // to finish an execution recorded before this change.
           const privateCodex=session.provider_id==='codex'&&!!adoption&&adoption.execution.supervisor!=='codex-daemon';
-          const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||privateCodex)
+          const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||privateCodex)
             ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
-          if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
+          if(session.provider_id==='antigravity') {
+            if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
+            actual=adoption?this.adoptedRun(prepared,adoption,antigravityExecutable())
+              :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
+          } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
@@ -915,7 +920,8 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='chatgpt'?null:budgetBriefWithProviderRoom(session.provider_id as 'claude-code'|'codex'),
+      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='codex'||session.provider_id==='claude-code'
+        ?budgetBriefWithProviderRoom(session.provider_id):null,
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
           isWritingSession(session)?WRITING_SESSION_STANDING:null,
           saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null}):undefined,

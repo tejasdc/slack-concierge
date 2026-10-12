@@ -1276,7 +1276,7 @@ export class SessionOwner {
   }
   async compare(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference','provider']);const action=actionId(input);
-    if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Choose another supported agent provider.');
+    if(!['codex','claude-code','antigravity','chatgpt'].includes(input.provider))throw new SessionOwnerError('Choose another supported agent provider.');
     if(input.provider===session.provider_id)throw new SessionOwnerError('Choose another agent provider for comparison.');
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
     if(prior){if(prior.kind!=='comparison'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
@@ -1451,7 +1451,7 @@ export class SessionOwner {
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
-    if(!['codex','claude-code','chatgpt','auto'].includes(input.provider))throw new SessionOwnerError('Select a supported provider or Automatic.');
+    if(!['codex','claude-code','antigravity','chatgpt','auto'].includes(input.provider))throw new SessionOwnerError('Select a supported provider or Automatic.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
     if(input.provider==='chatgpt'&&(input.project!==undefined||input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('ChatGPT sessions do not accept a code project, model, or reasoning effort.');
     if(input.provider==='auto'&&(input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('Choose a provider before setting its model or effort.');

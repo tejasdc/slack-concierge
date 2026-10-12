@@ -11,6 +11,36 @@ failure without substituting a different provider.
 
 ## Selection and binding
 
+### Antigravity sessions
+
+The server can run Google's Antigravity CLI as a third native agent provider. A new
+turn starts in the same supervised execution host used for Claude subprocesses: the
+owner records the exact accepted input and launch intent first, then the host owns
+the CLI process and its append-only output. After an owner restart, Concierge adopts
+that host and replays its output. It does not send the accepted prompt a second time.
+An unconfirmed host loss leaves the turn unconfirmed instead of guessing it failed.
+
+The CLI emits structured `init`, `step_update`, and terminal `result` events. Its
+`conversation_id` is the provider session binding. Each later turn starts a new
+headless process with `--conversation` and that exact ID, so it resumes the right
+Google conversation without using the CLI's mutable most-recent conversation.
+Only a `SUCCESS` result with the bound ID completes work. A result that changes
+the ID or omits it fails closed, because the next turn would otherwise run in
+the wrong or a fresh conversation.
+Headless work requests the CLI's unattended permission mode and verifies the
+effective mode in its structured start event. Google can otherwise deny a
+shell command yet return `SUCCESS`; a permission-denied tool event or diagnostic
+therefore leaves the turn unconfirmed instead of reporting completion.
+
+Antigravity currently supports sequential native turns and Stop. Its CLI has a
+streaming input protocol, but live steering is disabled until its pickup and
+recovery semantics are proven. Native human replies during a run queue as the
+next turn. Historical pages, forks, and information-only consultation are also
+disabled because their provider contracts are not yet established. The CLI must
+be installed on the machine running the provider and must have that machine's
+own Google sign-in. Credentials are never copied into a Concierge session.
+
+
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.
 
 ### Model and reasoning effort are separate axes

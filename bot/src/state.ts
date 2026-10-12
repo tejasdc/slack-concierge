@@ -855,7 +855,7 @@ initializeRouterSearchIndex(db);
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
-export type ProviderId = "codex" | "claude-code" | "chatgpt";
+export type ProviderId = "codex" | "claude-code" | "antigravity" | "chatgpt";
 
 export interface RecoverableTurnRow {
   id: number;

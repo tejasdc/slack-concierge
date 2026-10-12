@@ -8,6 +8,7 @@ import { forkClaudeHistory, readClaudeHistory, readClaudeHistoryDetail, readCode
   type ProviderHistoryInput, type ProviderHistoryPage, type ProviderDetailInput } from "./provider-history";
 import type { ProviderMessageCallback } from "./provider-history";
 import {MANAGED_CODEX} from './provider-activation';
+import { antigravityInstalled, runAntigravityTurn } from "./antigravity";
 
 export type { ProviderInteractionPolicy } from "./provider-policy";
 export type { ProviderHistoryInput, ProviderHistoryMessage, ProviderHistoryPage, ProviderDetailInput } from "./provider-history";
@@ -126,9 +127,25 @@ class UnavailableChatGPTProvider implements AgentProvider {
   }
 }
 
+class AntigravityProvider implements AgentProvider {
+  id: ProviderId = "antigravity";
+  capabilities: ProviderCapabilities = { send: antigravityInstalled(), stop: true, steer: false, consultation: false,
+    history: false, fork: false, forkBoundary: null, consultationFork: false,
+    reason: "Google conversations can be continued here; live steering and historical forks are unavailable." };
+
+  run(input: Parameters<AgentProvider["run"]>[0]) {
+    return runAntigravityTurn(input);
+  }
+
+  async fork(): Promise<RunResult> {
+    throw new ProviderCapabilityUnavailableError("fork", "Antigravity does not expose a verified conversation fork.");
+  }
+}
+
 export const providers: Record<ProviderId, AgentProvider> = {
   codex: new CodexProvider(),
   "claude-code": new ClaudeCodeProvider(),
+  antigravity: new AntigravityProvider(),
   chatgpt: new UnavailableChatGPTProvider(),
 };
 
