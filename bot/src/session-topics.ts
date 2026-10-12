@@ -255,12 +255,9 @@ function entryIndex():EntryIndex {
   return index;
 }
 /**
- * Fills the index after a restart in bounded steps that yield the owner between them. The
- * whole build runs inside whichever read or human action comes first, and after each of the
- * 75 restarts in the three days to 2026-10-12 that was his first tap on a thread: 2.9 s with
- * 157 MB read inside its own write transaction, with every other read waiting behind it. A
- * reader that arrives mid-warm finishes only what is left; a thread move that resets the memo
- * mid-warm simply makes the next step start over. Nothing is written.
+ * Fills the index after a restart in time-bounded steps that yield the owner between them.
+ * A reader that arrives mid-warm finishes only what is left; a thread move that resets the
+ * memo mid-warm makes the next step start over. Nothing is written.
  */
 export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
   const batch=Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH);
@@ -270,31 +267,38 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(options.stopped?.())return {rows,steps,ms:Math.round(performance.now()-started),complete:false};
     refreshRootMemo();
     const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
-    const read=extendEntryIndex(index,batch);
-    rows+=read;steps+=1;
-    if(read<batch)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
+    const read=extendEntryIndex(index,batch,performance.now()+ENTRY_INDEX_WARM_STEP_MS);
+    rows+=read.rows;steps+=1;
+    if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
     await new Promise<void>(resolve=>setImmediate(resolve));
   }
 }
-const ENTRY_INDEX_WARM_BATCH=250;
-/** Extends the index over the next rows past its watermark; `limit` bounds one step, -1 reads to the end. Returns the rows read. */
-function extendEntryIndex(index:EntryIndex,limit:number):number {
+const ENTRY_INDEX_WARM_BATCH=16;
+const ENTRY_INDEX_WARM_STEP_MS=12;
+/** Extends the index over the next rows past its watermark; `limit` bounds the read, -1 reads to the end. */
+function extendEntryIndex(index:EntryIndex,limit:number,deadline=Infinity):{rows:number;exhausted:boolean} {
   const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(index.watermark,limit) as any[];
+  let processed=0;
   for(const row of rows) {
-    index.watermark=row.sequence;
-    const messageId=inboxMessageId(row);
-    if(!messageId)continue;
-    const root=rootOf(row.session_id,messageId);
-    const kind=entryKind(row);
-    const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id};
-    index.messages.set(messageId,{...record,root,kind});
-    if(!root)continue;
-    const current=index.byRoot.get(root);
-    if(!current||row.sequence>current.sequence)index.byRoot.set(root,record);
-    if(kind==='final'&&(index.finals.get(root)?.sequence??-1)<row.sequence)index.finals.set(root,{...record,inputId:messageId});
-    if(kind==='post'&&(index.posts.get(root)?.sequence??-1)<row.sequence)index.posts.set(root,record);
+    indexEntryRow(index,row);
+    processed++;
+    if(performance.now()>=deadline)break;
   }
-  return rows.length;
+  return {rows:processed,exhausted:processed===rows.length&&rows.length<limit};
+}
+function indexEntryRow(index:EntryIndex,row:any) {
+  index.watermark=row.sequence;
+  const messageId=inboxMessageId(row);
+  if(!messageId)return;
+  const root=rootOf(row.session_id,messageId);
+  const kind=entryKind(row);
+  const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id};
+  index.messages.set(messageId,{...record,root,kind});
+  if(!root)return;
+  const current=index.byRoot.get(root);
+  if(!current||row.sequence>current.sequence)index.byRoot.set(root,record);
+  if(kind==='final'&&(index.finals.get(root)?.sequence??-1)<row.sequence)index.finals.set(root,{...record,inputId:messageId});
+  if(kind==='post'&&(index.posts.get(root)?.sequence??-1)<row.sequence)index.posts.set(root,record);
 }
 /** After a thread link moved, only the messages in the threads it touched are resolved again. */
 function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {
@@ -425,15 +429,56 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
 }
 /** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
 function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:()=>{change:Change;result:T}):T&{duplicate?:boolean} {
-  return db.transaction(()=>{
-    const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
-      payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
-    if(saved.duplicate)return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};
-    const {change,result}=run();
-    record(actor.sessionId,saved.input.id,actor.turnId,change);
-    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
-    return {...result,duplicate:false};
-  })();
+  const started=performance.now();
+  let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
+  let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
+  let resultForTrace:T|null=null;
+  try {
+    const result=db.transaction(()=>{
+      const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
+        payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
+      retainMs=performance.now()-phaseStart;
+      phaseStart=performance.now();phaseName='compute';
+      if(saved.duplicate){duplicate=true;phaseName='commit';return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};}
+      const {change,result}=run();
+      computeMs=performance.now()-phaseStart;
+      resultForTrace=result;
+      phaseStart=performance.now();phaseName='record';
+      record(actor.sessionId,saved.input.id,actor.turnId,change);
+      recordMs=performance.now()-phaseStart;
+      phaseStart=performance.now();phaseName='receipt';
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+      receiptMs=performance.now()-phaseStart;
+      phaseName='commit';
+      return {...result,duplicate:false};
+    })();
+    completed=true;
+    return result;
+  } finally {
+    const ended=performance.now(),totalMs=ended-started;
+    if(phaseName==='retain')retainMs=ended-phaseStart;
+    else if(phaseName==='compute'&&!duplicate)computeMs=ended-phaseStart;
+    else if(phaseName==='record')recordMs=ended-phaseStart;
+    else if(phaseName==='receipt')receiptMs=ended-phaseStart;
+    if(totalMs>=250) {
+      const named=payload as {kind?:unknown;topicId?:unknown;requestId?:unknown;questionId?:unknown};
+      let topicId=typeof named?.topicId==='string'?named.topicId:null;
+      if(!topicId&&resultForTrace&&'topic' in resultForTrace) {
+        const topic=(resultForTrace as {topic?:{topicId?:unknown}}).topic;
+        if(typeof topic?.topicId==='string')topicId=topic.topicId;
+      }
+      try {
+        if(!topicId&&typeof named?.requestId==='string')
+          topicId=(db.query('SELECT topic_id FROM inbox_requests WHERE request_id=?').get(named.requestId) as {topic_id:string}|null)?.topic_id??null;
+        if(!topicId&&typeof named?.questionId==='string')
+          topicId=(db.query('SELECT topic_id FROM inbox_questions WHERE question_id=?').get(named.questionId) as {topic_id:string}|null)?.topic_id??null;
+      } catch { /* Diagnostic attribution must never replace the command's result. */ }
+      log('warn','inbox_topic_mutation_slow',{action:typeof named?.kind==='string'?named.kind:'unknown',topic_id:topicId,
+        duration_ms:Math.round(totalMs),retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),
+        record_ms:Math.round(recordMs),receipt_ms:Math.round(receiptMs),
+        transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),duplicate,outcome:completed?'completed':'failed'});
+    }
+  }
 }
 /** His own action on a topic. Same retained-receipt shape as the owner's other human controls. */
 function humanMutation(sessionId:number,clientActionId:string,payload:unknown,run:()=>{change:Change;result:Record<string,any>}) {
