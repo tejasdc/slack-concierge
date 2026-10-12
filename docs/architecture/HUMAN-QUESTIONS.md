@@ -17,6 +17,8 @@ answered questions follow, each group newest first. The browser sends a follow-u
 normal addressed thread reply, then links the accepted human input to the same question.
 The owner verifies the source before appending it. Replies to that input join the item's
 answer history; a failed link leaves the reply sent and reports that the view is behind.
+Changing the linked answer request or source messages advances the question revision, so
+prepared reads discard their earlier answer list and load the new association.
 
 This uses the existing topic stream, accepted inputs, addressed reply path and prepared
 question browser. A second question database would duplicate topic placement and reply
