@@ -19,7 +19,7 @@ const PERIODIC_SYNC_MS = 1_000;
 const SLOW_SYNC_MS = 1_000;
 const STALLED_SYNC_LOG_MS = 60_000;
 const RESTART_AFTER_MS = 5_000;
-const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 4 * 1024 * 1024 * 1024, quietPressure: 10, intervalMs: 5_000 };
+const CHECKPOINT = { quietBytes: 64 * 1024 * 1024, forceBytes: 256 * 1024 * 1024, quietPressure: 10, intervalMs: 5_000 };
 
 type Waiter = { changes: number; resolve: () => void };
 const counters = { syncs: 0, slowSyncs: 0, slowestSyncMs: 0, lastSyncMs: 0, checkpoints: 0, slowestCheckpointMs: 0,

@@ -1,5 +1,5 @@
 import {spawn,type ChildProcess} from 'node:child_process';
-import {existsSync,realpathSync,rmSync} from 'node:fs';
+import {existsSync,realpathSync,rmSync,statSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {inflateRawSync} from 'node:zlib';
 import {Database} from 'bun:sqlite';
@@ -228,11 +228,20 @@ export class MeaningIndex {
     }
   }
   /** The archive's prompts (both machines' transcripts), read from Thinkering's disposable index without touching any transcript file. */
+  // One connection held while the index file stays the same. Opening it per page or per search
+  // made SQLite open and chown its log on the root disk each time, and under load each open held
+  // the owner for up to 1.6 s (2026-10-12). A rebuilt index is a new file, so it is reopened.
+  private held:{db:Database,identity:string}|null=null;
   private archive():Database|null {
-    if(!existsSync(ARCHIVE_INDEX))return null;
+    const file=statSync(ARCHIVE_INDEX,{throwIfNoEntry:false});
+    const identity=file?`${file.dev}:${file.ino}`:null;
+    if(this.held&&this.held.identity===identity)return this.held.db;
+    this.held?.db.close();this.held=null;
+    if(!identity)return null;
     const archive=new Database(ARCHIVE_INDEX,{readonly:true});
     const version=Number((archive.query('PRAGMA user_version').get() as any)?.user_version);
     if(version!==3){archive.close();throw new Error(`archive index format ${version} is not the one this reader knows (3)`);}
+    this.held={db:archive,identity};
     return archive;
   }
   private async archivePage():Promise<boolean> {
@@ -247,7 +256,7 @@ export class MeaningIndex {
       await this.save(rows.map(row=>({key:`archive:${row.hash}`,target:{kind:'archive',sourceId:'',sourceVersion:'',eventId:''},text:meaningText(inflateRawSync(row.body).toString('utf8')),at:null})));
       this.setWatermark('archive',String(rows[rows.length-1].id));
       return true;
-    }finally{archive.close();}
+    }catch(error){this.held?.db.close();this.held=null;throw error;}
   }
   /** Indexing runs on its own timer, one page per tick, so it never holds the owner for long. */
   start() {
@@ -268,7 +277,7 @@ export class MeaningIndex {
     };
     this.timer=setTimeout(tick,5_000);
   }
-  stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();this.store.close();}
+  stop(){this.stopped=true;if(this.timer)clearTimeout(this.timer);this.engine.stop();this.held?.db.close();this.held=null;this.store.close();}
   /** Archive hits resolve to the exact source, version and event the archive holds now, so a stale vector never names a changed file. */
   private resolveArchive(archive:Database,key:string):MeaningHit['target']|null {
     try{
@@ -302,7 +311,7 @@ export class MeaningIndex {
     }
     const ranked=[...best.values()].sort((a,b)=>b.score-a.score);
     const hits:MeaningHit[]=[],seen=new Set<string>();
-    // One read-only connection per search, a bounded number of lookups, and none at all when the
+    // The held read-only connection, a bounded number of lookups, and none at all when the
     // archive cannot be opened: a failing lookup must never walk every candidate on the owner's loop.
     let archive:Database|null=null,archiveReason:string|null=null,lookups=0,unresolved=0;
     try{archive=this.archive();}catch(error){archiveReason=`Archive matches skipped: ${error instanceof Error?error.message:String(error)}`;}
@@ -320,7 +329,7 @@ export class MeaningIndex {
         if(seen.has(identity))continue;seen.add(identity);
         hits.push({target,score:Math.round(score*1000)/1000,text:this.texts[index]!,at:this.times[index]??null,ref:this.keys[index]!});
       }
-    }finally{archive?.close();}
+    }catch(error){this.held?.db.close();this.held=null;throw error;}
     const reason=[this.caughtUp?null:'The meaning index is still catching up; older sessions may be missing.',archiveReason,
       unresolved?`${unresolved} archive meaning matches had unavailable or invalid indexed source metadata and were omitted.`:null].filter(Boolean).join(' ')||null;
     return {available:true,hits,reason,indexed,pending:!this.caughtUp};
