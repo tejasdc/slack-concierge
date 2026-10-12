@@ -17,8 +17,7 @@ export type ReleaseView = {
 };
 
 const LIMIT = 50;
-const commitTitles = new Map<string, string | null>();
-const rangeChanges = new Map<string, { revision: string; title: string }[]>();
+type Change = { revision: string; title: string; note: string | null; merge: boolean };
 
 function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/var/lib/slack-concierge-deployment/source";
@@ -32,22 +31,25 @@ async function git(arguments_: string[]): Promise<string | null> {
   } catch { return null; }
 }
 
-// Commits are immutable, so a title or a range, once read, never needs reading again.
-async function commitTitle(revision: string) {
-  if (!commitTitles.has(revision)) commitTitles.set(revision, (await git(["log", "-1", "--format=%s", revision]))?.trim() || null);
-  return commitTitles.get(revision)!;
-}
-
-async function changesBetween(previous: string | null, revision: string) {
-  const key = `${previous ?? ""}..${revision}`;
-  if (!rangeChanges.has(key)) {
-    const output = previous ? await git(["log", "--first-parent", "--reverse", "--format=%H%x09%s", `${previous}..${revision}`]) : null;
-    rangeChanges.set(key, (output ?? "").split("\n").filter(Boolean).map((line) => {
-      const [hash, ...subject] = line.split("\t");
-      return { revision: hash!, title: subject.join("\t") };
-    }));
-  }
-  return rangeChanges.get(key)!;
+async function changesBetween(previous: string | null, revision: string): Promise<Change[]> {
+  // The oldest listed release still needs a description. Its first parent is the boundary
+  // when the previous release has fallen out of the bounded history.
+  const base = previous || (await git(["rev-parse", `${revision}^1`]))?.trim() || null;
+  const range = base ? [`${base}..${revision}`] : ["--max-count=1", revision];
+  // Include branch commits inside a merge. Notes are read on every request because an
+  // already-published note may be corrected without changing the commit or release row.
+  const output = await git(["log", "--notes=refs/notes/update", "--topo-order", "--reverse",
+    "--format=%x1e%H%x00%P%x00%s%x00%B%x00%N", ...range]);
+  return (output ?? "").split("\x1e").slice(1).map((record) => {
+    const [hash, parents, subject, body, attached] = record.split("\x00");
+    const written = attached?.trim() || noteInMessage(body ?? "");
+    return {
+      revision: hash?.trim() ?? "",
+      title: subject ?? "",
+      note: written && !/^internal\.?$/i.test(written) ? written.replace(/\s+/g, " ").trim() : null,
+      merge: (parents?.trim().split(/\s+/).length ?? 0) > 1,
+    };
+  }).filter((change) => change.revision);
 }
 
 /**
@@ -56,14 +58,6 @@ async function changesBetween(previous: string | null, revision: string) {
  * line, or in a note on `refs/notes/update` when the commit is already pushed (that note
  * wins, so it can correct one — including replacing a retired `internal` marker).
  */
-// Never remembered: a note can be attached, or corrected, while its update waits, and the
-// notice is read again every minute, so the next read must see it.
-async function updateNote(revision: string) {
-  const attached = (await git(["notes", "--ref=refs/notes/update", "show", revision]))?.trim();
-  const written = attached || noteInMessage(await git(["log", "-1", "--format=%B", revision]) ?? "");
-  return written ? written.replace(/\s+/g, " ").trim() : null;
-}
-
 /**
  * The note is read from anywhere in the message, because a blank line before other trailers
  * hides it from git's own trailer parser — and it is read whole. An editor wraps a sentence
@@ -118,12 +112,13 @@ export async function pendingUpdateSummary(previous: string | null, revision: st
   const notes: string[] = [];
   const subjects: string[] = [];
   for (const change of await changesBetween(previous, revision)) {
-    const note = await updateNote(change.revision);
+    const note = change.note;
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
     if (!note || /^internal\.?$/i.test(note)) {
       refreshNotesSoon();
-      if (!subjects.includes(change.title)) subjects.push(change.title);
+      // A merge is a delivery wrapper, not a change. Its branch commits are already here.
+      if (!change.merge && !subjects.includes(change.title)) subjects.push(change.title);
       continue;
     }
     if (!notes.includes(note)) notes.push(note);
@@ -161,12 +156,18 @@ export async function releaseHistory(): Promise<{ releases: ReleaseView[] }> {
     { git_commit: string; state: string; activated_at: string | null }[];
   const releases: ReleaseView[] = [];
   for (const [index, row] of rows.slice(0, LIMIT).entries()) {
+    const rawChanges = await changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit);
+    if (rawChanges.some((change) => !change.note)) refreshNotesSoon();
+    const changes = rawChanges
+      .filter((change) => !change.merge || change.note)
+      .map((change) => ({ revision: change.revision, title: change.note ?? change.title }));
     releases.push({
       revision: row.git_commit,
       activatedAt: iso(row.activated_at),
       current: row.state === "lkg",
-      title: await commitTitle(row.git_commit),
-      changes: await changesBetween(rows[index + 1]?.git_commit ?? null, row.git_commit),
+      title: changes.length === 1 ? changes[0]!.title : changes.length > 1
+        ? `${changes.length} changes published` : "An agent service update was published",
+      changes,
     });
   }
   return { releases };
