@@ -947,7 +947,8 @@ export class SessionPeers {
       const retained=existing.origin_provenance_json?JSON.parse(existing.origin_provenance_json):{};
       if(retained.forwardedIntent&&JSON.stringify(retained.forwardedIntent)!==JSON.stringify(forwardedIntent))
         throw new SessionOwnerError('Idempotency conflict: forwarded request payload changed.',409);
-      this.dependencies.owner.dispatch(getAcceptedSessionInput(existing.target_input_id)!);
+      const target=getAcceptedSessionInput(existing.target_input_id)!;
+      if(target.turn_id===null)this.dependencies.owner.dispatch(target);
       return this.accepted(existing);
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
@@ -1221,7 +1222,10 @@ export class SessionPeers {
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
           OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending')) AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>{
-          if(row.closed_at_ms===null)this.dependencies.owner.dispatch(getAcceptedSessionInput(row.target_input_id)!);
+          if(row.closed_at_ms===null){
+            const target=getAcceptedSessionInput(row.target_input_id)!;
+            if(target.turn_id===null)this.dependencies.owner.dispatch(target);
+          }
           this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
         });
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
