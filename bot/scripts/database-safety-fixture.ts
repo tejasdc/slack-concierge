@@ -24,6 +24,13 @@ try {
   publishSqliteBackup(source, path(2));
   assert.equal(pruneVerifiedBackups(root, 1), 1);
   assert(!existsSync(path(1)) && isVerifiedBackup(path(2)));
+  // An unverified copy older than the newest verified one is superseded and removed; byte cap keeps the newest.
+  writeFileSync(path(0), 'legacy-unverified');
+  publishSqliteBackup(source, path(3));
+  assert.equal(pruneVerifiedBackups(root, 8, 1), 2);
+  assert(!existsSync(path(0)) && !existsSync(path(2)) && isVerifiedBackup(path(3)) && existsSync(path(99)));
+  rmSync(path(3)); rmSync(`${path(3)}.verified.json`);
+  publishSqliteBackup(source, path(2));
   const bytes = readFileSync(path(2));
   assert.throws(() => publishSqliteBackup(source, path(2)), /replace/);
   assert.deepEqual(readFileSync(path(2)), bytes);

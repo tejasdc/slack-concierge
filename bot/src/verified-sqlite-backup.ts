@@ -85,16 +85,39 @@ export function verifyMigrationBackup(path: string): void {
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 
-export function pruneVerifiedBackups(folder: string, keep: number): number {
+/**
+ * Retention for automatic pre-update copies: the newest `keep` verified copies, and only as many
+ * of those as fit in `maxBytes` (the newest one always stays). Counting only verified copies kept
+ * an unverified file from evicting a proven one, but it also meant nothing ever removed copies made
+ * before certificates existed: seven 2.4 GB copies from 2026-10-10 sat uncounted beside six
+ * certified ones and took the root disk under its 50 GB floor on 2026-10-12. An unverified copy is
+ * now removed once a newer verified copy exists (it can never be a rollback source and is
+ * superseded); one newer than every verified copy, or still being published, is left alone.
+ */
+export function pruneVerifiedBackups(folder: string, keep: number, maxBytes = Number.POSITIVE_INFINITY): number {
   if (!Number.isSafeInteger(keep) || keep < 1) throw new Error('At least one verified backup must be kept.');
-  const verified = readdirSync(folder)
-    .filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name) && isVerifiedBackup(join(folder, name)))
-    .sort((a, b) => Number(b.split('.')[2]) - Number(a.split('.')[2]));
-  for (const name of verified.slice(keep)) {
+  const stamp = (name: string) => Number(name.split('.')[2]);
+  const automatic = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
+    .sort((a, b) => stamp(b) - stamp(a));
+  const verified = automatic.filter(name => isVerifiedBackup(join(folder, name)));
+  let removed = 0, bytes = 0, kept = 0, full = false;
+  for (const name of verified) {
+    const size = lstatSync(join(folder, name)).size;
+    if (!full && kept < keep && (kept === 0 || bytes + size <= maxBytes)) { kept++; bytes += size; continue; }
+    full = true;
     // Remove its qualification before its bytes. An interrupted prune cannot count a missing file.
     rmSync(join(folder, `${name}.verified.json`));
     rmSync(join(folder, name));
+    removed++;
+  }
+  const newestVerified = verified.length ? stamp(verified[0]!) : null;
+  for (const name of automatic) {
+    if (verified.includes(name) || newestVerified === null || stamp(name) >= newestVerified) continue;
+    if (existsSync(join(folder, `${name}.publishing`))) continue;
+    for (const suffix of ['.verified.json', '-wal', '-shm', '-journal', ''])
+      rmSync(join(folder, name + suffix), { force: true });
+    removed++;
   }
   syncPath(folder);
-  return Math.max(0, verified.length - keep);
+  return removed;
 }
