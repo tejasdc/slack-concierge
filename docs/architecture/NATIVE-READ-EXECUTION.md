@@ -44,6 +44,10 @@ index stays in owner memory because thread commands use it, but its warm-up read
 rows and stops processing a step after twelve milliseconds before yielding to other owner work.
 An individual SQLite call can exceed that target under storage contention, so installed lag
 records remain the acceptance check.
+Search answers carry bounded evidence previews and a bounded encoded body; selecting a result
+uses the exact context read for full text. Slow searches log elapsed time for prepared words,
+historical routing, meaning, archive search and retention, plus final answer size. These phases
+identify expensive search work without recording the query or message text.
 
 An Inbox topic command taking at least 250 milliseconds logs its action, known topic ID and
 time spent resolving the caller, retaining its source and executing the command. A slow topic

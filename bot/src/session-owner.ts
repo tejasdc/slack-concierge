@@ -10,6 +10,7 @@ import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJ
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
 import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
+import {boundSearchResponse} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
 import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
@@ -2051,6 +2052,8 @@ export class SessionOwner {
     return createNativeSession(source.provider,{origin:'imported',title:source.title,summary:purposeFromFirstWords(source.title),project:source.project??null,source:retained,...(source.provider==='chatgpt'?{}:{interactionPolicy:'consultation-only' as const})});
   }
   async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
+    const started=performance.now();
+    const timing={word_ms:0,routing_ms:0,meaning_ms:0,archive_search_ms:0,archive_retention_ms:0,meaning_retention_ms:0};
     const input=object(body);only(input,['query','limit','includeTools','everywhere']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
@@ -2058,11 +2061,16 @@ export class SessionOwner {
     // Inbox gets here, covering this ledger, the archive of both machines and the live peers.
     if(input.everywhere===true&&this.communication)return this.communication.searchEverywhere(input.query.trim(),limit);
     // Word and meaning work run independently outside this request thread.
-    const meaningSearch=meaningIndex()?.search(input.query.trim(),limit)??null;
+    const meaningStarted=performance.now();
+    const meaningSearch=meaningIndex()?.search(input.query.trim(),limit).finally(()=>{timing.meaning_ms=Math.round(performance.now()-meaningStarted);})??null;
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
-    const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true).catch(()=>null);
+    const wordStarted=performance.now();
+    const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true)
+      .then(value=>{timing.word_ms=Math.round(performance.now()-wordStarted);return value;})
+      .catch(()=>{timing.word_ms=Math.round(performance.now()-wordStarted);return null;});
+    const routingStarted=performance.now();
     const routingSearch=searchRouterThreadsRead({beforeTs:(Date.now()/1000).toFixed(6),...routingSource,
-      concepts:terms.slice(0,8),limit:Math.min(limit,10)});
+      concepts:terms.slice(0,8),limit:Math.min(limit,10)}).finally(()=>{timing.routing_ms=Math.round(performance.now()-routingStarted);});
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
     const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
     const add=(session:SessionRow,evidence:any[])=>{
@@ -2102,7 +2110,9 @@ export class SessionOwner {
     coverage.wordIndex=words?.coverage??{complete:false};
     if(this.runtime.sources) {
       try {
-        const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
+        const archiveSearchStarted=performance.now();
+        const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit})
+          .finally(()=>{timing.archive_search_ms=Math.round(performance.now()-archiveSearchStarted);});
         const candidates=(found.sources??[]).map((source:any)=>({source,matches:(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
           &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)))}))
           .filter((candidate:any)=>candidate.matches.length);
@@ -2120,7 +2130,9 @@ export class SessionOwner {
           coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
         }
         // Retention checks run together, so search is as slow as the slowest one, not their sum.
+        const retentionStarted=performance.now();
         const retained=await Promise.allSettled(examined.map((candidate:any)=>this.retainArchiveSource({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId})));
+        timing.archive_retention_ms=Math.round(performance.now()-retentionStarted);
         let unavailable=0;
         for(const [index,candidate] of examined.entries()) {
           if(retained[index]!.status==='rejected'){unavailable++;continue;}
@@ -2144,9 +2156,11 @@ export class SessionOwner {
     if(meaning?.available) {
       // Archive matches that are not a session here are retained together, as the word path does above.
       const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
+      const meaningRetentionStarted=performance.now();
       const retained=await Promise.allSettled(meaning.hits.map(hit=>hit.target.kind==='archive'&&!native(hit.target.nativeId)&&this.runtime.sources
         ?this.retainArchiveSource({sourceId:hit.target.sourceId,sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId})
         :Promise.resolve(null)));
+      timing.meaning_retention_ms=Math.round(performance.now()-meaningRetentionStarted);
       let unretained=0;
       for(const [index,hit] of meaning.hits.entries()) {
         let session:SessionRow|null=null;
@@ -2181,7 +2195,12 @@ export class SessionOwner {
     const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
     const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})})),
       ...peerHits.map(hit=>({score:1/(60+hit.rank),result:()=>({session:hit.view,evidence:hit.evidence,match:{words:false,meaning:hit.score}})}))].sort((a,b)=>b.score-a.score);
-    return {results:ranked.slice(0,limit).map(entry=>entry.result()),coverage};
+    const response=boundSearchResponse({results:ranked.slice(0,limit).map(entry=>entry.result()),coverage});
+    const durationMs=Math.round(performance.now()-started);
+    if(durationMs>=500)log('warn','session_search_slow',{duration_ms:durationMs,...timing,
+      results:response.results.length,evidence:response.results.reduce((sum,result)=>sum+result.evidence.length,0),
+      response_bytes:Buffer.byteLength(JSON.stringify(response))});
+    return response;
   }
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);
