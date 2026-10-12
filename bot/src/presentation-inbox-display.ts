@@ -60,6 +60,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,row.turn_id) as {quiet:string}|null)?.quiet?.trim():null;
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(post&&event.answersQuestion===true?{answersQuestion:true}:{}),
     content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(request?{author:{kind:'agent',communication:'request',requestId:event.requestId}}:{}),
@@ -79,6 +80,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const preview={id:full.id,sourceSessionId:sessionId,role:full.role,
     content:bounded(full.content,1024).text,tool:null,phase:null,...(full.inputId?{inputId:full.inputId}:{}),
     ...(full.mixedThreads?{mixedThreads:true}:{}),...(full.answeredByPost?{answeredByPost:true}:{}),
+    ...(full.answersQuestion?{answersQuestion:true}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
     ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.relayed?{relayed:true}:{}),
     ...(full.quiet?{quiet:bounded(String(full.quiet),160).text}:{}),

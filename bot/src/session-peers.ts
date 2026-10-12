@@ -759,7 +759,7 @@ export class SessionPeers {
         inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.text??''),
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-        workDisposition:declared.workDisposition??null,hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null});
+        answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null});
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
       return;
     }
