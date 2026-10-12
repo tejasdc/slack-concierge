@@ -5,13 +5,24 @@ import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { ProviderCapabilityUnavailableError } from "./provider-policy";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 
 /** Execution hosts have a supervisor PATH, so resolve the CLI on the owner before launch. */
 export function antigravityExecutable(): string {
+  // The subscription has a separate paid-credit pool. A change to the CLI setting must
+  // never make Concierge silently buy more work after the included quota is spent.
+  try {
+    const settings = JSON.parse(readFileSync(join(homedir(), ".gemini/antigravity-cli/settings.json"), "utf8"));
+    if (settings?.useG1Credits === true) throw new ProviderCapabilityUnavailableError(
+      "execution", "Google AI credit overages are enabled; subscription-only dispatch is paused.");
+  } catch (error) {
+    if (error instanceof ProviderCapabilityUnavailableError) throw error;
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw new ProviderCapabilityUnavailableError(
+      "execution", "Google's credit setting could not be verified.");
+  }
   const configured = process.env.CONCIERGE_ANTIGRAVITY_EXECUTABLE || "agy";
   const found = configured.includes("/") ? configured
     : Bun.which(configured) || (existsSync(join(homedir(), ".local/bin", configured))
@@ -41,6 +52,7 @@ type AntigravityEvent = {
     response?: string;
     error?: string;
     num_turns?: number;
+    usage?: { total_tokens?: number };
   };
 };
 
@@ -141,7 +153,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
 
   const exit = await input.transport.run({
     args, cwd: input.cwd,
-    environment: providerOwnerEnvironment(input.environment),
+    environment: { ...providerOwnerEnvironment(input.environment), AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
     stdin: initialInput,
     onStdout: chunk => {
       buffer += chunk;
@@ -175,18 +187,25 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   });
   input.onProviderTerminal?.();
   if (cancelled) throw new ProviderTurnCancelledError("The Google turn was stopped.");
+  const needsSignIn = /authentication required|please sign in|not logged in|oauth.*expired/i.test(
+    `${terminal?.error ?? ""} ${stderrTail}`);
   if (!terminal) {
-    throw new ProviderDispatchError({ message: exit.code === 0
+    throw new ProviderDispatchError({ message: needsSignIn ? "Google authentication required on this machine."
+      : exit.code === 0
       ? "Google exited without a final structured result."
       : "Google exited before confirming a final result.",
-      terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId,
+      terminalConfirmed: needsSignIn && !sawInit && !observedOutput,
+      assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }
   if (!sawInit || permissionDenied) {
-    throw new ProviderDispatchError({ message: !sawInit
+    throw new ProviderDispatchError({ message: needsSignIn && !sawInit
+      ? "Google authentication required on this machine."
+      : !sawInit
       ? "Google returned no structured start event; its tool policy could not be verified."
       : "Google denied a requested tool during the run, so its answer cannot be marked complete.",
-      terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId,
+      terminalConfirmed: needsSignIn && !sawInit && !observedOutput,
+      assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }
   // The CLI's terminal result is the turn outcome. Closing its streaming stdin can make the
@@ -195,10 +214,26 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   if (terminal.status !== "SUCCESS") {
     // ERROR says the run ended, not that it had no effects. Only zero-turn refusals are
     // replay-safe; an error after Google began a turn stays unconfirmed for inspection.
-    const beforeTurn = terminal.num_turns === 0 && !observedOutput && toolsUsed.size === 0;
+    const beforeTurn = (terminal.num_turns === 0 || terminal.usage?.total_tokens === 0)
+      && !observedOutput && toolsUsed.size === 0;
+    const quotaRefusal = /RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(terminal.error ?? "");
+    let clearsAtMs: number | null = null;
+    if (quotaRefusal && beforeTurn) {
+      // The error's prose may contain a duration, but only Google's fresh structured quota
+      // reply can name a reset we may queue against.
+      const { scheduleProviderAccountUsageRefresh, providerAccountUsage } = await import("./provider-account-usage");
+      await scheduleProviderAccountUsageRefresh().catch(() => {});
+      const usage = providerAccountUsage("antigravity");
+      const account = usage?.accounts.find(item => item.current && !item.problem);
+      if (!usage?.problem && account) {
+        const spent = account.windows.filter(window => window.usedPercent >= 100)
+          .map(window => Date.parse(window.resetsAt ?? "")).filter(Number.isFinite);
+        if (spent.length) clearsAtMs = Math.max(...spent);
+      }
+    }
     throw new ProviderDispatchError({ message: (terminal.error || `Google ended with ${terminal.status ?? "unknown status"}.`).slice(0, MAX_ERROR_TEXT),
       terminalConfirmed: beforeTurn, assistantOutput: observedOutput, providerSessionId: conversationId,
-      toolsUsed: [...toolsUsed] });
+      clearsAtMs, toolsUsed: [...toolsUsed] });
   }
   if (!conversationId) {
     throw new ProviderDispatchError({ message: "Google answered without a conversation ID, so this session cannot preserve continuity.",

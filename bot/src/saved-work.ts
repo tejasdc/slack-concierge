@@ -2,7 +2,7 @@ import {db,claimNextQueuedTurn,executionChanged,getSessionById,type QueuedTurnCl
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
-import type {ProviderKey} from './provider-accounts';
+import type {AccountIdentityProvider} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
@@ -100,8 +100,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
     if(row.saved_manual_start)continue;
     if(row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now)continue;
     const session=getSessionById(row.session_id);
-    if(!session||!['codex','claude-code'].includes(session.provider_id))continue;
-    const provider=session.provider_id as ProviderKey;
+    if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
+    const provider=session.provider_id as AccountIdentityProvider;
     const usage=providerAccountUsage(provider);
     const rooms=usage?savedWorkAccountRooms(provider,usage,now):[];
     const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt

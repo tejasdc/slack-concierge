@@ -9,7 +9,7 @@ import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, re
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
-import { credentialPath, currentAccount, type ProviderKey } from "./provider-accounts";
+import { credentialPath, currentAccount, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
 import { createConnection } from "node:net";
@@ -36,7 +36,7 @@ type ReleaseSource = "owner_signin" | "file_event" | "keychain_event" | "turn_fi
 let pendingCodexActivation = false;
 const activationFlights = new Map<ProviderKey, Promise<ActivationReport>>();
 
-export function releaseAuthHold(provider: ProviderKey, releasedBy: ReleaseSource): number {
+export function releaseAuthHold(provider: AccountIdentityProvider, releasedBy: ReleaseSource): number {
   const head = db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND turns.dispatch_failure_class='auth_wait' AND sessions.provider_id=?`)
     .get(provider) as { id: number | null };

@@ -61,11 +61,12 @@ export async function startSessionRuntime() {
       const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start)continue;
       if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
       const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
-      if(!session||!['codex','claude-code'].includes(session.provider_id))continue;
-      const usage=providerAccountUsage(session.provider_id as 'codex'|'claude-code');
+      if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
+      const provider=session.provider_id as 'codex'|'claude-code'|'antigravity';
+      const usage=providerAccountUsage(provider);
       const account=usage?.accounts.find(item=>item.label===row.saved_account);
       const window=account?.windows.find(item=>item.name===row.saved_window);
-      const room=usage?savedWorkAccountRooms(session.provider_id as 'codex'|'claude-code',usage).find(item=>item.account===row.saved_account):null;
+      const room=usage?savedWorkAccountRooms(provider,usage).find(item=>item.account===row.saved_account):null;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
         !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
         ||!window||window.usedPercent>=100-reserve)

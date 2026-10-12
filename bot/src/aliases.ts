@@ -21,7 +21,8 @@ export type ProviderAliasKey =
   | "cx-astra"
   | "cx-sol"
   | "cx-terra"
-  | "cx-luna";
+  | "cx-luna"
+  | "google";
 
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
@@ -52,6 +53,8 @@ const CODEX_MODELS = {
   luna: "gpt-6-luna",
 } as const;
 
+const GOOGLE_MODELS = { pro: "gemini-3.1-pro-high" } as const;
+
 /**
  * Every model this system can select, and what it is called in front of Tejas.
  *
@@ -79,7 +82,8 @@ const CODEX_MODELS = {
  */
 export type SelectableModel =
   | typeof CLAUDE_MODELS[keyof typeof CLAUDE_MODELS]
-  | typeof CODEX_MODELS[keyof typeof CODEX_MODELS];
+  | typeof CODEX_MODELS[keyof typeof CODEX_MODELS]
+  | typeof GOOGLE_MODELS[keyof typeof GOOGLE_MODELS];
 
 const MODEL_LABELS: Record<SelectableModel, string> = {
   "claude-fable-5-1": "Claude Fable 5.1",
@@ -91,6 +95,7 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
   "gpt-6-luna": "GPT-6 Luna",
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-6-astra": "GPT-6 Astra",
+  "gemini-3.1-pro-high": "Gemini 3.1 Pro",
 };
 
 /**
@@ -197,6 +202,7 @@ export function chatgptThinkingLevel(input: string | null | undefined): ChatgptT
 export const PROVIDER_DEFAULT_REASONING_EFFORT: Record<ProviderId, ReasoningEffort | undefined> = {
   codex: "medium",
   "claude-code": undefined,
+  antigravity: undefined,
 };
 
 // Aliases choose a model only. `cc-fast`, `cc-medium`, `cx-fast`, and
@@ -219,6 +225,7 @@ export const PROVIDER_ALIASES = {
   "cx-sol": { provider: "codex", model: CODEX_MODELS.sol },
   "cx-terra": { provider: "codex", model: CODEX_MODELS.terra },
   "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
+  google: { provider: "antigravity", model: GOOGLE_MODELS.pro },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
 // The provider a session takes when nothing has chosen one. The Codex allowance
@@ -337,7 +344,7 @@ export interface ProviderTurnSelection {
 }
 
 export function aliasKeyForProvider(provider: ProviderId): ProviderAliasKey {
-  return provider === "claude-code" ? "cc" : "cx";
+  return provider === "claude-code" ? "cc" : provider === "antigravity" ? "google" : "cx";
 }
 
 export function resolveProviderAlias(

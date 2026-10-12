@@ -2,7 +2,7 @@ import {existsSync,lstatSync,mkdirSync,readdirSync,readlinkSync,realpathSync,ren
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
-import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type ProviderKey} from './provider-accounts';
+import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type AccountIdentityProvider,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
@@ -160,7 +160,7 @@ export function proveClaudeHomesAhead(accounts:readonly string[]):void{
 function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
 /** Homes with credentials that this owner can use without switching a live login. */
-function accountUsedPercent(provider:ProviderKey,account:AccountUsage):number|null {
+function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage):number|null {
   if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
   return account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null;
 }
@@ -196,11 +196,11 @@ function launchableClaudeHome(account:string,selected:string|null,prepare:boolea
   return complete&&(account===selected||provenOrProve(account,complete))?complete:null;
 }
 
-export function savedWorkAccountRooms(provider:ProviderKey,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
+export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
   // Codex turns all use the shared daemon. Other homes are read for usage and kept for
   // switching, but a banked turn cannot launch against one without changing that daemon.
-  if(provider==='codex'){
-    const active=currentAccount('codex')?.label;
+  if(provider==='codex'||provider==='antigravity'){
+    const active=currentAccount(provider)?.label;
     const account=usage.accounts.find(item=>item.label===active);
     if(!account)return [];
     const fresh=Date.parse(account.readAt??usage.observedAt)>=now-6*60_000&&!usage.problem;

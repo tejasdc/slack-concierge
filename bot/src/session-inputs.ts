@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
-import {resolveProviderDefault} from './aliases';
+import {resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
@@ -250,7 +250,8 @@ export function enqueueSessionInput(inputId:string) {
     if (input.kind!=='fork' && (typeof text!=='string' || (!text.trim()&&(!Array.isArray(attachments)||!attachments.length)))) throw new Error('An executable input needs text or an attachment.');
     if(input.origin==='human'||input.origin==='agent')discardQueuedTurnContinuations(session.id,'new_input');
     const metadata=sessionMetadata(session);
-    const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):null;
+    const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):
+      session.provider_id==='antigravity'?resolveProviderAlias('google'):null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
       requested_by_user_id,provider_model,reasoning_effort,replay_text)
       VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,

@@ -104,7 +104,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 /**
  * `detail` is one sentence for him about what actually happened, present only when
  * something went wrong. Without it the app could say only "Couldn't start", and a sign-in
@@ -195,6 +195,7 @@ export class SessionExecutionHost {
   /** Private control answer: never reads credentials, usage, SQLite or the filesystem. */
   authEphemera():ProviderAuthEphemera {
     return {observedAtMs:Date.now(),checking:this.providerAuthCheck!==null,usageRefreshing:usageRefreshing(),codexSignIn:this.codexSignIn,
+      antigravityAccount:currentAccount('antigravity'),
       accountFallback:{codex:accountMemoryFallback('codex'),'claude-code':accountMemoryFallback('claude-code')},
       codexPending:this.codexLogin.hasPending(),claudePending:this.claudeLogin.hasPending(),
       claudePendingFor:this.claudeLogin.pendingFor(),claudePendingUrl:this.claudeLogin.pendingUrl(),
@@ -831,9 +832,10 @@ export class SessionExecutionHost {
     const saved=savedTurn(claim.turn_id);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
     if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
-      const usage=session.provider_id==='codex'||session.provider_id==='claude-code'?providerAccountUsage(session.provider_id):null;
-      const rooms=usage&&['codex','claude-code'].includes(session.provider_id)
-        ?savedWorkAccountRooms(session.provider_id as ProviderKey,usage):[];
+      const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
+        ?providerAccountUsage(session.provider_id):null;
+      const rooms=usage&&['codex','claude-code','antigravity'].includes(session.provider_id)
+        ?savedWorkAccountRooms(session.provider_id as ProviderKey|'antigravity',usage):[];
       const choice=chooseAccountForTurn({accounts:rooms,
         bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
       if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()

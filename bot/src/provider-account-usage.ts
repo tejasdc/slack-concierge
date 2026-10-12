@@ -6,9 +6,11 @@ import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
-import type { ProviderKey } from "./provider-accounts";
+import { setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
+import { accountUsageTable } from "./provider-usage-tables";
+import { antigravityExecutable } from "./antigravity";
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -129,6 +131,12 @@ export const USAGE_URGENT_REFRESH_MS = 60_000;
 
 if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS provider_account_usage (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
+  observed_at TEXT NOT NULL,
+  usage_json TEXT NOT NULL
+)`);
+// Keep the installed Claude/Codex table intact; Google's snapshot has an additive home.
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS antigravity_account_usage (
+  provider TEXT PRIMARY KEY CHECK (provider = 'antigravity'),
   observed_at TEXT NOT NULL,
   usage_json TEXT NOT NULL
 )`);
@@ -284,6 +292,76 @@ async function readClaude(): Promise<ProviderUsage> {
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
 
+/** The subscription's quota is read through Google's own CLI, without an agent turn. */
+async function readAntigravity(): Promise<ProviderUsage> {
+  const observedAt = new Date().toISOString();
+  const unavailable = (problem: string): ProviderUsage => ({ observedAt, accounts: [], problem });
+  let executable: string;
+  try { executable = antigravityExecutable(); }
+  catch (error) { return unavailable(error instanceof Error ? error.message : "The Google agent CLI is unavailable."); }
+  const capture = async (args: string[], timeoutMs: number) => {
+    const child = Bun.spawn([executable, ...args], {
+      env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
+      cwd: homedir(), stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+      ]);
+      return { stdout, stderr, code };
+    } finally { clearTimeout(timer); }
+  };
+  // /usage starts an interactive OAuth flow even with closed stdin. The models subcommand
+  // refuses an unsigned account promptly, so it is the noninteractive sign-in gate.
+  let preflight: Awaited<ReturnType<typeof capture>>;
+  try { preflight = await capture(["--output-format", "json", "models"], 15_000); }
+  catch { return unavailable("Google's sign-in state could not be checked."); }
+  if (preflight.code !== 0) return unavailable(/please sign in|authentication required/i.test(preflight.stderr)
+    ? "Sign in to the Google agent on this machine to show its allowance."
+    : "Google's sign-in state could not be checked.");
+  let stdout = "", stderr = "", code = -1;
+  try { ({ stdout, stderr, code } = await capture(["-p", "/usage", "--output-format", "json"], 25_000)); }
+  catch { return unavailable("Google's allowance could not be read."); }
+  if (code !== 0) return unavailable(/authentication required|please sign in|not logged in/i.test(stderr)
+    ? "Sign in to the Google agent on this machine to show its allowance."
+    : "Google's allowance could not be read.");
+  let payload: any;
+  try { payload = JSON.parse(stdout); }
+  catch { return unavailable("Google returned an unreadable allowance."); }
+  if (payload?.command?.name !== "usage") return unavailable("Google did not confirm a quota reading.");
+  const groups = payload?.command?.data?.groups;
+  if (!Array.isArray(groups)) return unavailable("Google returned no verified allowance groups.");
+  const buckets = groups.flatMap((group: any) => Array.isArray(group?.buckets) ? group.buckets : []);
+  const windows: UsageWindow[] = [];
+  for (const [id, name] of [["gemini-5h", "Gemini · 5-hour"], ["gemini-weekly", "Gemini · weekly"]] as const) {
+    const bucket = buckets.find((item: any) => item?.id === id);
+    const remaining = bucket?.remaining_fraction;
+    if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 1) continue;
+    windows.push({ name, usedPercent: (1 - remaining) * 100, resetsAt: iso(bucket?.reset_time),
+      willLastToReset: null, runsOutAt: null });
+  }
+  if (windows.length !== 2) return unavailable("Google did not report both Gemini allowance windows.");
+  // An account label must come from Google's own reply. Guessing from the browser's
+  // Google account would let a different CLI login inherit this account's capacity.
+  let statusIdentity: { email?: unknown; plan?: unknown } = {};
+  try { statusIdentity = JSON.parse(readFileSync(join(process.env.CONCIERGE_ANTIGRAVITY_IDENTITY_DIR ??
+    "/root/.local/state/concierge", "antigravity-identity.json"), "utf8")); }
+  catch { /* a headless quota reply may still identify its own account */ }
+  const envelopeEmail = [payload?.command?.data?.email, payload?.command?.data?.account?.email,
+    payload?.data?.email, payload?.email].find((value: unknown) => typeof value === "string" && /.+@.+\..+/.test(value));
+  const email = typeof envelopeEmail === "string" ? envelopeEmail : statusIdentity.email;
+  if (typeof envelopeEmail === "string" && typeof statusIdentity.email === "string"
+    && envelopeEmail.toLowerCase() !== statusIdentity.email.toLowerCase())
+    return unavailable("Google's account identity changed; its allowance needs a fresh sign-in check.");
+  if (typeof email !== "string" || !/^[^@]+@[^@]+\.[^@]+$/.test(email))
+    return unavailable("Google reported allowance but did not identify the signed-in account.");
+  const plan = [payload?.command?.data?.subscription?.plan, payload?.command?.data?.plan_tier,
+    payload?.plan_tier, statusIdentity.plan].find((value: unknown) => typeof value === "string" && value.trim());
+  return { observedAt, accounts: [{ label: email, plan: typeof plan === "string" ? plan : null,
+    current: true, windows, problem: null, readAt: observedAt }], problem: null };
+}
+
 // Whether a reading is happening right now, so a surface can say "checking" instead of
 // showing an account with nothing under it. One pass at a time: a second request while one
 // runs joins it rather than starting a competing read of the same accounts.
@@ -392,7 +470,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
           usage = { ...usage, accounts: merged, problem: merged.length ? null : usage.problem };
         }
       }
-      db.query(`INSERT INTO provider_account_usage (provider, observed_at, usage_json) VALUES (?, ?, ?)
+      db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
         .run(provider, usage.observedAt, JSON.stringify(usage));
       // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
@@ -432,6 +510,34 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       log("warn", "provider_account_usage_failed", { provider, error_name: (error as Error)?.name ?? "Error" });
     }
   }
+  // Google's credential exists only in the CLI's own store. No peer reading can grant this
+  // machine permission to launch, and an unreadable current answer never revives old quota.
+  try {
+    const provider = "antigravity";
+    const usage = await readAntigravity();
+    db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
+      ON CONFLICT(provider) DO UPDATE SET observed_at=excluded.observed_at, usage_json=excluded.usage_json`)
+      .run(provider, usage.observedAt, JSON.stringify(usage));
+    const account = usage.accounts.find(item => item.current && !item.problem) ?? null;
+    setAntigravityAccountInUse(account ? { email: account.label, plan: account.plan } : null);
+    recordUsageReading(provider, usage);
+    if (account) {
+      const { releaseAuthHold } = await import("./provider-activation");
+      releaseAuthHold(provider, "interval");
+      if (account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
+        releaseUsageContinuationHolds(provider);
+        releaseUsageHeldWork(provider, "usable_account_observed");
+      } else {
+        const firstRoomAt = earliestRoomAt(provider);
+        if (firstRoomAt !== null && firstRoomAt > Date.now()) moveUsageHoldsEarlier(provider, firstRoomAt);
+      }
+    }
+    log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
+      unreadable: account ? 0 : 1, problem: !!usage.problem });
+  } catch (error) {
+    setAntigravityAccountInUse(null);
+    log("warn", "provider_account_usage_failed", { provider: "antigravity", error_name: (error as Error)?.name ?? "Error" });
+  }
 }
 
 /**
@@ -465,15 +571,15 @@ function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): v
 
 /** The account names in the stored reading, with nothing derived from which account is in use. */
 export function storedProviderAccountLabels(provider: ProviderKey): string[] {
-  const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
+  const row = db.query(`SELECT usage_json FROM ${accountUsageTable(provider)} WHERE provider = ?`)
     .get(provider) as { usage_json: string } | null;
   if (!row) return [];
   try { return ((JSON.parse(row.usage_json) as ProviderUsage).accounts ?? []).flatMap(account => account.label ? [account.label] : []); }
   catch { return []; }
 }
 
-export function providerAccountUsage(provider: ProviderKey): ProviderUsage | null {
-  const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
+export function providerAccountUsage(provider: AccountIdentityProvider): ProviderUsage | null {
+  const row = db.query(`SELECT usage_json FROM ${accountUsageTable(provider)} WHERE provider = ?`)
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
   try { return { ...withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }

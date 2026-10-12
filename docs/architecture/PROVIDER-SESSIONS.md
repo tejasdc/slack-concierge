@@ -40,6 +40,31 @@ disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.
 
+The `google` alias selects Gemini 3.1 Pro through Antigravity. The Google AI Pro
+subscription belongs on the server; Thinkering and the Mac do not copy its
+credential. Google's old Gemini CLI refuses consumer subscriptions, so one
+interactive Antigravity CLI sign-in on the server is required. Its documented
+status-line payload supplies the account email and plan to a root-only file
+containing only those fields. The quota reader first checks `agy models`, because
+unauthenticated `agy -p /usage` opens an OAuth prompt even with stdin closed.
+Once signed in, it reads `agy -p /usage --output-format json` without an agent
+turn. It accepts only the Gemini group's five-hour and weekly buckets with
+numeric remaining fractions and a valid account identity. A failed, stale, or
+mismatched reading is unknown capacity, not zero use. Google's included quota
+and optional AI credits are different pools; Concierge refuses dispatch while
+automatic AI-credit use is enabled.
+
+The owner stores Google's account reading and per-model refusal cache in
+additive tables, leaving the installed Claude and Codex schema intact.
+Thinkering reads that owner projection in Provider accounts; the server picks
+only its currently signed-in Google account for explicit Google sessions and
+banked work. Banked work uses the same fresh-reading and reserve rule as the
+other providers. Automatic new-session choice remains Claude/Codex until a
+matched historical-task replay establishes a useful Google role; an existing
+session never changes its provider. A Google quota refusal is held to a reset
+only if the provider proved it did no work and a fresh structured quota reading
+names the exhausted window's reset.
+
 
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.
 
@@ -63,6 +88,7 @@ Model aliases:
 | `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
+| `google` | Antigravity | `gemini-3.1-pro-high` |
 
 `cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
 for models that also have a model-name alias. They keep their historical

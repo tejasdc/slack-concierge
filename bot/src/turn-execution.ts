@@ -1168,7 +1168,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
-      if (authWait && (input.providerId === 'codex' || input.providerId === 'claude-code')) noticeAuthHold({provider: input.providerId,
+      if (authWait && (input.providerId === 'codex' || input.providerId === 'claude-code' || input.providerId === 'antigravity')) noticeAuthHold({provider: input.providerId,
         model: input.model ?? null, turnId: input.turnId,
         account: input.providerId==='claude-code'?runningClaudeAccount:null}, recordSessionEvent);
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {

@@ -20,6 +20,7 @@ import { storedProviderAccountLabels } from "./provider-account-usage";
 // rather than by an operator remembering a command.
 
 export type ProviderKey = "codex" | "claude-code";
+export type AccountIdentityProvider = ProviderKey | "antigravity";
 
 export type ProviderAccount = Readonly<{ id: string; label: string; detail: string | null }>;
 // `signedIn` is false when the kept login can no longer renew, so the surface offers a sign-in
@@ -167,6 +168,12 @@ export async function refreshClaudeAccount(): Promise<void> {
  * answers for the daemon when the file cannot.
  */
 let codexSignIn: ProviderAccount | null = null;
+// Antigravity keeps its own credential in the platform keyring. Only its official CLI may
+// read that credential; a successful CLI account/usage observation supplies this identity.
+let antigravitySignIn: ProviderAccount | null = null;
+export function setAntigravityAccountInUse(account: {email:string;plan:string|null}|null):void {
+  antigravitySignIn=account?{id:account.email,label:account.email,detail:account.plan}:null;
+}
 /** The login manager's last provider answer, when credential files have no readable identity. */
 export function accountMemoryFallback(provider:ProviderKey):ProviderAccount|null {
   return provider==='claude-code'?claudeSignIn:codexSignIn;
@@ -185,7 +192,8 @@ const memo = new Map<ProviderKey, Memo>();
  * read. A null identity never matches a recorded limit, so unreadable credentials
  * cannot inherit one.
  */
-export function currentAccount(provider: ProviderKey): ProviderAccount | null {
+export function currentAccount(provider: AccountIdentityProvider): ProviderAccount | null {
+  if(provider==="antigravity")return antigravitySignIn;
   const path = credentialPath(provider);
   let key: string;
   try { const stat = statSync(path); key = `${stat.mtimeMs}:${stat.size}`; }
@@ -200,7 +208,7 @@ export function currentAccount(provider: ProviderKey): ProviderAccount | null {
 }
 
 /** Identity component of a usage-cache scope. Never a secret. */
-export function accountScope(provider: ProviderKey): string {
+export function accountScope(provider: AccountIdentityProvider): string {
   return currentAccount(provider)?.id ?? "unattributed";
 }
 

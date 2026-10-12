@@ -21,7 +21,19 @@ function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
 
 /** Account listing runs in an isolated reader. Login state comes from the command owner. */
 export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly ProviderAuthView[] {
-  return (['claude-code','codex'] as const).map(provider=>providerAuthView(provider,ephemera));
+  return [...(['claude-code','codex'] as const).map(provider=>providerAuthView(provider,ephemera)),antigravityAuthView(ephemera)];
+}
+
+function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
+  const stored=providerAccountUsage('antigravity');
+  const usage=stored?{...stored,refreshing:ephemera.usageRefreshing}:null;
+  const current=usage?.accounts.find(item=>item.current&&item.label===ephemera.antigravityAccount?.label)??null;
+  const account=current?{id:current.label,label:current.label,detail:current.plan}:null;
+  const signedIn=!!account&&!current?.signedOut;
+  return {provider:'antigravity',mode:'host-managed',pending:false,signInKeepsCurrent:true,
+    pendingFor:null,pendingUrl:null,lastSignIn:null,
+    message:signedIn?'':usage?.problem??'Google has not been signed in on this machine.',
+    signedIn,account,profiles:[],usage,checking:ephemera.checking};
 }
 
 function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):ProviderAuthView {

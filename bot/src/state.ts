@@ -23,6 +23,13 @@ if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_c
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
 )`);
+// Google joins through an additive table: deployment never rebuilds the live provider cache.
+if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
+  provider TEXT PRIMARY KEY CHECK (provider = 'antigravity'),
+  generation INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 0,
+  limits_json TEXT NOT NULL DEFAULT '{}'
+)`);
 
 const executionChangeListeners = new Set<() => void>();
 const turnFactListeners = new Set<(turnId:number,kind:string)=>void>();

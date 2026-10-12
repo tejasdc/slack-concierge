@@ -2,7 +2,8 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import type { ProviderKey } from "./provider-accounts";
+import type { AccountIdentityProvider } from "./provider-accounts";
+import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { claudeAccountCachedReset } from "./provider-usage";
 
@@ -50,7 +51,7 @@ export const WARN_LEAD_MS = 60 * 60_000;
 
 export type ForecastSource = "provider" | "observed" | "unknown";
 export type UsageForecast = Readonly<{
-  provider: ProviderKey;
+  provider: AccountIdentityProvider;
   account: string;
   current: boolean;
   window: string;
@@ -77,8 +78,8 @@ const at = (value: string | null | undefined): number | null => {
 };
 
 /** The latest stored reading, read from its own table so this module owes the reader nothing. */
-export function storedUsage(provider: ProviderKey): ProviderUsage | null {
-  const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
+export function storedUsage(provider: AccountIdentityProvider): ProviderUsage | null {
+  const row = db.query(`SELECT usage_json FROM ${accountUsageTable(provider)} WHERE provider = ?`)
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
   try { return withAgentsAccountCurrent(provider, JSON.parse(row.usage_json) as ProviderUsage); } catch { return null; }
@@ -90,7 +91,7 @@ export function storedUsage(provider: ProviderKey): ProviderUsage | null {
  * once accounts have homes of their own, so the running-low warning watched the wrong account and
  * he heard about chann.app only once it was out (2026-10-07).
  */
-export function withAgentsAccountCurrent(provider: ProviderKey, usage: ProviderUsage): ProviderUsage {
+export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usage: ProviderUsage): ProviderUsage {
   if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
   const chosen = selectedClaudeHome()?.label ?? null;
   if (!chosen) return usage;
@@ -102,7 +103,7 @@ export function withAgentsAccountCurrent(provider: ProviderKey, usage: ProviderU
  * names a percentage for are kept; an unreadable account contributes nothing rather than
  * a zero, because a zero would read as "plenty left".
  */
-export function recordUsageReading(provider: ProviderKey, usage: ProviderUsage): void {
+export function recordUsageReading(provider: AccountIdentityProvider, usage: ProviderUsage): void {
   const passAt = at(usage.observedAt) ?? Date.now();
   db.transaction(() => {
     for (const account of usage.accounts) {
@@ -152,7 +153,7 @@ const sameWindow = (left: number | null, right: number | null) =>
  * nothing was sent. The same stored samples, grouped with a tolerance, give 27 readings over
  * 119 minutes and about 49% an hour.
  */
-function currentWindowSamples(provider: ProviderKey, account: string, window: string, resetsAtMs: number | null): Sample[] {
+function currentWindowSamples(provider: AccountIdentityProvider, account: string, window: string, resetsAtMs: number | null): Sample[] {
   const rows = db.query(`SELECT observed_at_ms, used_percent, resets_at_ms FROM provider_usage_readings
     WHERE provider=? AND account=? AND window_name=? ORDER BY observed_at_ms`)
     .all(provider, account, window) as Sample[];
@@ -187,7 +188,7 @@ function recentPace(samples: Sample[]): Sample[] {
   return recent.length >= 2 && (last.observed_at_ms - recent[0]!.observed_at_ms) >= MIN_SPAN_MS ? recent : samples;
 }
 
-function forecastWindow(provider: ProviderKey, account: AccountUsage, window: AccountUsage["windows"][number],
+function forecastWindow(provider: AccountIdentityProvider, account: AccountUsage, window: AccountUsage["windows"][number],
   observedAt: string): UsageForecast {
   const now = Date.now();
   const resetsAtMs = at(window.resetsAt);
@@ -222,7 +223,7 @@ function forecastWindow(provider: ProviderKey, account: AccountUsage, window: Ac
 }
 
 /** Every window of every account of one provider, forecast from the latest reading. */
-export function usageForecasts(provider: ProviderKey): UsageForecast[] {
+export function usageForecasts(provider: AccountIdentityProvider): UsageForecast[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.flatMap(account => account.problem ? []
@@ -230,7 +231,7 @@ export function usageForecasts(provider: ProviderKey): UsageForecast[] {
 }
 
 /** The one window closest to stopping work on the account the agents are actually using. */
-export function tightestCurrentWindow(provider: ProviderKey): UsageForecast | null {
+export function tightestCurrentWindow(provider: AccountIdentityProvider): UsageForecast | null {
   const running = usageForecasts(provider).filter(forecast => forecast.current && forecast.runsOutBeforeReset);
   if (!running.length) return null;
   return running.reduce((closest, forecast) =>
@@ -249,7 +250,7 @@ export function tightestCurrentWindow(provider: ProviderKey): UsageForecast | nu
 export const NOTICE_AT_PERCENT = 90;
 
 /** Every account of one provider with a window at 90% or more but not yet spent, its fullest window each. */
-export function accountsNearlySpent(provider: ProviderKey): UsageForecast[] {
+export function accountsNearlySpent(provider: AccountIdentityProvider): UsageForecast[] {
   const fullest = new Map<string, UsageForecast>();
   for (const forecast of usageForecasts(provider)) {
     // A spent window is the usage hold's to report, with what is waiting on it.
@@ -274,7 +275,7 @@ export function accountsNearlySpent(provider: ProviderKey): UsageForecast[] {
  * which was chann.app's weekly reset alone; his personal account refilled at 11:20 PM.
  */
 export type AccountAvailability = Readonly<{ account: string; selected: boolean; hasRoom: boolean; freeAt: number | null }>;
-export function accountAvailability(provider: ProviderKey): AccountAvailability[] {
+export function accountAvailability(provider: AccountIdentityProvider): AccountAvailability[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
@@ -295,7 +296,7 @@ export function accountAvailability(provider: ProviderKey): AccountAvailability[
  * falls when an allowance resets, so a fall proves a reset happened after that moment. A reading that
  * merely lags behind a refusal (still 98% after Claude said "limit") does not fall, so it proves nothing.
  */
-export function usageFellSince(provider: ProviderKey, account: string, sinceMs: number): boolean {
+export function usageFellSince(provider: AccountIdentityProvider, account: string, sinceMs: number): boolean {
   const rows = db.query(`SELECT window_name, used_percent, observed_at_ms FROM provider_usage_readings
     WHERE provider=? AND account=? ORDER BY observed_at_ms`).all(provider, account) as
     { window_name: string; used_percent: number; observed_at_ms: number }[];
@@ -309,7 +310,7 @@ export function usageFellSince(provider: ProviderKey, account: string, sinceMs: 
 }
 
 /** The earliest moment any account of this provider can take work: now when one has room, null when unknown. */
-export function earliestRoomAt(provider: ProviderKey): number | null {
+export function earliestRoomAt(provider: AccountIdentityProvider): number | null {
   const rooms = accountAvailability(provider);
   if (rooms.some(room => room.hasRoom)) return Date.now();
   const known = rooms.flatMap(room => room.freeAt === null ? [] : [room.freeAt]);
@@ -317,7 +318,7 @@ export function earliestRoomAt(provider: ProviderKey): number | null {
 }
 
 /** Accounts other than `account` with room now. */
-export function accountsWithRoomBesides(provider: ProviderKey, account: string): string[] {
+export function accountsWithRoomBesides(provider: AccountIdentityProvider, account: string): string[] {
   return accountsWithRoom(provider).filter(label => label !== account);
 }
 
@@ -325,7 +326,7 @@ export function accountsWithRoomBesides(provider: ProviderKey, account: string):
  * Every account with room now, the one agents are selected to use included. It used to leave the
  * selected account out, so with only that one free it read as "no account has room" (2026-10-09).
  */
-export function accountsWithRoom(provider: ProviderKey): string[] {
+export function accountsWithRoom(provider: AccountIdentityProvider): string[] {
   return accountAvailability(provider).filter(room => room.hasRoom).map(room => room.account);
 }
 
@@ -334,7 +335,7 @@ export function accountsWithRoom(provider: ProviderKey): string[] {
  * any arithmetic of its own. It states what it knows and how it knows it; it recommends
  * nothing and changes nothing.
  */
-export function usageSignal(provider: ProviderKey) {
+export function usageSignal(provider: AccountIdentityProvider) {
   const usage = storedUsage(provider);
   const tightest = tightestCurrentWindow(provider);
   const spare = accountsWithRoom(provider);
@@ -371,7 +372,7 @@ export function usageSignal(provider: ProviderKey) {
  * a five-hour window; this is what makes an early warning possible at all.
  */
 export function usageReadingIsUrgent(): boolean {
-  for (const provider of ["claude-code", "codex"] as const) {
+  for (const provider of ["claude-code", "codex", "antigravity"] as const) {
     const usage = storedUsage(provider);
     for (const account of usage?.accounts ?? []) {
       // Any account, not only the selected one: turns move to whichever has room.
@@ -393,10 +394,10 @@ export function usageReadingIsUrgent(): boolean {
  * A running session keeps its own model. The account comparison and delegation action
  * are attached by the new-session choice owner from fresh, launchable account readings.
  */
-export function usagePressureBrief(provider: ProviderKey): string | null {
+export function usagePressureBrief(provider: AccountIdentityProvider): string | null {
   const tight = tightestCurrentWindow(provider);
   if (!tight || tight.minutesLeft === null || tight.minutesLeft * 60_000 > WARN_LEAD_MS) return null;
-  const name = (key: ProviderKey) => key === "codex" ? "Codex" : "Claude";
+  const name = (key: AccountIdentityProvider) => key === "codex" ? "Codex" : key === "antigravity" ? "Google" : "Claude";
   const basis = tight.source === "provider"
     ? `${name(provider)}'s own projection`
     : `this machine's readings (${tight.samples} in the last ${tight.spanMinutes ?? 0} minutes, climbing about ${tight.ratePerHour ?? 0}% an hour)`;

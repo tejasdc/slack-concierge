@@ -6,6 +6,7 @@ export type ProviderAuthEphemera=Readonly<{
   checking:boolean;
   usageRefreshing:boolean;
   codexSignIn:'signed-in'|'signed-out'|'unknown';
+  antigravityAccount:ProviderAccount|null;
   codexPending:boolean;
   claudePending:boolean;
   claudePendingFor:string|null;

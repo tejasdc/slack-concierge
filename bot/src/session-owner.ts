@@ -75,6 +75,7 @@ import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork} from './provider-start-choice';
+import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 
 export class SessionOwnerError extends Error {
@@ -1076,7 +1077,7 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   async status() {
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity')&&!!currentAccount('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
@@ -1477,13 +1478,14 @@ export class SessionOwner {
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):input.provider as ProviderId;
-      const codexDefault=provider==='codex'?resolveProviderDefault('codex'):null;
+      const providerDefault=provider==='codex'?resolveProviderDefault('codex'):
+        provider==='antigravity'?resolveProviderAlias('google'):null;
       const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
       const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
-        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
+        ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       const recorded=this.recordCreation(session,operation,!!input.firstInput);

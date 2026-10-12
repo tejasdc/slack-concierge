@@ -4,22 +4,23 @@ import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
 import { accountScope, currentAccount } from "./provider-accounts";
+import { usageCacheTable } from "./provider-usage-tables";
 import { recordSessionEvent } from "./session-inputs";
 
-export type UsageProvider = "codex" | "claude-code";
+export type UsageProvider = "codex" | "claude-code" | "antigravity";
 type UsageLimit = { resetAt: number | null; observedAt: number; revision: number };
 type UsageState = { generation: number; revision: number; limits: Record<string, UsageLimit> };
 export type UsageAttempt = { provider: UsageProvider; scope: string; label: string; generation: number; revision: number };
 
 function read(provider: UsageProvider): UsageState {
-  const row = db.query("SELECT generation, revision, limits_json FROM provider_usage_cache WHERE provider = ?")
+  const row = db.query(`SELECT generation, revision, limits_json FROM ${usageCacheTable(provider)} WHERE provider = ?`)
     .get(provider) as { generation: number; revision: number; limits_json: string } | null;
   return row ? { generation: row.generation, revision: row.revision, limits: JSON.parse(row.limits_json) }
     : { generation: 0, revision: 0, limits: {} };
 }
 
 function write(provider: UsageProvider, state: UsageState) {
-  db.query(`INSERT INTO provider_usage_cache (provider, generation, revision, limits_json)
+  db.query(`INSERT INTO ${usageCacheTable(provider)} (provider, generation, revision, limits_json)
     VALUES (?, ?, ?, ?) ON CONFLICT(provider) DO UPDATE SET
     generation = excluded.generation, revision = excluded.revision, limits_json = excluded.limits_json`)
     .run(provider, state.generation, state.revision, JSON.stringify(state.limits));
@@ -39,11 +40,12 @@ function prune(state: UsageState, now = Date.now()) {
 // until an operator remembered `provider-usage.ts clear codex`.
 export function usageScope(provider: UsageProvider, model?: string): string {
   const account = accountScope(provider);
-  return provider === "codex" ? account : `${account}:${canonicalClaudeUsageModel(model!.trim())}`;
+  if (provider === "codex") return account;
+  return `${account}:${provider === "claude-code" ? canonicalClaudeUsageModel(model!.trim()) : model!.trim()}`;
 }
 
 export function usageAttempt(provider: UsageProvider, model?: string, selectedAccount?:string): UsageAttempt {
-  if (provider === "claude-code" && !model?.trim()) throw new Error("Claude usage scope requires an exact model.");
+  if (provider !== "codex" && !model?.trim()) throw new Error("Usage scope requires an exact model.");
   const state = read(provider);
   const account = currentAccount(provider);
   const accountKey=selectedAccount?createHash('sha256').update(selectedAccount.toLowerCase()).digest('hex').slice(0,24):null;
@@ -53,6 +55,7 @@ export function usageAttempt(provider: UsageProvider, model?: string, selectedAc
     // What a person should be told the limit applies to. The scope carries a
     // credential fingerprint and never belongs in a message.
     label: provider === "codex" ? selectedAccount??account?.label ?? "this Codex account"
+      : provider === "antigravity" ? `${model!.trim()} on ${account?.label ?? "this Google account"}`
       : `${canonicalClaudeUsageModel(model!.trim())} on ${selectedAccount??account?.label ?? "this Claude account"}`,
     generation: state.generation, revision: state.revision };
 }
@@ -106,7 +109,8 @@ export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): str
   // in Provider accounts lifts it immediately. No cache command is involved.
   return `Usage for ${attempt.label} is cached as exhausted until ${new Date(limit.resetAt!).toISOString()}. `
     + "No request was sent, so this input keeps its place and is tried again at that time. "
-    + "Switching to another account in Provider accounts starts sending again sooner.";
+    + (attempt.provider === "antigravity" ? "It will resume when the Google allowance refreshes."
+      : "Switching to another account in Provider accounts starts sending again sooner.");
 }
 
 /**

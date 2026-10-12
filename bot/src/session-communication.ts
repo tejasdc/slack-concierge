@@ -528,7 +528,7 @@ export class SessionCommunicationCoordinator {
      */
     usage(input:{source:CommunicationSource}) {
         this.actor(input.source);
-        return {providers:(['claude-code','codex'] as const).map(provider=>usageSignal(provider))};
+        return {providers:(['claude-code','codex','antigravity'] as const).map(provider=>usageSignal(provider))};
     }
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a
