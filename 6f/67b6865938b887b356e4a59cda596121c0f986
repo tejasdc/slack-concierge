@@ -1,0 +1,1 @@
+The update check now keeps its temporary records separate from your live records while checking a packaged release.
