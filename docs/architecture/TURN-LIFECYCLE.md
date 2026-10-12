@@ -522,6 +522,14 @@ Legacy threads lazily adopt their earliest status reply and synthesize request/o
 
 Every provider, Slack, process, and SQLite boundary is non-atomic. Persist intent before side effects, use stable identities for retries, preserve ambiguous outcomes, and prove the exact previous process owner dead before reclaiming work.
 
+A Codex turn followed again after a restart reads its whole history and records it in
+steps of 50 items, yielding the owner's loop between steps. A replayed message is
+recorded only when what the provider said differs from every version already kept for
+that message; the observing run's model and effort labels do not make a new version.
+Before October 12, 2026 each restart re-recorded every message of a long turn because
+the adopting run labelled them differently, and one walk of eleven adopted turns held
+the owner for 12.5 s with 2,726 writes.
+
 Provider-session contention uses `turns.status='queued'` as a durable FIFO keyed
 by `session_id`. Admission persists the turn and its immutable projection mode in
 one transaction; only legacy admission also creates queued-status intent.
