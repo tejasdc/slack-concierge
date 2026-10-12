@@ -15,6 +15,7 @@ import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDec
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
+import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
@@ -427,7 +428,7 @@ export class SessionCommunicationCoordinator {
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
             || input.concepts.some(value => typeof value !== 'string' || !value.trim()))
             throw new Error('Use one to eight nonempty search concepts.');
-        if (input.peer !== undefined) return this.peers().search(input.peer, input.concepts, input.limit);
+        if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
         const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
@@ -447,12 +448,12 @@ export class SessionCommunicationCoordinator {
         }
         // Sessions live on several instances; discovery covers all of them unless one was named.
         found ??= await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
-        return {...found,results:this.withWorkload(found.results??[],actor,input.thread)};
+        return boundSearchResponse({...found,results:this.withWorkload(found.results??[],actor,input.thread)});
     }
     /** The whole search from this machine, for a peer that searches through it. */
-    searchEverywhere(query: string, limit?: number) {
+    async searchEverywhere(query: string, limit?: number) {
         const local = () => this.dependencies.owner.search({query, limit});
-        return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local();
+        return boundSearchResponse(await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local()));
     }
     async context(input: {
         source: CommunicationSource;
