@@ -11,17 +11,25 @@ import {runFixtureChild} from './fixture-child';
 import './foreground-boundary-check';
 
 const root=resolve(import.meta.dir,'..');
+// The installed controller retains stderr but discards stdout and exit status on a timed-out
+// candidate. Keep the last completed step visible without expanding its 90-second boundary.
+const phase=(name:string)=>process.stderr.write(`presentation-check: ${name}\n`);
+phase('started');
 // The deployment runner executes this candidate-owned check before sealing a release.
 const loggingGuard=Bun.spawnSync(['/usr/bin/python3',join(import.meta.dir,'bounded-logging-acceptance.py'),'--source-guard'],
   {cwd:root});
 if(loggingGuard.exitCode!==0)throw new Error(`Logging source guard failed: ${loggingGuard.stderr.toString().slice(0,2000)}`);
+phase('logging-source-guard');
 const ledgerConstructors=checkLedgerConstructors(root);
 const safety=Bun.spawnSync([process.execPath,join(import.meta.dir,'database-safety-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(safety.exitCode!==0)throw new Error(`Database safety check failed: ${safety.stderr.toString().slice(-3000)}`);
+phase('database-safety');
 const runningGuard=Bun.spawnSync([process.execPath,join(import.meta.dir,'live-store-copy-guard-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:10_000});
 if(runningGuard.exitCode!==0)throw new Error(`Running agent copy guard failed: ${runningGuard.stderr.toString().slice(-3000)}`);
+phase('live-store-copy-guard');
 const acceptance=Bun.spawnSync([process.execPath,join(import.meta.dir,'accepted-input-admission-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(acceptance.exitCode!==0)throw new Error(`Accepted input check failed: ${acceptance.stderr.toString().slice(-3000)}`);
+phase('accepted-input-admission');
 const scanner=new Bun.Transpiler({loader:'ts'});
 const visited=new Set<string>();
 function readOnlyDependency(file:string){
@@ -40,6 +48,7 @@ function readOnlyDependency(file:string){
 }
 for(const entry of ['presentation-message-worker.ts','presentation-search-read.ts'])
   readOnlyDependency(join(root,'src',entry));
+phase('readonly-import-graph');
 
 const fixtures:Record<string,()=>Promise<unknown>|unknown>={};
 for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixtures.ts','topic-growth-fixtures.ts','owner-collection-growth-fixtures.ts','lab-growth-fixtures.ts']){
@@ -52,12 +61,15 @@ for(const module of ['presentation-growth-fixtures.ts','session-card-growth-fixt
     fixtures[name]=fixture as ()=>unknown;
   }
 }
+phase('growth-fixtures-loaded');
 const results=[];
 checkReaderRefusals();
+phase('reader-refusals');
 // Prove the one authoritative dispatch claim before this check starts its
 // independent worker fixtures. Their simultaneous module loads can starve
 // the short child startup boundary on a busy production host.
 const dispatchClaim=await checkDispatchClaim();
+phase('dispatch-claim');
 // Each lifecycle owns a distinct scratch directory and child process group.
 // Run their independent waits alongside growth checks, within the existing
 // 90-second release envelope rather than extending the deployment deadline.
@@ -71,12 +83,16 @@ try {for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
     throw new Error(`Incomplete presentation contract: ${name}`);
   const fixture=fixtures[contract.fixture];
   if(!fixture)throw new Error(`Reader ${name} has no executable growth fixture: ${contract.fixture}`);
+  phase(`reader-start ${name}`);
   const started=performance.now();
   await fixture();
   results.push({reader:name,fixture:contract.fixture,durationMs:Math.round(performance.now()-started)});
+  phase(`reader-done ${name}`);
 }} catch(error) {await lifecycleChecks;throw error;}
+phase('lifecycle-wait');
 const lifecycleResults=await lifecycleChecks;
 const failures=lifecycleResults.filter(result=>result.status==='rejected');
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
+phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
 console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));
