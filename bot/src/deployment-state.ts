@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db, initializeLedgerSchema } from "./state-database";
 import type { ProviderId, SessionRow } from "./state";
 import { isProcessIdentityAlive } from "./runtime-identity";
+import { recordRepairNotice } from "./repair-notices";
 
 function writeDeploymentTransaction<T>(work: () => T): () => T {
   // The runner and service share WAL: claim writer ownership before reading state we may change.
@@ -1309,6 +1310,14 @@ export function parkDeploymentRepair(
     "failed",
     options,
   );
+  recordRepairNotice(db, {
+    key: `deployment-parked:${incident.id}`,
+    kind: "deployment_parked",
+    text: `The autonomous Concierge update repair stopped. Incident ${incident.id}, run ${incident.run_id}. `
+      + `The previous working release remains available. Inspect the retained incident outcome and repair log, `
+      + `then fix or recover this update through the existing deployment owner. `
+      + `Tell Tejas only if the remaining action truly requires him. Blocker: ${error.slice(0, 2000)}`,
+  });
   return getDeploymentRepairIncident(incidentId)!;
 }
 

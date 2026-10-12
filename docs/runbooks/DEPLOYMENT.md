@@ -311,8 +311,23 @@ user work until explicit operator recovery establishes health and releases them.
 
 ## Ordinary delivery
 
-Ordinary agent work ends at `git push origin main`. No deployment-specific
-prompt, command, task enrollment, polling, or success continuation is required.
+Every proposed Concierge commit is pushed to a topic branch. GitHub runs the
+frozen `bot` build, including the candidate presentation release check, on that
+branch and on its proposed merge with `main`. The `Release check` result is
+required by the default-branch ruleset, so a failed or absent check refuses the
+move to `main` and cannot trigger an update. A syntax error and a scratch-schema
+omission are both checked there. The deployment builder still repeats its own
+check on the exact archive before activation; GitHub's check is the early refusal,
+not runtime proof. Merge the checked branch through the normal GitHub path after
+the required result passes. No deployment-specific polling or success continuation
+is required after merge.
+
+The check runs on GitHub's fresh Linux worker with frozen dependencies and no
+production ledger configuration. A local pre-push build would provide faster
+feedback but could be bypassed and would not cover a web merge. Requiring the
+server's result on the candidate commit makes the refusal apply to every writer.
+An agent's source edit, a passing branch check and a merged commit are each
+separate from installed runtime proof.
 
 `main` only moves forward. GitHub ruleset `23901100` ("main cannot be rewritten or deleted",
 no bypass actors) refuses a forced push or deletion of the default branch, for every agent and
