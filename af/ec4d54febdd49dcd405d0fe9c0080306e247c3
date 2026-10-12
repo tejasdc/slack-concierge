@@ -1,0 +1,1 @@
+Paused repeating work now waits for its session to resume without trying to schedule the next occurrence every minute.
