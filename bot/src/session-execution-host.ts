@@ -83,6 +83,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
+import {antigravityAuthView} from './provider-auth-read';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome,admitProvenClaudeWaitingTurn} from './provider-account-dispatch';
@@ -300,7 +301,7 @@ export class SessionExecutionHost {
     const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.
-    return (['claude-code','codex'] as const).map(provider=>{
+    const accounts=(['claude-code','codex'] as const).map(provider=>{
       // The Accounts page waits on this read, so a slow one names its own steps: on 2026-10-08 it took
       // ~10 s a read and finding why took a system-call trace.
       const started=performance.now();this.authViewSteps={};
@@ -309,6 +310,7 @@ export class SessionExecutionHost {
       if(total>=500)log('warn','provider_auth_view_slow',{provider,total_ms:total,fresh,...this.authViewSteps});
       return {...view,checking};
     });
+    return [...accounts,antigravityAuthView(this.authEphemera())];
   }
   private providerAuthCheck:Promise<void>|null=null;
   private authViewSteps:Record<string,number>={};

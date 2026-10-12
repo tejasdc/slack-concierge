@@ -24,7 +24,7 @@ export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly Provide
   return [...(['claude-code','codex'] as const).map(provider=>providerAuthView(provider,ephemera)),antigravityAuthView(ephemera)];
 }
 
-function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
+export function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
   const stored=providerAccountUsage('antigravity');
   const fresh=stored!==null && Date.parse(stored.observedAt)>=Date.now()-ACCOUNT_READING_MAX_AGE_MS;
   const usage=stored?fresh?{...stored,refreshing:ephemera.usageRefreshing}
