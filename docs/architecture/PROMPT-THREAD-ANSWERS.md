@@ -25,6 +25,9 @@ and keeps the work request open. An ordinary progress partial does not satisfy t
 The request owner checks this signal, not the reply's prose. The CLI and owner both reject the flag
 outside a nonempty partial reply to a human thread request. For a peer reply, the signal travels
 with the retained reply event and is checked again by the origin.
+On the server, the installed command wrapper always uses the current release's session command
+parser. A running agent can retain an older bundled parser across a deployment; using it for a
+reply would reject `--answers-question` before the owner could record the answer.
 
 At two minutes without that signal, the recipient receives one service reminder through the same
 live-input channel. At three minutes, the origin records one overdue event, posts a service notice
