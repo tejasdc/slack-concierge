@@ -348,15 +348,16 @@ export function advanceRepeatingSchedules(now=Date.now()):number {
   return advanced;
 }
 
-/**
- * The one way a runtime claims queued work. Saved work's clock-driven steps (placing a repeating
- * schedule's next firing, settling a missed expiry) run here first, so no composition can claim
- * without them: the Slack-enabled runtime claimed directly and never ran them, and every
- * repeating schedule on the server stopped after its first firing (2026-10-07).
- */
-export function claimQueuedTurnWithSavedWork(ownerInstanceId:string,activeSessionIds:readonly number[]):QueuedTurnClaimRow|null {
+/** Run the saved-work clock once before a queue wake drains claims. */
+export function prepareSavedWorkForClaims():void {
   const now=Date.now();
   advanceRepeatingSchedules(now);
   settleMissedScheduledWork(now);
+}
+
+/** A single-claim entrance for callers outside the wake-driven coordinator. */
+export function claimQueuedTurnWithSavedWork(ownerInstanceId:string,activeSessionIds:readonly number[]):QueuedTurnClaimRow|null {
+  prepareSavedWorkForClaims();
+  const now=Date.now();
   return claimNextQueuedTurn(ownerInstanceId,now,activeSessionIds);
 }

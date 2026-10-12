@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
-import {db,abandonTurnArtifactBatch,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
+import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
@@ -25,7 +25,7 @@ import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
 import {CodexSessionObserver} from './codex-session-observer';
-import {claimQueuedTurnWithSavedWork,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
@@ -98,7 +98,8 @@ export async function startSessionRuntime() {
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   try {reconcilePlacedRequestAnswers();} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
-  const queue=new SessionTurnQueueCoordinator({claim:()=>claimQueuedTurnWithSavedWork(instanceId,registry.activeSessions),shouldStop:()=>draining,
+  const queue=new SessionTurnQueueCoordinator({beforeClaims:prepareSavedWorkForClaims,
+    claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{
