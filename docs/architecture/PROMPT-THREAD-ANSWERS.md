@@ -22,6 +22,10 @@ arrived; the Mac receives its input when it wakes.
 The recipient answers with a final request reply or a partial reply bearing `--answers-question`.
 The latter posts the agent's words in Tejas's thread immediately, records an explicit answer signal,
 and keeps the work request open. An ordinary progress partial does not satisfy the answer clock.
+The same signal is retained on the Inbox post as `answersQuestion:true`, including the prepared
+message projection. A non-stalled final carries that marker too, whether the request was directly
+forwarded from a human thread reply or dispatched by the Inbox router. Progress and stalled notices
+do not. Existing unmarked posts stay available for separate backfill judgment.
 The request owner checks this signal, not the reply's prose. The CLI and owner both reject the flag
 outside a nonempty partial reply to a human thread request. For a peer reply, the signal travels
 with the retained reply event and is checked again by the origin.

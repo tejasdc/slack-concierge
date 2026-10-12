@@ -98,6 +98,7 @@ export function inboxMessage(row:any) {
   const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id)
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
@@ -333,9 +334,10 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * the hour (one answer it gave to several requests) are not posted, filed or notified again. Returns the post that carries the
  * answer, or null when the reply had nothing to show.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;workDisposition:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
+  const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
   let carriedBy:string|null=null;
   db.transaction(()=>{
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId)){carriedBy=postId;}
@@ -347,13 +349,14 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
           WHERE input_id IN (SELECT ? UNION SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=(SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?))
           AND session_id=? AND kind='post'
           AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND coalesce(json_extract(payload_json,'$.attachments'),'[]')=json(?)
+          AND coalesce(json_extract(payload_json,'$.answersQuestion'),0)=?
           AND created_at>=datetime('now','-1 hour') LIMIT 1`)
-        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text,JSON.stringify(answer.attachments)) as {event_id:string}|null:null;
+        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text,JSON.stringify(answer.attachments),answersQuestion?1:0) as {event_id:string}|null:null;
       if(same)carriedBy=same.event_id;
       else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
-            replyKind:answer.final?'final':'partial',...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
+            replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;

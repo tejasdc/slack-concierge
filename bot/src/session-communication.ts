@@ -1233,7 +1233,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.text??''),
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-            workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
+            answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
         db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
     }
     reply(input: {

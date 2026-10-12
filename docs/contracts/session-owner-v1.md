@@ -220,6 +220,10 @@ request whose row has `thread_root_input_id` (every Inbox ask names one) placed 
 this machine or a peer — is posted at once through the same poster as a forwarded reply
 (`postAgentAnswer` → `postForwardedThreadAnswer`): one `post` per reply event (`post:forward:<eventId>`,
 `postedBy:'owner-forward'`, `postedBySession`, `requestId`, `replyKind`, `workDisposition` on a final);
+the retained post and both Inbox message projections carry `answersQuestion:true` only for an
+explicit `--answers-question` partial or a non-stalled final. A progress partial and a stall do
+not carry it. Deduplication never merges posts with different answer status. Older posts with no
+marker remain intact and require separate backfill judgment; absence is not proof of progress.
 when `request:<requestId>` is placed as a topic root, it takes precedence over the `--thread`
 captured at dispatch for local and peer answers, and appears as the original request text
 in the Conversation. The retained answer is projected under that root, including older answers.
