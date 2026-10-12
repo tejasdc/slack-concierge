@@ -429,15 +429,56 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
 }
 /** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
 function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:()=>{change:Change;result:T}):T&{duplicate?:boolean} {
-  return db.transaction(()=>{
-    const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
-      payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
-    if(saved.duplicate)return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};
-    const {change,result}=run();
-    record(actor.sessionId,saved.input.id,actor.turnId,change);
-    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
-    return {...result,duplicate:false};
-  })();
+  const started=performance.now();
+  let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
+  let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
+  let resultForTrace:T|null=null;
+  try {
+    const result=db.transaction(()=>{
+      const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
+        payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
+      retainMs=performance.now()-phaseStart;
+      phaseStart=performance.now();phaseName='compute';
+      if(saved.duplicate){duplicate=true;phaseName='commit';return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};}
+      const {change,result}=run();
+      computeMs=performance.now()-phaseStart;
+      resultForTrace=result;
+      phaseStart=performance.now();phaseName='record';
+      record(actor.sessionId,saved.input.id,actor.turnId,change);
+      recordMs=performance.now()-phaseStart;
+      phaseStart=performance.now();phaseName='receipt';
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+      receiptMs=performance.now()-phaseStart;
+      phaseName='commit';
+      return {...result,duplicate:false};
+    })();
+    completed=true;
+    return result;
+  } finally {
+    const ended=performance.now(),totalMs=ended-started;
+    if(phaseName==='retain')retainMs=ended-phaseStart;
+    else if(phaseName==='compute'&&!duplicate)computeMs=ended-phaseStart;
+    else if(phaseName==='record')recordMs=ended-phaseStart;
+    else if(phaseName==='receipt')receiptMs=ended-phaseStart;
+    if(totalMs>=250) {
+      const named=payload as {kind?:unknown;topicId?:unknown;requestId?:unknown;questionId?:unknown};
+      let topicId=typeof named?.topicId==='string'?named.topicId:null;
+      if(!topicId&&resultForTrace&&'topic' in resultForTrace) {
+        const topic=(resultForTrace as {topic?:{topicId?:unknown}}).topic;
+        if(typeof topic?.topicId==='string')topicId=topic.topicId;
+      }
+      try {
+        if(!topicId&&typeof named?.requestId==='string')
+          topicId=(db.query('SELECT topic_id FROM inbox_requests WHERE request_id=?').get(named.requestId) as {topic_id:string}|null)?.topic_id??null;
+        if(!topicId&&typeof named?.questionId==='string')
+          topicId=(db.query('SELECT topic_id FROM inbox_questions WHERE question_id=?').get(named.questionId) as {topic_id:string}|null)?.topic_id??null;
+      } catch { /* Diagnostic attribution must never replace the command's result. */ }
+      log('warn','inbox_topic_mutation_slow',{action:typeof named?.kind==='string'?named.kind:'unknown',topic_id:topicId,
+        duration_ms:Math.round(totalMs),retain_ms:Math.round(retainMs),compute_ms:Math.round(computeMs),
+        record_ms:Math.round(recordMs),receipt_ms:Math.round(receiptMs),
+        transaction_other_ms:Math.round(Math.max(0,totalMs-retainMs-computeMs-recordMs-receiptMs)),duplicate,outcome:completed?'completed':'failed'});
+    }
+  }
 }
 /** His own action on a topic. Same retained-receipt shape as the owner's other human controls. */
 function humanMutation(sessionId:number,clientActionId:string,payload:unknown,run:()=>{change:Change;result:Record<string,any>}) {

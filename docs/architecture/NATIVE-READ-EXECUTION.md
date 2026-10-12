@@ -45,6 +45,13 @@ rows and stops processing a step after twelve milliseconds before yielding to ot
 An individual SQLite call can exceed that target under storage contention, so installed lag
 records remain the acceptance check.
 
+An Inbox topic command taking at least 250 milliseconds logs its action, known topic ID and
+time spent resolving the caller, retaining its source and executing the command. A slow topic
+mutation also logs time spent retaining the action, computing its change, recording that change,
+writing the receipt and finishing the transaction. These records contain no topic text. The
+October 12 four-second topic-command transaction predates these fields, so its exact action
+cannot be recovered from that lag record alone.
+
 Failed and slow read completions, plus a one-percent ordinary sample, include the route template,
 status, duration, measured storage work and gateway admission ID without path or query data.
 Counters retain all completions, elapsed time and sampled-out logs. `/internal/ready` reports
