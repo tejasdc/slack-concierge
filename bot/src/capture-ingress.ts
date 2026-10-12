@@ -776,7 +776,14 @@ export function createCaptureRequestHandler(
     if (!route) return respond(404, { error: "not_found" });
     if (route.adapter === "thinkering" && url.search) return respond(404, { error: "not_found" });
     if (request.method !== "POST") return respond(405, { error: "method_not_allowed" }, { allow: "POST" });
-    if (!authorized(request, route.auth)) {
+    // The phone key is stored here only as a one-way verifier. An agent's marked
+    // Pebble probe uses the existing server-held Thinkering key instead; the owner
+    // still verifies that its source input and run are a real agent turn.
+    const agentPebbleProbe = route.adapter === "pebble-index"
+      && request.headers.has("x-concierge-agent-source")
+      && thinkeringRoute !== undefined
+      && authorized(request, thinkeringRoute.auth);
+    if (!authorized(request, route.auth) && !agentPebbleProbe) {
       return respond(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
     }
     let capture: Capture | null = null;

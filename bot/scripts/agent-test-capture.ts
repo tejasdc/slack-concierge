@@ -55,7 +55,7 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
 } else if (path === 'pebble') {
   const form = new FormData();
   form.set('transcription', text); form.set('recordedAt', String(Date.now())); form.set('client', 'agent-test');
-  await send(`${DROP_OFF}/pebble`, { method: 'POST', body: form, headers: { ...agentHeader, authorization: `Bearer ${key('/etc/concierge/pebble-index.token')}` } });
+  await send(`${DROP_OFF}/pebble`, { method: 'POST', body: form, headers: { ...agentHeader, authorization: `Bearer ${key('/etc/concierge/thinkering.token')}` } });
 } else if (DEVICE_APPS[path]) {
   const replyTo = flags.get('--reply-to');
   const body = { formatVersion: 1, captureId: randomUUID(), capturedAt: new Date().toISOString(),
