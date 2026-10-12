@@ -1,0 +1,1 @@
+Concierge now prepares its records in larger steps at startup, reducing repeated disk writes during updates.
