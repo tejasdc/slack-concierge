@@ -703,9 +703,14 @@ copies first if a difference has appeared, and otherwise exits `unchanged` witho
 whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
 filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Only copies with matching
 verification records qualify for automatic retention. The newest eight verified copies are
-kept after a new copy is durably published, including when a later deployment step fails.
-Unverified legacy files and incident evidence are not counted or automatically removed;
-insufficient space refuses the new backup instead of deleting the last recovery evidence.
+kept after a new copy is durably published, including when a later deployment step fails,
+and only as many of those as fit in 16 GB (the newest is always kept). An unverified
+automatic copy (`state.pre-deployment-repair.<ms>.db` without a matching record) is removed
+once a newer verified copy exists, since it can never be a rollback source; one newer than
+every verified copy, or still being published, is left alone. Before this, uncertified copies
+were never counted or removed, and seven from 2026-10-10 took the root disk under its 50 GB
+floor on 2026-10-12. Incident evidence and hand-made backups have other names and are never
+touched; insufficient space refuses the new backup instead of deleting the last recovery evidence.
 A release whose migrator predates `--backup-if-needed` is copied unconditionally, as below.
 
 `bot/scripts/migrate-deployment-repair.ts --backup-only` opens the source read-only and
