@@ -1,0 +1,1 @@
+When an account check succeeds before the usage display catches up, only the matching waiting conversations can start.
