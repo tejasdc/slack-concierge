@@ -199,6 +199,9 @@ authorization or a change to the default rapid-iteration policy.
   The installed machine command check refuses raw live-store copies even for older running agents;
   its safety check is independent of their pinned session hooks. See [database operations](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
   The same catalogue document owns the release gates.
+Historical session-search routing evidence runs in the sealed read-only search process, and
+restart-time Inbox entry-index warm-up yields on elapsed time; see
+[native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.
   Its scratch subprocesses share bounded lifetime and phase diagnostics; see the same catalogue document.
