@@ -140,11 +140,14 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
 }
 
 function questionValue(context:TopicContext,row:any,roots:string[],replies:{inputId:string;at:string;reviews:string[];replyTo:string|null}[]){
+ const sources=parse(row.sources_json,[]);
+ const askedSource=row.kind==='asked'&&typeof sources[0]==='string'
+  ?context.source.query('SELECT created_at FROM session_inputs WHERE id=?').get(sources[0]) as {created_at:string}|null:null;
  const question={id:row.question_id,topicId:row.topic_id,revision:row.revision,state:row.state,blocking:!!row.blocking,
-  optional:!!row.optional,context:row.context,brief:parse(row.brief_json,{}),owner:parse(row.owner_json),sources:parse(row.sources_json,[]),
+  optional:!!row.optional,context:row.context,brief:parse(row.brief_json,{}),owner:parse(row.owner_json),sources,
   replaces:row.replaces,replacedBy:row.replaced_by,answer:parse(row.answer_json),recovered:!!row.recovered,
   legacyNeedEventId:row.legacy_need_event_id,kind:row.kind==='reading'?'reading':row.kind==='asked'?'asked':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
-  generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
+  generation:typeof row.generation==='number'?row.generation:null,deferUntil:iso(row.defer_until),createdAt:iso(askedSource?.created_at??row.created_at)!,updatedAt:iso(row.updated_at)!};
  const reading=[context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='exposed' AND revision=? ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id,question.revision),
   context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
