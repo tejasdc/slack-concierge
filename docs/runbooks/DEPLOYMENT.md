@@ -41,11 +41,11 @@ candidate can be built.
 entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
 The candidate-owned presentation check writes bounded step and reader markers to stderr.
-If the installed controller times it out, its retained failure summary includes the last
-marker even though that controller discards stdout and the child exit status. The markers
-name only checks, never private content. A fresh run of the same isolated check passing
-does not establish why an earlier candidate timed out; compare its last marker with the
-host's resources before changing the gate's deadline or candidate behavior.
+Even an older installed controller that retains only stderr can show the last marker;
+the updated controller also retains stdout and process status. The markers name only
+checks, never private content. A fresh run of the same isolated check passing does not
+establish why an earlier candidate timed out; compare its last marker with the host's
+resources before changing the gate's deadline or candidate behavior.
 
 The stable controller launcher resolves its control artifact once for each invocation.
 Restoring or promoting the control pointer cannot switch a running deployment's helper
