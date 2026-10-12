@@ -90,10 +90,9 @@ case "${1:-}" in
     ;;
   sessions)
     shift
-    # New requests and shared Lab board commands use the current owner contract. A running
-    # session can outlive a board command update; pinning its old parser would make the new
-    # reply address impossible to use even after the board service supports it.
-    if [ "$(uname -s)" != Darwin ] && { [ "${1:-}" = ask ] || [ "${1:-}" = board ]; }; then
+    # New requests, saved work, and shared Lab board commands use the current owner contract.
+    # A running session can outlive a command update; its old parser may reject a new provider.
+    if [ "$(uname -s)" != Darwin ] && { [ "${1:-}" = ask ] || [ "${1:-}" = bank ] || [ "${1:-}" = schedule ] || [ "${1:-}" = board ]; }; then
       CURRENT_BOT_DIR=/var/lib/slack-concierge-deployment/current/control/bot
       if [ -f "$CURRENT_BOT_DIR/scripts/router-sessions.js" ]; then
         exec bun run "$CURRENT_BOT_DIR/scripts/router-sessions.js" "$@"
