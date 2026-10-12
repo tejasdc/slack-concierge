@@ -422,7 +422,7 @@ export class SessionPeers {
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
-    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string}}) {
+    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     const client=this.client(input.peer);
     const effect=input.requestedEffect??'informational';
@@ -736,7 +736,7 @@ export class SessionPeers {
       db.query("UPDATE session_peer_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
       return;
     }
-    if(declared.promptAnswerOverdue){
+    if(declared.promptAnswerOverdue&&getAcceptedSessionInput(row.source_input_id)?.origin==='human'){
       const question=String(JSON.parse(row.payload_json).text??'');
       this.dependencies.owner.admit({sessionId:row.source_session_id,inputId:`question-overdue:${row.request_id}`,
         origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
@@ -879,6 +879,7 @@ export class SessionPeers {
   private inspectOverdueRequest(row:PeerRequestRow) {
     const now=this.now();
       if(JSON.parse(row.payload_json).promptAnswer&&row.prompt_answered_at_ms===null){
+        const human=getAcceptedSessionInput(row.source_input_id)?.origin==='human';
         db.transaction(()=>{
           const current=this.row(row.request_id);
           if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
@@ -886,7 +887,7 @@ export class SessionPeers {
             db.query('UPDATE session_peer_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
               .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
           } else {
-            this.event(current,'overdue',{text:'No answer to this question arrived within three minutes. The agent has been reminded if its machine is awake; the Inbox router has been told. The request remains open, and its answer will still appear here when it arrives.',promptAnswerOverdue:true});
+            this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake${human?'; the Inbox router has been told':''}. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
             db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
           }
         })();
@@ -932,7 +933,7 @@ export class SessionPeers {
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
-    if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'))
+    if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     if(input.summary!==undefined&&(typeof input.summary!=='string'||!input.summary.trim()||input.summary.includes('\n')||input.summary.length>200))throw new SessionOwnerError('A session description is one line of at most 200 characters.');
@@ -1061,7 +1062,7 @@ export class SessionPeers {
     const target=getAcceptedSessionInput(row.target_input_id);
     this.dependencies.owner.admit({sessionId:row.target_session_id,inputId:`question-reminder:${row.request_id}`,
       origin:'service',sourceInputId:row.target_input_id,sourceRunId:target?.turn_id?nativeRunId(target.turn_id):row.origin_run_id,requestId:row.request_id,
-      text:`Tejas is still waiting for an answer to the question in request ${row.request_id}. Answer in his Inbox thread now with sessions reply ${row.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
+      text:`${JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.authorKind==='agent'?'The marked agent test':'Tejas'} is still waiting for an answer to the question in request ${row.request_id}. Answer in the Inbox thread now with sessions reply ${row.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
     db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
   }
   /** Deliveries from a peer that this session holds without a final reply (see the coordinator's owed). */

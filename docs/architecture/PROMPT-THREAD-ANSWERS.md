@@ -37,3 +37,8 @@ clock; three minutes is the upper bound before the visible overdue state and rou
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs
 make retries and restarts idempotent. No timer closes, cancels or resends the underlying work.
+
+For live acceptance, a marked agent test input may reply inside an Inbox thread through the same
+forwarding path. Its stored and displayed author remains agent, and its test overdue does not
+claim Tejas asked the question or wake the Inbox router. This lets the check prove delivery to a
+busy recipient and the returned thread post without impersonating him.
