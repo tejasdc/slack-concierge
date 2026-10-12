@@ -497,9 +497,13 @@ The candidate's isolated checks run inside the detached runner, which starts at 
 IO weight (1000, like `concierge-bot.service`), because they time the candidate owner's own startup
 and reads: at an equal share beside a dozen agent runs (load 70-140 on 12 cores) they missed their
 deadlines three times on 2026-10-09/10 with nothing wrong in the candidate. A failed check records
-its own error line (fixture, deadline, termination, phases; `failedCheckSummary`), not a cut of
-Bun's source excerpt or the fixture's output tail. A desired commit whose run failed is not run
-again; the next push to `main` starts a fresh run.
+its exit status or signal, an explicit timeout after its bound, and the final 2,000 bytes of
+each output stream in the release error and deploy journal. Preparation and preactivation
+presentation checks allow 180 seconds: successful preparation took about 47 seconds, and
+the same candidate passed in 52 seconds under load after a 90-second timeout. This gives
+ordinary disk contention room while retaining a finite hang guard. The candidate's
+own child checks retain their specific deadlines and diagnostics. A desired commit whose
+run failed is not run again; the next push to `main` starts a fresh run.
 
 If the detached runner cannot launch, or if a durable rollout step, candidate
 restart, or functional health proof fails, Concierge records one incident on

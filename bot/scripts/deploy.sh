@@ -652,7 +652,9 @@ prepare_candidate_release() {
   if [ "$status" -ne 0 ]; then
     if candidate_advanced; then return 0; fi
     detail=$(printf '%s\n' "$output" | jq -c '{status,error}' 2>/dev/null || printf '%s' "$output")
-    detail=${detail:0:1200}
+    # The release manager bounds each stream; retain both tails in the durable
+    # failure reason as well as its full JSON line in the deploy journal.
+    detail=${detail:0:8000}
     DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared. Candidate preparation reported: $detail"
     return "$status"
   fi

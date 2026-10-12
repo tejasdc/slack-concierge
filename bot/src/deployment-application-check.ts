@@ -3,7 +3,7 @@ import {existsSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,symlin
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {TrustedRootReleaseManager,failedCheckSummary,type ReleaseManifest} from './deployment-release';
+import {TrustedRootReleaseManager,failedCandidateCheck,CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,type ReleaseManifest} from './deployment-release';
 import {releaseCodexBridgePath} from './release-worker';
 import {privateDatabaseCommand} from './private-database-command';
 
@@ -35,7 +35,8 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
    symlinkSync(dependencies,join(controlRoot,'bot/node_modules'),'dir');
    const check=spawnSync(process.execPath,[join(controlRoot,'bot/scripts/ledger-constructor-check.ts'),join(controlRoot,'bot')],
     {cwd:join(controlRoot,'bot'),encoding:'utf8',timeout:15_000,env:{...process.env,BUN_INSTALL_AUTO:'disable'}});
-   if(check.error||check.status!==0)throw new Error(`Candidate control SQLite constructor check failed: ${failedCheckSummary((check.stderr||check.error?.message||'unknown'))}`);
+   if(check.error||check.status!==0)throw new Error(`Candidate control SQLite constructor check failed: ${failedCandidateCheck({
+    exitCode:check.status,signal:check.signal,stdout:check.stdout,stderr:check.stderr,error:check.error??null,timeoutSeconds:15})}`);
   }
   const declarationPath=join(scratch,'bot/src/deployment-artifact-files.json');
   const declaration=existsSync(declarationPath)?JSON.parse(readFileSync(declarationPath,'utf8')):{};
@@ -55,10 +56,12 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
   const gate=join(scratch,'bot/scripts/presentation-release-check.ts');
   if(!existsSync(gate))throw new Error('Candidate application is missing its presentation release check.');
   const [executable,...arguments_]=privateDatabaseCommand([process.execPath,gate]);
-  const checked=spawnSync(executable!,arguments_,{cwd:join(scratch,'bot'),encoding:'utf8',timeout:90_000,
+  const checked=spawnSync(executable!,arguments_,{cwd:join(scratch,'bot'),encoding:'utf8',timeout:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS*1000,
    env:{...process.env,BUN_INSTALL_AUTO:'disable',CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',
     CONCIERGE_STATE_DIR:join(scratch,'isolated-owner'),CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'isolated-capture')}});
-  if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${failedCheckSummary((checked.stderr||checked.error?.message||'unknown'))}`);
+  if(checked.error||checked.status!==0)throw new Error(`Candidate presentation check failed: ${failedCandidateCheck({
+   exitCode:checked.status,signal:checked.signal,stdout:checked.stdout,stderr:checked.stderr,
+   error:checked.error??null,timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS})}`);
   const result=JSON.parse(checked.stdout.trim().split('\n').at(-1)??'null');
   if(result?.check!=='presentation-release'||result.status!=='passed')throw new Error('Candidate presentation check returned no passing receipt.');
   return {...result,git_commit:manifest.git_commit,artifact_digest:manifest.artifact_digest};
