@@ -15,3 +15,6 @@ reply, which may happen before its reminder time.
 The phrase classifier is intentionally narrow. Ambiguous language remains quiet until the
 requesting agent can represent the desired phone delivery explicitly. The source input's exact
 receipt is the contract between Concierge and thnkr.ing.
+When a delegated answer is filed into an Inbox thread, its event carries the exact asking input
+separately from the thread root. A quiet completion cannot suppress a result notification he
+explicitly requested.

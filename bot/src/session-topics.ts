@@ -1,6 +1,7 @@
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
+import {notificationRequest} from './session-notification-request';
 import {randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
@@ -2011,6 +2012,14 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
   const seen=(eventId:string)=>!!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId);
   const by:TopicBy={kind:'owner',sessionId:answer.respondingSessionId};
   const agent=answer.respondingTitle||'The agent working on this';
+  // The root locates the Inbox thread; a later request in that thread has its own human input.
+  // Delivery intent belongs to that asking input, never to the thread's first capture.
+  const dispatched=(db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=?').get(answer.dispatchRequestId)
+    ??db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=?').get(answer.dispatchRequestId)) as {source_input_id:string}|null;
+  const askingInput=dispatched?getAcceptedSessionInput(dispatched.source_input_id):null;
+  const notificationInputId=askingInput&&humanAuthored(askingInput)?askingInput.id:null;
+  const words=askingInput?JSON.parse(askingInput.payload_json):null;
+  const requestedResult=notificationInputId&&(words.notificationRequest??notificationRequest(String(words.text??words.firstInput?.text??'')))==='result';
   db.transaction(()=>{
     // Done work closes the thread request it was sent for, exactly when the router could have closed it.
     if(answer.disposition==='completed') {
@@ -2032,7 +2041,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     if(seen(filedId))return;
     // Completed work its agent said he need not read is posted and closes its request, and is filed
     // for nobody: no reading item, no notification [decision: sends-notify-only-on-failure].
-    if(answer.quiet&&answer.disposition==='completed'){
+    if(answer.quiet&&answer.disposition==='completed'&&!requestedResult){
       log('info','inbox_answer_quiet',{thread:answer.root,post:answer.postId,request_id:answer.dispatchRequestId});
       return;
     }
@@ -2060,7 +2069,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     applyTopicChange('topic_question',payload);
     // The thread's one notification slot: the Inbox session, the thread's root as its input, shaped like a new question's.
     recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
-      payload:{outcome:decision?'needs_you':'response',question:brief.decision,inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId}});
+      payload:{outcome:decision?'needs_you':'response',question:brief.decision,inputId:answer.root,notificationInputId,generation,topicId,questionId:question.questionId,postId:answer.postId}});
   })();
 }
 
