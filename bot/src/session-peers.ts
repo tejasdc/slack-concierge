@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
-import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
@@ -101,13 +101,13 @@ export class PeerClient {
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
-  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number;thread_root_input_id:string|null};
+  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;prompt_reminded_at_ms:number|null;prompt_answered_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number;thread_root_input_id:string|null};
 type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
 const OFFLINE_MS=60_000;
 const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
 export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
-type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
+type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;prompt_reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
 type WorkDisposition='completed'|'failed'|'needs_decision';
@@ -429,7 +429,7 @@ export class SessionPeers {
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),
-      ...(input.forwardedReply?{forwardedReply:input.forwardedReply}:{})});
+      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const previous=prior();
@@ -450,7 +450,7 @@ export class SessionPeers {
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply}:{}),...(files.length?{files}:{})};
+      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(files.length?{files}:{})};
     let accepted:{sessionId:string;address:string;operationId:string};
     let queued=false;
     try {
@@ -471,7 +471,7 @@ export class SessionPeers {
       const raced=prior();
       if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
       db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+DUE_MS,now,input.threadRoot??null);
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null);
       const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
         payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
           ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
@@ -561,7 +561,10 @@ export class SessionPeers {
     if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
-    const requestedEffect=JSON.parse(row.payload_json).requestedEffect;
+    const requestPayload=JSON.parse(row.payload_json);
+    const requestedEffect=requestPayload.requestedEffect;
+    const promptAnswer=!!requestPayload.promptAnswer;
+    if(input.answersQuestion&&(final||!promptAnswer||!input.text.trim()))throw new SessionOwnerError('A prompt answer must be a partial reply with answer text for a human thread question.');
     if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
@@ -577,12 +580,15 @@ export class SessionPeers {
         .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
+        ...(input.answersQuestion?{answersQuestion:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
         ...(disposition==='completed'&&typeof input.quiet==='string'&&input.quiet.trim()?{quiet:input.quiet.trim().slice(0,2000)}:{})};
       if(final&&inferred)db.query('UPDATE session_peer_events SET superseded_by_event_id=? WHERE event_id=?').run(input.eventId,inferred.event_id);
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
+      if(promptAnswer&&(final||input.answersQuestion))db.query('UPDATE session_peer_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
+        .run(this.now(),this.now()+DUE_MS,requestId);
       if(final){
         // Declared completion settles when the reply arrives, not when the peer's run ends.
         const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?'answered':requestedEffect==='work'?'undetermined':'answered';
@@ -605,7 +611,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,answersQuestion:reply.answersQuestion??undefined,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -726,6 +732,16 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
+    if(event.kind==='overdue'&&(declared.promptAnswerOverdue?row.prompt_answered_at_ms!==null:!!row.outcome)&&!event.accepted_input_id){
+      db.query("UPDATE session_peer_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+      return;
+    }
+    if(declared.promptAnswerOverdue){
+      const question=String(JSON.parse(row.payload_json).text??'');
+      this.dependencies.owner.admit({sessionId:row.source_session_id,inputId:`question-overdue:${row.request_id}`,
+        origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
+        text:`A question Tejas asked in Inbox thread ${row.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent on ${row.peer} was reminded if awake. Request ${row.request_id}: ${question}\nCheck current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread.`});
+    }
     // An answer for a thread from a Mac agent goes into that thread as the agent's words, never as a
     // return that would start a router turn: his thread reply's answer, or the agent's own reply to a
     // request the Inbox sent for a thread. The same road a server agent's answer takes
@@ -834,6 +850,7 @@ export class SessionPeers {
    */
   private closeStranded(row:PeerRequestRow):boolean {
     if(row.outcome||!row.remote_status_json||this.currentFinal(row.request_id))return false;
+    if(JSON.parse(row.payload_json).promptAnswer&&row.prompt_answered_at_ms===null&&row.overdue_at_ms===null)return false;
     const remote=JSON.parse(row.remote_status_json);
     const execution=remote.execution;
     if(!execution||remote.stillWorking||['running','queued'].includes(execution.status))return false;
@@ -861,6 +878,20 @@ export class SessionPeers {
   }
   private inspectOverdueRequest(row:PeerRequestRow) {
     const now=this.now();
+      if(JSON.parse(row.payload_json).promptAnswer&&row.prompt_answered_at_ms===null){
+        db.transaction(()=>{
+          const current=this.row(row.request_id);
+          if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
+          if(current.prompt_reminded_at_ms===null){
+            db.query('UPDATE session_peer_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
+              .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
+          } else {
+            this.event(current,'overdue',{text:'No answer to this question arrived within three minutes. The agent has been reminded if its machine is awake; the Inbox router has been told. The request remains open, and its answer will still appear here when it arrives.',promptAnswerOverdue:true});
+            db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
+          }
+        })();
+        return;
+      }
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       // A peer mid-update holds its work for a few minutes; that is waiting, not a stall.
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking||remote?.updating===true;
@@ -908,7 +939,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     if(!['informational','work'].includes(effect))throw new SessionOwnerError('Requested effect must be informational or work.');
     const owner=this.dependencies.owner;
-    const forwardedIntent=input.forwardedReply?{forwardedReply:input.forwardedReply,address:input.address,text:input.text,message:input.message,
+    const forwardedIntent=input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:input.promptAnswer===true,address:input.address,text:input.text,message:input.message,
       files:(input.files??[]).map((file:{name:string;contentType:string;base64:string})=>({name:file.name,contentType:file.contentType,
         sha256:createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex')}))}:null;
     const existing=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=?').get(requestId) as DeliveryRow|null;
@@ -936,13 +967,11 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.forwardedReply||target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
+          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
       db.query(`INSERT INTO session_peer_deliveries(request_id,peer,origin_session_id,origin_input_id,origin_run_id,target_session_id,target_input_id,requested_effect,origin_provenance_json,created_at_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?)`).run(requestId,origin.peer,origin.sessionId,origin.inputId,origin.runId,sessionId,`request:${requestId}`,effect,JSON.stringify(provenance),this.now());
-      if(input.forwardedReply&&enqueueSessionInput(`request:${requestId}`).turn_id===null)
-        throw new SessionOwnerError('The forwarded reply could not be queued for its exact recipient.',409,'CAPABILITY_UNAVAILABLE');
       return this.delivery(requestId);
     })();
     owner.dispatch(getAcceptedSessionInput(created.target_input_id)!);
@@ -968,7 +997,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1010,7 +1039,7 @@ export class SessionPeers {
     const files=payload.attachments?.length
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
-    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
@@ -1020,6 +1049,18 @@ export class SessionPeers {
     const reply=db.query('SELECT * FROM session_peer_replies WHERE request_id=? AND event_id=?').get(requestId,eventId) as ReplyRow|null;
     if(!reply)throw new SessionOwnerError('Unknown reply.',404);
     return this.replyBody(row,reply);
+  }
+  private remindPromptAnswer(row:DeliveryRow) {
+    if(row.closed_at_ms!==null||row.prompt_reminded_at_ms!==null||!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.promptAnswer)return;
+    if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND (kind='final' OR json_extract(payload_json,'$.answersQuestion')=1) LIMIT 1").get(row.request_id)){
+      db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
+      return;
+    }
+    const target=getAcceptedSessionInput(row.target_input_id);
+    this.dependencies.owner.admit({sessionId:row.target_session_id,inputId:`question-reminder:${row.request_id}`,
+      origin:'service',sourceInputId:row.target_input_id,sourceRunId:target?.turn_id?nativeRunId(target.turn_id):row.origin_run_id,requestId:row.request_id,
+      text:`Tejas is still waiting for an answer to the question in request ${row.request_id}. Answer in his Inbox thread now with sessions reply ${row.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
+    db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
   }
   /** Deliveries from a peer that this session holds without a final reply (see the coordinator's owed). */
   owedDeliveries(sessionId:number,runId:string,mark:{offer:string[];remind:boolean}):OwedRequest[] {
@@ -1042,16 +1083,19 @@ export class SessionPeers {
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;answersQuestion?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
     if(input.workDisposition!==undefined&&(!input.final||row.requested_effect!=='work'||!['completed','failed','needs_decision'].includes(input.workDisposition)))throw new Error('A work disposition requires a final reply to a work request.');
     if(input.final&&row.requested_effect==='work'&&input.workDisposition===undefined)throw new Error('A final reply to a work request needs --work-disposition completed, failed or needs_decision.');
+    if(input.answersQuestion&&(input.final||!input.text.trim()||!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.promptAnswer))
+      throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
     const target=getAcceptedSessionInput(row.target_input_id);
     if(!target?.turn_id)throw new Error('This request has not been delivered to this session yet.');
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
+      ...(input.answersQuestion?{answersQuestion:true}:{}),
       // Custody on this instance; the forward reads these exact bytes for the origin.
       ...(input.attachments?.length?{attachments:input.attachments}:{}),
       ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
@@ -1176,6 +1220,9 @@ export class SessionPeers {
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE (closed_at_ms IS NULL
           OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending')) AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id))));
+      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
+          AND json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 AND created_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+        row=>this.remindPromptAnswer(row),this.now()-PROMPT_ANSWER_REMINDER_MS);
       if(!this.stopped)this.arm();
     }
   }
@@ -1203,7 +1250,9 @@ export class SessionPeers {
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
-    const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())])];
+    const reminder=(db.query(`SELECT min(created_at_ms)+? AS due FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
+      AND json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1`).get(PROMPT_ANSWER_REMINDER_MS) as {due:number|null}).due;
+    const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())]),...(reminder===null?[]:[Math.max(0,reminder-this.now())])];
     if(!delays.length)return;
     const timer=setTimeout(()=>this.wake(),Math.min(24*60*60_000,...delays));
     timer.unref();
