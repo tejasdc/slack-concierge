@@ -55,6 +55,8 @@
     "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
     "control/install-transcriber.sh": "bot/scripts/install-transcriber.sh",
     "control/install-meaning-engine.sh": "bot/scripts/install-meaning-engine.sh",
+    "control/install-antigravity-account-hook.sh": "bot/scripts/install-antigravity-account-hook.sh",
+    "control/antigravity-account-statusline.sh": "bot/scripts/antigravity-account-statusline.sh",
     "control/parakeet-server.cpp": "bot/native/parakeet-server.cpp",
     "control/deployment-repair-review.schema.json": "bot/scripts/deployment-repair-review.schema.json",
     "control/systemd/concierge-bot.service": "systemd/concierge-bot.service",

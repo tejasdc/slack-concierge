@@ -1065,6 +1065,14 @@ deploy() {
     "$CONTROL_DIR/install-meaning-engine.sh"
   fi
 
+  echo "=== install Google account identity hook ==="
+  DEPLOY_FAILURE_REASON="The Google account identity hook could not be installed."
+  if [ -n "${CANDIDATE_ARTIFACT_PATH:-}" ]; then
+    "$CANDIDATE_ARTIFACT_PATH/control/install-antigravity-account-hook.sh"
+  else
+    "$CONTROL_DIR/install-antigravity-account-hook.sh"
+  fi
+
   DEPLOY_FAILURE_REASON="The durable restarting checkpoint could not be recorded."
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
   echo "=== verify whether $CAPTURE_SERVICE changed ==="

@@ -87,11 +87,12 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let terminal: NonNullable<AntigravityEvent["result"]> | null = null;
   let observedOutput = false;
   let acknowledged = false;
-  let cancelled = false;
+  let cancelRequested = false;
   let sawInit = false;
   let permissionDenied = false;
   let stderrTail = "";
   let closeInput: (() => void) | null = null;
+  let interruptInput: (() => Promise<void>) | null = null;
   const toolsUsed = new Set<string>();
   const startedAt = Date.now();
 
@@ -180,13 +181,19 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       if (/soft.denied|permission.{0,30}denied|approval.{0,30}(?:denied|unavailable)|requires.{0,30}approval/i.test(stderrTail))
         permissionDenied = true;
     },
+    onInterruptReady: interrupt => { interruptInput = interrupt; },
     onStdinReady: (_write, close) => {
       closeInput = close;
-      input.onCancellationReady?.(async () => { cancelled = true; close(); });
+      input.onCancellationReady?.(async () => {
+        if (!interruptInput) throw new Error("The Google process cannot be interrupted yet.");
+        cancelRequested = true;
+        await interruptInput();
+      });
     },
   });
   input.onProviderTerminal?.();
-  if (cancelled) throw new ProviderTurnCancelledError("The Google turn was stopped.");
+  if (cancelRequested && (terminal?.status === "CANCELED" || terminal?.status === "INTERRUPTED"))
+    throw new ProviderTurnCancelledError("The Google turn was stopped.");
   const needsSignIn = /authentication required|please sign in|not logged in|oauth.*expired/i.test(
     `${terminal?.error ?? ""} ${stderrTail}`);
   if (!terminal) {

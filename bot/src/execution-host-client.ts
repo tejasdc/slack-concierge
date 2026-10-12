@@ -587,6 +587,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
             }
             if (!ready) {
               if (execution.mode === "adopt") replayUntil = lastRecordSeq;
+              input.onInterruptReady?.(async () => { throw new HostWriteRefusedError("the provider has exited"); });
               input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
               ready = true;
               for (const frame of early.splice(0)) sort(frame);
@@ -617,6 +618,11 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         streamingReplay = attached.streamingReplay === true;
         journalBytes=typeof attached.journalBytes==="number"?attached.journalBytes:null;
         execution.onAttached?.(attached);
+        input.onInterruptReady?.(async () => {
+          if (exited || !connection) throw new HostWriteRefusedError("the provider has exited");
+          await connection.command({ op: "signal", id: `interrupt-${randomUUID()}`, signal: "SIGINT" });
+          timers.push(setTimeout(() => { signal("SIGTERM"); scheduleKill(); }, 5_000));
+        });
         input.onStdinReady?.((value: string, meta?: TransportFrameMeta) => write(value, meta), () => closeInput());
         input.onProtocolActivityReady?.(resetInactivity);
         ready = true;
@@ -668,6 +674,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       }
     }
     if (!exit) throw new HostUnavailableError("the execution's record holds no exit");
+    input.onInterruptReady?.(async () => { throw new HostWriteRefusedError("the provider has exited"); });
     input.onStdinReady?.(() => Promise.reject(new HostWriteRefusedError("the provider has exited")), () => {});
     for await (const frame of streamJournal(directory)) {
       if (frame.k === "o") input.onStdout(`${frame.d}\n`, frame.t);

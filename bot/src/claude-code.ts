@@ -90,6 +90,8 @@ export interface ClaudeCodeTransport {
     onStdout: (chunk: string, at?: number) => void;
     onStderr: (chunk: string) => void;
     onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void;
+    /** Interrupt the provider process itself; closing a streaming input only ends future turns. */
+    onInterruptReady?: (interrupt: () => Promise<void>) => void;
     onProtocolActivityReady?: (record: () => void) => void;
     /** A write an earlier coordinator made to this same process, replayed from the host's record. */
     onReplayedInput?: (line: string, meta: TransportFrameMeta | null, at: number, outcome: "written" | "unknown") => void;
@@ -115,6 +117,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
     onStdout: (chunk: string, at?: number) => void;
     onStderr: (chunk: string) => void;
     onStdinReady?: (write: (input: string, meta?: TransportFrameMeta) => Promise<void>, close: () => void) => void;
+    onInterruptReady?: (interrupt: () => Promise<void>) => void;
     onProtocolActivityReady?: (record: () => void) => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const proc = spawn(this.executable, input.args, {
@@ -194,6 +197,9 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
         proc.stdin.write(value, (error) => error ? rejectWrite(error) : resolveWrite());
       });
       void write(input.stdin).then(() => {
+        input.onInterruptReady?.(async () => {
+          if (!proc.kill("SIGINT")) throw new Error("The provider process was no longer running.");
+        });
         if (input.onStdinReady) input.onStdinReady(write, closeInput);
         else closeInput();
       }).catch(terminateWithError);

@@ -24,7 +24,10 @@ The CLI emits structured `init`, `step_update`, and terminal `result` events. It
 `conversation_id` is the provider session binding. Each later turn starts a new
 headless process with `--conversation` and that exact ID, so it resumes the right
 Google conversation without using the CLI's mutable most-recent conversation.
-Only a `SUCCESS` result with the bound ID completes work. A result that changes
+Only a `SUCCESS` result with the bound ID completes work. Stop sends `SIGINT`
+through the durable host; a result that confirms cancellation or interruption
+closes it as stopped. A success that raced Stop remains a success, and an exit
+without a final result stays unconfirmed. A result that changes
 the ID or omits it fails closed, because the next turn would otherwise run in
 the wrong or a fresh conversation.
 Headless work requests the CLI's unattended permission mode and verifies the
@@ -39,6 +42,9 @@ next turn. Historical pages, forks, and information-only consultation are also
 disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.
+Deployment installs the sanitized account status-line command through the
+immutable release's stable `current` path. It preserves the CLI's other settings
+and refuses to replace an unrelated status-line command.
 
 The `google` alias selects Gemini 3.1 Pro through Antigravity. The Google AI Pro
 subscription belongs on the server; Thinkering and the Mac do not copy its
