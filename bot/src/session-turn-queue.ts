@@ -47,53 +47,62 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
   private pump() {
     try {
       let claimedInSlice = 0;
-      do {
-        if (this.needsPreparation) {
-          this.wakeRequested = false;
-          this.needsPreparation = false;
+      if (this.needsPreparation) {
+        this.wakeRequested = false;
+        this.needsPreparation = false;
+        try {
+          this.options.beforeClaims?.();
+        } catch (error) {
+          this.claimFailures += 1;
+          this.options.onClaimError?.(error, this.claimFailures);
+          return;
+        }
+      }
+      while (!this.stopped && !this.options.shouldStop()) {
+        const claim = this.claimOrNull();
+        if (!claim) break;
+        claimedInSlice += 1;
+        if (this.activeTurnIds.has(claim.turn_id)) {
+          this.options.onError(claim, new Error(`Queued turn ${claim.turn_id} was claimed twice locally.`));
+        } else {
+          this.activeTurnIds.add(claim.turn_id);
+          let execution: Promise<unknown>;
           try {
-            this.options.beforeClaims?.();
+            execution = this.options.run(claim);
           } catch (error) {
-            this.claimFailures += 1;
-            this.options.onClaimError?.(error, this.claimFailures);
-            break;
+            execution = Promise.reject(error);
           }
-        }
-        while (!this.stopped && !this.options.shouldStop()) {
-          const claim = this.claimOrNull();
-          if (!claim) break;
-          claimedInSlice += 1;
-          if (this.activeTurnIds.has(claim.turn_id)) {
-            this.options.onError(claim, new Error(`Queued turn ${claim.turn_id} was claimed twice locally.`));
-          } else {
-            this.activeTurnIds.add(claim.turn_id);
-            let execution: Promise<unknown>;
-            try {
-              execution = this.options.run(claim);
-            } catch (error) {
-              execution = Promise.reject(error);
-            }
-            void execution
-              .catch((error) => this.options.onError(claim, error))
-              .finally(() => {
-                this.activeTurnIds.delete(claim.turn_id);
-                this.wake();
-              });
-          }
-          if (claimedInSlice >= SessionTurnQueueCoordinator.CLAIMS_PER_SLICE) {
-            this.continuation = setImmediate(() => {
-              this.continuation = null;
-              if (this.stopped || this.options.shouldStop()) this.finishPump();
-              else this.pump();
+          void execution
+            .catch((error) => this.options.onError(claim, error))
+            .finally(() => {
+              this.activeTurnIds.delete(claim.turn_id);
+              this.wake();
             });
-            return;
-          }
         }
-        if (this.wakeRequested && !this.stopped && !this.options.shouldStop()) this.needsPreparation = true;
-      } while (this.needsPreparation);
+        if (claimedInSlice >= SessionTurnQueueCoordinator.CLAIMS_PER_SLICE) {
+          this.continueOnNextTurn();
+          return;
+        }
+      }
+      if (this.wakeRequested && !this.stopped && !this.options.shouldStop()) {
+        this.needsPreparation = true;
+        this.continueOnNextTurn();
+        return;
+      }
     } finally {
       if (!this.continuation) this.finishPump();
     }
+  }
+
+  private continueOnNextTurn() {
+    this.continuation = setImmediate(() => {
+      this.continuation = null;
+      if (this.stopped || this.options.shouldStop()) this.finishPump();
+      else {
+        if (this.wakeRequested) this.needsPreparation = true;
+        this.pump();
+      }
+    });
   }
 
   private finishPump() {
