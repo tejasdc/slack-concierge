@@ -216,6 +216,8 @@ type ReceiptPosition={v:1;s:number;w:number;live:number[]};
 type PresentationPosition={v:2;k:'receipts';s:number;e:number;a:number;h:number};
 type ReceiptWindowPosition={v:2;k:'window';s:number;e:number;h:number;w:number;b:number};
 const PRESENTATION_PAGE=40;
+/** Events per event-stream page; the incident's replay averaged 11 KB an event, so about 2 MB a page. */
+const STREAM_PAGE_EVENTS=200;
 function encodePresentationPosition(position:PresentationPosition) {
   return Buffer.from(JSON.stringify(position)).toString('base64url');
 }
@@ -2632,23 +2634,40 @@ export class SessionOwner {
     return {events,nextCursor:rows.length?String(rows.at(-1).sequence):null,hasMore:limit!==null&&rows.length===limit};
   }
   private stream(request:Request,url:URL) {
-    let detach=()=>{},dispose=()=>{};
+    let detach=()=>{},dispose=()=>{},readable=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
       let after=resume==='now'?(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence:Number(resume)||0,closed=false;
+      let draining=false,changed=false,caughtUp=false,waiting:(()=>void)|null=null;
+      readable=()=>{const wake=waiting;waiting=null;wake?.();};
+      // A client far behind replays its whole gap, so the gap goes out one bounded page at a
+      // time with the loop released between pages, and waits while the client is not reading.
+      // Sent as one read it held the owner 5.6 s and queued 674 MB (incident bfb3021e).
       // A filtered subscription advances past the events it scanned, not only the ones
       // it sent, so a narrow filter never rescans the same skipped rows on every change.
-      const flush=()=>{if(closed)return;
-        const page=this.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),{kind:url.searchParams.get('kind')});
-        for(const event of page.events)controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));
-        if(page.nextCursor!==null)after=Number(page.nextCursor);
+      const drain=async()=>{
+        if(draining){changed=true;return;}
+        draining=true;
+        try{
+          for(;;){
+            if(closed)return;changed=false;
+            const page=this.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),{kind:url.searchParams.get('kind'),limit:STREAM_PAGE_EVENTS});
+            if(page.events.length)controller.enqueue(new TextEncoder().encode(page.events.map(event=>`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`).join('')));
+            if(page.nextCursor!==null)after=Number(page.nextCursor);
+            if(!page.hasMore&&!changed)break;
+            if((controller.desiredSize??1)<=0)await new Promise<void>(resolve=>{waiting=resolve;});
+            else await new Promise<void>(resolve=>setImmediate(resolve));
+          }
+          if(!caughtUp){caughtUp=true;controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
+        }catch(error){if(!closed)log.warn({event:'session_event_stream_failed',error:String(error)},'Session event stream page failed');stop();}
+        finally{draining=false;}
       };
-      dispose=()=>{if(closed)return false;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);return true;};
+      dispose=()=>{if(closed)return false;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);readable();return true;};
       // A consumer that cancelled has already closed the controller, so only an owner-side end closes it here.
       const stop=()=>{if(dispose())try{controller.close();}catch{}};
-      detach=observeExecutionChanges(flush);this.openStreams.add(stop);request.signal.addEventListener('abort',stop,{once:true});
-      if(request.signal.aborted)stop();else {flush();controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
-    },cancel:()=>dispose()});
+      detach=observeExecutionChanges(()=>void drain());this.openStreams.add(stop);request.signal.addEventListener('abort',stop,{once:true});
+      if(request.signal.aborted)stop();else void drain();
+    },pull:()=>readable(),cancel:()=>dispose()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});
   }
   /**
