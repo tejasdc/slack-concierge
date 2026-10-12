@@ -32,6 +32,10 @@ export const REMINDERS_SINCE_MS = 1790138700000; // 2026-09-23T04:45:00Z
 export const STILL_WAITING_AFTER_MS = 15 * 60_000;
 export const STILL_WAITING_MINUTES = STILL_WAITING_AFTER_MS / 60_000;
 
+/** Human thread replies get a prompt answer while the recipient continues its work. */
+export const PROMPT_ANSWER_REMINDER_MS = 2 * 60_000;
+export const PROMPT_ANSWER_OVERDUE_MS = 3 * 60_000;
+
 /** True while a Concierge update is draining: work held only by it is waiting, not stalled. */
 export function updateDraining(): boolean {
   return !!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();

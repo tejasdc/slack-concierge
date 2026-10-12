@@ -18,7 +18,7 @@ import { log } from './log';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel } from './session-notices';
@@ -62,6 +62,8 @@ type RequestRow = {
     result_json: string | null;
     due_at_ms: number;
     overdue_at_ms: number | null;
+    prompt_reminded_at_ms: number | null;
+    prompt_answered_at_ms: number | null;
     reminded_at_ms: number | null;
     reminded_via: string | null;
     stalled_at_ms: number | null;
@@ -1093,14 +1095,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
     }
     /**
      * His reply inside an Inbox thread, carried to the agent working on it as a request rather than
-     * as a bare message: it closes only by that agent's own `sessions reply`, queues behind a shared
-     * agent's current run instead of steering into it, and comes back attributed to the agent. The
+     * as a bare message: it closes only by that agent's own `sessions reply`, joins the shared
+     * agent's current run, and comes back attributed to the agent. The
      * Inbox router is not woken: each reply is posted into the thread as the agent's words
      * (`postForwardedReply`). Design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md;
      * review by concierge:3756, which ruled out inferring the answer from the agent's closing text.
      */
     forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const origin=getAcceptedSessionInput(input.inputId)?.origin==='agent'?'agent':'human';
         const actionId=`forward:${input.inputId}`;
         const existing=db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null;
         if(existing)return existing.request_id;
@@ -1119,7 +1122,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             if(this.forwarding.has(id))return id;
             this.forwarding.add(id);
             void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
-                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,input.target.topicId,input.inputId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId}})
+                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin,input.target.topicId,input.inputId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin}})
               .then(receipt=>{
                 if(receipt.status==='queued_offline')db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=?")
                     .run(JSON.stringify({code:'PEER_ASLEEP',message:`Queued until ${peer} wakes; the agent gets it the moment the Mac is back.`,clearsAt:null,automaticRetry:true}),input.inputId);
@@ -1140,14 +1143,14 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
-        const firstInput={text:forwardedReplyFraming(id,input.text,input.target.topicId,input.inputId),...(attachments.length?{attachments}:{})};
-        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},...(attachments.length?{attachments}:{})});
+        const firstInput={text:forwardedReplyFraming(id,input.text,origin,input.target.topicId,input.inputId),...(attachments.length?{attachments}:{})};
+        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},promptAnswer:true,...(attachments.length?{attachments}:{})});
         db.transaction(()=>{
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target.id,null,null,payload,hash(payload),now+STILL_WAITING_AFTER_MS,now,input.inputId,`request:${id}`,input.target.root);
+                .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target.id,null,null,payload,hash(payload),now+PROMPT_ANSWER_REMINDER_MS,now,input.inputId,`request:${id}`,input.target.root);
             retainSessionInput({id:`request:${id}`,sessionId:target.id,scope:`session:${input.inputId}`,actionId:`request:${id}`,kind:'input',origin:'agent',payload:firstInput,sourceInputId:input.inputId,requestId:id});
-            const operation=retainSessionInput({sessionId:input.inbox.id,scope:`communication:${input.inputId}`,actionId,kind:'request',origin:'human',
+            const operation=retainSessionInput({sessionId:input.inbox.id,scope:`communication:${input.inputId}`,actionId,kind:'request',origin,
                 payload:{text:input.text,sourceInputId:input.inputId,targetSessionId:`concierge:${target.id}`,targetAddress:address,requestedEffect:'work',thread:input.target.root,forwardedReply:true}});
             recordSessionEvent({eventId:`request:${id}`,sessionId:input.inbox.id,inputId:operation.input.id,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${target.id}`}});
         })();
@@ -1215,6 +1218,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         request_id: string;
         text: string;
         final: boolean;
+        answers_question?: boolean;
         workDisposition?: WorkDisposition;
         evidence?:unknown[];
         attachments?:string[];
@@ -1280,7 +1284,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,
-                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{})});
+                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1297,7 +1301,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                     : [];
                 const attachments = retained && [...(input.attachments ?? []), ...retained];
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
-                    || payload.workDisposition !== input.workDisposition
+                    || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || !attachments
                     || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
@@ -1313,7 +1317,10 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if (typeof input.final !== 'boolean')
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
-        const requestedEffect = JSON.parse(request.payload_json).requestedEffect;
+        const requestPayload=JSON.parse(request.payload_json);
+        const requestedEffect = requestPayload.requestedEffect;
+        if(input.answers_question && (input.final || !requestPayload.promptAnswer || !input.text.trim()))
+            throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
         if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
             || !['completed','failed','needs_decision'].includes(input.workDisposition)))
             throw new Error('A work disposition requires a final reply to a work request.');
@@ -1339,6 +1346,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(input.summary?{summary:input.summary}:{}),
+            ...(input.answers_question?{answersQuestion:true}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
             ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}) };
@@ -1362,6 +1370,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             if (input.final && inferred)
                 db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
+            if(requestPayload.promptAnswer&&(input.final||input.answers_question))
+                db.query('UPDATE session_communication_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
+                    .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,request.request_id);
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
                     payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
@@ -1697,6 +1708,16 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
+        if(event.kind==='overdue'&&(declared.promptAnswerOverdue?request.prompt_answered_at_ms!==null:!!request.outcome)&&!event.accepted_input_id){
+            db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
+        if(declared.promptAnswerOverdue&&request.source_input_id&&getAcceptedSessionInput(request.source_input_id)?.origin==='human'){
+            const question=String(JSON.parse(request.payload_json).text??'');
+            this.dependencies.owner!.admit({sessionId:request.source_session_id,inputId:`question-overdue:${request.request_id}`,
+                origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
+                text:`A question Tejas asked in Inbox thread ${request.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent was reminded. Request ${request.request_id}: ${question}\nCheck the request's current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread; do not wait for the agent's work to finish.`});
+        }
         // An agent's answer for a thread goes into that thread as the agent's words, never as a
         // return that would start a router turn.
         const thread=this.threadAnswer(request,event,declared);
@@ -1713,10 +1734,6 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         // A stall or overdue notice for a request that has since been answered is never delivered:
         // on 2026-10-08 the coordinator read two "stalled" notices after the answers had arrived.
         // Settlement is checked here, at delivery, not only when the notice was written.
-        if (event.kind === 'overdue' && this.row(request.request_id).outcome && !event.accepted_input_id) {
-            db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
-            return;
-        }
         // The answer withdraws any notice about this request that is admitted but not yet taken up.
         if (event.kind === 'final')
             for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
@@ -1833,6 +1850,26 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
     private inspectOverdueRequest(request: RequestRow) {
         const now = this.now();
             if (!request.source_input_id || !request.target_input_id) return;
+            if(JSON.parse(request.payload_json).promptAnswer && request.prompt_answered_at_ms===null) {
+                const asker=getAcceptedSessionInput(request.source_input_id)?.origin==='agent'?'The marked agent test':'Tejas';
+                db.transaction(()=>{
+                    const current=this.row(request.request_id);
+                    if(current.outcome||current.prompt_answered_at_ms!==null||current.overdue_at_ms!==null)return;
+                    if(current.prompt_reminded_at_ms===null) {
+                        // One reminder joins the recipient's current run. The retained input ID
+                        // makes a restart or reconciliation harmless.
+                        this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
+                            origin:'service',sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
+                            text:`${asker} is still waiting for an answer to the question in request ${current.request_id}. Answer in the Inbox thread now with sessions reply ${current.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
+                        db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
+                            .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
+                    } else {
+                        this.event(current,'overdue',{text:`No answer to this ${asker==='Tejas'?'question':'marked test question'} arrived within three minutes. The agent has been reminded${asker==='Tejas'?'; the Inbox router has been told':''}. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
+                        db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
+                    }
+                })();
+                return;
+            }
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
             // Work in progress under a live owner is not a stall. Wait another interval rather

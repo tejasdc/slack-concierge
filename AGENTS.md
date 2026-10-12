@@ -20,6 +20,10 @@ See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
 
+Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
+answer in that thread, with a two-minute reminder and three-minute overdue escalation;
+see [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
+
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
 That repair credits the exact covered taste-mining request to the retained Codex result
