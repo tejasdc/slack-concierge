@@ -1,5 +1,13 @@
 # Storage work attribution
 
+Slow Inbox topic mutations include a content-free breakdown of input retention: payload
+serialization, existing-action lookup, cancellation lookup, insertion, readback and the
+inner transaction boundary. The outer topic transaction's remaining time is reported
+separately. These timings are emitted only when a topic mutation exceeds 250 ms, so a
+slow writer-lock wait or disk write can be distinguished from topic computation without
+logging the action payload or SQL values. A slow inner transaction does not by itself
+identify a competing writer; compare the phase with owner loop lag and ledger worker logs.
+
 ## Startup transaction ownership
 
 `state.ts` creates the base ledger schema in one immediate transaction and applies

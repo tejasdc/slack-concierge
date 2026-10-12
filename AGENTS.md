@@ -201,6 +201,7 @@ authorization or a change to the default rapid-iteration policy.
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
+  Slow Inbox topic mutations break input retention into bounded, content-free storage phases there.
   Ledger startup batches base schema and legacy upgrades; presentation worker schema setup
   is one atomic transaction with startup timing, without weakening durability;
   see [startup transaction ownership](docs/architecture/STORAGE-OBSERVATION.md#startup-transaction-ownership).
