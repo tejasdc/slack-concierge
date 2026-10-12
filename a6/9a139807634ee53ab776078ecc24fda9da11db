@@ -1,0 +1,1 @@
+Slow Inbox topic actions now record which control ran and where its time went, helping trace pauses.
