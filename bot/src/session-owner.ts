@@ -1,4 +1,5 @@
 import {ownerRequestLabel} from './owner-request-label';
+import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
 import {basename,dirname,join,relative,sep} from 'node:path';
@@ -735,7 +736,7 @@ export class SessionOwner {
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
       account:session.provider_id==='claude-code'?meta.claudeAccount??null:null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
-      archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,space:sessionSpace(session),
+      archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,space:sessionSpace(session),touch:sessionTouch(db,session.id),
       // What is still open, from the owner's own record. A client that rebuilt this from
       // attention events showed every question the session ever asked, because a later
       // declaration settles earlier ones without erasing their events (Tejas, 2026-09-20).
