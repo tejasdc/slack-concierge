@@ -3,6 +3,7 @@ import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionByI
 import {resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
+import {notificationRequest} from './session-notification-request';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 
 export type AcceptedSessionInput = {
@@ -208,10 +209,15 @@ export function recordSessionInputAttention(inputId:string) {
 export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string}) {
  return db.transaction(()=>{
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
-  const payload=stablePayload(input.payload);
+  const rawPayload=stablePayload(input.payload);
+  const value=JSON.parse(rawPayload);
+  const words=value?.firstInput?.text??value?.text;
+  const mark=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
+    ?notificationRequest(typeof words==='string'?words:''):null;
+  const payload=stablePayload(mark&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value);
   const old=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId) as AcceptedSessionInput|null;
   if (old) {
-    if (old.session_id!==input.sessionId || stablePayload(JSON.parse(old.payload_json))!==payload || old.origin!==input.origin || old.kind!==input.kind
+    if (old.session_id!==input.sessionId || ![rawPayload,payload].includes(stablePayload(JSON.parse(old.payload_json))) || old.origin!==input.origin || old.kind!==input.kind
       || old.source_input_id!==(input.sourceInputId??null) || old.source_run_id!==(input.sourceRunId??null) || old.request_id!==(input.requestId??null)) throw new Error('Idempotency conflict: accepted action payload changed.');
     return {input:old,duplicate:true};
   }
