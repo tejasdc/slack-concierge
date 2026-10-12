@@ -87,11 +87,14 @@ function schemaChanges(): string[] {
  * day of rollbacks at the usual pace of releases for 15 GB.
  */
 const AUTOMATIC_COPIES_KEPT = 8;
+// And never more than 16 GB of them however large the ledger grows (2.9 GB on 2026-10-12, so five
+// copies today): the root disk's cleanup holds a 50 GB floor and cannot remove these itself.
+const AUTOMATIC_COPY_BYTES = 16 * 1024 ** 3;
 // Failed or legacy unverified names cannot evict a proven recovery copy. Prune only after
 // the replacement is verified and durably published, including when later release checks fail.
 function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
-  return pruneVerifiedBackups(dirname(backupPath), keep);
+  return pruneVerifiedBackups(dirname(backupPath), keep, AUTOMATIC_COPY_BYTES);
 }
 
 if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
