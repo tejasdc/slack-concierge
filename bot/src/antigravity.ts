@@ -247,6 +247,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       terminalConfirmed: true, assistantOutput: true, toolsUsed: [...toolsUsed] });
   }
   const fullText = terminal.response ?? "";
+  // A bounded historical run returned SUCCESS at its time limit with no reply after
+  // editing files. Those effects cannot be summarized as a completed turn.
+  if (!fullText.trim()) {
+    throw new ProviderDispatchError({ message: "Google ended without a final reply, so the work outcome is unconfirmed.",
+      terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId,
+      toolsUsed: [...toolsUsed] });
+  }
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker(fullText);
   const responseId = Number.isSafeInteger(terminal.num_turns) && terminal.num_turns! > 0
     ? String(terminal.num_turns) : createHash("sha256").update(fullText).digest("hex").slice(0, 16);

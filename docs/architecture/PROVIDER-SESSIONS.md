@@ -27,7 +27,9 @@ Google conversation without using the CLI's mutable most-recent conversation.
 Only a `SUCCESS` result with the bound ID completes work. Stop sends `SIGINT`
 through the durable host; a result that confirms cancellation or interruption
 closes it as stopped. A success that raced Stop remains a success, and an exit
-without a final result stays unconfirmed. A result that changes
+without a final result stays unconfirmed. A `SUCCESS` result with no final reply
+also stays unconfirmed: a bounded historical replay produced exactly that after
+making an isolated source edit and reaching its time limit. A result that changes
 the ID or omits it fails closed, because the next turn would otherwise run in
 the wrong or a fresh conversation.
 Headless work requests the CLI's unattended permission mode and verifies the
