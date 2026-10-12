@@ -8,6 +8,9 @@ The owner refuses an agent-authored source, a source in another topic, or a decl
 without one source. The Inbox router declares questions in captured messages when it
 routes them, with a separate work request for each specific question. A worker receiving a directly forwarded thread reply can declare the
 question in that reply using the topic and source identity in its request framing.
+The displayed asked time and sort time come from that original human message, even when
+the Inbox declares the question later. The declaration's own write time remains an
+internal update time.
 
 The answer is not copied into the question. The prepared reader resolves answer-bearing
 Inbox posts for the linked request and source messages. An explicitly marked partial is
