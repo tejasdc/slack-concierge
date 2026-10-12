@@ -1,0 +1,1 @@
+The update check now includes conversation interactions in its temporary data, so it can check a release without stopping on missing records.
