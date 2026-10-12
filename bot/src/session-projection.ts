@@ -22,7 +22,21 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   // Recorded once, when first seen: an adopted run replays its earlier output, and attribution may
   // have moved since (a follow-up acknowledged in between), which must not rewrite or refuse it.
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`message:${turnId}:${digest}`))return;
+  // The same holds when only the run's own labels differ: an adopting run can know the model or
+  // effort differently from the run that first saw the message, and treating that as a new
+  // version re-recorded every message of a long turn at each restart (2,726 writes in one
+  // 12.5 s freeze, 2026-10-12) and could put an older provider state back on top.
+  const recorded=messageContent(message);
+  for(const {payload_json} of db.query(`SELECT payload_json FROM session_owner_events
+    WHERE turn_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=?`).all(turnId,message.id) as {payload_json:string}[])
+    if(messageContent(JSON.parse(payload_json).message)===recorded)return;
   recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:steered?.accepted_input_id??turn.accepted_input_id,turnId,kind:'message',payload});
+}
+
+/** What the provider said, without the labels the observing run attaches. */
+function messageContent(message:ProviderHistoryMessage) {
+  const {model:_model,modelSource:_modelSource,reasoningEffort:_effort,reasoningEffortSource:_effortSource,...content}=message as any;
+  return JSON.stringify(Object.keys(content).sort().map(key=>[key,content[key]]));
 }
 
 /** Projects existing turn facts; it neither admits input nor executes work. */

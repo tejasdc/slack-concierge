@@ -226,6 +226,8 @@ function codexTransport(input: { executable?: string }) {
 
 const DEFAULT_CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS = 30 * 60_000;
+/** Items of a recovered turn recorded between yields to the owner's loop. */
+const RECOVERED_ITEMS_PER_STEP = 50;
 const DEFAULT_CODEX_SHUTDOWN_GRACE_MS = 2_000;
 
 async function runCodexControlRequest(input: {
@@ -1213,11 +1215,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const toolName = toolNameFromItem(item);
     if (toolName) toolsUsed.push(toolName);
   };
-  const settleFromTurn = (turn: any) => {
+  const settleFromTurn = (turn: any, itemsRecorded = false) => {
     if (turnSettled) return;
     if (typeof turn?.id === "string") activeTurnId = turn.id;
     reportTurnStarted();
-    for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
+    if (!itemsRecorded) for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
     if (!turn?.status || turn.status === "inProgress") return;
     durationMs = codexTurnDurationMs(turn);
     reportProviderTerminal();
@@ -1382,7 +1384,15 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }
         if (typeof turn.id === "string") acceptActiveTurnId(turn.id);
         const stillRunning = !turn?.status || turn.status === "inProgress";
-        settleFromTurn(turn);
+        // A recovered turn's history can hold thousands of items, each recorded in the ledger;
+        // walking them in one go held the owner for 12.5 s after a restart (2026-10-12).
+        const items = Array.isArray(turn?.items) ? turn.items : [];
+        for (let start = 0; start < items.length; start += RECOVERED_ITEMS_PER_STEP) {
+          for (const item of items.slice(start, start + RECOVERED_ITEMS_PER_STEP)) recordCompletedItem(item);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (turnSettled || controllerClosed) return;
+        }
+        settleFromTurn(turn, true);
         if (input.adoptTurn && stillRunning && !adoptedLiveReported) { adoptedLiveReported = true; input.onAdoptedLive?.(); }
         if (turnSettled) return;
         if (recoveryMustInterrupt && activeTurnId) {
