@@ -742,6 +742,8 @@ authorization or a change to the default rapid-iteration policy.
   what is about to be applied; commit subjects are shown only when a change has no sentence. A note can be added
   to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
   <commit>` followed by `git push origin refs/notes/update`, and that note wins.
+  Published release history uses these same sentences for each change inside a pull-request
+  merge; the merge itself is only delivery metadata. See [release history](docs/contracts/session-owner-v1.md).
   `release-history.ts` reads them, never remembering one, so a note written or corrected while
   an update waits reaches him on the next read; the wait payload carries them. **Write the note
   when you commit.** The `post-commit` hook says so, to you, while you are still there; it warns
