@@ -46,6 +46,8 @@ Production native startup does not wait for the retired Slack socket; see
 Deployment backs up online, then applies additive schema only after its normal drain
 stops the coordinator; surviving agent hosts are adopted on startup. The same deployment runbook owns this boundary.
 Deployment helpers never initialize live schema; candidate checks cannot access live state.
+The candidate presentation check emits bounded phase markers to stderr so the installed
+controller's failure record names the last completed step; see [deployment](docs/runbooks/DEPLOYMENT.md).
 Backups publish only after verification and fsync, and retention counts matching verification
 records. The [migration and backup boundary](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups)
 owns the executable gates and their root-operator limits.
