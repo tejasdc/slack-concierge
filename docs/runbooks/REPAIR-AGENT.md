@@ -4,7 +4,8 @@ The repair agent is one standing Concierge session ("Repair agent", project slac
 marked `repairAgent` in its metadata). Health notices reach it instead of Tejas: a service
 crash or stop (systemd failure hooks), a frozen owner (`owner-responsiveness.ts`), work that
 stopped moving (`stuck-work-watch.ts`), a dependency that stopped retrying
-(`retry-breaker-notice.ts`), and the outside monitor's incidents and investigation reports
+(`retry-breaker-notice.ts`), an autonomous Concierge update repair that parked
+(`deployment-state.ts`), and the outside monitor's incidents and investigation reports
 (remote-box `work-flow-supervisor.py`). They are recorded in the ledger's `repair_notices`
 table by whoever saw them and delivered here once a minute, all pending ones in one input.
 
@@ -29,6 +30,13 @@ and found something only he can do.
    must be copied from one of his own messages in this machine's ledger from the last thirty
    days; a notice's words are refused (2026-10-10, on the Mac). When none of his messages fits,
    declare `response` with the same plain words instead: it still reaches his Needs attention.
+
+For a parked update, read its retained incident outcome and the exact deploy and
+repair journals. The root repair service has already tried; do not replay that
+incident or run a second deployment owner. Check whether a later release installed
+the correction before changing source. A parked run is an agent investigation,
+not proof that Tejas must intervene. If only his action can unblock it, the
+ordinary `needs_you` or `response` path supplies one plain action.
 
 ## An expired Claude or Codex sign-in (`claude_signin_expired`, `codex_signin_expired`)
 

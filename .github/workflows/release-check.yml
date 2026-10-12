@@ -1,0 +1,31 @@
+name: Concierge release check
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-check:
+    name: Release check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install frozen dependencies
+        working-directory: bot
+        run: bun install --frozen-lockfile
+      - name: Build and check candidate
+        working-directory: bot
+        env:
+          CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
+        run: bun run build

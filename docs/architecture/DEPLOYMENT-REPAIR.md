@@ -233,7 +233,11 @@ no code push could help because the check runs inside the control. Recovery used
    the same immutable file set during normal promotion. Its content now describes
    repair outcomes, not review verdicts.
 7. The supervisor fetches `origin/main`, proves the recorded base is unchanged,
-   and performs a non-force push. If origin moved, the same repair session may
+   and pushes the exact repair commit to a commit-specific topic branch. It waits
+   for GitHub Actions' required `Release check` on that SHA, then refetches and
+   performs a non-force push to `main` only if the recorded base is still current.
+   A failed check parks with its exact result for the standing repair agent; it
+   cannot enter the update branch. If origin moved, the same repair session may
    rebase within the existing incident budget. Retry records the explicit human
    no-test/no-review policy and `review_performed: false`, never a fabricated
    `SHIP`. An active historical reviewed incident requires operator resolution.

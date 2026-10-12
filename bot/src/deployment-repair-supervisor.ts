@@ -191,7 +191,7 @@ export class DeploymentRepairSupervisor {
         continue;
       }
 
-      const integration = this.integrateRepair(incident);
+      const integration = await this.integrateRepair(incident);
       if (integration === "origin_moved") {
         const newBase = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
         incident = recordDeploymentRepairWorkspace(
@@ -493,7 +493,7 @@ export class DeploymentRepairSupervisor {
     return this.cleanRepairCommit(incident, result.commit!);
   }
 
-  private integrateRepair(incident: DeploymentRepairIncidentRow): "pushed" | "origin_moved" {
+  private async integrateRepair(incident: DeploymentRepairIncidentRow): Promise<"pushed" | "origin_moved"> {
     this.assertOwner();
     const fetched = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
     if (fetched.exitCode !== 0) throw new Error(`Could not refresh origin/main: ${commandText(fetched)}`);
@@ -502,12 +502,49 @@ export class DeploymentRepairSupervisor {
     if (head !== incident.repair_commit) throw new RepairAttemptStoppedError("Committed repair tree changed before integration.");
     if (originMain === head) return "pushed";
     if (originMain !== incident.base_commit) return "origin_moved";
+    const branch = `repair-deployment-${incident.id}-${head.slice(0, 12)}`;
+    const proposed = this.services.command(
+      ["git", "push", "origin", `${head}:refs/heads/${branch}`],
+      { cwd: incident.worktree_path! },
+    );
+    if (proposed.exitCode !== 0) throw new Error(`Could not submit repair for release check: ${commandText(proposed)}`);
+    await this.waitForReleaseCheck(head);
+    this.assertOwner();
+    const refreshed = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
+    if (refreshed.exitCode !== 0) throw new Error(`Could not refresh origin/main after release check: ${commandText(refreshed)}`);
+    if (this.git(["rev-parse", "origin/main"], this.repositoryRoot) !== incident.base_commit) return "origin_moved";
     const pushed = this.services.command(
       ["git", "push", "origin", `${head}:refs/heads/main`],
       { cwd: incident.worktree_path! },
     );
     if (pushed.exitCode !== 0) throw new Error(`Non-force repair integration failed: ${commandText(pushed)}`);
     return "pushed";
+  }
+
+  private async waitForReleaseCheck(commit: string): Promise<void> {
+    const deadline = Date.now() + 20 * 60_000;
+    while (Date.now() < deadline) {
+      this.assertOwner();
+      const result = this.services.command(
+        ["gh", "api", `repos/tejasdc/slack-concierge/commits/${commit}/check-runs`],
+        { cwd: this.repositoryRoot },
+      );
+      if (result.exitCode !== 0) throw new Error(`Could not read repair release check: ${commandText(result)}`);
+      const checks = JSON.parse(result.stdout) as { check_runs?: Array<{
+        name: string; status: string; conclusion: string | null; started_at: string | null;
+        details_url: string; app?: { id: number };
+      }> };
+      const latest = checks.check_runs?.filter(check => check.name === "Release check" && check.app?.id === 15368)
+        .sort((left, right) => (right.started_at ?? "").localeCompare(left.started_at ?? ""))[0];
+      if (latest?.status === "completed") {
+        if (latest.conclusion === "success") return;
+        throw new RepairAttemptStoppedError(
+          `The repair commit ${commit} failed GitHub's required release check (${latest.conclusion}). Inspect ${latest.details_url} and correct that commit before integration.`,
+        );
+      }
+      await Bun.sleep(10_000);
+    }
+    throw new RepairAttemptStoppedError(`GitHub did not finish the required release check for repair commit ${commit} within twenty minutes.`);
   }
 
   private git(args: string[], cwd: string) {

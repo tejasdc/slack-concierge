@@ -1,5 +1,5 @@
 /** Exercises the installer's generated machine wrapper without touching machine settings. */
-import {mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -87,7 +87,11 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   check(/CONCIERGE_STATE_DIR=\/tmp\/concierge-private-code-/.test(privateEnv),'private command did not replace inherited live state');
   const canonical=join(homedir(),'.local/state/'+'concierge');
   const probe=`const fs=require('node:fs');try{fs.accessSync(${JSON.stringify(canonical)},fs.constants.R_OK|fs.constants.X_OK);process.exit(11)}catch(error){if(error.code==='EACCES')console.log('hidden');else throw error}`;
-  check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could access canonical live state');
+  // GitHub's clean worker has no production ledger to hide. The installed builder on the
+  // service host still proves the mount boundary against its existing canonical directory.
+  if(existsSync(canonical))
+    check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could access canonical live state');
+  else check(process.env.GITHUB_ACTIONS==='true','canonical live state missing outside the clean CI worker');
   const raw='sqlite3 /root/.local/state/'+'concierge/state.db "'+'.back'+'up /tmp/raw.db"';
   check(execute(raw).permissionDecision==='deny','current machine policy did not deny raw live copy');
   const marked=Bun.spawnSync([bun,resolve(import.meta.dir,'history-guard.ts')],{
