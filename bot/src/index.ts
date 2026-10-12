@@ -10,7 +10,7 @@ import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
-import { claimQueuedTurnWithSavedWork } from "./saved-work";
+import { prepareSavedWorkForClaims } from "./saved-work";
 import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -173,6 +173,7 @@ import {
   type SlackInputRecoveryNoticeRow,
   acquireSessionTurn,
   nextQueuedTurnAttemptMs,
+  claimNextQueuedTurn,
   resolveForkParentSession,
   resolveComparisonSourceSession,
   requestSlackThreadStatusProjection,
@@ -2478,7 +2479,8 @@ async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
 function startSessionTurnQueue() {
   if (sessionTurnQueue) return;
   sessionTurnQueue = new SessionTurnQueueCoordinator({
-    claim: () => claimQueuedTurnWithSavedWork(instanceId,activeTurnDispatch.activeSessions),
+    beforeClaims: prepareSavedWorkForClaims,
+    claim: () => claimNextQueuedTurn(instanceId,Date.now(),activeTurnDispatch.activeSessions),
     run: runPersistedQueuedTurn,
     shouldStop: () => draining,
     nextAttemptMs: () => nextQueuedTurnAttemptMs(),

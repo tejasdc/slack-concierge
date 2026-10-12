@@ -41,6 +41,10 @@ which keeps its original input under the separate sign-in/usage hold rules.
 - `bot/src/index.ts` owns Slack ingress, admission, command and shortcut registration, and routing.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
+
+### Queue wake bounds
+
+Each runtime runs the saved-work clock once at the start of a queue wake pass, before claiming. It places due repeating firings and settles expired schedules before any claim. The coordinator admits at most four claims per event-loop slice, then continues on a new event-loop turn. Wakes arriving during a drain are retained; after the current claim pass reaches an empty queue, another pass prepares the clock again. Stopping the coordinator cancels its pending continuation. The SQLite transaction still owns each claim and its ordering.
 - Both runtime compositions sweep locally owned running turns without an execution record; active queue and dispatch work is excluded. A proven never-admitted turn returns to its original FIFO, or stays cancelled if Stop was requested. Possible effects prevent replay and leave an interrupted turn for reconciliation.
 - `bot/src/turn-dispatch-seams.ts` owns the shared active-turn/steering registry, restart ordering seam, and forced-fresh comparison dispatch contract.
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.

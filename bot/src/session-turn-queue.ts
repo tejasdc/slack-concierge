@@ -1,4 +1,6 @@
 export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: number }> {
+  /** Clock-driven queue maintenance runs once before each wake pass, not before each claim. */
+  beforeClaims?(): void;
   claim(): TClaim | null;
   run(claim: TClaim): Promise<unknown>;
   shouldStop(): boolean;
@@ -16,11 +18,14 @@ export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: nu
 }
 
 export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
+  private static readonly CLAIMS_PER_SLICE = 4;
   private readonly activeTurnIds = new Set<number>();
   private pumping = false;
   private wakeRequested = false;
+  private needsPreparation = true;
   private stopped = false;
   private deadline: ReturnType<typeof setTimeout> | null = null;
+  private continuation: ReturnType<typeof setImmediate> | null = null;
   private claimFailures = 0;
 
   constructor(private readonly options: SessionTurnQueueCoordinatorOptions<TClaim>) {}
@@ -35,36 +40,65 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
     }
 
     this.pumping = true;
+    this.needsPreparation = true;
+    this.pump();
+  }
+
+  private pump() {
     try {
+      let claimedInSlice = 0;
       do {
-        this.wakeRequested = false;
+        if (this.needsPreparation) {
+          this.wakeRequested = false;
+          this.needsPreparation = false;
+          try {
+            this.options.beforeClaims?.();
+          } catch (error) {
+            this.claimFailures += 1;
+            this.options.onClaimError?.(error, this.claimFailures);
+            break;
+          }
+        }
         while (!this.stopped && !this.options.shouldStop()) {
           const claim = this.claimOrNull();
           if (!claim) break;
+          claimedInSlice += 1;
           if (this.activeTurnIds.has(claim.turn_id)) {
             this.options.onError(claim, new Error(`Queued turn ${claim.turn_id} was claimed twice locally.`));
-            continue;
+          } else {
+            this.activeTurnIds.add(claim.turn_id);
+            let execution: Promise<unknown>;
+            try {
+              execution = this.options.run(claim);
+            } catch (error) {
+              execution = Promise.reject(error);
+            }
+            void execution
+              .catch((error) => this.options.onError(claim, error))
+              .finally(() => {
+                this.activeTurnIds.delete(claim.turn_id);
+                this.wake();
+              });
           }
-
-          this.activeTurnIds.add(claim.turn_id);
-          let execution: Promise<unknown>;
-          try {
-            execution = this.options.run(claim);
-          } catch (error) {
-            execution = Promise.reject(error);
-          }
-          void execution
-            .catch((error) => this.options.onError(claim, error))
-            .finally(() => {
-              this.activeTurnIds.delete(claim.turn_id);
-              this.wake();
+          if (claimedInSlice >= SessionTurnQueueCoordinator.CLAIMS_PER_SLICE) {
+            this.continuation = setImmediate(() => {
+              this.continuation = null;
+              if (this.stopped || this.options.shouldStop()) this.finishPump();
+              else this.pump();
             });
+            return;
+          }
         }
-      } while (this.wakeRequested && !this.stopped && !this.options.shouldStop());
+        if (this.wakeRequested && !this.stopped && !this.options.shouldStop()) this.needsPreparation = true;
+      } while (this.needsPreparation);
     } finally {
-      this.pumping = false;
-      this.armDeadline();
+      if (!this.continuation) this.finishPump();
     }
+  }
+
+  private finishPump() {
+    this.pumping = false;
+    this.armDeadline();
   }
 
   /**
@@ -120,6 +154,11 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
   stop() {
     this.stopped = true;
     this.wakeRequested = false;
+    if (this.continuation) {
+      clearImmediate(this.continuation);
+      this.continuation = null;
+      this.pumping = false;
+    }
     if (this.deadline) {
       clearTimeout(this.deadline);
       this.deadline = null;
