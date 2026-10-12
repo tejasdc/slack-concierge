@@ -211,7 +211,7 @@ authorization or a change to the default rapid-iteration policy.
   The same catalogue document owns the release gates.
 Historical session-search routing evidence runs in the sealed read-only search process, and
 restart-time Inbox entry-index warm-up yields on elapsed time. Search answers are bounded
-previews with phase timing for slow calls; see
+previews with phase timing for slow calls and a compact exact archive proof; see
 [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
   That gate also exercises actual topic creation, mutation and worker restart through a
   prepared checkpoint with nonempty history; static reader fixtures alone are insufficient.

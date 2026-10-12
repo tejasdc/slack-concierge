@@ -394,6 +394,21 @@ export class SessionCapabilityClient {
     return value;
   }
 
+  async sourceSearchProof(input: SourceRef & {eventId:string}) {
+    let value:SourceRef&{retainedEventId:string};
+    try{value=await this.post('/sources/history/proof',input);}
+    catch(error){
+      // A peer still serving the previous source contract can prove this through history.
+      if(error instanceof SessionCapabilityError&&error.status===404&&error.code==='CAPABILITY_HTTP_ERROR')
+        return this.sourceHistory({...input,cursor:null,limit:1});
+      throw error;
+    }
+    verify(isRecord(value)&&value.sourceId===input.sourceId&&value.sourceVersion===input.sourceVersion
+      &&value.branch===input.branch&&value.retainedEventId===input.eventId,
+      'Search proof changed its exact source, version, branch or event.');
+    return {kind:'search-proof',...value};
+  }
+
   async sourceHistoryMessage(input:SourceRef & {messageId:string}) {
     const value=await this.post<{message:CapabilityMessage}>('/sources/history/message',input);
     verify(isRecord(value)&&isRecord(value.message)&&value.message.id===input.messageId
