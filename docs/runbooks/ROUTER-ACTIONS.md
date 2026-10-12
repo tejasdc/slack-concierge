@@ -259,9 +259,9 @@ What reaches Tejas carries its reasons, and the owner refuses it otherwise:
 ```bash
 # A question: his exact words that started the work, and what they leave open.
 router-actions.sh sessions outcome needs_you <source-flags> --action-id A \
-  --his-words '<copied from his message>' --why-not-answered '<what only he can decide>' -- '<the question>'
+  --only-he-can ambiguous --his-words '<copied from his message>' --why-not-answered '<what only he can decide>' -- '<the question>'
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition needs_decision \
-  --his-words '<…>' --why-not-answered '<…>' -- '<the question>'
+  --summary '<one line>' --only-he-can ambiguous --his-words '<…>' --why-not-answered '<…>' -- '<the question>'
 # Completed work: what was exercised on the real system and what was seen, or why nothing could be.
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition completed \
   --checked '<what you ran live, and what you saw>' -- '<the answer>'
@@ -270,6 +270,20 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A --wor
 His words are checked against the message that started the work and his other messages of the
 last thirty days in this ledger; work that began on the other machine is taken as given. A
 session in a writing project (the messaging agent) cannot send `--requested-effect work`.
+
+### Approval required by a permanent decision
+
+An approval question uses the existing `needs_you` outcome or final `needs_decision` reply.
+It carries `--only-he-can approval`, the decision ID, a named action, his exact words, and why
+those words do not themselves approve the proposed action. For example, a change to disk
+priority uses `--decision-id machine-wide-resource-changes-need-his-approval` and
+`--approval-action disk-priority`. An action combines `processor`, `memory`, or `disk`
+with `priority`, `throttling`, `slots`, `limit`, or `quota`.
+The owner reads the installed decision record, requires it to be permanent and unsuperseded,
+and checks that its scope covers the named action. It also accepts his words from that record.
+An unsupported decision or action is refused; adding another permanent approval rule requires
+an owner-side scope check. Other permission, approval, and design questions stay refused
+[decision: act-then-tell] [decision: machine-wide-resource-changes-need-his-approval].
 
 To answer a thread of your own Inbox, post into it deliberately:
 
