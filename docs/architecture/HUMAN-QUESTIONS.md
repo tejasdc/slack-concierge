@@ -9,10 +9,13 @@ without one source. The Inbox router declares questions in captured messages whe
 routes them, with a separate work request for each specific question. A worker receiving a directly forwarded thread reply can declare the
 question in that reply using the topic and source identity in its request framing.
 
-The answer is not copied into the question. The prepared reader resolves the retained
-Inbox posts for the linked request and source messages. Partial and final worker replies
-therefore appear in order, with their complete message detail available. A partial is an
-answer as soon as it is posted. An unanswered question stays first in the `asked` page;
+The answer is not copied into the question. The prepared reader resolves answer-bearing
+Inbox posts for the linked request and source messages. An explicitly marked partial is
+an answer as soon as it is posted; progress-only partials do not settle the question.
+Completed final replies count as answers, including older replies made before the explicit
+answer marker was retained on posts. A stalled or decision-needed final does not silently
+turn the question into answered. Answer posts appear in order with their complete message
+detail available. An unanswered question stays first in the `asked` page;
 answered questions follow, each group newest first. The browser sends a follow-up as a
 normal addressed thread reply, then links the accepted human input to the same question.
 The owner verifies the source before appending it. Replies to that input join the item's
