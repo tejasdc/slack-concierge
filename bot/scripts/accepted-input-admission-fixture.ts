@@ -102,7 +102,8 @@ async function child() {
   forwardedReply:{inboxInputId:'fixture-source',topicId:'fixture-topic'}};
  db.exec("CREATE TRIGGER fixture_refuse_peer_turn BEFORE INSERT ON turns BEGIN SELECT RAISE(ABORT,'fixture peer turn insertion failed'); END");
  assert.throws(()=>peers.accept(peerBody),/fixture peer turn insertion failed/);
- assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,0);
+ assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,1,
+  'the accepted peer request keeps its durable live-delivery intent when dispatch fails');
  db.exec('DROP TRIGGER fixture_refuse_peer_turn');
  peers.accept(peerBody);
  peers.accept(peerBody);
@@ -111,7 +112,7 @@ async function child() {
  assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,1);
  assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE accepted_input_id=?').get(`request:${peerBody.requestId}`) as {n:number}).n,1);
  console.log(JSON.stringify({fixture:'accepted-input-admission',rollback:true,duplicateOneTurn:true,payloadConflict:true,unprovenOrphanHeld:true,recoveredOneTurn:true,
-  forwardingRollback:true,forwardingRecoveryOneRequest:true,peerForwardingAtomic:true,peerPayloadConflict:true}));
+  forwardingRollback:true,forwardingRecoveryOneRequest:true,peerForwardingRecoveryOneRequest:true,peerPayloadConflict:true}));
 }
 
 if(import.meta.main){

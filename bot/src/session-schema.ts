@@ -70,6 +70,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_communication_events','superseded_by_event_id','superseded_by_event_id TEXT');
       // The steps request-liveness.ts takes for a stranded request, each at most once.
       add('session_communication_requests','reminded_at_ms','reminded_at_ms INTEGER');
+      add('session_communication_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
+      add('session_communication_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
       // 'hook' when the end-of-turn hook sent the worker back inside its run; 'input' for a reminder turn.
       add('session_communication_requests','reminded_via','reminded_via TEXT');
@@ -465,6 +467,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
       add('session_peer_requests','delivery_json','delivery_json TEXT');
+      add('session_peer_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
+      add('session_peer_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       // Same supersession as session_communication_events: a peer recipient's late explicit final
       // replaces an inferred one and returns in its own right.
       add('session_peer_events','superseded_by_event_id','superseded_by_event_id TEXT');
@@ -472,6 +476,7 @@ export function initializeSessionOwnerSchema(db: Database) {
       // The worker's machine reminds and detects a stall (it owns the worker session); the origin
       // records the stalled notice it returned to the requester.
       add('session_peer_deliveries','reminded_at_ms','reminded_at_ms INTEGER');
+      add('session_peer_deliveries','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
       add('session_peer_deliveries','stalled_at_ms','stalled_at_ms INTEGER');
       add('session_peer_deliveries','stalled_reason','stalled_reason TEXT');
       add('session_peer_deliveries','reminded_via','reminded_via TEXT');

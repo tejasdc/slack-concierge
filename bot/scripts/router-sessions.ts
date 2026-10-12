@@ -31,7 +31,7 @@ Moves an idle session to another folder; its next turn resumes the same conversa
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--text-file F | -- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
-router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--partial [--answers-question] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous --his-words "<his exact words>" --why-not-answered "<what they leave open>"] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
@@ -398,6 +398,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const paths: string[] = [];
   const custody: string[] = [];
   let partial = false;
+  let answersQuestion = false;
   let allDone = false;
   let detach = false;
   let resurrect = false;
@@ -428,6 +429,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if (flag === "--partial" && operation === "reply") {
       if (partial) invalid("Repeated --partial option.");
       partial = true;
+      continue;
+    }
+    if (flag === "--answers-question" && operation === "reply") {
+      if (answersQuestion) invalid("Repeated --answers-question option.");
+      answersQuestion = true;
       continue;
     }
     if (flag === "--his-chat" && operation === "ask") {
@@ -618,6 +624,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
   if(also.length&&paths.length)invalid('--also sends one answer to several requests; attach files already retained with --attachment, or send the files with one request.');
   if(also.length&&partial)invalid('--also closes other requests with this one final answer; a partial reply names one request.');
+  if(answersQuestion&&!partial)invalid('--answers-question belongs to a partial reply; a final reply already answers the question.');
+  if(answersQuestion&&!message?.trim())invalid('--answers-question requires answer text.');
   if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
@@ -641,6 +649,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   return operation === "ask"
     ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(hisChat?{effort:`tejas:${effort??''}`}:effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),
+        ...(answersQuestion?{answers_question:true}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--checked','checked'],['--not-checked','not_checked'],['--hand-back','hand_back'],['--quiet-because','quiet_because']]
           .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(also.length?{also}:{}) } };

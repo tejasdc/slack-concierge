@@ -40,13 +40,17 @@ they share one query. It appears as an assistant message with `author.communicat
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
 An accepted executable message and its local queued turn commit together. A forwarded
-thread reply and its local agent request also commit together. Forwarding to another
+thread reply and its local agent request also commit together; the request attempts live
+delivery into a busy recipient and queues only when no live run can take it. A marked
+agent test reply uses the same entrance with agent authorship. Forwarding to another
 machine retains the exact chosen destination as an intent before the network call;
 retry and startup recovery reuse the original input and peer request identity. A lost
 peer answer leaves delivery explicitly unconfirmed until that identity is reconciled.
-For a forwarded reply, the recipient commits its own queued turn with the peer
-delivery record, so a repeated request identity observes the same turn.
-The private `accepted-input-admission-fixture.ts` exercises rollback on turn insertion,
+For a forwarded reply, the peer recipient retains the exact input with the delivery
+record, then attempts live delivery. A refusal before provider admission recovers that
+same input on retry or reconciliation and creates at most one queued turn.
+The private `accepted-input-admission-fixture.ts` exercises rollback for local forwarding,
+retained peer intent and exact-input recovery after turn insertion refusal,
 same-action duplicate and changed-payload refusal. Recovery acts only on explicit
 queue or forwarding intents with no turn, steering, request or source-run custody;
 an exact duplicate of an older unbound message without that proof gets an explicit

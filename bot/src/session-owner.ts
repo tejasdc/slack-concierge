@@ -1537,7 +1537,9 @@ export class SessionOwner {
     // A reply inside an Inbox thread goes to the agent working on it unless he addressed the
     // router; the owner decides from the thread's record and he can override in the To line
     // (design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md).
-    const forward=!agent&&input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
+    // Marked agent test inputs exercise the same thread forwarding path while retaining their
+    // agent authorship. Ordinary service/agent inputs enter through admit, not this human surface.
+    const forward=input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
     const retained=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
