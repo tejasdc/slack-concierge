@@ -97,6 +97,9 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
    WHERE session_id=? AND kind='post' AND (
     (?<>'' AND json_extract(payload_json,'$.requestId')=?)
     OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
+   ) AND (
+    json_extract(payload_json,'$.answersQuestion')=1
+    OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
    ) ORDER BY sequence`).all(context.sessionId,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify(followups)) as {event_id:string}[];
   return posts.flatMap(post=>{const message=messageById(context,post.event_id);
    return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});

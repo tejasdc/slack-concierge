@@ -196,7 +196,9 @@ export class SessionCapabilityError extends Error {
 
 export class ChatGptDispatchError extends ProviderDispatchError {
   constructor(readonly evidence: Extract<CapabilityEvidence, { kind: "failure" }>, binding: ChatGptBinding | null, turnId: string | null) {
-    super({ message: evidence.message, failureClass: "parked_terminal", terminalConfirmed: !evidence.uncertain,
+    super({ message: evidence.message,
+      failureClass: !evidence.uncertain && ["CHATGPT_NOT_SENT", "CHATGPT_SEND_FAILED"].includes(evidence.code) ? "retryable" : "parked_terminal",
+      terminalConfirmed: !evidence.uncertain,
       providerSessionId: binding?.sessionId, providerTurnId: turnId });
     this.name = "ChatGptDispatchError";
   }
@@ -458,7 +460,13 @@ export class SessionCapabilityClient {
     for (let pause = 2_000; ; pause = Math.min(pause * 2, 20_000)) {
       const outcome = await this.start(run, providerInput, signal).then(value => ({ value }), (error: unknown) => ({ error }));
       if ("value" in outcome) return outcome.value;
-      const ownerStarting = outcome.error instanceof SessionCapabilityError && outcome.error.code === "SESSION_OWNER_UNAVAILABLE" && !signal?.aborted;
+      // A repeated start uses the same run id. The host returns an existing dispatched effect
+      // unchanged, and only rearms a receipt that proves no browser dispatch happened.
+      const ownerStarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
+        && (outcome.error.code === "SESSION_OWNER_UNAVAILABLE"
+          || outcome.error.code === "CAPABILITY_DISCONNECTED"
+          || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE"
+          || outcome.error.status === 503);
       if (!ownerStarting || Date.now() + pause > until) throw outcome.error;
       await new Promise(resolve => setTimeout(resolve, pause));
     }
@@ -562,7 +570,11 @@ export class SessionCapabilityClient {
       terminalConfirmed = true;
       input.onProviderTerminal?.();
       if (result.state === "canceled") throw new ProviderTurnCancelledError("ChatGPT confirmed native cancellation.");
-      if (result.state === "failed") throw new SessionCapabilityError("CHATGPT_RUN_FAILED", failureText(result.error, "ChatGPT execution failed."), 409);
+      if (result.state === "failed") {
+        const neverSent = result.error === "CHATGPT_NOT_SENT" || result.error === "CHATGPT_SEND_FAILED";
+        throw new SessionCapabilityError(neverSent ? result.error : "CHATGPT_RUN_FAILED",
+          failureText(result.error, "ChatGPT execution failed."), 409);
+      }
       return { text: result.text, sessionUUID: result.sessionId, providerTurnId: turnId, toolsUsed: [] };
     };
     try {

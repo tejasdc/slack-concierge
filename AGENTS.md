@@ -1010,6 +1010,10 @@ restart-time Inbox entry-index warm-up yields on elapsed time; see
   the native-only runtime has no periodic poll, so without that timer a wait with a known
   end has nobody to come back for it. A refusal with no stated reset stays terminal;
   never guess a clearance time. Never widen this to an acknowledged or ambiguous failure.
+  ChatGPT's exact `prepared` receipt with `CHATGPT_NOT_SENT` or `CHATGPT_SEND_FAILED` is
+  a retryable wait under the same run and a per-turn bounded retry budget, so an older
+  account-wide terminal refusal cannot suppress it; the capability host rearms only that
+  never-dispatched receipt after checking the active owner admission. See [session owner](docs/architecture/SESSION-OWNER.md).
 - A sign-in refusal before any assistant output or tool work is also a wait, even when the
   provider cannot say when the credential will recover. The exact input stays at the head
   of its own queue and resumes only after the selected account answers following sign-in,
