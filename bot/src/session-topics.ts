@@ -1274,8 +1274,11 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       const context=declaredContext??(missing.length?'agent_checking':existing.context);
       if(existing.kind!=='reading'&&context==='ready'&&by.kind==='agent'&&briefChanged(existing.brief,brief)){
         try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
-      const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context;
-      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner===undefined?existing.owner:owner,sources:existing.kind==='asked'?[...new Set([...existing.sources,...sources])]:sources.length?sources:existing.sources,
+      const nextOwner=owner===undefined?existing.owner:owner;
+      const nextSources=existing.kind==='asked'?[...new Set([...existing.sources,...sources])]:sources.length?sources:existing.sources;
+      const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context
+        ||briefChanged(existing.owner,nextOwner)||briefChanged(existing.sources,nextSources);
+      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:nextOwner,sources:nextSources,
         state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
         revision:changed?existing.revision+1:existing.revision,updatedAt:at,
         ...(typeof item.changedBecause==='string'?{brief:{...brief,changedBecause:item.changedBecause}}:{})};
