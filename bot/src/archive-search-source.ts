@@ -18,7 +18,8 @@ export function retainedArchiveSearchSource(source:unknown,pin:Pin,proof:unknown
  if(typeof pin.branch!=='string')return null;
  try{verifySource(source,{...pin,branch:pin.branch});}catch{return null;}
  if(!record(proof))return null;
- const compact=proof.kind==='search-proof'&&proof.retainedEventId===pin.eventId;
+ const compact=proof.kind==='search-proof'&&proof.sourceId===pin.sourceId&&proof.sourceVersion===pin.sourceVersion
+   &&proof.branch===pin.branch&&proof.retainedEventId===pin.eventId;
  const prepared=Array.isArray(proof.messages)&&proof.retainedEventId===pin.eventId;
  const context=record(proof.source)&&proof.source.id===pin.sourceId&&proof.source.version===pin.sourceVersion
    &&proof.source.branch===pin.branch&&Array.isArray(proof.evidence)

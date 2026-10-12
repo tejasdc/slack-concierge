@@ -395,7 +395,7 @@ export class SessionCapabilityClient {
   }
 
   async sourceSearchProof(input: SourceRef & {eventId:string}) {
-    let value:{retainedEventId:string};
+    let value:SourceRef&{retainedEventId:string};
     try{value=await this.post('/sources/history/proof',input);}
     catch(error){
       // A peer still serving the previous source contract can prove this through history.
@@ -403,8 +403,10 @@ export class SessionCapabilityClient {
         return this.sourceHistory({...input,cursor:null,limit:1});
       throw error;
     }
-    verify(isRecord(value)&&value.retainedEventId===input.eventId,'Search proof changed the exact archive event.');
-    return {kind:'search-proof',retainedEventId:value.retainedEventId};
+    verify(isRecord(value)&&value.sourceId===input.sourceId&&value.sourceVersion===input.sourceVersion
+      &&value.branch===input.branch&&value.retainedEventId===input.eventId,
+      'Search proof changed its exact source, version, branch or event.');
+    return {kind:'search-proof',...value};
   }
 
   async sourceHistoryMessage(input:SourceRef & {messageId:string}) {
