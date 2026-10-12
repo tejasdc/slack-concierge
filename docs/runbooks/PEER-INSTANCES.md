@@ -119,6 +119,25 @@ curl -s --unix-socket "$HOME/Library/Application Support/concierge/requests.sock
 curl -s -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/concierge/peer.token")" http://100.90.183.122:8788/sessions/v1/peers
 ```
 
+### Google sessions on the Mac
+
+Install Google's supported Antigravity CLI as this Mac user with its official
+installer. A local `agy models` confirms whether this machine is signed in; if it
+asks for sign-in, `agy` opens Google's own approval in the Mac browser. The
+server's credential is never moved here. CodexBar's Antigravity provider reads
+this same local CLI for the Gemini five-hour and weekly allowance while its
+desktop app is closed.
+
+The normal Mac updater installs the sanitized account status-line hook beside
+the local CLI. It stores only Google account email and plan under this Mac's
+Concierge state directory, so a quota reading is attributed to the account
+whose allowance the Mac will spend. An unrelated pre-existing status-line
+command makes installation fail rather than overwriting it. The owner reads
+its own local CLI quota and can start an explicit `google` session for a Mac-only
+project after sign-in; a server Google session still runs against server files.
+This local route is independent of the server release gate, although the Mac
+must install a revision compatible with its peer before activation.
+
 Projects are every `~/workspace/<dir>` with `.git` and `AGENTS.md`, plus every folder
 directly inside an Obsidian vault that has its own `AGENTS.md` (the vault is a workspace
 child or grandchild holding `.obsidian`, so `~/workspace/obsidian-vault/journalmaxx/blogs` here). There is no Inbox,

@@ -345,8 +345,10 @@ async function readAntigravity(): Promise<ProviderUsage> {
   // An account label must come from Google's own reply. Guessing from the browser's
   // Google account would let a different CLI login inherit this account's capacity.
   let statusIdentity: { email?: unknown; plan?: unknown; observedAt?: unknown } = {};
+  const defaultIdentityDir = process.platform === "darwin"
+    ? join(homedir(), "Library/Application Support/concierge") : join(homedir(), ".local/state/concierge");
   try { statusIdentity = JSON.parse(readFileSync(join(process.env.CONCIERGE_ANTIGRAVITY_IDENTITY_DIR ??
-    "/root/.local/state/concierge", "antigravity-identity.json"), "utf8")); }
+    defaultIdentityDir, "antigravity-identity.json"), "utf8")); }
   catch { /* a headless quota reply may still identify its own account */ }
   const statusAt = iso(statusIdentity.observedAt);
   const statusFresh = statusAt !== null && Date.parse(statusAt) >= Date.now() - ACCOUNT_READING_MAX_AGE_MS;
