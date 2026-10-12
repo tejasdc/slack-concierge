@@ -79,7 +79,7 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
     },
     sources:capabilityClient?{
       search:input=>capabilityClient.searchSources(input),context:input=>capabilityClient.sourceContext(input),
-      import:async()=>{throw new Error('READ_ONLY');},history:input=>capabilityClient.sourceHistory(input),
+      import:async()=>{throw new Error('READ_ONLY');},proof:input=>capabilityClient.sourceSearchProof(input),history:input=>capabilityClient.sourceHistory(input),
       historyMessage:input=>capabilityClient.sourceHistoryMessage(input),
     }:undefined,
   };

@@ -48,6 +48,11 @@ Search answers carry bounded evidence previews and a bounded encoded body; selec
 uses the exact context read for full text. Slow searches log elapsed time for prepared words,
 historical routing, meaning, archive search and retention, plus final answer size. These phases
 identify expensive search work without recording the query or message text.
+The archive search begins alongside the independent word and routing reads. Thinkering's compact
+proof checks the selected source version, branch and matched event without building its full
+history projection; opening the conversation still prepares that history. A peer serving the
+older source contract uses the prepared history proof until it is upgraded. Search updates an
+already imported session only when its retained source or labels actually changed.
 
 An Inbox topic command taking at least 250 milliseconds logs its action, known topic ID and
 time spent resolving the caller, retaining its source and executing the command. A slow topic

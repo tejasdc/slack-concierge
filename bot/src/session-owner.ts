@@ -374,7 +374,7 @@ export type SessionOwnerRuntime = {
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
   fork?(session:SessionRow,input:AcceptedSessionInput):void;
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
-  sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
+  sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;proof?(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}):Promise<unknown>;
   auth?:{
@@ -2037,6 +2037,7 @@ export class SessionOwner {
    */
   private retainArchiveSource(pin:{sourceId:string;sourceVersion:string;branch:unknown;eventId:string}) {
     const sources=this.runtime.sources!;
+    if(sources.proof)return sources.proof(pin);
     if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1,eventId:pin.eventId});
     return sources.context({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,eventId:pin.eventId,limit:1});
   }
@@ -2045,7 +2046,10 @@ export class SessionOwner {
     const existing=db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id')=? AND json_extract(native_metadata_json,'$.source.branch')=?").get(source.id,source.branch) as SessionRow|null;
     const {messages,...retained}=source;
     if(existing) {
-      if(sessionMetadata(existing).source?.version!==source.version)db.query('UPDATE sessions SET binding_generation=binding_generation+1 WHERE id=?').run(existing.id);
+      const metadata=sessionMetadata(existing),prior=metadata.source;
+      if(prior?.version===source.version&&JSON.stringify(prior)===JSON.stringify(retained)
+        &&metadata.title===source.title&&(metadata.project??null)===(source.project??null))return existing;
+      if(prior?.version!==source.version)db.query('UPDATE sessions SET binding_generation=binding_generation+1 WHERE id=?').run(existing.id);
       updateSessionMetadata(existing.id,{source:retained,title:source.title,project:source.project??null});
       return getSessionById(existing.id)!;
     }
@@ -2071,6 +2075,10 @@ export class SessionOwner {
     const routingStarted=performance.now();
     const routingSearch=searchRouterThreadsRead({beforeTs:(Date.now()/1000).toFixed(6),...routingSource,
       concepts:terms.slice(0,8),limit:Math.min(limit,10)}).finally(()=>{timing.routing_ms=Math.round(performance.now()-routingStarted);});
+    const archiveStarted=performance.now();
+    const archiveSearch=this.runtime.sources?.search({query:input.query,includeTools:input.includeTools===true,limit})
+      .then(found=>{timing.archive_search_ms=Math.round(performance.now()-archiveStarted);return {found,error:null};},
+        error=>{timing.archive_search_ms=Math.round(performance.now()-archiveStarted);return {found:null,error};});
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
     const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
     const add=(session:SessionRow,evidence:any[])=>{
@@ -2110,9 +2118,9 @@ export class SessionOwner {
     coverage.wordIndex=words?.coverage??{complete:false};
     if(this.runtime.sources) {
       try {
-        const archiveSearchStarted=performance.now();
-        const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit})
-          .finally(()=>{timing.archive_search_ms=Math.round(performance.now()-archiveSearchStarted);});
+        const archived=await archiveSearch!;
+        if(archived.error)throw archived.error;
+        const found=archived.found!;
         const candidates=(found.sources??[]).map((source:any)=>({source,matches:(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
           &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)))}))
           .filter((candidate:any)=>candidate.matches.length);
