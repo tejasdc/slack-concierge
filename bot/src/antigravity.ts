@@ -32,8 +32,9 @@ type AntigravityRun = Parameters<AgentProvider["run"]>[0] & {
 type AntigravityEvent = {
   event?: string;
   conversation_id?: string;
-  init?: { cwd?: string };
-  step_update?: { step_index?: number; step_type?: string; state?: string; text_delta?: string };
+  init?: { cwd?: string; permission_mode?: string };
+  step_update?: { step_index?: number; step_type?: string; state?: string; text_delta?: string;
+    tool_name?: string; tool_info?: { error?: { type?: string; message?: string } } };
   result?: {
     conversation_id?: string;
     status?: string;
@@ -75,6 +76,9 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let observedOutput = false;
   let acknowledged = false;
   let cancelled = false;
+  let sawInit = false;
+  let permissionDenied = false;
+  let stderrTail = "";
   let closeInput: (() => void) | null = null;
   const toolsUsed = new Set<string>();
   const startedAt = Date.now();
@@ -98,6 +102,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   const handle = (event: AntigravityEvent) => {
     if (event.event === "init") {
       bind(event.conversation_id);
+      sawInit = true;
+      // The headless CLI otherwise soft-denies shell actions and may still return SUCCESS.
+      // The flag is our requested policy; the init event is proof of the effective policy.
+      if (event.init?.permission_mode !== "always-proceed") {
+        throw new ProviderDispatchError({ message: "Google did not activate the required unattended tool permissions.",
+          terminalConfirmed: false, providerSessionId: conversationId });
+      }
       input.onProgress?.({ type: "started" });
       return;
     }
@@ -108,8 +119,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
         observedOutput = true;
         input.onProgress?.({ type: "commentary", text: step.text_delta });
       } else if (step.step_type && !["agent_response", "user_input"].includes(step.step_type)) {
-        toolsUsed.add(step.step_type);
-        if (step.state === "DONE") input.onProgress?.({ type: "tool_use", toolName: step.step_type });
+        const toolName = step.tool_name || step.step_type;
+        if (step.step_type === "tool") {
+          toolsUsed.add(toolName);
+          const problem = `${step.tool_info?.error?.type ?? ""} ${step.tool_info?.error?.message ?? ""}`;
+          if (/permission|approv|denied|forbidden/i.test(problem)) permissionDenied = true;
+        }
+        if (step.state === "DONE") input.onProgress?.({ type: "tool_use", toolName });
       }
       return;
     }
@@ -147,7 +163,11 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     },
     // stderr is deliberately not copied into a user-visible error: the CLI controls its
     // contents and could include account or local machine details.
-    onStderr: () => {},
+    onStderr: chunk => {
+      stderrTail = (stderrTail + chunk).slice(-MAX_ERROR_TEXT);
+      if (/soft.denied|permission.{0,30}denied|approval.{0,30}(?:denied|unavailable)|requires.{0,30}approval/i.test(stderrTail))
+        permissionDenied = true;
+    },
     onStdinReady: (_write, close) => {
       closeInput = close;
       input.onCancellationReady?.(async () => { cancelled = true; close(); });
@@ -159,6 +179,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     throw new ProviderDispatchError({ message: exit.code === 0
       ? "Google exited without a final structured result."
       : "Google exited before confirming a final result.",
+      terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId,
+      toolsUsed: [...toolsUsed] });
+  }
+  if (!sawInit || permissionDenied) {
+    throw new ProviderDispatchError({ message: !sawInit
+      ? "Google returned no structured start event; its tool policy could not be verified."
+      : "Google denied a requested tool during the run, so its answer cannot be marked complete.",
       terminalConfirmed: false, assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }

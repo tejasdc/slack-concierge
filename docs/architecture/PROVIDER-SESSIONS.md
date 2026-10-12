@@ -27,6 +27,10 @@ Google conversation without using the CLI's mutable most-recent conversation.
 Only a `SUCCESS` result with the bound ID completes work. A result that changes
 the ID or omits it fails closed, because the next turn would otherwise run in
 the wrong or a fresh conversation.
+Headless work requests the CLI's unattended permission mode and verifies the
+effective mode in its structured start event. Google can otherwise deny a
+shell command yet return `SUCCESS`; a permission-denied tool event or diagnostic
+therefore leaves the turn unconfirmed instead of reporting completion.
 
 Antigravity currently supports sequential native turns and Stop. Its CLI has a
 streaming input protocol, but live steering is disabled until its pickup and
