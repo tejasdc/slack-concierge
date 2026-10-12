@@ -333,6 +333,20 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS project_setup_orders_project ON project_setup_orders(peer,project);
         CREATE INDEX IF NOT EXISTS project_setup_orders_pending ON project_setup_orders(peer,state)
           WHERE state NOT IN ('done','already_present','refused','failed','cancelled');
+        -- A link a session asked to open in a browser on another machine (or this one), kept until
+        -- that machine answers; the receiver keeps one receipt per order so it never opens twice.
+        CREATE TABLE IF NOT EXISTS peer_link_opens (
+          open_id TEXT PRIMARY KEY, peer TEXT NOT NULL, url TEXT NOT NULL, browser TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'queued', result_json TEXT, created_at_ms INTEGER NOT NULL,
+          expires_at_ms INTEGER NOT NULL, last_attempt_at_ms INTEGER,
+          source_session_id INTEGER NOT NULL REFERENCES sessions(id), source_input_id TEXT NOT NULL,
+          source_run_id TEXT NOT NULL, answered_at_ms INTEGER, return_input_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS peer_link_opens_pending ON peer_link_opens(created_at_ms)
+          WHERE state='queued' OR return_input_id IS NULL;
+        CREATE TABLE IF NOT EXISTS peer_link_receipts (
+          open_id TEXT PRIMARY KEY, result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS project_creations (
           project TEXT PRIMARY KEY, purpose TEXT NOT NULL, commit_sha TEXT NOT NULL,
           here_only INTEGER NOT NULL, created_at_ms INTEGER NOT NULL

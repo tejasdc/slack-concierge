@@ -52,6 +52,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
+        if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));
         if (operation === 'note') return Response.json(await sessions.note(input));

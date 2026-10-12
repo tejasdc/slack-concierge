@@ -205,6 +205,11 @@ running meanwhile. One service input `watch:<id>:<fired|expired|failed|cancelled
 what was observed and any observation gap. Local to this machine. See
 [watches](../architecture/WATCHES.md).
 
+**Opening a link on his Mac.** `sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default]`
+with the run's source pair and a stable `--action-id` opens the link in his browser on the Mac with no
+session; queued while the Mac sleeps, with one service result when it later opens or expires. See
+[peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
+
 **Discussing in the open.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions and skills they produce, each with a lasting address (`lab:<handle>`,

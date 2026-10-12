@@ -64,4 +64,5 @@ export const WRITING_SESSION_STANDING =
 export const MACHINE_NEED_REQUIRED =
   'A new session on another machine needs --machine-need "<what only that machine can do for this work>" — '
   + 'for the Mac: its Messages app, Xcode or the Simulator, a file or app that exists only there, a screenshot, or Tejas naming the Mac. '
+  + 'Opening a link in his browser there needs no session: use sessions open <link>. '
   + 'Everything else runs here, on the always-on server: create the session without --peer.';

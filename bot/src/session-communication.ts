@@ -854,6 +854,17 @@ export class SessionCommunicationCoordinator {
      * deadline (docs/architecture/WATCHES.md). Local to this machine and to the session whose live run
      * asks: this route is served on the owner socket only, never to a peer, and a watch is never forwarded.
      */
+    /** A link opened in a browser on a machine, with no session: the order waits in the ledger while that machine sleeps. */
+    async openLink(input:{source:CommunicationSource;action_id:string;url:string;on?:string;browser?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id)throw new Error('Open a link from an admitted native run: use --source-input and --source-run.');
+        const links=this.dependencies.owner?.peerLinks;
+        if(!links)throw new Error('Opening links on another machine is not available on this instance.');
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
+            ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
+    }
     watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;path?:string;argv?:string[];cwd?:string;watch_id?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
