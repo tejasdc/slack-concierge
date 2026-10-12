@@ -42,9 +42,10 @@ next turn. Historical pages, forks, and information-only consultation are also
 disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.
-Deployment installs the sanitized account status-line command through the
-immutable release's stable `current` path. It preserves the CLI's other settings
-and refuses to replace an unrelated status-line command.
+Deployment installs the sanitized account status-line command from the sealed
+release into the server's durable local hook slot. That slot survives a release
+rollback. Installation preserves the CLI's other settings and refuses to replace
+an unrelated status-line command.
 
 The `google` alias selects Gemini 3.1 Pro through Antigravity. The Google AI Pro
 subscription belongs on the server; Thinkering and the Mac do not copy its

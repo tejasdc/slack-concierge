@@ -702,7 +702,10 @@ promote_candidate_release() {
   [ -n "$CANDIDATE_ARTIFACT_DIGEST" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
     --run-id "$DEPLOY_RUN_ID" --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
-    --artifact "$CANDIDATE_ARTIFACT_PATH"
+    --artifact "$CANDIDATE_ARTIFACT_PATH" || return $?
+  DEPLOY_FAILURE_REASON="The Google account identity hook could not be installed."
+  "$CANDIDATE_ARTIFACT_PATH/control/install-antigravity-account-hook.sh" \
+    "$CANDIDATE_ARTIFACT_PATH/control/antigravity-account-statusline.sh"
 }
 
 install_router_actions() {
@@ -1063,14 +1066,6 @@ deploy() {
   if [ -x "$CONTROL_DIR/install-meaning-engine.sh" ]; then
     DEPLOY_FAILURE_REASON="The session search engine could not be installed or verified."
     "$CONTROL_DIR/install-meaning-engine.sh"
-  fi
-
-  echo "=== install Google account identity hook ==="
-  DEPLOY_FAILURE_REASON="The Google account identity hook could not be installed."
-  if [ -n "${CANDIDATE_ARTIFACT_PATH:-}" ]; then
-    "$CANDIDATE_ARTIFACT_PATH/control/install-antigravity-account-hook.sh"
-  else
-    "$CONTROL_DIR/install-antigravity-account-hook.sh"
   fi
 
   DEPLOY_FAILURE_REASON="The durable restarting checkpoint could not be recorded."
