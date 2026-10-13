@@ -273,6 +273,13 @@ export const PROVIDER_ALIASES = {
   google: { provider: "antigravity", model: GOOGLE_MODELS.high },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
+/** Models chosen for a new Automatic session; all model IDs still come from the alias table. */
+export const AUTOMATIC_PROVIDER_ALIASES = {
+  'claude-code': 'cc-opus',
+  codex: 'cx-sol',
+  antigravity: 'google',
+} as const satisfies Record<Exclude<ProviderId, 'chatgpt'>, ProviderAliasKey>;
+
 // The provider a session takes when nothing has chosen one. The Codex allowance
 // is account-scoped and has now been exhausted on two accounts, so the default
 // parent is Opus and the cheaper Codex tiers are reached by delegating bounded
