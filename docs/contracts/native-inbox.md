@@ -331,7 +331,7 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   after it closed (`topic-reopen:waiting:<topic>:<revision>`).
 - Both rules run after every live topic change, whatever path made it (the router's and his
   commands, the owner's filings, his "mark seen"); replay projects events without them.
-- The pass runs on the owner's reading cadence (about every three minutes) in both runtime
+- The pass runs on the owner's reading cadence (about every three minutes, first about 30 seconds after start) in both runtime
   compositions, over open threads and threads with his reply still being worked on.
 
 **A thread's title is checked against what it holds.** When a thread's newest request shares no
