@@ -37,6 +37,8 @@ Google conversation ID for later turns. Each machine running them has its own si
 quota reading; the Mac install path is in [peer instances](docs/runbooks/PEER-INSTANCES.md#google-sessions-on-the-mac).
 The sanitized account identity, live Gemini quota, credit guard and banked-work rule are in
 [Antigravity sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
+An unavailable model fails its session's request without treating the whole Google account as down;
+that section owns the retired-binding rule.
 
 Accepted messages and local forwarded replies retain their next step atomically; recovery
 requires explicit intent and checks prior custody. See [waiting captures and replies](docs/contracts/native-inbox.md)

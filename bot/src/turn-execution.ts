@@ -1071,9 +1071,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       let retryable = replaySafe
         && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
+      // A rejected model is a property of this session's binding, not of the Google
+      // account. The request below fails with the provider's reason, but it must not
+      // trip an account-wide breaker that would describe healthy Google work as down.
+      const invalidGoogleModel = replaySafe && input.providerId === 'antigravity'
+        && structuredFailure?.terminalConfirmed === true && !structuredFailure.assistantOutput
+        && structuredFailure.toolsUsed.length === 0 && /\binvalid model selection\b/i.test(message);
+      if (invalidGoogleModel) retryable = false;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
-      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount) {
+      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount && !invalidGoogleModel) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }
