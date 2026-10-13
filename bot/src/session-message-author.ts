@@ -1,17 +1,14 @@
-import {db,getSessionById,getChannel} from './state';
+import {db} from './state';
+import {authorSessionOf} from './session-presence';
 import {authorCorrection,sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
-import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
+import {peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
 
+/** Who wrote a message, by the one author-session rule in session-presence.ts. */
 export function authorSession(id:number):MessageAuthor['session'] {
-  const session=getSessionById(id);if(!session)return undefined;
-  const meta=sessionMetadata(session);
-  const retained=!meta.title&&session.slack_channel_id&&session.slack_thread_ts?db.query(`SELECT desired_title AS title FROM slack_agent_session_title_projections WHERE slack_channel_id=? AND slack_thread_ts=?
-    UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
-    .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as any:null;
-  return {id:`concierge:${id}`,title:meta.title??retained?.title??(session.slack_channel_id?getChannel(session.slack_channel_id)?.name:null)??'Agent session',provider:session.provider_id};
+  return authorSessionOf(db,`concierge:${id}`);
 }
 
 /**
@@ -20,15 +17,7 @@ export function authorSession(id:number):MessageAuthor['session'] {
  * a Mac session and a cloud session read the same way on both machines.
  */
 export function sessionAuthor(id:string):MessageAuthor['session'] {
-  const local=localSessionNumber(id);
-  if(local!==null)return authorSession(local);
-  const colon=id.indexOf(':');
-  if(colon<=0)return undefined;
-  const peer=id.slice(0,colon),remote=id.slice(colon+1);
-  const row=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id IN (?,?) ORDER BY updated_at_ms DESC LIMIT 1')
-    .get(peer,remote,`concierge:${remote}`) as {view_json:string}|null;
-  const view=row?JSON.parse(row.view_json):null;
-  return {id,title:view?.title??`Session on ${peer}`,provider:view?.provider??'claude-code'};
+  return authorSessionOf(db,id);
 }
 
 function sourceIdentity(inputId:string|null,runId:string|null):Partial<MessageAuthor> {

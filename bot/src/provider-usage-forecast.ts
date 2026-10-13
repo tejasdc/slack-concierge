@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
@@ -403,7 +404,7 @@ export function usageReadingIsUrgent(): boolean {
 export function usagePressureBrief(provider: AccountIdentityProvider): string | null {
   const tight = tightestCurrentWindow(provider);
   if (!tight || tight.minutesLeft === null || tight.minutesLeft * 60_000 > WARN_LEAD_MS) return null;
-  const name = (key: AccountIdentityProvider) => key === "codex" ? "Codex" : key === "antigravity" ? "Google" : "Claude";
+  const name = (key: AccountIdentityProvider) => providerDisplayName(key) ?? key;
   const basis = tight.source === "provider"
     ? `${name(provider)}'s own projection`
     : `this machine's readings (${tight.samples} in the last ${tight.spanMinutes ?? 0} minutes, climbing about ${tight.ratePerHour ?? 0}% an hour)`;

@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 import type { AgentSessionDashboardRow } from "./state";
 import { slackThreadPermalink } from "./slack-links";
 
@@ -72,7 +73,7 @@ function elapsedSince(value: string | null, nowMs: number) {
 }
 
 function providerLabel(row: AgentSessionDashboardRow) {
-  const provider = row.provider_id === "claude-code" ? "Claude Code" : "Codex";
+  const provider = providerDisplayName(row.provider_id) ?? "Unknown agent";
   return row.provider_model ? `${provider} · ${row.provider_model}` : provider;
 }
 

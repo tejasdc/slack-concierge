@@ -77,6 +77,12 @@ no production migration or missing-table fallback is needed. The autonomous repa
 not run tests or reviews; integration and activation proof remain with the supervisor
 and detached deployment controller.
 
+A card's identity and status (provider, model, effort, `agentName`, `execution`, `timing`,
+`presenceRevision`) come from the same `sessionPresence` call the owner's full view makes, never a
+worker-side copy; see [agent presence](../contracts/session-owner-v1.md#agent-presence-one-identity-and-status-record).
+A card whose presence is unchanged keeps its earlier `presenceRevision`, so a journal change that
+alters nothing shown writes no card change.
+
 The card projection must preserve the owner view's pure title and space rules; the label helper
 is shared with the existing owner. Runtime provider capabilities and selected-session obligations
 are deliberately resolved only for the exact detail requested. Any new field copied into a card

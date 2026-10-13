@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { currentAccount } from "./provider-accounts";
@@ -288,7 +289,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   record({
     eventId: `${episode}:used`, sessionId: session, kind: "provider_outage",
     payload: {
-      inputId: null, provider, model: null, modelLabel: provider === "codex" ? "Codex" : "Claude",
+      inputId: null, provider, model: null, modelLabel: providerDisplayName(provider) ?? provider,
       status: null, incident: null, alternatives: [],
       usage: {
         account: decision.account, clearsAt: null, heldInputs: 0, accountsWithRoom: [],
@@ -404,7 +405,7 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
 const movesAutomatically = (provider: UsageProvider) => provider === "codex" || claudeRunsFromOwnHomes();
 
 function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
-  const name = provider === "codex" ? "Codex" : "Claude";
+  const name = providerDisplayName(provider) ?? provider;
   const refill = noticeTime(db, Date.parse(reading.resetsAt!));
   const head = `${name} account ${reading.account} has used ${Math.round(reading.usedPercent)}% of its `
     + `${windowLabel(reading.window)}. It refills at ${refill}.`;
@@ -419,7 +420,7 @@ function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare
   const bothNear = thisUsed !== null && thisUsed >= NOTICE_AT_PERCENT
     && otherUsed !== null && otherUsed >= NOTICE_AT_PERCENT;
   const automaticElsewhere = otherUsed !== null && otherUsed < 100
-    ? ` Automatic new work can start on ${other === 'codex' ? 'Codex' : 'Claude'} while it has room.` : '';
+    ? ` Automatic new work can start on ${providerDisplayName(other) ?? other} while it has room.` : '';
   return head + next + automaticElsewhere + (bothNear
     ? ' Both Claude and Codex are at or above 90% on the accounts that can take new work. If both reach their limits, new work waits for an allowance reset; work already running keeps its provider.'
     : '');
@@ -494,7 +495,7 @@ export function publishExpiringResetNotices(_record?: RecordEvent): void {
       // that way is not announced a second time.
       if (db.query("SELECT 1 FROM session_owner_events WHERE event_id IN (?,?)").get(key, `service-notice:${key}`)) continue;
       try {
-        const name = provider === "codex" ? "Codex" : "Claude";
+        const name = providerDisplayName(provider) ?? provider;
         const count = credits.available === 1 ? "1 banked usage reset" : `${credits.available} banked usage resets`;
         published = publishProviderFreeNotice(db, {
           key, kind: "provider_reset_expiring",

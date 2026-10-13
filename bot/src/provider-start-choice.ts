@@ -3,7 +3,7 @@ import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, usagePressureBrief } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
-import {resolveProviderAlias} from './aliases';
+import {resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
 
 type Candidate = { provider: 'claude-code' | 'codex'; used: number; resetsAt: number | null; windowResetAt: number | null };
@@ -70,7 +70,7 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
   if (!forecast && (!own || own.used < NOTICE_AT_PERCENT)) return null;
   const other = provider === 'claude-code' ? 'codex' : 'claude-code';
   const elsewhere = newWorkCapacity(other, now);
-  const name = (key: 'claude-code' | 'codex') => key === 'codex' ? 'Codex' : 'Claude';
+  const name = (key: 'claude-code' | 'codex') => providerDisplayName(key) ?? key;
   const facts = `${name(provider)} new-session allowance: ${own ? `${own.used}% used` : 'unverified'}. `
     + `${name(other)} new-session allowance: ${elsewhere ? `${elsewhere.used}% used` : 'unverified'}. `
     + 'The owner checks again when a helper request is created.';

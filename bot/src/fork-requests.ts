@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 import { CodexControlRequestError, findCodexForksByThreadSource } from "./codex";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
@@ -50,7 +51,7 @@ function escapeSlackMrkdwn(text: string) {
 }
 
 export function forkAnchorMessage(request: ForkRequestRow): string {
-  const provider = request.provider_id === "codex" ? "Codex" : "Claude Code";
+  const provider = providerDisplayName(request.provider_id) ?? "an unknown agent";
   const excerpt = forkSourceExcerpt(request.source_message_excerpt);
   if (!request.source_message_ts) {
     return `Forked ${provider} from the latest complete session. Reply in this new thread to continue the fork.`;

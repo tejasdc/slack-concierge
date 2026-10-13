@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 import {ACCOUNT_READING_MAX_AGE_MS,currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
@@ -71,6 +72,6 @@ function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):Pr
     pendingUrl:provider==='claude-code'?ephemera.claudePendingUrl:null,
     lastSignIn,message:account?(provider==='claude-code'?claudeInUseSentence(account.label,usage):'')
       :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
-      :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
+      :`This machine has no ${providerDisplayName(provider)??provider} account yet.`,
     account,profiles:checked,usage,checking:ephemera.checking};
 }
