@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
+import {resolveProviderAlias} from './aliases';
+import {newWorkCapacity} from './provider-start-choice';
+import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
 import {yieldBankedTurn} from './saved-work';
@@ -40,6 +43,7 @@ import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
 import { SESSION_INPUT_INSTRUCTIONS } from "./session-input-context";
 import {
   abandonTurnArtifactBatch,
+  db,
   acknowledgeTurnProviderInput,
   getTurnReplayInput,
   listInterruptedInputContext,
@@ -62,6 +66,7 @@ import {
   getTurnArtifactBatch,
   getTurnProgressStream,
   getTurnStatusProjection,
+  getSessionById,
   listTurnArtifactDeliveries,
   listSlackThreadResponses,
   markTurnDeliveryFailed,
@@ -292,6 +297,43 @@ type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
 interface AgentSessionStatusProjectionResult {
   outcome: ProjectionOutcome;
   error: string | null;
+}
+
+function moveUnreceivedAutomaticFirstTurn(input:TurnExecutionInput,dispatchAttempt:number,message:string):boolean {
+  if(input.presentation!=='native'||!sessionMetadata(input.session).automaticProviderChoice||
+    (input.providerId!=='codex'&&input.providerId!=='claude-code'))return false;
+  const other=input.providerId==='codex'?'claude-code':'codex';
+  const capacity=newWorkCapacity(other);
+  const choice=resolveProviderAlias(other==='codex'?'cx-sol':'cc-opus');
+  if(!capacity||capacity.used>=100||!choice.model||modelCapacityRefused(other,choice.model))return false;
+  return db.transaction(()=>{
+    const session=getSessionById(input.session.id);
+    const turn=db.query(`SELECT status,owner_instance_id,dispatch_attempt,saved_kind,provider_started_at,
+      provider_input_acknowledged_at,provider_turn_id,outbound_text,stop_requested_at
+      FROM turns WHERE id=? AND session_id=?`).get(input.turnId,input.session.id) as {
+      status:string;owner_instance_id:string|null;dispatch_attempt:number;saved_kind:string|null;provider_started_at:string|null;
+      provider_input_acknowledged_at:string|null;provider_turn_id:string|null;outbound_text:string|null;stop_requested_at:string|null;
+    }|null;
+    if(!session||session.provider_id!==input.providerId||!sessionMetadata(session).automaticProviderChoice||
+      !turn||turn.status!=='running'||turn.owner_instance_id!==input.ownerInstanceId||
+      turn.dispatch_attempt!==dispatchAttempt||turn.saved_kind||turn.provider_started_at||turn.provider_input_acknowledged_at||
+      turn.provider_turn_id||turn.outbound_text||turn.stop_requested_at||
+      db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(session.id,input.turnId)||
+      db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND id<>?
+        AND kind IN ('create','input','request') LIMIT 1`).get(session.id,input.inputId))return false;
+    if(!retryRunningTurnAfterProviderFailure({turnId:input.turnId,ownerInstanceId:input.ownerInstanceId,
+      dispatchAttempt,error:message,nextAttemptMs:Date.now()}))return false;
+    const metadata={...sessionMetadata(session),model:choice.model,reasoningEffort:choice.reasoning_effort};
+    delete metadata.codexLifecycle;
+    db.query(`UPDATE sessions SET provider_id=?,agent_session_uuid=NULL,
+      binding_generation=binding_generation+1,native_metadata_json=? WHERE id=?`)
+      .run(other,JSON.stringify(metadata),session.id);
+    db.query('UPDATE turns SET provider_model=NULL,reasoning_effort=NULL,dispatch_next_attempt_ms=0 WHERE id=?')
+      .run(input.turnId);
+    recordSessionEvent({eventId:`capacity-reroute:${input.turnId}`,sessionId:session.id,turnId:input.turnId,
+      kind:'provider',payload:{from:input.providerId,to:other,reason:'model_capacity_refusal'}});
+    return true;
+  })();
 }
 
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
@@ -643,6 +685,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
     clearRetryBreaker(providerBreakerKey);
+    const completedModel=input.model??sessionMetadata(input.session).model;
+    if(completedModel)clearModelCapacityRefusal(input.providerId,completedModel);
     if (input.providerId === 'chatgpt') clearRetryBreaker(chatGptNeverSentBreakerKey);
 
     if (artifactDirectory) {
@@ -1001,6 +1045,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "cancelled", turnId: input.turnId };
     }
     const structuredFailure = providerDispatchError(error);
+    const capacityModel=input.model??sessionMetadata(input.session).model;
+    if(structuredFailure?.modelAtCapacity&&capacityModel)
+      rememberModelCapacityRefusal(input.providerId,capacityModel);
     const providerIdentityCompatible = !structuredFailure?.providerSessionId
       || !input.session.agent_session_uuid
       || structuredFailure.providerSessionId === input.session.agent_session_uuid;
@@ -1032,6 +1079,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
+      const unreceivedCapacityRefusal=!structuredFailure?.modelAtCapacity||!!db.query(`SELECT 1 FROM turns
+        WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+          AND provider_started_at IS NULL AND provider_turn_id IS NULL
+          AND provider_input_acknowledged_at IS NULL`).get(input.turnId,input.ownerInstanceId,dispatchAttempt);
+      if(structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed&&replaySafe&&unreceivedCapacityRefusal&&
+        moveUnreceivedAutomaticFirstTurn(input,dispatchAttempt,message)) {
+        await progressController?.pauseForRetry();
+        await statusController?.stop();
+        log('warn','automatic_model_capacity_rerouted',{turn_id:input.turnId,session_id:input.session.id,
+          provider:input.providerId,model:capacityModel});
+        return {status:'retry_queued',turnId:input.turnId};
+      }
       // A refusal that named the instant it clears — a usage allowance reset — is a wait,
       // not a death. Nothing was sent, or the provider confirmed it did nothing, so the
       // input keeps its place in its own queue and is tried again then. Every existing
@@ -1068,8 +1127,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
-      let retryable = replaySafe
-        && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
+      let retryable = replaySafe&&unreceivedCapacityRefusal
+        && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" ||
+          structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
       // account. The request below fails with the provider's reason, but it must not
@@ -1080,7 +1140,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (invalidGoogleModel) retryable = false;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
-      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount && !invalidGoogleModel) {
+      if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
+        !invalidGoogleModel && !(structuredFailure?.modelAtCapacity&&!unreceivedCapacityRefusal)) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }
@@ -1099,7 +1160,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
       await statusController?.stop();
-      if(input.presentation==='native'&&!retryable&&!ambiguous) {
+      if(input.presentation==='native'&&!retryable&&!ambiguous&&!structuredFailure?.modelAtCapacity) {
         if(!failRunningTurnAndReleaseSession(input.turnId,input.ownerInstanceId,message))throw new Error('Native provider refusal could not release its exact execution.');
         log('error','native_provider_refused',{...errorFields(error),turn_id:input.turnId,session_id:input.session.id,dispatch_attempt:dispatchAttempt});
         return {status:'error',turnId:input.turnId,error:message};

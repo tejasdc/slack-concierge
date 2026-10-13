@@ -13,6 +13,7 @@ export class CodexAppServerClientError extends Error {
     message: string,
     readonly outcome: "rejected" | "ambiguous",
     readonly code?: number,
+    readonly data?: unknown,
   ) {
     super(message);
     this.name = "CodexAppServerClientError";
@@ -313,8 +314,9 @@ export class CodexAppServerClient {
         const errorCode = Number(event.error.code);
         pending.reject(new CodexAppServerClientError(
           `Codex app-server ${pending.method} failed: ${event.error.message || JSON.stringify(event.error)}`,
-          errorCode === -32602 ? "rejected" : "ambiguous",
+          errorCode === -32602 || errorCode === -32001 ? "rejected" : "ambiguous",
           errorCode,
+          event.error.data,
         ));
         return;
       }

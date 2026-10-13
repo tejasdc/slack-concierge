@@ -33,6 +33,8 @@ export class ProviderDispatchError extends Error {
   readonly providerTurnId: string | null;
   /** Retry at once: he chose another model for a message stuck in a provider outage. */
   readonly immediateRetry: boolean;
+  /** The provider's typed refusal says this model has no serving capacity. */
+  readonly modelAtCapacity: boolean;
   /**
    * The instant this refusal's own condition is known to clear, when the provider stated
    * one — a usage allowance reset. Set it only where nothing was sent or the provider
@@ -51,6 +53,7 @@ export class ProviderDispatchError extends Error {
     providerSessionId?: string | null;
     providerTurnId?: string | null;
     immediateRetry?: boolean;
+    modelAtCapacity?: boolean;
     clearsAtMs?: number | null;
   }) {
     super(input.message);
@@ -62,6 +65,7 @@ export class ProviderDispatchError extends Error {
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;
+    this.modelAtCapacity = input.modelAtCapacity === true;
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
   }

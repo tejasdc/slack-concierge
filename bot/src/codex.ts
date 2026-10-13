@@ -1230,6 +1230,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       rejectTurn(new ProviderDispatchError({
         message: turn.error?.message || `Codex turn ended with status ${turn.status}.`,
         terminalConfirmed: true,
+        modelAtCapacity: turn.error?.codexErrorInfo === "serverOverloaded",
         toolsUsed,
         assistantOutput: messageParts.some(part => part.trim().length > 0),
         providerSessionId: activeThreadId,
@@ -1537,7 +1538,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       resetInactivityTimeout();
     } catch (error) {
       if (turnSettled) throw error;
-      if (error instanceof CodexAppServerClientError && error.outcome === "rejected") throw error;
+      if (error instanceof CodexAppServerClientError && error.outcome === "rejected") {
+        const detail=error.data as {codex_error_info?:unknown;codexErrorInfo?:unknown}|null;
+        throw new ProviderDispatchError({message:error.message,terminalConfirmed:true,
+          modelAtCapacity:detail?.codex_error_info==='server_overloaded'||detail?.codexErrorInfo==='serverOverloaded'});
+      }
       await Promise.race([ensureRecovered(error), turnCompletion]);
     }
     }
