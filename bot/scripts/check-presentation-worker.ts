@@ -10,7 +10,8 @@ source.exec(`CREATE TABLE channels(slack_channel_id TEXT PRIMARY KEY,name TEXT,c
   CREATE TABLE slack_agent_session_status_projections(slack_channel_id TEXT,slack_thread_ts TEXT,initial_title TEXT);
   CREATE TABLE sessions(id INTEGER PRIMARY KEY,native_metadata_json TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,
     provider_id TEXT DEFAULT 'claude-code',status TEXT DEFAULT 'active',agent_session_uuid TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,last_turn_at TEXT);
-  CREATE TABLE turns(id INTEGER PRIMARY KEY,agent_text TEXT,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT);
+  CREATE TABLE turns(id INTEGER PRIMARY KEY,agent_text TEXT,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
+    native_run_id TEXT,ended_at TEXT,provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER);
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,payload_json TEXT,created_at TEXT,request_id TEXT,
     scope TEXT DEFAULT 'surface:thinkering',action_id TEXT DEFAULT 'test',turn_id INTEGER,source_input_id TEXT,source_run_id TEXT);
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,event_id TEXT,input_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT,turn_id INTEGER);
