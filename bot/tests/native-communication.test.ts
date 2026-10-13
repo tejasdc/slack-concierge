@@ -33,7 +33,7 @@ function run(){
 }
 async function ask(source:any,target:any,action='ask',extra:any={}){return communication.ask({source,action_id:action,address:target.session.address,text:'Exact question',...extra});}
 
-test('a marked agent thread reply retained for a peer advances from its exact forwarding intent',()=>{
+test('a marked agent thread reply retained for a peer advances from its exact forwarding intent',async()=>{
   session();const agent=run();const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
   const target={sessionId:'mac:22',local:null,peer:{peer:'mac',address:'mac/session:fixture'},title:'Mac agent',topicId:'topic:fixture',root:'capture:fixture'};
   const retained=retainSessionInput({sessionId:inboxId,scope:'surface:thinkering',actionId:'marked-peer-reply',kind:'input',origin:'agent',
@@ -43,7 +43,7 @@ test('a marked agent thread reply retained for a peer advances from its exact fo
   const forwarded:any[]=[];const original=owner.communication;
   owner.communication={forwardReply:(value:any)=>{forwarded.push(value);}} as any;
   try {
-    owner.recoverAcceptedInput(getAcceptedSessionInput(retained.id)!);
+    communication.wake();await communication.idle();
     expect(forwarded).toHaveLength(1);
     expect(forwarded[0]).toMatchObject({inputId:retained.id,target,text:'Marked question'});
     db.query('UPDATE session_inputs SET payload_json=? WHERE id=?').run(JSON.stringify({text:'Marked question',agentSource:{inputId:agent.source.input_id,runId:'different-run'}}),retained.id);
