@@ -70,6 +70,22 @@ the unrelated pressure file; raw SHM inspection refuses the release.
 
 ## What still waits on the loop
 
+The 2026-10-13 update at 22:42 UTC exposed a separate status-read stall: one owner-loop
+interval lasted 10.388 s, including 8.128 s in a `deployment_run_events` timestamp scan.
+The update-run row is inserted together with its first `prepared` event, and its `created_at`
+is the same timestamp. All 331 runs with a prepared or draining event in the October 10 offline
+snapshot had matching timestamps. The live status and wait-notice readers now use that run
+timestamp directly, so neither scans the event table to display how long an update has waited.
+This removes the observed slow statement; another real update under disk load is needed to
+verify the owner's loop-lag outcome. The concurrent Thinkering backup read at least 23.5 GB
+and wrote 3.4 GB during that update on the RAID device backing the ledger's loop filesystem;
+that overlap is evidence of disk contention, not proof it caused every slow ledger operation.
+The earlier 21:56–21:57 stalls preceded the update controller. A Thinkering agent launched a
+worktree build at 21:55:02 and `npm ci` for 959 packages at 21:56:04; the install ran for about
+two minutes. Those were concurrent bulk disk operations, while ledger WAL syncs repeatedly took
+one to three seconds. No retained per-process I/O sample or SQLite lock-holder sample proves
+which operation held any particular ledger statement.
+
 Measured on 2026-10-10 12:55 ET after this change, under agent disk load (IO pressure 17-58%):
 the owner's main thread was in uninterruptible wait 27% of a three-minute sample, with no
 commit-sync waits left. Three causes, and what was done:

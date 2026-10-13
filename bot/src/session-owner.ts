@@ -1128,7 +1128,8 @@ export class SessionOwner {
   private async deploymentWait() {
     const run=getActiveDeploymentRun();
     if(!run||!['prepared','draining'].includes(run.status))return null;
-    const since=(db.query("SELECT MIN(created_at) AS at FROM deployment_run_events WHERE run_id=? AND event IN ('prepared','draining')").get(run.id) as {at:string|null}|null)?.at??run.created_at;
+    // The run and its first prepared event are inserted together. Re-reading event history
+    // for this timestamp once held the accepting loop for eight seconds under disk load.
     const running=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
     // Conversations whose agents carry on through the restart are not waited for; the update line
     // says how many continue instead of listing them as holding it (design 2026-10-07 §3.1 step 6).
@@ -1153,7 +1154,7 @@ export class SessionOwner {
     // Only commits accepted after activation need another update.
     const newest=getDeploymentDesiredState('concierge')?.desired_commit??null;
     const queued=commit&&newest&&newest!==commit?await pendingUpdateSummary(commit,newest):{notes:[],subjects:[]};
-    return {runId:run.id,commit,waitingSince:iso(since),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};
+    return {runId:run.id,commit,waitingSince:iso(run.created_at),sessions,continuing,notes:holds.notes,subjects:holds.subjects,queued};
   }
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every
