@@ -299,7 +299,7 @@ interface AgentSessionStatusProjectionResult {
   error: string | null;
 }
 
-function moveUnreceivedAutomaticFirstTurn(input:TurnExecutionInput,dispatchAttempt:number,message:string):boolean {
+function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatchAttempt:number,message:string):boolean {
   if(input.presentation!=='native'||!sessionMetadata(input.session).automaticProviderChoice||
     (input.providerId!=='codex'&&input.providerId!=='claude-code'))return false;
   const other=input.providerId==='codex'?'claude-code':'codex';
@@ -308,16 +308,14 @@ function moveUnreceivedAutomaticFirstTurn(input:TurnExecutionInput,dispatchAttem
   if(!capacity||capacity.used>=100||!choice.model||modelCapacityRefused(other,choice.model))return false;
   return db.transaction(()=>{
     const session=getSessionById(input.session.id);
-    const turn=db.query(`SELECT status,owner_instance_id,dispatch_attempt,saved_kind,provider_started_at,
-      provider_input_acknowledged_at,provider_turn_id,outbound_text,stop_requested_at
+    const turn=db.query(`SELECT status,owner_instance_id,dispatch_attempt,saved_kind,outbound_text,stop_requested_at
       FROM turns WHERE id=? AND session_id=?`).get(input.turnId,input.session.id) as {
-      status:string;owner_instance_id:string|null;dispatch_attempt:number;saved_kind:string|null;provider_started_at:string|null;
-      provider_input_acknowledged_at:string|null;provider_turn_id:string|null;outbound_text:string|null;stop_requested_at:string|null;
+      status:string;owner_instance_id:string|null;dispatch_attempt:number;saved_kind:string|null;
+      outbound_text:string|null;stop_requested_at:string|null;
     }|null;
     if(!session||session.provider_id!==input.providerId||!sessionMetadata(session).automaticProviderChoice||
       !turn||turn.status!=='running'||turn.owner_instance_id!==input.ownerInstanceId||
-      turn.dispatch_attempt!==dispatchAttempt||turn.saved_kind||turn.provider_started_at||turn.provider_input_acknowledged_at||
-      turn.provider_turn_id||turn.outbound_text||turn.stop_requested_at||
+      turn.dispatch_attempt!==dispatchAttempt||turn.saved_kind||turn.outbound_text||turn.stop_requested_at||
       db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(session.id,input.turnId)||
       db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND id<>?
         AND kind IN ('create','input','request') LIMIT 1`).get(session.id,input.inputId))return false;
@@ -328,7 +326,9 @@ function moveUnreceivedAutomaticFirstTurn(input:TurnExecutionInput,dispatchAttem
     db.query(`UPDATE sessions SET provider_id=?,agent_session_uuid=NULL,
       binding_generation=binding_generation+1,native_metadata_json=? WHERE id=?`)
       .run(other,JSON.stringify(metadata),session.id);
-    db.query('UPDATE turns SET provider_model=NULL,reasoning_effort=NULL,dispatch_next_attempt_ms=0 WHERE id=?')
+    // The refused Codex turn's ids describe the provider it is leaving, not the one it starts on.
+    db.query(`UPDATE turns SET provider_model=NULL,reasoning_effort=NULL,dispatch_next_attempt_ms=0,
+      provider_started_at=NULL,provider_input_acknowledged_at=NULL,provider_turn_id=NULL WHERE id=?`)
       .run(input.turnId);
     recordSessionEvent({eventId:`capacity-reroute:${input.turnId}`,sessionId:session.id,turnId:input.turnId,
       kind:'provider',payload:{from:input.providerId,to:other,reason:'model_capacity_refusal'}});
@@ -1079,12 +1079,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
-      const unreceivedCapacityRefusal=!structuredFailure?.modelAtCapacity||!!db.query(`SELECT 1 FROM turns
-        WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
-          AND provider_started_at IS NULL AND provider_turn_id IS NULL
-          AND provider_input_acknowledged_at IS NULL`).get(input.turnId,input.ownerInstanceId,dispatchAttempt);
-      if(structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed&&replaySafe&&unreceivedCapacityRefusal&&
-        moveUnreceivedAutomaticFirstTurn(input,dispatchAttempt,message)) {
+      // Codex accepts the turn and then ends it with serverOverloaded before the model does
+      // anything (all three refusals on 2026-10-13 were acknowledged). Reaching this branch
+      // already proves no tools, no output and no artifacts, and the provider confirmed the
+      // end, so the model did nothing: requiring "never received" made the fix miss every
+      // refusal that actually happened.
+      if(structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed&&replaySafe&&
+        moveAutomaticFirstTurnOffRefusingModel(input,dispatchAttempt,message)) {
         await progressController?.pauseForRetry();
         await statusController?.stop();
         log('warn','automatic_model_capacity_rerouted',{turn_id:input.turnId,session_id:input.session.id,
@@ -1127,7 +1128,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
-      let retryable = replaySafe&&unreceivedCapacityRefusal
+      let retryable = replaySafe
         && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
@@ -1141,7 +1142,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
       if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
-        !invalidGoogleModel && !(structuredFailure?.modelAtCapacity&&!unreceivedCapacityRefusal)) {
+        !invalidGoogleModel) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }
@@ -1160,7 +1161,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
       await statusController?.stop();
-      if(input.presentation==='native'&&!retryable&&!ambiguous&&!structuredFailure?.modelAtCapacity) {
+      if(input.presentation==='native'&&!retryable&&!ambiguous) {
         if(!failRunningTurnAndReleaseSession(input.turnId,input.ownerInstanceId,message))throw new Error('Native provider refusal could not release its exact execution.');
         log('error','native_provider_refused',{...errorFields(error),turn_id:input.turnId,session_id:input.session.id,dispatch_attempt:dispatchAttempt});
         return {status:'error',turnId:input.turnId,error:message};
