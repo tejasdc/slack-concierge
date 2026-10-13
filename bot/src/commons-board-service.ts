@@ -63,8 +63,9 @@ async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknow
   const response=await fetch(`${ORIGIN()}/api/lab${path}`,{method,signal:AbortSignal.timeout(20_000),
     headers:{authorization:`Bearer ${key}`,'x-concierge-agent-source':`${actor.inputId} ${actor.runId}`,...(body?{'content-type':'application/json'}:{})},
     ...(body?{body:JSON.stringify(body)}:{})});
-  const answer=await response.json().catch(()=>({}));
-  if(!response.ok)throw new BoardError(`${answer.code??response.status}: ${answer.reason??answer.error??answer.message??'the lab record refused this'}`);
+  // A refusal body can be absent or the JSON literal null; the refusal must still name the status and route.
+  const answer=(await response.json().catch(()=>null))??{};
+  if(!response.ok)throw new BoardError(`${answer.code??response.status}: ${answer.reason??answer.error??answer.message??`the lab record refused this (HTTP ${response.status} from ${method} /api/lab${path})`}`);
   return answer;
 }
 
