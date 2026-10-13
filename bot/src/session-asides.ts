@@ -45,7 +45,15 @@ function run(command:string,args:string[],options:{cwd:string;env:NodeJS.Process
   return new Promise((resolve,reject)=>{
     const child=spawn(command,args,{cwd:options.cwd,env:options.env,stdio:['ignore','pipe','pipe']});
     let stdout='',stderr='';
-    const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('The side question took longer than three minutes.'));},ASIDE_TIMEOUT_MS);
+    // A last-resort bound for a copy that stalls (one ran past three minutes on his Mac on 2026-10-13
+    // with nothing recorded): it says what the copy was doing, and forces the process down if it
+    // ignores the polite stop, so a stuck copy never lives on.
+    const timer=setTimeout(()=>{
+      log('warn','session_aside_timed_out',{command:command.split('/').pop(),elapsed_ms:ASIDE_TIMEOUT_MS,stdout_bytes:stdout.length,stdout_tail:stdout.slice(-300),stderr_tail:stderr.slice(-300)});
+      child.kill('SIGTERM');
+      setTimeout(()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');},5_000).unref();
+      reject(new Error('No answer came within three minutes, so that copy was stopped. Ask again.'));
+    },ASIDE_TIMEOUT_MS);
     child.stdout.on('data',chunk=>{stdout+=chunk;});
     child.stderr.on('data',chunk=>{stderr=(stderr+chunk).slice(-4000);});
     child.on('error',error=>{clearTimeout(timer);reject(error);});
