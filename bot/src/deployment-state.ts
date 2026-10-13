@@ -1322,6 +1322,53 @@ export function parkDeploymentRepair(
   return getDeploymentRepairIncident(incidentId)!;
 }
 
+/** Retire terminal repair claims after a newer deployment proves the same target healthy. */
+function retireSupersededDeploymentRepairsInTransaction(
+  isAlive: typeof isProcessIdentityAlive,
+): number {
+  const stale = db.query(`SELECT incident.id AS incident_id, incident.error AS incident_error,
+        run.id AS run_id,
+        run.runner_pid, run.runner_boot_id, run.runner_start_ticks,
+        incident.supervisor_pid, incident.supervisor_boot_id, incident.supervisor_start_ticks,
+        (SELECT newer.id FROM deployment_runs newer
+          WHERE newer.target=run.target AND newer.status='succeeded'
+            AND newer.rowid>run.rowid ORDER BY newer.rowid DESC LIMIT 1) AS successor_id
+      FROM deployment_repair_incidents incident
+      JOIN deployment_runs run ON run.id=incident.run_id
+      WHERE run.status IN ('failed','ambiguous')
+        AND run.repair_state IN ('repairing','reviewing','retrying')
+        AND incident.status NOT IN ('parked','completed')`)
+    .all() as Array<{
+        incident_id: string; incident_error: string | null; run_id: string;
+        successor_id: string | null;
+        runner_pid: number | null; runner_boot_id: string | null; runner_start_ticks: string | null;
+        supervisor_pid: number | null; supervisor_boot_id: string | null; supervisor_start_ticks: string | null;
+    }>;
+  let retired = 0;
+  for (const row of stale) {
+    if (!row.successor_id) continue;
+    if (isAlive({ pid: row.runner_pid || 0, bootId: row.runner_boot_id || "",
+      startTicks: row.runner_start_ticks || "" })) continue;
+    if (isAlive({ pid: row.supervisor_pid || 0, bootId: row.supervisor_boot_id || "",
+      startTicks: row.supervisor_start_ticks || "" })) continue;
+    const reason = `Repair runner ended; later deployment ${row.successor_id} succeeded.`;
+    parkDeploymentRepair(row.incident_id,
+      row.incident_error ? `${row.incident_error}\n${reason}` : reason,
+      { repairAgentHandoff: false });
+    appendRunEvent(row.run_id, "repair_superseded", {
+      incident_id: row.incident_id, succeeded_run_id: row.successor_id,
+    });
+    retired += 1;
+  }
+  return retired;
+}
+
+export function retireSupersededDeploymentRepairs(
+  isAlive = isProcessIdentityAlive,
+): number {
+  return writeDeploymentTransaction(() => retireSupersededDeploymentRepairsInTransaction(isAlive))();
+}
+
 export function listRunnableDeploymentRepairs(): DeploymentRepairIncidentRow[] {
   return db.query(`SELECT incident.* FROM deployment_repair_incidents incident
     JOIN deployment_runs run ON run.id=incident.run_id
@@ -2002,6 +2049,7 @@ export function completeDeploymentRun(input: {
       SET status='completed', error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE run_id=? AND status NOT IN ('parked', 'completed')`).run(input.runId);
 
+    retireSupersededDeploymentRepairsInTransaction(isProcessIdentityAlive);
     return completedRun;
   })();
 }

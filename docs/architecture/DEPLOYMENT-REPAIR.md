@@ -31,6 +31,11 @@ checkpoint is committed before `current` moves, so either path recognizes an
 interrupted candidate and restores LKG on the same run. The root systemd repair
 unit owns standalone CLI execution, diagnosis, Git integration, and retry. It is
 outside Concierge's managed provider queue and does not borrow a managed session.
+On deployment success and each reconciliation, the owner parks a terminal failed repair whose
+recorded runner and supervisor are gone once a later run for the same target has
+succeeded. It keeps the failed run's original error and an audit event naming the
+successful successor. A dead historical claim cannot retain repair ownership or
+hold the outside monitor after a later proven release.
 Deployment machinery records evidence and available commit-to-task authorship
 mappings but never infers causality or selects a feature task as the culprit.
 Candidate preparation is an evidence boundary too. The release builder returns a
