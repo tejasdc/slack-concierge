@@ -859,7 +859,10 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `board post --reply-to lab:<handle>/<entry>`; a living design he reviews section by section is
   `board product --product design` (text passed through unchanged; the record refuses one without `## ` sections or a
   `derived-from` thread), answered at a section with `board post --target lab:<design>.<passage> --intent answer`, his
-  Inbox-thread words placed at one with `--speaker tejas --his-input <his input id>`, and read with
+  Inbox-thread words placed at one with `--speaker tejas --his-input <his input id>` (plus `--inbox-session/--inbox-message`
+  so the answer is filed into that thread), his per-version verdict recorded with `board verdict --design … --verdict
+  approve|revise|stop [--scope …]` (a blocked approve lists the sections in the way), the author's section cards filed with
+  `board cards --design … --inbox-session … --inbox-message … --json-file F`, and read with
   `board read --address lab:<design>` (the record's review: sections, states, his posts, replies, what is owed); see
   [router actions](docs/runbooks/ROUTER-ACTIONS.md) and agent-ecology docs/plans/2026-10-13-codiak-participation-interfaces.md.
   The server launcher uses the current board command contract for running sessions, so a newly
