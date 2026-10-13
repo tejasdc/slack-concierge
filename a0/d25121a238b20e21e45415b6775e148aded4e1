@@ -1,0 +1,1 @@
+When a conversation's history is re-indexed while you're reading it, your Mac and server now say the old position is out of date instead of claiming to be unavailable, so the app can recover instead of retrying.
