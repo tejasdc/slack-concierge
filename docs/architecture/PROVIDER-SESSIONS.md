@@ -76,8 +76,9 @@ subscriptions, so an interactive Antigravity CLI sign-in on each machine is requ
 Its documented status-line payload supplies the account email and plan to an owner-only file
 containing only those fields. The quota reader first checks `agy models`, because
 unauthenticated `agy -p /usage` opens an OAuth prompt even with stdin closed.
-Once signed in, it reads `agy -p /usage --output-format json` without an agent
-turn. It accepts only the Gemini group's five-hour and weekly buckets with
+Once signed in, it checks that the offered model list still includes the model
+Automatic would select, then reads `agy -p /usage --output-format json` without
+an agent turn. It accepts only the Gemini group's five-hour and weekly buckets with
 numeric remaining fractions and a valid account identity. A failed, stale, or
 mismatched reading is unknown capacity, not zero use. Google's included quota
 and optional AI credits are different pools; Concierge refuses dispatch while
@@ -90,14 +91,11 @@ minutes as unknown, so an old snapshot never advertises current room.
 The owner stores Google's account reading and per-model refusal cache in
 additive tables, leaving the installed Claude and Codex schema intact.
 Thinkering reads that owner projection in Provider accounts; each instance picks
-only its currently signed-in Google account for explicit Google sessions and
-banked work. Banked work uses the same fresh-reading and reserve rule as the
-other providers. Automatic new-session choice uses Claude and Codex only,
-including when both have reached capacity and when a zero-work first turn moves
-to the other provider. Gemini requires Tejas to name it for the specific work;
-capacity readings or model evaluations do not add it to Automatic or make it a
-fallback [decision: gemini-only-when-tejas-asks]. An existing session never
-changes its provider. A Google quota refusal is replay-safe only
+only its currently signed-in Google account for Google sessions and banked work.
+Banked work uses the same fresh-reading and reserve rule as the other providers.
+[Automatic starts](#automatic-starts-for-new-work) admit Google for bounded small
+agent requests [decision: mix-claude-codex-google-for-new-work]; an existing
+session never changes its provider. A Google quota refusal is replay-safe only
 when the CLI confirms both zero turns and zero tokens and there is no observed
 output or tool activity. If a fresh structured reading names the exhausted
 window's reset, the input waits until then. If the reset is unreadable, it
@@ -306,19 +304,42 @@ the exact incident inputs. Manual pauses and unknown outcomes remain binding.
 
 New unbound coding work defaults to Automatic when an agent names a project without a provider;
 callers can also request `--provider auto` explicitly. At creation, the session owner reads
-recent allowance data for accounts this machine can actually launch. Claude remains the
-ordinary choice while its roomiest usable account is below the existing 90% warning level.
-Once Claude reaches that level, the owner starts the new session on whichever provider has
-more headroom among Claude and Codex. An explicitly chosen provider, model or
-effort is never replaced. An existing session keeps its provider; this is a
-creation decision, not a fallback or replay chain.
+recent allowance data for accounts this machine can actually launch. Claude and Codex both
+join the ordinary choice. An agent marks a new Automatic request `--small-task` when its
+deliverable and scope fit one focused agent session; that also admits Google. This is a
+structured judgment by the requesting agent, rather than a guess from prompt length.
+Agents can still name `--provider google` for a specific task. Google currently handles
+sequential turns and queues follow-ups until a running turn finishes, so work needing
+live steering is not marked small. An explicitly chosen provider, model or effort is never
+replaced; an existing session keeps its provider.
+
+Each candidate needs a fresh, complete allowance reading, a launchable account and an
+offered model. Claude may use a verified account home; Codex and Google use only the
+account signed in to their local execution host. The candidate's spent fraction is its
+tightest usable allowance window, so a nearly exhausted five-hour or weekly bucket
+reduces its share. The owner first uses candidates below the existing 90% warning level;
+the others are eligible only when every candidate has crossed it. A stable hash of the
+accepted request identity then distributes starts in proportion to each candidate's
+remaining allowance. That mixes providers even when their readings are equal without
+storing a second rotation counter or delaying the request. As usage changes, the mix
+shifts toward the roomier account. No selection promises that a running turn cannot
+consume the last of a five-hour allowance. If all verified candidates are spent, the
+owner binds to the earliest verified reset under the existing hold protocol. Unknown
+or stale room never becomes a guessed start.
+
+This replaces Claude-first-until-90%, which spent Claude's five-hour allowance before
+using Codex, and the earlier explicit-only Google rule. Sending every task to Google
+would ignore its limited matched-task evidence and missing live steering; the small-task
+mark uses its allowance where the current contract fits. Tejas's later request to mix
+all three for new work supersedes the earlier Gemini restriction
+[decision: mix-claude-codex-google-for-new-work].
 
 An allowance reading cannot show whether a model is accepting turns. Codex App Server's
 `TurnError.codexErrorInfo=serverOverloaded` is a model-capacity refusal, separate from a
 usage reset or sign-in failure. The owner remembers that exact provider and model for
 20 minutes, because the October 13 Sol refusals recurred 17 and 13 minutes apart; a
 successful turn clears the observation sooner. Automatic creation skips a remembered
-model and uses the other provider only when its own fresh allowance reading proves
+model and uses another eligible provider only when its own fresh allowance reading proves
 room. A named provider or model remains the caller's choice.
 
 Codex accepts the turn first and then ends it with `serverOverloaded` before the model
@@ -330,11 +351,11 @@ provider confirmed the end and no tool, assistant output or artifact was observe
 same proof that already lets a usage refusal wait and run again. Acknowledgement alone
 is not an effect; an ambiguous outcome or any work still blocks replay.
 
-If the first ordinary turn of an Automatic session gets such a refusal and the other
-provider's fresh reading proves room, the owner changes that session's provider, drops
+If the first ordinary turn of an Automatic session gets such a refusal and another
+eligible provider's fresh reading proves room, the owner changes that session's provider, drops
 the refused Codex thread and turn IDs, and puts its **same** retained turn back in the
 queue. The session, input and request IDs do not change. This applies to native and
-agent-request creation; the Automatic origin is retained with the session. A bound
+agent-request creation; the Automatic origin and small-task mark stay with the session. A bound
 conversation with earlier turns never changes provider. Saved work retains its chosen
 provider and time. Choosing a model on an Automatic session removes its eligibility.
 Every other capacity refusal (an explicit choice, a later turn, or no alternative with
@@ -342,11 +363,11 @@ room) waits and retries on its own provider under the ordinary bounded retry pol
 instead of failing. The first version of this fix (October 13) required the input to be
 unacknowledged, so it moved none of the refusals that actually occur and parked them.
 
-The owner ignores stale or unreadable allowance as proof of room. If both providers are spent,
+The owner ignores stale or unreadable allowance as proof of room. If all eligible providers are spent,
 it binds the new request to the provider whose spent window refills first, so the existing
 provider usage hold retains the input and wakes it at that reset. A Claude account with a
 stored login and an observed usage refusal remains eligible as a *wait* target even when
-its immediate launch proof fails before that reset. If neither provider has a
+its immediate launch proof fails before that reset. If no eligible provider has a
 usable reading or reset, automatic creation refuses instead of guessing. The 90% provider-free
 warning names the risk that both providers may stall when both have reached that level;
 one combined provider-free warning also fires when both have already crossed 90% before

@@ -14,6 +14,7 @@ import { antigravityExecutable } from "./antigravity";
 import { claudeAccountFacts, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
 import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
+import { resolveProviderAlias } from "./aliases";
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -336,6 +337,15 @@ async function readAntigravity(): Promise<ProviderUsage> {
   if (preflight.code !== 0) return unavailable(/please sign in|authentication required/i.test(preflight.stderr)
     ? "Sign in to the Google agent on this machine to show its allowance."
     : "Google's sign-in state could not be checked.");
+  // The same preflight that proves sign-in also proves the configured model is still
+  // offered. Google withdrew the previous alias while quota remained available.
+  let offeredModels: unknown;
+  try { offeredModels = JSON.parse(preflight.stdout)?.command?.data?.models; }
+  catch { return unavailable("Google's offered models could not be read."); }
+  const selectedModel = resolveProviderAlias('google').model;
+  if (!Array.isArray(offeredModels) || !selectedModel ||
+    !offeredModels.some((model: any) => model?.id === selectedModel))
+    return unavailable("Google's selected model is not currently offered.");
   let stdout = "", stderr = "", code = -1;
   try { ({ stdout, stderr, code } = await capture(["-p", "/usage", "--output-format", "json"], 25_000)); }
   catch { return unavailable("Google's allowance could not be read."); }
@@ -403,10 +413,8 @@ export function scheduleProviderAccountUsageRefresh(): Promise<void> {
 /**
  * Keeps reading, on its own clock, and says what it saw before anyone hits a wall.
  *
- * Half-hourly is the right cadence while there is room, and far too coarse near a limit: an
- * hour's warning on a five-hour window needs more than two samples to draw a line through.
- * So the interval tightens to five minutes once a window on the account in use is more than
- * about halfway through, and relaxes again afterwards. A reading costs one short-lived
+ * Three minutes keeps the six-minute account readings usable for Automatic choices.
+ * The interval tightens to one minute near a limit. A reading costs one short-lived
  * process against a local cache, so the dense period is cheap and bounded.
  *
  * This used to live only in the Slack-enabled composition, which meant an instance running

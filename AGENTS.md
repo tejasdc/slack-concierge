@@ -38,10 +38,10 @@ Account budget holds, withdrawn queued requests, and the audited October 10 stal
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
 That repair credits the exact covered taste-mining request to the retained Codex result
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
-Automatic new-session choice also remembers typed model-capacity refusals and moves a
-zero-work refused first turn between Claude and Codex. Gemini is only for work Tejas explicitly
-assigns to it, never an automatic start or fallback [decision: gemini-only-when-tejas-asks];
-see [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
+Automatic new-session choice spreads work across fresh, usable Claude and Codex allowance;
+a bounded small agent request also admits Google [decision: mix-claude-codex-google-for-new-work].
+Typed model refusals can move only a zero-work first turn, preserving its request identity.
+See [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
 
 Google Antigravity agent sessions use the existing durable execution host and retain the
 Google conversation ID for later turns. Each machine running them has its own sign-in and
