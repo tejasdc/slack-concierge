@@ -381,6 +381,8 @@ An agent's prompt-answer partial is one post in the thread. Its later bodyless f
 that exact request and exposes `closingLine` on the existing answer message: the disposition
 and checked/not-checked facts. The closure is retained separately from the answer bytes. A
 final containing new body text is posted as a new message with its own closing line. The
+prepared topic view refreshes the existing answer on closure and catches up retained closures
+after an update; its bounded preview carries the line as well as the exact message detail. The
 owner never decides whether to show a post by comparing its words, files or hash with an
 earlier post; historical duplicates remain visible.
 `needsYou` counts decisions that are open or partially answered, **ready**,

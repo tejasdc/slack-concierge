@@ -71,7 +71,11 @@ test('prepared topic preserves canonical question, request, attention, and work 
  // those items must never make one full answer copy per question.
  const hugeText='A retained eight megabyte answer. '.repeat(260000);
  db.query('UPDATE session_owner_events SET payload_json=? WHERE event_id=?').run(JSON.stringify({text:hugeText}),'post-one');
+ db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)')
+  .run('post:closure:post-one',session,'root-one','answer_closure',JSON.stringify({postId:'post-one',closingLine:'Completed · Checked on the real system: one answer.'}),at);
  const updatedDisplay=preparedInboxDisplay(db,session,post,'post-one')!;
+ expect(updatedDisplay.preview.closingLine).toBe('Completed · Checked on the real system: one answer.');
+ expect(JSON.parse(updatedDisplay.detailJson!).closingLine).toBe('Completed · Checked on the real system: one answer.');
  prepared.query('UPDATE presentation_message_display SET display_json=? WHERE event_sequence=?').run(JSON.stringify(updatedDisplay.preview),post);
  const insert=db.query('INSERT INTO inbox_questions(question_id,topic_id,state,kind,context,brief_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)');
  db.transaction(()=>{for(let i=0;i<1000;i++)insert.run(`historical-${i}`,'fixture-topic','read','reading','ready',JSON.stringify({...brief,reads:['post-one']}),at,at);})();

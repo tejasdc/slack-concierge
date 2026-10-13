@@ -58,8 +58,12 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const quiet=result&&row.turn_id!==null?(database.query(`SELECT json_extract(payload_json,'$.quiet') AS quiet
     FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='turn_outcome'
       AND json_extract(payload_json,'$.quiet') IS NOT NULL LIMIT 1`).get(sessionId,row.turn_id) as {quiet:string}|null)?.quiet?.trim():null;
+  const closing=post?database.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
+    .get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
+  const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&event.answersQuestion===true?{answersQuestion:true}:{}),
     content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
@@ -81,6 +85,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     content:bounded(full.content,1024).text,tool:null,phase:null,...(full.inputId?{inputId:full.inputId}:{}),
     ...(full.mixedThreads?{mixedThreads:true}:{}),...(full.answeredByPost?{answeredByPost:true}:{}),
     ...(full.answersQuestion?{answersQuestion:true}:{}),
+    ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
     ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.relayed?{relayed:true}:{}),
     ...(full.quiet?{quiet:bounded(String(full.quiet),160).text}:{}),
