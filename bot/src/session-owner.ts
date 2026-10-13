@@ -64,7 +64,7 @@ import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
 import {commitWork,originInput} from './commit-work';
-import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -1550,6 +1550,7 @@ export class SessionOwner {
       // His message is his answer to whatever this session (or Inbox thread) asked him.
       const canceled=saved.input.receipt_json&&JSON.parse(saved.input.receipt_json).state==='canceled';
       if(!saved.duplicate&&!agent&&!canceled)clearNeedsForHumanInput(session.id,input);
+      if(!saved.duplicate&&!canceled&&sessionMetadata(session).inbox)reopenThreadForHisMessage(session.id,saved.input.id,input.replyToMessage?.messageId);
       if(forward&&!saved.duplicate&&!canceled) {
         if(!this.communication)throw new SessionOwnerError('Session communication is unavailable; the reply was not accepted.',503);
         if(forward.peer&&!db.query('SELECT 1 FROM turns WHERE session_id=? LIMIT 1').get(session.id))

@@ -301,6 +301,37 @@ unless that topic contains the dispatch root or the named thread. This rule also
 already retained answers under their request's placed root without changing their bytes.
 Both server and Mac startup reconcile requests placed after their answers arrived: they close
 the answered request and move its existing reading item without notifying twice.
+
+**Threads keep themselves current** (thread upkeep in `session-topics.ts`; Tejas, 2026-10-12,
+capture `d30a141a`: "you're not maintaining the threads, so a lot of threads that could be closed
+are still in my thread view"). On that day 71 open threads held requests whose work had ended:
+his replies to the agent working on a request were never counted as its work, a "could not finish"
+answer posted into the thread closed nothing, and no thread ever closed itself. Now:
+- His reply forwarded to the agent working on a request is linked to that request as a dispatch
+  (`topic-link:forward:<request>:<topicRequest>`), in time order, so the answer to his reply
+  settles the request; a reply after the request closed reopens it while that work runs.
+- Once nothing sent for an open request is running, its latest answer decides (owner event
+  `topic-settle:<request>:<work>`): done closes it `completed` under `refuseUnfinishedCompletion`,
+  an agent's `failed` closes it `failed`, a cancelled send closes it `withdrawn`, and a decision
+  he still owes keeps it open. Any other end (never answered, undetermined, a decision nobody
+  waits on, held behind failed work) is flagged once per request and work to the router as one
+  service notice per pass (`topic-flag:<request>:<work>`), which sends it again, closes it or asks.
+- A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
+  owner) at the moment its last request or question ends or an agent's final answer arrives,
+  when no request is open, nothing waits on him (an unread answer counts, as does a question set
+  aside until a time), no work for its roots is running and it is not set aside. It is decided
+  only at such an ending, never by a pass over quiet threads, so a thread reopened by hand stays
+  open until something in it ends again.
+- A closed thread reopens when he writes in it (`topic-reopen:his:<input>`) or when new work is
+  placed there (`place`, `request add`, `request link`, `request reopen`), bringing back the
+  questions its closure ended.
+- The pass runs on the owner's reading cadence (about every three minutes) in both runtime
+  compositions, over open threads and threads with his reply still being worked on.
+
+**A thread's title is checked against what it holds.** When a thread's newest request shares no
+word with its title and at least half of its last four requests do not either, `request add`
+returns `titleDrift` and the router's `<topic>` block carries it with what to do: rename the
+thread, or, when he named it himself, move the unrelated requests into their own thread.
 A post's `--topic` must be the
 topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
 a thread other than its own input's, and `answeredByPost` when it posted into its own thread.
