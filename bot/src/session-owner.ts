@@ -2465,10 +2465,12 @@ export class SessionOwner {
         if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
         if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
         if(row.transcript_text!==null)return asyncResult?{state:'done',text:row.transcript_text}:{text:row.transcript_text};
-        await stageSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),{attachmentId:id,sha256:row.sha256,name:row.name,contentType:row.content_type,bytes:row.bytes});
+        const staged=stageSpeechJob(speechRoot(process.env.CONCIERGE_STATE_DIR!),{attachmentId:id,sha256:row.sha256,name:row.name,contentType:row.content_type,bytes:row.bytes});
+        await awaitingOutside(()=>staged);
         state=this.transcriptionState(id);
       }
-      await ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!).catch(()=>{
+      const worker=ensureSpeechWorker(process.env.CONCIERGE_STATE_DIR!);
+      await awaitingOutside(()=>worker).catch(()=>{
         throw new SessionOwnerError('The speech worker is unavailable. Your recording is kept and can be retried.',424,'AUDIO_WORKER_UNAVAILABLE');
       });
       if(asyncResult)return state;
@@ -2482,11 +2484,11 @@ export class SessionOwner {
           ?'Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.'
           :'Speech-to-text could not turn this recording into words. Your recording is kept.',422,
           current.reason==='transcriber_missing'?'AUDIO_TRANSCRIBER_UNAVAILABLE':'AUDIO_TRANSCRIPTION_FAILED');
-        await new Promise(resolve=>setTimeout(resolve,250));
+        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,250)));
       }
     }
     const pending=this.transcribing.get(id);
-    if(pending){const result=await pending;return asyncResult?{state:'done' as const,text:result.text}:result;}
+    if(pending){const result=await awaitingOutside(()=>pending);return asyncResult?{state:'done' as const,text:result.text}:result;}
     const job=this.transcribeAttachmentOnce(id).finally(()=>this.transcribing.delete(id));
     this.transcribing.set(id,job);
     const result=await job;
@@ -2523,7 +2525,8 @@ export class SessionOwner {
       // A recording with no speech in it (a cancelled dictation, a report that was only an image)
       // has no words; answering that as a failure told him dictation failed on the server and
       // held his report (capture 4a659382).
-      const result=await transcribeAudioPath({slackFileId:row.id,title:row.name,path}).catch((error:unknown)=>{
+      const transcription=transcribeAudioPath({slackFileId:row.id,title:row.name,path});
+      const result=await awaitingOutside(()=>transcription).catch((error:unknown)=>{
         if(error instanceof NoSpeech)return null;
         const missing=error instanceof Error&&/exited 127|ENOENT/.test(error.message);
         log('warn','audio_transcription_failed',{attachment_id:row.id,reason:missing?'transcriber_missing':'transcriber_failed'});
