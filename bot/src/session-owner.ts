@@ -494,6 +494,11 @@ export class SessionOwner {
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
   private readonly openStreams=new Set<()=>void>();
   private streamsClosed=false;
+  /** The most recent ChatGPT source refresh pass this owner started, in memory only. A rate-limited
+   * pass outlived the gateway's 120 s command deadline on 2026-10-13 and its 200 reached nobody; a
+   * caller cut off there reads the outcome with `GET /sources/refresh` instead of starting another
+   * crawl, and a POST during a pending pass joins it. A restart forgets it. */
+  private sourceRefreshPass:{view:{startedAt:string;settledAt:string|null;refresh:unknown[]|null;error:{code:string;message:string}|null};settled:Promise<any>}|null=null;
   // A subscriber never ends its own event stream, so the owner ends every open one when it drains.
   // A subscriber reconnects within seconds over its kept-alive connection, which a graceful stop
   // still serves, so the owner also refuses every later stream: none can outlive the drain.
@@ -512,6 +517,25 @@ export class SessionOwner {
    * a read covers every machine and a change applies here. A call for a peer is forwarded to
    * that peer's identical route, where it runs against that peer's own disk.
    */
+  /** Joins the pending refresh pass or starts one; the pass settles its remembered view whether or
+   * not any HTTP caller is still waiting. */
+  private sourceRefresh(refresh:()=>Promise<any>):Promise<any> {
+    const pending=this.sourceRefreshPass;
+    if(pending&&!pending.view.settledAt)return pending.settled;
+    const view={startedAt:new Date().toISOString(),settledAt:null as string|null,refresh:null as unknown[]|null,error:null as {code:string;message:string}|null};
+    const settled=refresh().then(value=>{
+      view.settledAt=new Date().toISOString();
+      view.refresh=Array.isArray(value?.refresh)?value.refresh:null;
+      return value;
+    },error=>{
+      view.settledAt=new Date().toISOString();
+      view.error={code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:(error instanceof Error?error.message:String(error)).slice(0,500)};
+      throw error;
+    });
+    this.sourceRefreshPass={view,settled};
+    return settled;
+  }
+
   private machineName(value:unknown):string|null {
     if(value===undefined||value===null)return null;
     if(typeof value!=='string'||!MACHINE_NAME.test(value))throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
@@ -3010,8 +3034,10 @@ export class SessionOwner {
         const input=object(body);only(input,['provider']);
         if(input.provider!=='chatgpt')throw new SessionOwnerError('Only the configured ChatGPT inventory supports explicit refresh.');
         if(!this.runtime.sources?.refresh)throw new SessionOwnerError('Source refresh is unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        result=await this.runtime.sources.refresh();
+        result=await awaitingOutside(()=>this.sourceRefresh(()=>this.runtime.sources!.refresh!()));
       }
+      else if(request.method==='GET'&&parts[0]==='sources'&&parts[1]==='refresh'&&parts.length===2)
+        result={pass:this.sourceRefreshPass?{...this.sourceRefreshPass.view}:null};
       // `runtime.auth` guards only this instance's own controls, and is checked where they
       // are used: a call for a peer must not be refused because this machine has none.
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts.length===2) {

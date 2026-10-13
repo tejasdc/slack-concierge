@@ -4142,6 +4142,44 @@
       }
     },
     {
+      "name": "owner-remembers-most-recent-chatgpt-refresh-pass",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sources/refresh"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "pass": {
+            "startedAt": "2026-10-13T10:30:00.000Z",
+            "settledAt": "2026-10-13T10:34:27.000Z",
+            "refresh": [
+              {
+                "accountScope": "chatgpt:50a5ee17cb005388e7f31e1ed28043dda745bb3d2b65d8042afaead6fd4af575",
+                "state": "partial",
+                "inventoryComplete": false,
+                "discovered": 3,
+                "saved": 2,
+                "indexed": 2,
+                "failed": 1,
+                "reportedTotal": null,
+                "lastAttemptAt": "2026-09-15T12:00:00.000Z",
+                "lastCompleteAt": null,
+                "reason": "One synthetic source could not be retained; accessible inventory is incomplete."
+              }
+            ],
+            "error": null
+          }
+        }
+      },
+      "expect": {
+        "providerSends": 0,
+        "sessionInputs": 0,
+        "capabilityCalls": 0,
+        "ledgerWrites": 0
+      }
+    },
+    {
       "name": "explicit-chatgpt-agent-request-creates-native-target",
       "request": {
         "method": "POST",
