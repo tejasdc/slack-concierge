@@ -1453,7 +1453,8 @@ export class SessionOwner {
     const project=sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
-    return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
+    return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
+      ...(input.provider==='auto'?{automaticProviderChoice:true}:{})};
   }
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
@@ -1490,12 +1491,14 @@ export class SessionOwner {
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):input.provider as ProviderId;
       const providerDefault=provider==='codex'?resolveProviderDefault('codex'):
+        provider==='claude-code'&&input.provider==='auto'?resolveProviderAlias('cc-opus'):
         provider==='antigravity'?resolveProviderAlias('google'):null;
       const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
       const defaults=input.provider!=='auto'&&selected?.provider===provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       if(savedWork&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
       const session=createNativeSession(provider,{title,summary:purposeFromFirstWords(input.firstInput?.text)??(title?undefined:'A conversation you started that has no message yet.'),purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
+        ...(input.provider==='auto'?{automaticProviderChoice:true}:{}),
         ...(providerDefault?{model:providerDefault.model,reasoningEffort:providerDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;

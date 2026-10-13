@@ -308,6 +308,35 @@ Once Claude reaches that level, the owner starts the new session on whichever pr
 more headroom. An explicitly chosen provider, model or effort is never replaced. An existing
 session keeps its provider; this is a creation decision, not a fallback or replay chain.
 
+An allowance reading cannot show whether a model is accepting turns. Codex App Server's
+`TurnError.codexErrorInfo=serverOverloaded` is a model-capacity refusal, separate from a
+usage reset or sign-in failure. The owner remembers that exact provider and model for
+20 minutes, because the October 13 Sol refusals recurred 17 and 13 minutes apart; a
+successful turn clears the observation sooner. Automatic creation skips a remembered
+model and uses the other provider only when its own fresh allowance reading proves
+room. A named provider or model remains the caller's choice.
+
+If the first ordinary turn of an Automatic session receives a confirmed capacity rejection
+before a provider turn starts or the input is acknowledged, the owner changes that
+session's provider and puts its **same** retained turn back in the queue. The session,
+input and request IDs do not change. This applies to native and agent-request
+creation; the Automatic origin is retained with the session, since the create receipt
+records the selected provider. No existing bound conversation or acknowledged or
+ambiguous input changes provider. Saved work retains its chosen provider and time.
+A safe refusal without a proven available alternative
+uses the ordinary bounded retry policy on its current provider. Explicit selections
+also use that retry policy only when the provider demonstrably received no input.
+An acknowledged capacity refusal is retained as parked work for inspection or an
+explicit retry, without automatic replay; capacity alone does not erase the provider's
+acknowledgement.
+
+The three October 13 reported Sol failures were terminal turn completions, not
+pre-admission rejections: all have provider turn IDs and acknowledged input timestamps
+in the diagnostic ledger snapshot. Their Codex transcripts carry
+`codex_error_info: server_overloaded`. The owner may use those refusals to avoid Sol
+for later Automatic starts, but cannot replay those same inputs elsewhere without
+breaking the acknowledged-effect boundary.
+
 The owner ignores stale or unreadable allowance as proof of room. If both providers are spent,
 it binds the new request to the provider whose spent window refills first, so the existing
 provider usage hold retains the input and wakes it at that reset. A Claude account with a

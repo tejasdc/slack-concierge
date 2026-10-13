@@ -169,6 +169,13 @@ export function initializeSessionOwnerSchema(db: Database) {
           status INTEGER,
           retry_at_ms INTEGER
         );
+        CREATE TABLE IF NOT EXISTS provider_model_capacity (
+          provider_id TEXT NOT NULL,
+          model TEXT NOT NULL,
+          refused_at_ms INTEGER NOT NULL,
+          expires_at_ms INTEGER NOT NULL,
+          PRIMARY KEY(provider_id, model)
+        );
         CREATE TABLE IF NOT EXISTS provider_outage_offers (
           turn_id INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
           input_id TEXT NOT NULL,

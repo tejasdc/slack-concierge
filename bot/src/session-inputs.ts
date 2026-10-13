@@ -28,6 +28,8 @@ export type NativeSessionMetadata = {
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   claudeAccount?:string;
   claudeSelectionRevision?:number;
+  /** Only an unreceived first turn may change the provider selected by Automatic. */
+  automaticProviderChoice?:boolean;
   /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
   claudeAccountNotice?:null;
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;

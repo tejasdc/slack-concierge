@@ -3,6 +3,8 @@ import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, usagePressureBrief } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
+import {resolveProviderAlias} from './aliases';
+import {modelCapacityRefused} from './provider-model-capacity';
 
 type Candidate = { provider: 'claude-code' | 'codex'; used: number; resetsAt: number | null; windowResetAt: number | null };
 const FRESH_MS = 6 * 60_000;
@@ -11,6 +13,8 @@ const FRESH_MS = 6 * 60_000;
 function candidatesForNewWork(now: number): Candidate[] {
   const candidates: Candidate[] = [];
   for (const provider of ['claude-code', 'codex'] as const) {
+    const model=resolveProviderAlias(provider==='codex'?'cx-sol':'cc-opus').model;
+    if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
     const observedAt = Date.parse(usage?.observedAt ?? '');
     if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - FRESH_MS) continue;
