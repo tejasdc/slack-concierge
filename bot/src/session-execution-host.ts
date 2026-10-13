@@ -89,7 +89,7 @@ import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome,admitProvenClaudeWaitingTurn} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
-import {storedUsage} from './provider-usage-forecast';
+import {storedUsage,withResetAdvice} from './provider-usage-forecast';
 import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
@@ -223,7 +223,9 @@ export class SessionExecutionHost {
       ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
     // A sign-in Codex refused shows as signed out, on the account in use and on any kept
     // account whose usage reading was refused, so the row offers "Sign in again".
-    const usage=providerAccountUsage(provider);
+    // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
+    const stored=providerAccountUsage(provider);
+    const usage=stored?withResetAdvice(provider,stored):null;step('usage_ms');
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
     // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it

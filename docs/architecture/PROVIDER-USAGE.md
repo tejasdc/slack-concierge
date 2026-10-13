@@ -676,13 +676,83 @@ He is told in two places, and they are deliberately different events:
   rather than usually holding. Two milestones, each keyed by the expiry instant, so the pass
   that runs every three minutes cannot turn a deadline into a drumbeat.
 
-**Anthropic has no equivalent to read.** Claude has the idea — its own copy offers "Use your
-limit reset to reset it now" and its account config carries an entitlement cache — but that
-cache records `available: false, eligible: false, granted: false` and there is no per-account
-list of grants with ids, grant times and expiries the way OpenAI publishes one. So nothing
-here infers a Claude grant. If that cache is ever observed turning true, it becomes a real
-source; until then treating it as one would be guessing.
+**Anthropic's resets exist, but Concierge cannot see them.** Anthropic occasionally offers a
+"limit reset" to eligible plans, pressed as "Reset for free" in claude.ai Settings > Usage on the
+web or desktop app and on the limit-reached message (not in Claude Code), and Tejas used one on
+2026-10-13. There is no per-account list of them with ids, grant times and expiries the way
+OpenAI publishes one: the usage endpoint carries nothing about an offer (checked against the raw
+reply the same day), so nothing here infers a Claude grant or spends one. What a reset does, and
+when it is worth pressing, is the next section.
 
+
+## What a reset does, and when it is worth using
+
+Tejas, 2026-10-13, after resetting tejastej.dc@gmail.com at 12:50 PM ET: "I thought the reset
+would reset the timing, but apparently it doesn't. For that account, the weekly reset was
+Wednesday 4 AM … now I need to use all of it today, by Wednesday 4 AM. So we have maybe 15 hours
+to use a whole week's worth of usage … add information in the provider account that I can use to
+make the right judgment on when to reset. And the agents should have this information too."
+
+The facts, in `bot/src/provider-reset-facts.ts` (`RESET_FACTS`, read by him on the Accounts page
+and by agents through `sessions usage` and their budget brief):
+
+| Provider | What a reset restores | What happens to the clock | Source |
+| --- | --- | --- | --- |
+| Claude | The five-hour or the weekly limit it was offered for, back to full; cannot be undone; works before a limit is hit; expires on the offer's date | **Nothing.** "Your weekly limits still reset on their usual day and time." | support.claude.com 17007452 (What is a limit reset?), 11049741 (Max plan) |
+| Codex (banked grant) | The account's limits, at once; which windows is recorded in `windows_reset` the first time one is spent | For a purchased weekly reset OpenAI says the weekly clock restarts with the first request afterwards, seven days to the next | help.openai.com 20001507 |
+
+This ledger's own readings of the account he reset (`provider_usage_readings`, 2026-10-13): the
+weekly stood at 100% all afternoon with its end at 08:00 UTC on Oct 14; at 16:50 UTC it read 0%
+with the **same** end, and the Fable-only weekly fell from 44% to 0% with the same end too. The
+five-hour window had been idle at 0% beforehand, so the readings cannot say whether that reset
+touched it; Anthropic's words say a reset is for one limit or the other.
+
+So the value of a reset is what it recovers multiplied by the time left to use it, and the
+advice is derived from that, per account, at the moment he looks (`resetAdvice`):
+
+| Reading | Advice | Why |
+| --- | --- | --- |
+| Week at or above 95%, less than 24 h to its end (Claude) | **wait** | The same week arrives on its own in hours; a reset buys a week to be spent in those hours and nothing after |
+| Week spent, end far, another account has room | **later** | Work moves to the account with room; a reset recovers nothing that was needed yet |
+| Week spent, end far, no other room | **now** | Full value: a whole week with days to use it, and work is otherwise stopped |
+| Under 20% used with under 48 h to the end | **spend first** | Nothing to reset; the room lapses at the end, so the automatic choice spends this account first |
+| Five-hour wall with the week not spent | **later** | That window refills on its own; a reset would recover only the part of the week already used |
+| Anything else | **later / none** | Recovers only the used share of the week, which is not yet worth a finite grant |
+
+The sentence is written once (`withResetAdvice` in `provider-usage-forecast.ts`) and shown in
+three places so they cannot disagree: under the account's bars on the Accounts page (both
+machines, through the same account rows the Mac borrows), in `sessions usage` as `resetFacts`
+and `resetAdvice`, and in the budget brief a running session gets when its account is low.
+
+**The automatic choice spends the allowance that lapses first.** `chooseAccountForTurn` ranks
+eligible accounts by `lapsePressure`: percent of weekly room left divided by hours until that
+week ends. A freshly reset week with 15 hours to its end (93% ÷ 15 h ≈ 6.3) is used before a
+week with 2% room and five days (≈ 0.02), and the 2026-10-10 case still holds: 13% with two days
+(0.3) loses to 83% with five (0.7). An unknown end counts as a whole week away, so a missing
+date never jumps the queue. Equal pressure keeps the previous account, as before. Exercised on
+the day's real readings before shipping: the reset Gmail account won over chann.app at 98%, and
+the October 10 pair still chose the roomier account.
+
+## Credits on the accounts page
+
+Tejas, 2026-10-13: "I also added the API credits on my chann.app account, so both accounts should
+accrue these API credits … build that into our dashboard too, so we understand how much of the API
+credits we're using, if that information is available from the same source we use for the usage
+here, or if Anthropic provides it directly."
+
+Two different credits exist, and each Claude account row names both (`bot/src/claude-account-facts.ts`,
+read on the same login as the bars, refreshed every thirty minutes because the usage endpoint's
+polling budget is shared with claude-swap):
+
+| Credit | What it is | Where it is read | Shown as |
+| --- | --- | --- | --- |
+| Usage credits | A prepaid balance that carries Claude and Claude Code past a plan limit at API rates (support.claude.com 12429409) | The `spend` block of the same `/api/oauth/usage` reply the bars come from | "Usage credits: off (out of credits); monthly cap $20." |
+| Monthly API credits | $100 a month on Max 5x, $200 on Max 20x, granted to one linked Console organization each billing cycle, expiring at its end; API, Managed Agents, Agent SDK and playground only, never Claude Code or app extra usage (platform.claude.com/docs/en/about-claude/api-credits-for-subscribers) | Plan tier and billing day from `/api/oauth/profile`; **no API publishes the credit balance**; spend this cycle from the Admin API's `cost_report` once an Admin API key for that organization is filed by the credential portal at `/root/.local/state/credential-portal/credentials/anthropic-admin-api/<account-slug>.json` | "API credits: $200 a month on Max 20x, in the linked Console organization; $37.12 spent this cycle as of 1:04 PM ET (Anthropic's cost report); renews November 12 at 4:56 AM ET." |
+
+Until a key is filed the line says so and shows what is known (the amount, the plan, the renewal).
+The remaining amount is the grant minus that spend only while the organization holds no other
+credits; the page says "about … left if nothing else was bought". The Console's own
+Settings > Billing > Promotional credits remains the authority for the balance and its expiry.
 
 ## What he is told about accounts, and when he is not
 

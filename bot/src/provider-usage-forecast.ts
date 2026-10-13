@@ -7,6 +7,8 @@ import { ACCOUNT_READING_MAX_AGE_MS, type AccountIdentityProvider } from "./prov
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { claudeAccountCachedReset } from "./provider-usage";
+import { RESET_FACTS, resetAdvice } from "./provider-reset-facts";
+import { noticeTime } from "./notice-time";
 
 /**
  * Seeing a usage wall coming, instead of discovering it by hitting one.
@@ -340,8 +342,26 @@ export function accountsWithRoom(provider: AccountIdentityProvider): string[] {
  * any arithmetic of its own. It states what it knows and how it knows it; it recommends
  * nothing and changes nothing.
  */
+/**
+ * The same reading with each account's reset advice attached for this moment. One place writes
+ * the sentence the Accounts row, `sessions usage` and the budget brief all show, so the three
+ * cannot disagree about what a reset would do.
+ */
+export function withResetAdvice(provider: AccountIdentityProvider, usage: ProviderUsage, nowMs = Date.now()): ProviderUsage {
+  if (provider === "antigravity") return usage;
+  return { ...usage, accounts: usage.accounts.map(account => ({
+    ...account,
+    resetAdvice: account.problem || !account.windows.length ? null : resetAdvice({
+      provider, windows: account.windows, nowMs,
+      othersWithRoom: accountsWithRoomBesides(provider, account.label).length > 0,
+      when: ms => noticeTime(db, ms),
+    }),
+  })) };
+}
+
 export function usageSignal(provider: AccountIdentityProvider) {
   const usage = storedUsage(provider);
+  const advised = usage && provider !== "antigravity" ? withResetAdvice(provider, usage) : null;
   const staleGoogle = provider === "antigravity" && (!usage || !!usage.problem ||
     (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS);
   const tightest = tightestCurrentWindow(provider);
@@ -366,6 +386,11 @@ export function usageSignal(provider: AccountIdentityProvider) {
     resetsBasis: "A reset is spent automatically only when work has actually stopped and no "
       + "other account of this provider has room; otherwise it waits for Tejas. Nothing an "
       + "agent does spends one.",
+    // What a reset does on this provider and what one would do for each account right now,
+    // the same sentences his Accounts page shows (provider-reset-facts.ts).
+    resetFacts: provider === "antigravity" ? null : RESET_FACTS[provider],
+    resetAdvice: (advised?.accounts ?? []).flatMap(account => account.resetAdvice
+      ? [{ account: account.label, worth: account.resetAdvice.worth, line: account.resetAdvice.line }] : []),
     forecasts: staleGoogle ? [] : usageForecasts(provider),
     basis: "A forecast assumes the pace of the last readings continues. Agent work arrives in "
       + "bursts, so treat it as a heads-up and not a countdown. 'provider' is the provider's own "
@@ -411,6 +436,9 @@ export function usagePressureBrief(provider: AccountIdentityProvider): string | 
   const spare = accountsWithRoomBesides(provider, tight.account);
   const banked = (storedUsage(provider)?.accounts ?? []).flatMap(account => account.resetCredits?.available
     ? [{ account: account.label, available: account.resetCredits.available }] : []);
+  const stored = storedUsage(provider);
+  const advice = stored && provider !== "antigravity"
+    ? withResetAdvice(provider, stored).accounts.find(account => account.label === tight.account)?.resetAdvice ?? null : null;
   return [
     `Budget: the ${name(provider)} account this session runs on is ${tight.usedPercent}% through its ${tight.window} window`
       + ` and, by ${basis}, is expected to run out in about ${Math.max(0, tight.minutesLeft)} minutes`
@@ -423,6 +451,7 @@ export function usagePressureBrief(provider: AccountIdentityProvider): string | 
       ? `Banked resets on this provider: ${banked.map(entry => `${entry.account} (${entry.available})`).join(", ")}.`
         + " One is spent automatically if work actually stops and no account has room, so there is nothing for you to do about it."
       : "",
+    advice ? `About a reset on this account: ${advice.line}` : "",
     'Do not stop or abandon admitted work because of this budget notice.',
   ].filter(Boolean).join(" ");
 }

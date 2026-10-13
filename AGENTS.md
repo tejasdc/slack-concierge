@@ -1007,6 +1007,14 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   Codex grants these; Anthropic publishes no per-account list to spend. The Accounts button
   stays for when he wants to spend one himself. See
   [banked resets](docs/architecture/PROVIDER-USAGE.md#banked-resets-so-none-of-them-lapses-unused).
+  **A reset restores the allowance and, on Claude, keeps the weekly end** (he reset a week 15 hours
+  before its Wednesday 4 AM end on 2026-10-13 and had 15 hours to use it): `provider-reset-facts.ts`
+  holds the providers' words and derives, per account and moment, whether a reset is worth it;
+  `withResetAdvice` writes that one sentence for the Accounts row, `sessions usage` and the budget
+  brief, and `chooseAccountForTurn` spends the allowance that lapses first (`lapsePressure`). Each
+  Claude row also names its usage credits and monthly API credits (`claude-account-facts.ts`). See
+  [what a reset does](docs/architecture/PROVIDER-USAGE.md#what-a-reset-does-and-when-it-is-worth-using)
+  and [credits on the accounts page](docs/architecture/PROVIDER-USAGE.md#credits-on-the-accounts-page).
   **A grant is spent only against a spent weekly allowance, never early.** Tejas cancelled the
   pre-expiry spend hours after it shipped (2026-10-08): "we're not resetting before hundred
   percent dude … we only use actual resets for the whole weekly consumption … please do not
@@ -1094,9 +1102,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   2026-09-23 ("we don't have to switch to our cheaper model suddenly"). Delegation should
   cross providers: a session low on one is told where the other has room. Each Claude turn
   now chooses among this machine's readable accounts with shared conversation history, while
-  a running process keeps its own home and credentials untouched. The last account breaks
-  equal-weekly-room ties after comparing eligible accounts; a newly selected account wins the next
-  turn. Only banked work can bind to one account. A
+  a running process keeps its own home and credentials untouched. Eligible accounts are ranked
+  by the weekly room that lapses first (room left over hours to the week's end), the last account
+  breaks ties, and a newly selected account wins the next turn. Only banked work can bind to one account. A
   one-home machine retains its existing dispatch path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - **Nothing is said to him about which account a turn runs on.** Not a start, not a switch that
