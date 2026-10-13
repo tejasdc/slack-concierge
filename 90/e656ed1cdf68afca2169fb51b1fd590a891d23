@@ -1,0 +1,1 @@
+Gemini sessions now use an available model, and a failed start tells the requesting agent right away.
