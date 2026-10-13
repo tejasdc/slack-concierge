@@ -21,6 +21,8 @@ candidate check pass. The installed controller owns candidate-check timeouts and
 failure evidence; parked autonomous repairs go to the standing repair agent.
 See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
+Terminal repair claims whose runners have died are parked by the deployment owner
+after a newer release succeeds; see [repair ownership](docs/architecture/DEPLOYMENT-REPAIR.md#ownership).
 
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).

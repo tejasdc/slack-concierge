@@ -24,6 +24,7 @@ import {
   parkDeploymentTurnReaction,
   recordDeploymentTurnReactionDiscoveryFailure,
   recoverDeadDeploymentRuns,
+  retireSupersededDeploymentRepairs,
   recoverDeploymentTurnReactionClaims,
   recoverDeploymentNoticeClaims,
   registerDeploymentTurnReactionTargets,
@@ -187,6 +188,8 @@ export async function reconcileDeploymentWork(input: {
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
   const recoveredReactions = recoverDeploymentTurnReactionClaims();
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
+  const supersededRepairs = retireSupersededDeploymentRepairs(input.isOwnerAlive);
+  if (supersededRepairs) log("info", "deployment_repairs_superseded", { count: supersededRepairs });
   let automaticDeploymentPrepared = false;
   if (!input.shouldStop()) {
     try {
