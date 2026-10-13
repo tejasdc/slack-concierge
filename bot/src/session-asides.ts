@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {selectedClaudeHome} from './provider-account-dispatch';
 import {MANAGED_CODEX} from './codex-daemon-file-limit';
+import {log} from './log';
 
 /**
  * A side question: answered from a throwaway copy of a session's conversation, the way Claude
@@ -59,8 +60,11 @@ async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> 
   const result=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',args,{cwd:input.cwd,env});
   let parsed:any=null;
   try{parsed=JSON.parse(result.stdout);}catch{}
-  if(!parsed||parsed.is_error||typeof parsed.result!=='string')
-    throw new Error(`Claude could not answer the side question${parsed?.result?`: ${String(parsed.result).slice(0,300)}`:result.stderr?`: ${result.stderr.trim().split('\n').pop()}`:'.'}`);
+  if(!parsed||parsed.is_error||typeof parsed.result!=='string'){
+    // The provider's own words stay in the log; what goes back is a sentence he can read.
+    log('warn','session_aside_failed',{provider:'claude-code',code:result.code,result:String(parsed?.result??'').slice(0,300),stderr:result.stderr.slice(-300)});
+    throw new Error('Claude could not answer the side question.');
+  }
   const model=Object.keys(parsed.modelUsage??{})[0]??input.model;
   return {answer:parsed.result.trim(),model,durationMs:Date.now()-started};
 }
@@ -74,7 +78,10 @@ async function codexAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const result=await run(MANAGED_CODEX,args,{cwd:input.cwd,env:process.env});
   let answer='';
   try{answer=readFileSync(out,'utf8').trim();}catch{}
-  if(!answer)throw new Error(`Codex could not answer the side question${result.stderr?`: ${result.stderr.trim().split('\n').pop()}`:'.'}`);
+  if(!answer){
+    log('warn','session_aside_failed',{provider:'codex',code:result.code,stderr:result.stderr.slice(-300)});
+    throw new Error('Codex could not answer the side question.');
+  }
   return {answer,model:null,durationMs:Date.now()-started};
 }
 
