@@ -13,7 +13,7 @@ import {log} from './log';
 import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
 import {boundSearchResponse} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
-import {observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
+import {awaitingOutside,observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
 import {ownerGetPolicy} from './owner-get-policy';
 import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
@@ -1877,7 +1877,8 @@ export class SessionOwner {
     const cwd=meta.cwd??channel?.code_path??channel?.vault_path??this.defaultCwd;
     try {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
-      return await askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000);
+      // The wait is for the throwaway copy, not the owner: it is recorded as awaited, never as owner slowness.
+      return await awaitingOutside(()=>askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000));
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }
@@ -2780,8 +2781,13 @@ export class SessionOwner {
       status=response?.status??null;
       bytes=Number(response?.headers.get('content-length'))||null;
       const ms=Math.round(performance.now()-started);
-      if(ms>=SLOW_OWNER_REQUEST_MS)noteSlowOwnerRequest(label,ms);
-      if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status,bytes});
+      // Time spent awaiting an answer from outside the owner (a side question's throwaway copy)
+      // is not owner slowness: the owner answered every other read meanwhile. `duration_ms` stays
+      // wall time; the line says how much of it was awaited so a reader can judge the same way.
+      const awaited=(work as StorageWork|null)?.awaited_ms??0;
+      const ownerMs=ms-awaited;
+      if(ownerMs>=SLOW_OWNER_REQUEST_MS)noteSlowOwnerRequest(label,ownerMs);
+      if(ownerMs>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,awaited_ms:awaited,status,bytes});
       return response;
     } finally {
       log('info','owner_request_completed',{request_id:requestId,route:label,duration_ms:Math.round(performance.now()-started),status,bytes,

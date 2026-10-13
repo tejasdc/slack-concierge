@@ -5,7 +5,7 @@ const mutationPaths=[
  '/sessions','/sessions/:id/inputs','/sessions/:id/stop','/sessions/:id/actions',
  '/sessions/:id/actions/:id/cancel','/sessions/:id/outage-choice','/sessions/:id/message-actions','/sessions/:id/input','/sessions/:id/title',
  '/sessions/:id/forks','/sessions/:id/comparisons','/sessions/:id/tasks',
- '/sessions/:id/captures','/sessions/:id/reconcile','/sessions/:id/bind',
+ '/sessions/:id/captures','/sessions/:id/reconcile','/sessions/:id/bind','/sessions/:id/asides',
  '/inbox','/inbox/topics','/inbox/topics/:id/actions','/operations/:id/cancel',
  '/search','/context','/imports','/sources/refresh',
  '/attachments','/attachments/:id/transcription','/attachments/:id/transcription/start',
