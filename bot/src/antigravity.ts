@@ -202,11 +202,6 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   const refusedBeforeStart = !sawInit && terminal?.status === "ERROR"
     && terminal.num_turns === 0 && terminal.usage?.total_tokens === 0
     && !observedOutput && toolsUsed.size === 0;
-  if (refusedBeforeStart) {
-    const detail = (terminal.error || "Google rejected the session before it started.").slice(0, MAX_ERROR_TEXT);
-    throw new ProviderDispatchError({ message: detail, terminalConfirmed: true,
-      providerSessionId: conversationId, toolsUsed: [] });
-  }
   if (!terminal) {
     throw new ProviderDispatchError({ message: needsSignIn ? "Google authentication required on this machine."
       : exit.code === 0
@@ -216,7 +211,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }
-  if (!sawInit || permissionDenied) {
+  if ((!sawInit && !refusedBeforeStart) || permissionDenied) {
     throw new ProviderDispatchError({ message: needsSignIn && !sawInit
       ? "Google authentication required on this machine."
       : !sawInit
