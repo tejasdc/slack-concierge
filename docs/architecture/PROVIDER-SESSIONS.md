@@ -60,6 +60,14 @@ wakes request reconciliation immediately; a request whose execution ended in err
 settles as failed, while an unconfirmed provider outcome remains explicit uncertainty.
 A missing `init` without this
 zero-work proof remains unconfirmed, preserving work that may have happened.
+An older session retains its recorded model even after Google withdraws it. Its next
+request fails with the model refusal; Concierge does not silently change the model
+or replay the prompt elsewhere. A person can explicitly choose an offered model
+for later turns, or an agent can start a fresh Google session with the source
+brief. A confirmed invalid-model refusal belongs to that session, not the Google
+account, and does not trip the account-wide retry breaker. The October 13 audit
+was restarted in a fresh Google session with the identical brief; its old
+zero-work request remains withdrawn.
 Each machine using
 the subscription signs in to its own Antigravity CLI; no credential is copied
 between them or into Thinkering. Google's old Gemini CLI refuses consumer
