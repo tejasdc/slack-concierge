@@ -1,0 +1,1 @@
+Sessions on the Mac and server now use the same connection to other sessions, and a release check refuses separate machine-specific wiring.
