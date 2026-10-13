@@ -53,7 +53,10 @@ const CODEX_MODELS = {
   luna: "gpt-6-luna",
 } as const;
 
-const GOOGLE_MODELS = { pro: "gemini-3.1-pro-high" } as const;
+// Google changes the subscription's offered models. This is the strongest Gemini
+// mode returned by `agy models` on the server on 2026-10-13; a rejected choice
+// must close the request as a failed start rather than wait for an answer.
+const GOOGLE_MODELS = { high: "gemini-3.8-flash-high" } as const;
 
 /**
  * Every model this system can select, and what it is called in front of Tejas.
@@ -95,7 +98,7 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
   "gpt-6-luna": "GPT-6 Luna",
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-6-astra": "GPT-6 Astra",
-  "gemini-3.1-pro-high": "Gemini 3.1 Pro",
+  "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
 };
 
 /**
@@ -104,6 +107,7 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
  * Superseded, not selectable: these never appear in a picker.
  */
 const RETIRED_MODEL_LABELS: Record<string, string> = {
+  "gemini-3.1-pro-high": "Gemini 3.1 Pro",
   "claude-opus-5": "Claude Opus 5",
   "gpt-5.6-sol": "GPT-5.6 Sol",
   "gpt-5.6-luna": "GPT-5.6 Luna",
@@ -225,7 +229,7 @@ export const PROVIDER_ALIASES = {
   "cx-sol": { provider: "codex", model: CODEX_MODELS.sol },
   "cx-terra": { provider: "codex", model: CODEX_MODELS.terra },
   "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
-  google: { provider: "antigravity", model: GOOGLE_MODELS.pro },
+  google: { provider: "antigravity", model: GOOGLE_MODELS.high },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
 // The provider a session takes when nothing has chosen one. The Codex allowance

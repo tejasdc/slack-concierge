@@ -196,6 +196,12 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     throw new ProviderTurnCancelledError("The Google turn was stopped.");
   const needsSignIn = /authentication required|please sign in|not logged in|oauth.*expired/i.test(
     `${terminal?.error ?? ""} ${stderrTail}`);
+  // The CLI can reject a model before emitting init. Its structured result proves
+  // zero turns and zero tokens in that case; treating every missing init as an
+  // ambiguous run left the request waiting after a definite failed start.
+  const refusedBeforeStart = !sawInit && terminal?.status === "ERROR"
+    && terminal.num_turns === 0 && terminal.usage?.total_tokens === 0
+    && !observedOutput && toolsUsed.size === 0 && !needsSignIn;
   if (!terminal) {
     throw new ProviderDispatchError({ message: needsSignIn ? "Google authentication required on this machine."
       : exit.code === 0
@@ -205,7 +211,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       assistantOutput: observedOutput, providerSessionId: conversationId,
       toolsUsed: [...toolsUsed] });
   }
-  if (!sawInit || permissionDenied) {
+  if ((!sawInit && !refusedBeforeStart) || permissionDenied) {
     throw new ProviderDispatchError({ message: needsSignIn && !sawInit
       ? "Google authentication required on this machine."
       : !sawInit

@@ -40,6 +40,9 @@ export function observeTurnFacts(listener:(turnId:number,kind:string)=>void) {
 }
 function turnFactChanged(turnId:number,kind:string) {
   for(const listener of turnFactListeners)listener(turnId,kind);
+  // Requests observe the settled execution, not the provider's output stream. Wake their
+  // owner as soon as any provider turn ends so a proven failed start reaches its sender.
+  if(kind==='terminal')executionChanged();
 }
 export function observeExecutionChanges(listener: () => void) {
   executionChangeListeners.add(listener);

@@ -50,7 +50,17 @@ from its Git checkout before starting the updated owner. Both slots survive a re
 or checkout rollback. Installation preserves the CLI's other settings and refuses
 to replace an unrelated status-line command.
 
-The `google` alias selects Gemini 3.1 Pro through Antigravity. Each machine using
+The `google` alias selects Gemini 3.8 Flash (High) through Antigravity, the highest
+Gemini mode Google's CLI listed for this account on 2026-10-13. The earlier Gemini
+3.1 Pro choice was removed from that live list, so its headless start returned a
+structured zero-turn model refusal before `init`; the provider now carries that
+confirmed refusal to the common failed-turn path, which closes an addressed request
+and tells its sender rather than leaving it waiting. Every provider terminal change
+wakes request reconciliation immediately; a request whose execution ended in error
+settles as failed, while an unconfirmed provider outcome remains explicit uncertainty.
+A missing `init` without this
+zero-work proof remains unconfirmed, preserving work that may have happened.
+Each machine using
 the subscription signs in to its own Antigravity CLI; no credential is copied
 between them or into Thinkering. Google's old Gemini CLI refuses consumer
 subscriptions, so an interactive Antigravity CLI sign-in on each machine is required.
@@ -108,7 +118,7 @@ Model aliases:
 | `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
-| `google` | Antigravity | `gemini-3.1-pro-high` |
+| `google` | Antigravity | `gemini-3.8-flash-high` |
 
 `cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
 for models that also have a model-name alias. They keep their historical
