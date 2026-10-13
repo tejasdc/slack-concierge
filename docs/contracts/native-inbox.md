@@ -309,7 +309,10 @@ his replies to the agent working on a request were never counted as its work, a 
 answer posted into the thread closed nothing, and no thread ever closed itself. Now:
 - His reply forwarded to the agent working on a request is linked to that request as a dispatch
   (`topic-link:forward:<request>:<topicRequest>`), in time order, so the answer to his reply
-  settles the request; a reply after the request closed reopens it while that work runs.
+  settles the request; a reply after the request closed reopens it while that work runs. It is
+  linked only when the request is certain: the one whose posted answer he replied to, else the
+  one open request that agent works on in the thread, else (all closed) the newest it worked on.
+  With several open and no answer replied to, nothing is linked.
 - Once nothing sent for an open request is running, its latest answer decides (owner event
   `topic-settle:<request>:<work>`): done closes it `completed` under `refuseUnfinishedCompletion`,
   an agent's `failed` closes it `failed`, a cancelled send closes it `withdrawn`, and a decision
@@ -322,9 +325,12 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   aside until a time), no work for its roots is running and it is not set aside. It is decided
   only at such an ending, never by a pass over quiet threads, so a thread reopened by hand stays
   open until something in it ends again.
-- A closed thread reopens when he writes in it (`topic-reopen:his:<input>`) or when new work is
+- A closed thread reopens when he writes in it (`topic-reopen:his:<input>`), when new work is
   placed there (`place`, `request add`, `request link`, `request reopen`), bringing back the
-  questions its closure ended.
+  questions its closure ended, or when anything new waits on him there, such as an answer filed
+  after it closed (`topic-reopen:waiting:<topic>:<revision>`).
+- Both rules run after every live topic change, whatever path made it (the router's and his
+  commands, the owner's filings, his "mark seen"); replay projects events without them.
 - The pass runs on the owner's reading cadence (about every three minutes) in both runtime
   compositions, over open threads and threads with his reply still being worked on.
 
