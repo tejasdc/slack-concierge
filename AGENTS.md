@@ -50,6 +50,8 @@ that section owns the retired-binding rule.
 Accepted messages and local forwarded replies retain their next step atomically; recovery
 requires explicit intent and checks prior custody. See [waiting captures and replies](docs/contracts/native-inbox.md)
 and the [October 10 reconciliation](docs/incidents/2026-10-10-database-lock-and-corruption.md).
+Marked agent test replies to a Mac peer recover from that retained forwarding intent only
+when their exact source-run identity matches; see [waiting captures and replies](docs/contracts/native-inbox.md).
 
 Production native startup does not wait for the retired Slack socket; see
 [deployment](docs/runbooks/DEPLOYMENT.md).

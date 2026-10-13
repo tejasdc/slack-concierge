@@ -1992,9 +1992,13 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             startedPeers = false;
             let pendingAcceptedRecovery=false;
             await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
-                WHERE scope='surface:thinkering' AND origin='human' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
+                WHERE scope='surface:thinkering' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND (json_extract(receipt_json,'$.admissionIntent')='queue'
                     OR json_extract(receipt_json,'$.state')='waiting' AND json_extract(receipt_json,'$.forwardTarget') IS NOT NULL)
+                  AND (origin='human' AND source_input_id IS NULL AND source_run_id IS NULL
+                    OR origin='agent' AND json_extract(receipt_json,'$.forwardTarget') IS NOT NULL
+                      AND source_input_id=json_extract(payload_json,'$.agentSource.inputId')
+                      AND source_run_id=json_extract(payload_json,'$.agentSource.runId'))
                   AND NOT EXISTS (SELECT 1 FROM session_communication_requests r WHERE r.source_input_id=session_inputs.id)
                   AND NOT EXISTS (SELECT 1 FROM session_peer_requests p WHERE p.source_input_id=session_inputs.id)
                   AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`, input=>{

@@ -1584,15 +1584,19 @@ export class SessionOwner {
   }
   /** Complete a retained admission without changing its input or request identity. */
   recoverAcceptedInput(input:AcceptedSessionInput) {
-    if(input.scope!=='surface:thinkering'||input.origin!=='human'||input.kind!=='input'||input.turn_id!==null
-      ||input.steering_id!==null||input.request_id!==null||input.source_input_id!==null||input.source_run_id!==null)return;
+    if(input.scope!=='surface:thinkering'||input.kind!=='input'||input.turn_id!==null
+      ||input.steering_id!==null||input.request_id!==null)return;
+    const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
+    const marked=JSON.parse(input.payload_json).agentSource;
+    const agentForward=input.origin==='agent'&&!!receipt?.forwardTarget&&typeof input.source_input_id==='string'
+      &&typeof input.source_run_id==='string'&&marked?.inputId===input.source_input_id&&marked?.runId===input.source_run_id;
+    if(!(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null)&&!agentForward)return;
     // A detached binding can retain evidence of a prior, possibly ambiguous provider send.
     // Only an explicit intent written by this admission path is eligible for recovery.
     if(db.query('SELECT 1 FROM turns WHERE accepted_input_id=? LIMIT 1').get(input.id)
       ||db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? LIMIT 1').get(input.id)
       ||db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? LIMIT 1').get(input.id)
       ||db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? LIMIT 1').get(input.id))return;
-    const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
     if(receipt?.state&&receipt.state!=='waiting')return;
     if(receipt?.admissionIntent!=='queue'&&!receipt?.forwardTarget) {
       // Older split-commit records have no proof that an external effect never began.
