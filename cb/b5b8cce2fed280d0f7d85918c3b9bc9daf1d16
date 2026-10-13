@@ -1,0 +1,1 @@
+Concierge now describes checkpoint disk work accurately: the earlier slowdown had competing storage work, while the exact database lock holder was not captured.
