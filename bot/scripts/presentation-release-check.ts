@@ -5,6 +5,7 @@ import {checkReaderRefusals} from './presentation-contract-fixture';
 import {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle} from './topic-projection-fixture';
 import {checkDispatchClaim} from './dispatch-claim-fixture';
 import {checkLedgerConstructors} from './ledger-constructor-check';
+import {checkSessionLocationComposition} from './session-location-contract';
 import {runFixtureChild} from './fixture-child';
 // Older installed builders already execute this candidate-owned entrance.
 // A package-only check would not protect the first activation of these workers.
@@ -15,6 +16,8 @@ const root=resolve(import.meta.dir,'..');
 // candidate. Keep the last completed step visible without expanding its 90-second boundary.
 const phase=(name:string)=>process.stderr.write(`presentation-check: ${name}\n`);
 phase('started');
+const sessionLocation=checkSessionLocationComposition(root);
+phase('session-location-contract');
 // The deployment runner executes this candidate-owned check before sealing a release.
 const loggingGuard=Bun.spawnSync(['/usr/bin/python3',join(import.meta.dir,'bounded-logging-acceptance.py'),'--source-guard'],
   {cwd:root});
@@ -95,4 +98,4 @@ const failures=lifecycleResults.filter(result=>result.status==='rejected');
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));

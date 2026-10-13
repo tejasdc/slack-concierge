@@ -6,14 +6,12 @@ import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
-import {SessionCommunicationCoordinator} from './session-communication';
 import {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {SessionTurnQueueCoordinator} from './session-turn-queue';
 import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity';
 import {startRoutedRequestApi} from './routed-request-api';
-import {peerSettings,PeerClient,SessionPeers} from './session-peers';
-import {ProjectSetup} from './project-setup';
-import {PeerLinks} from './peer-links';
+import {peerSettings} from './session-peers';
+import {createSessionPeerServices} from './session-peer-services';
 import {GHOST_TURN_INTERRUPT_AGE_MS,reconcileRecoverableTurns,sweepGhostRunningTurns} from './turn-recovery';
 import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
@@ -81,14 +79,10 @@ export async function startSessionRuntime() {
   const isOwnerAlive=(owner:string)=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);};
   const onError=(error:unknown)=>log('error','session_communication_failed',errorFields(error));
   const peering=peerSettings();
-  // Both runtime compositions carry project setup: this one is the Mac's, where a project order lands.
-  const projectSetup=new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>host.owner,()=>peers?.wake());
-  const peerLinks=new PeerLinks(peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>host.owner);
-  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive,onWake:()=>{projectSetup.wake();peerLinks.wake();},hasPendingOperations:()=>projectSetup.hasPending()||peerLinks.hasPending()}):undefined;
-  host.owner.projectSetup=projectSetup;
-  host.owner.peerLinks=peerLinks;
-  const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
-  host.owner.communication=communication;
+  const {projectSetup,peerLinks,peers,communication,bindOwner}=createSessionPeerServices({
+    settings:peering,workspaceRoot:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',
+    owner:()=>host.owner,isOwnerAlive,onError});
+  bindOwner();
   for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
     provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordSessionEvent);
   const detachProjection=installSessionProjection(host.owner);

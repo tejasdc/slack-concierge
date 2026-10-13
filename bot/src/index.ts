@@ -3,9 +3,8 @@ import { runStartupPhase } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi } from "./routed-request-api";
-import { peerSettings, PeerClient, SessionPeers } from "./session-peers";
-import {ProjectSetup} from './project-setup';
-import {PeerLinks} from './peer-links';
+import { peerSettings } from "./session-peers";
+import {createSessionPeerServices} from './session-peer-services';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
@@ -462,25 +461,17 @@ const routedRequests = new RoutedRequestCoordinator({
   onChanged: () => sessionCommunication?.wake(),
 });
 const peering = peerSettings();
-const projectSetup = new ProjectSetup(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>sessionExecutionHost.owner,()=>sessionPeers?.wake());
-const peerLinks = new PeerLinks(peering.self??'local',new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),()=>sessionExecutionHost.owner);
-const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!, peer.paths, peer.archives)])),
-  get owner() {return sessionExecutionHost.owner;},
-  isOwnerAlive: ownerId => {
-    const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
-    return Boolean(owner&&isProcessIdentityAlive(owner));
-  },
-  onError:error=>log('error','session_peer_failed',errorFields(error)),
-  onWake:()=>{projectSetup.wake();peerLinks.wake();},hasPendingOperations:()=>projectSetup.hasPending()||peerLinks.hasPending()}) : undefined;
-sessionCommunication = new SessionCommunicationCoordinator({
-  get owner() {return sessionExecutionHost.owner;},
-  ...(sessionPeers ? {peers: sessionPeers} : {}),
+const {projectSetup,peerLinks,peers:sessionPeers,communication,bindOwner}=createSessionPeerServices({
+  settings:peering,workspaceRoot:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',
+  owner:()=>sessionExecutionHost.owner,
   isOwnerAlive: ownerId => {
     const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
     return Boolean(owner&&isProcessIdentityAlive(owner));
   },
   onError:error=>log('error','session_communication_failed',errorFields(error)),
+  onPeerError:error=>log('error','session_peer_failed',errorFields(error)),
 });
+sessionCommunication=communication;
 // A new input that queues behind a still-running head cannot resume it at
 // admission (the head has not parked yet). This one-shot per-session grant lets
 // the next settlement resume a now-parked head exactly once, closing the window
@@ -529,9 +520,7 @@ if(process.platform==='linux'){
 }
 sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.status() ?? { available: false, reason: "Capture delivery has not started." };
 codexSessionObserver=new CodexSessionObserver();
-sessionExecutionHost.owner.communication=sessionCommunication;
-sessionExecutionHost.owner.projectSetup=projectSetup;
-sessionExecutionHost.owner.peerLinks=peerLinks;
+bindOwner();
 for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
   provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 installSessionProjection(sessionExecutionHost.owner);
