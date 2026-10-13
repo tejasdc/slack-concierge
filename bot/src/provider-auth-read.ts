@@ -1,6 +1,7 @@
 import { providerDisplayName } from "./aliases";
 import {ACCOUNT_READING_MAX_AGE_MS,currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
+import {withResetAdvice} from './provider-usage-forecast';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
 import {claudeAccountSelection} from './provider-account-selection';
 import {noticeTime} from './provider-free-notice';
@@ -55,7 +56,9 @@ function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):Pr
     :provider==='claude-code'&&selection&&selection.profileId!=='default'
     ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
   const storedUsage=providerAccountUsage(provider);
-  const usage=storedUsage?{...storedUsage,refreshing:ephemera.usageRefreshing}:null;
+  // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
+  // This reader answers the Accounts page; the command owner's own view says the same.
+  const usage=storedUsage?{...withResetAdvice(provider,storedUsage),refreshing:ephemera.usageRefreshing}:null;
   const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
   const brokenInUse=provider==='codex'&&ephemera.codexSignIn==='signed-out';
   const listed=provider==='codex'&&account&&!profiles.some(profile=>profile.current)
