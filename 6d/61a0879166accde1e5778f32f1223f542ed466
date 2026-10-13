@@ -1,0 +1,1 @@
+Google quota refusals still use the account's reset information even when they happen before a session starts.
