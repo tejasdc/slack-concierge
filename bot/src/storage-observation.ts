@@ -17,7 +17,7 @@ export type StorageWork = {
    * provider copy, another service), during which the owner was free for other work. */
   awaited_ms: number;
 };
-type Scope = { work: StorageWork; closed: boolean };
+type Scope = { work: StorageWork; closed: boolean; awaiting: number };
 const scopes = new AsyncLocalStorage<Scope>();
 export type StorageReadBudget={maxCalls:number;maxRows:number;maxResultBytes:number};
 const readBudgets=new AsyncLocalStorage<StorageReadBudget>();
@@ -55,19 +55,28 @@ const empty = (): StorageWork => ({ db_calls: 0, db_duration_ms: 0, db_rows: 0,
  * enclosing operation as `awaited_ms`, so the owner's slow-request judgement counts only the
  * owner's own time: five side questions of 8-11 s each, every other read answering in
  * milliseconds, were counted as owner slowness and opened a degradation incident on 2026-10-13
- * (work-flow supervisor incident 838dfa4c). */
+ * (work-flow supervisor incident 838dfa4c). Every call over Thinkering's private capability
+ * socket is such a wait (`SessionCapabilityClient`): the same incident reopened on the daily
+ * ChatGPT transcript refresh, 267 s of waiting for Thinkering behind a rate-limited browser with
+ * no loop lag and no ledger call, recorded as owner time. A wait inside another wait is counted
+ * once, by the outermost. */
 export async function awaitingOutside<T>(wait: () => Promise<T>): Promise<T> {
   const scope = scopes.getStore();
+  if (!scope || scope.closed || scope.awaiting > 0) return wait();
+  scope.awaiting++;
   const started = performance.now();
   try { return await wait(); }
-  finally { if (scope && !scope.closed) scope.work.awaited_ms += Math.round(performance.now() - started); }
+  finally {
+    scope.awaiting--;
+    if (!scope.closed) scope.work.awaited_ms += Math.round(performance.now() - started);
+  }
 }
 
 export function observeStorageOperation<T>(operation: string, callback: () => T,
   finished: (work: StorageWork) => void): T {
   // The caller owns the bounded operation vocabulary; neither SQL nor parameters leave here.
   void operation;
-  const scope: Scope = { work: empty(), closed: false };
+  const scope: Scope = { work: empty(), closed: false, awaiting: 0 };
   const finish = () => {
     if (scope.closed) return;
     scope.closed = true;
