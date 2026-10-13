@@ -12,6 +12,28 @@ export function authorSession(id:number):MessageAuthor['session'] {
 }
 
 /**
+ * Prepared Inbox entries keep the author identity they were prepared with, which can predate the
+ * presence record or a later rename. Every owner read of them names each author session again by
+ * the one rule, so a stored entry never shows an older identity than the sidebar.
+ */
+export function withCurrentAuthors<T>(displays:readonly T[]):T[] {
+  const known=new Map<string,MessageAuthor['session']>();
+  const current=(session:any)=>{
+    if(!session||typeof session.id!=='string')return session;
+    if(!known.has(session.id))known.set(session.id,sessionAuthor(session.id));
+    return known.get(session.id)??{...session,provider:session.provider??null,model:session.model??null,reasoningEffort:session.reasoningEffort??null,agentName:session.agentName??null};
+  };
+  return displays.map((display:any)=>{
+    const author=display?.message?.author??display?.author;
+    if(!author)return display;
+    const next={...author,...(author.session?{session:current(author.session)}:{}),
+      ...(author.originatingHuman?.session?{originatingHuman:{...author.originatingHuman,session:current(author.originatingHuman.session)}}:{}),
+      ...(author.quoted?.session?{quoted:{...author.quoted,session:current(author.quoted.session)}}:{})};
+    return display.message?.author?{...display,message:{...display.message,author:next}}:{...display,author:next};
+  });
+}
+
+/**
  * The author session for any identity: a local one from this ledger, another instance's
  * from this instance's last catalogue of that peer. Every hop resolves identities here, so
  * a Mac session and a cloud session read the same way on both machines.

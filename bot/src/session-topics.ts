@@ -1,3 +1,4 @@
+import {withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
@@ -1054,7 +1055,7 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
   if([...displayBySequence.values()].some(value=>value===null))
     return {messages:[],nextCursor:null,coverage:{complete:false as const,code:'presentation_indexing' as const,
       retryAfterMs:1000,appliedSequence:page.coverage.appliedSequence}};
-  const messages=page.keys.map(key=>displayBySequence.get(key.sequence)).filter(Boolean);
+  const messages=withCurrentAuthors(page.keys.map(key=>displayBySequence.get(key.sequence)).filter(Boolean));
   return {messages,nextCursor:page.nextCursor,coverage:page.coverage};
 }
 
