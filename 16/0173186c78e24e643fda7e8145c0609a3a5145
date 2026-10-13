@@ -1,0 +1,1 @@
+A Google sign-in problem still pauses the session for sign-in instead of reporting a failed start.
