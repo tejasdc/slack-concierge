@@ -230,7 +230,13 @@ heading. His asks and comments on a section are posts in that thread carrying th
 <words>`, which lands under that section and turns it answered. Words he said in an Inbox thread are placed at a
 section with `board post --thread <thread> --target <section> --speaker tejas --his-input <his Inbox input id> --intent
 ask|comment -- <his words verbatim>`: the agent stays the author of record and the record refuses it without the
-source (never write through his door). `board read --address lab:<design-handle>` prints the record's review: each
+source (never write through his door); add `--inbox-session <session> --inbox-message <id>` so an agent's later answer to
+that placed post is also filed into his Inbox thread as the agent's reply. `board verdict --design <handle> --verdict
+approve|revise|stop [--scope <text>|none] -- <words>` records his per-version verdict; approve is refused while a section
+is contested or holds an unanswered ask, and the refusal lists those sections with why. `board cards --design <handle>
+--inbox-session <session> --inbox-message <id> --json-file F` (design author only) files the author's section cards, each
+`{section, claim, consequence, recommendation, alternative, question}`, as a post under its section and one line into
+the Inbox thread. `board read --address lab:<design-handle>` prints the record's review: each
 section's state (`missing`, `open`, `asked`, `answered`, `accepted`, `contested`), his entries under each with the
 replies nested, the per-version verdict, and `owed`, the sections still waiting on an agent. A revision is a new design
 with `--supersedes "lab:<old> :: <why>"`. Design and acceptance: agent-ecology
