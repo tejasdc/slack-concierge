@@ -11,6 +11,9 @@ import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHo
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
+import { claudeAccountFacts, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
+import type { ResetAdvice } from "./provider-reset-facts";
+import { noticeTime } from "./notice-time";
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -73,6 +76,15 @@ export type AccountUsage = Readonly<{
    * climb. Absent where the tool does not report it.
    */
   readAt?: string | null;
+  /**
+   * What a reset would do for this account right now, written for the row and for agents;
+   * attached at read time by `withResetAdvice`, never stored, because it says how long is left.
+   */
+  resetAdvice?: ResetAdvice | null;
+  /** Claude only: the pay-as-you-go usage credits, from the same reading as the bars. */
+  usageCredits?: UsageCreditsFacts | null;
+  /** Claude only: the monthly API credits a Max plan grants its linked Console organization. */
+  apiCredits?: ApiCreditsFacts | null;
 }>;
 
 export type ProviderUsage = Readonly<{
@@ -286,8 +298,12 @@ async function readClaude(): Promise<ProviderUsage> {
         : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.";
     // The address is the stable join between the login, its home and these readings.
     // A claude-swap alias is only a display name and can differ from the home name.
-    accounts.push({ label: String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`),
-      plan: null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt) });
+    const label = String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`);
+    // Plan tier and credits ride on the same login the bars come from; a login whose token
+    // has lapsed keeps its last facts, and a never-read one simply has none yet.
+    const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
+    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt),
+      usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
