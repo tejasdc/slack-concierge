@@ -1903,6 +1903,13 @@ export class SessionOwner {
       catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
         return {messages:[],nextCursor:null,coverage:{complete:false,code:'history_indexing',retryAfterMs:1000,
           omissions:['Conversation history is still being prepared.']}};
+        // A cursor from before the conversation was re-indexed, or one that names no page of
+        // it, is a definite answer, not an outage: answered 503, thnkr.ing retried it for ten
+        // minutes and told him history was reconnecting (report f63bab21, 2026-10-13).
+        if(error instanceof Error&&error.message==='STALE_HISTORY_CURSOR')
+          throw new SessionOwnerError('This conversation was re-indexed; read it again from the newest page.',409,'HISTORY_CURSOR_STALE');
+        if(error instanceof Error&&error.message==='INVALID_HISTORY_REFERENCE')
+          throw new SessionOwnerError('This history position does not belong to this conversation.',400,'HISTORY_CURSOR_INVALID');
         const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
         throw new SessionOwnerError(error instanceof Error?error.message:'History preparation failed.',status,
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
@@ -1924,7 +1931,7 @@ export class SessionOwner {
     const delegated=this.session(id);
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)){
       try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
-      catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')return {reset:true};
+      catch(error){if(error instanceof Error&&['HISTORY_PAGE_STILL_PREPARING','STALE_HISTORY_CURSOR'].includes(error.message))return {reset:true};
         const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
         throw new SessionOwnerError(error instanceof Error?error.message:'History changes unavailable.',status,
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
