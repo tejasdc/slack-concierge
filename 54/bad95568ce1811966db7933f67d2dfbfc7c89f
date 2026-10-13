@@ -1,0 +1,1 @@
+Release preparation now leaves ledger cleanup to Concierge's background worker, reducing pauses while you use the app.
