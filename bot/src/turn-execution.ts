@@ -1139,7 +1139,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // CHATGPT_NOT_SENT is written only when Thinkering restarted while this send waited its pacing
       // turn: nothing reached ChatGPT. It is a place lost in a queue, not a failed attempt, so it never
       // spends the retry budget (two queued sends were stopped after five restarts on 2026-10-13) and
-      // goes straight back in line. It can recur only once per Thinkering restart.
+      // goes back in line after the ordinary short retry delay. An immediate requeue let the queue claim
+      // the turn again while its failed run still held it ("claimed twice locally", eleven ChatGPT turns
+      // on 2026-10-13). It can recur only once per Thinkering restart.
       const chatgptPlaceLost = replaySafe && input.providerId === 'chatgpt' && message.includes('CHATGPT_NOT_SENT');
       let retryable = replaySafe
         && (authWait || googleUsageWait || chatgptPlaceLost || structuredFailure?.failureClass === "retryable" ||
@@ -1185,7 +1187,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             authWait,
             usageHold: heldUntilMs !== null || googleUsageWait,
             usageResetUnknown: googleUsageWait,
-            nextAttemptMs: switchClaudeAccount || chatgptPlaceLost || providerDispatchError(error)?.immediateRetry
+            nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
         : parkRunningTurnAfterProviderFailure({
