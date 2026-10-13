@@ -85,12 +85,16 @@ async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> 
 
 async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv,started:number):Promise<AsideAnswer> {
   // --fork-session copies the transcript, --no-session-persistence keeps the copy off disk, and
-  // --tools "" leaves it nothing to act with, so the session's files and history stay untouched.
-  const args=['-p','--resume',input.sessionUuid,'--fork-session','--no-session-persistence','--tools','',
+  // --tools "" with --strict-mcp-config (and no MCP config) leaves it nothing to act with: the
+  // built-in tools and every MCP server (his Mac's include a vault delete) are absent, so the
+  // session's files, history and accounts stay untouched.
+  const args=['-p','--resume',input.sessionUuid,'--fork-session','--no-session-persistence','--tools','','--strict-mcp-config',
     '--output-format','json',...(input.model?['--model',input.model]:[]),prompt];
   const result=await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',args,{cwd:input.cwd,env});
   let parsed:any=null;
-  try{parsed=JSON.parse(result.stdout);}catch{}
+  // One result record, or (where the CLI's settings make JSON output verbose, as on the Mac) the
+  // whole event list, whose result record comes last.
+  try{const json=JSON.parse(result.stdout.slice(result.stdout.search(/[\[{]/)));parsed=Array.isArray(json)?json.findLast((event:any)=>event?.type==='result')??null:json;}catch{}
   if(!parsed||parsed.is_error||typeof parsed.result!=='string'){
     // The provider's own words stay in the log; what goes back is a sentence he can read.
     log('warn','session_aside_failed',{provider:'claude-code',code:result.code,result:String(parsed?.result??'').slice(0,300),stderr:result.stderr.slice(-300)});
