@@ -47,6 +47,7 @@ export function topicEventSentence(payload:any):string {
     case 'settled':return `Question settled as ${payload.questions?.[0]?.state??''}${payload.reason?`: ${payload.reason}`:''}`;
     case 'filed':return `Filed here: ${payload.questions?.[0]?.brief?.decision??''}`;
     case 'recovered':return `${payload.questions?.length??0} earlier attention ${(payload.questions?.length??0)===1?'entry':'entries'} filed as questions${payload.reason?` (${payload.reason})`:''}.`;
+    case 'flagged':return `The Inbox agent was asked to decide what happens to this request: ${payload.reason??''}`;
     case 'recorded':return `Your answer was recorded against ${payload.mappings?.length??0} question${(payload.mappings?.length??0)===1?'':'s'}.`;
     default:return payload.change??'Updated.';
   }

@@ -349,7 +349,7 @@ import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuatio
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
-import {expireUnreadableReadingItems,fileServiceNotices,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
@@ -3945,7 +3945,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, onReading: () => { reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);

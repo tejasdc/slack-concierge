@@ -2,7 +2,7 @@ import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
 import {notificationRequest} from './session-notification-request';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
@@ -390,6 +390,11 @@ export function topicOfRoot(rootInputId:string):string|null {
  * projection can never disagree with the ledger.
  */
 export function applyTopicChange(kind:string,payload:any) {
+  projectTopicChange(kind,payload);
+  keepThreadOpenOrClosed(payload);
+}
+/** The projection alone, for replay: a replayed event never records anything new. */
+function projectTopicChange(kind:string,payload:any) {
   for(const topic of [payload.topic,payload.mergedTopic,...(payload.topics??[])])if(topic)upsertTopic(topic);
   for(const root of payload.removedRoots??[])db.query('DELETE FROM inbox_topic_roots WHERE root_input_id=?').run(root.rootInputId);
   for(const root of payload.roots??[])
@@ -416,7 +421,7 @@ export function rebuildTopicProjections() {
     const rows=db.query(`SELECT kind,payload_json FROM session_owner_events WHERE kind IN (${TOPIC_EVENT_KINDS.map(()=>'?').join(',')}) ORDER BY sequence`).all(...[...TOPIC_EVENT_KINDS]) as {kind:string;payload_json:string}[];
     for(const row of rows) {
       if(row.kind==='topics_migration')continue;
-      applyTopicChange(row.kind,JSON.parse(row.payload_json));
+      projectTopicChange(row.kind,JSON.parse(row.payload_json));
     }
     return {events:rows.length,topics:(db.query('SELECT count(*) AS count FROM inbox_topics').get() as {count:number}).count};
   })();
@@ -428,6 +433,7 @@ type Change={kind:string;payload:any};
 const emptyRetainTiming=():RetainInputTiming=>({serializeMs:0,existingMs:0,cancellationMs:0,insertMs:0,readbackMs:0,transactionOtherMs:0});
 const roundedRetainTiming=(timing:RetainInputTiming)=>Object.fromEntries(Object.entries(timing).map(([key,value])=>[key,Math.round(value)]));
 function record(sessionId:number,inputId:string,turnId:number|null,change:Change) {
+  change=reopenedForNewWork(change);
   recordSessionEvent({eventId:`topic-change:${inputId}`,sessionId,inputId,turnId:turnId??null,kind:change.kind,payload:change.payload});
   applyTopicChange(change.kind,change.payload);
 }
@@ -1505,7 +1511,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
     case 'request.add':{
       assertInbox(session);
       const title=text(body?.title,'--title',200),brief=text(body?.brief,'brief',8000),sources=parseSources(body?.sources);
-      return agentMutation(actor,actionId(),{kind:'topic-request-add',topicId:body?.topic_id,title,brief,sources},()=>{
+      const added=agentMutation(actor,actionId(),{kind:'topic-request-add',topicId:body?.topic_id,title,brief,sources},()=>{
         const topic=topicFor(body?.topic_id);
         const at=nowIso();
         const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title,brief,state:'open',disposition:null,
@@ -1513,6 +1519,9 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const next=bumped(topic);
         return {change:{kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:next,request,by,revision:next.revision}},result:{request}};
       });
+      // Drift is noticed the moment it happens: the request that made the title stop fitting.
+      const drift=added.duplicate?null:titleDrift(added.request.topicId);
+      return drift?{...added,titleDrift:{...drift,instruction:titleDriftInstruction(drift)}}:added;
     }
     case 'request.amend':{
       assertInbox(session);
@@ -1962,6 +1971,9 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
   if(!post||!answer.final||answer.stalled)return post;
+  // Filing closes the request before it files his item for this answer; the thread is judged once,
+  // after both, below, so it never closes and reopens around one answer.
+  upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
       respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:answer.text,
@@ -1969,6 +1981,13 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   } catch(error) {
     // The answer is in the thread; what failed is only the filing, which the router can still do.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
+  } finally {upkeepDepth--;}
+  try {
+    refreshRootMemo();
+    const topicId=topicOfRoot(answer.root);
+    if(topicId){keepThreadOpenOrClosed({topicId});keepThreadCurrent(topicId,forwardedReplies(),true);}
+  } catch(error) {
+    log('error','inbox_thread_upkeep_failed',{request_id:answer.requestId,thread:answer.root,message:error instanceof Error?error.message:String(error)});
   }
   return post;
 }
@@ -2084,6 +2103,334 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
   })();
 }
 
+/* ------------------------------------------------------------------ thread upkeep */
+
+/*
+ * Threads keep themselves current; nobody has to remember to tidy them (Tejas, 2026-10-12, capture
+ * d30a141a: "you're not maintaining the threads, so a lot of threads that could be closed are still
+ * in my thread view"). On that day 71 open threads held requests whose work had long ended, for
+ * three reasons this section removes: his replies to the agent working on a request were never
+ * counted as that request's work, so the answer to his reply closed nothing; an agent's "could not
+ * finish" answer goes into the thread instead of to the router, so nobody ever closed its request;
+ * and no thread ever closed itself. The rules, all decided here and by the owner:
+ * - A request follows its work. Once nothing sent for it is running, its latest answer decides:
+ *   done closes it completed (the same rule the router is held to), an agent's "could not finish"
+ *   closes it failed (that answer is already in the thread and filed for him), and a send that was
+ *   cancelled closes it withdrawn. Any other end (never answered, undetermined, a decision nobody is
+ *   waiting on any more) is flagged once to the router, which sends it again, closes it or asks him.
+ * - A thread closes itself when the last thing in it ends: no open request, nothing waiting on him
+ *   (an unread answer counts), no work running for it, not set aside. It is decided at that ending
+ *   (a request closing, a question ending, an agent's final answer), never by a pass over quiet
+ *   threads, so a thread he or the router reopened stays open until something in it ends again.
+ * - A closed thread reopens when he writes in it or new work is placed there.
+ */
+const OWNER_BY:TopicBy={kind:'owner'};
+type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number};
+const dispositionOf=(resultJson:string|null)=>{
+  if(!resultJson)return null;
+  try{const value=JSON.parse(resultJson).workDisposition;return typeof value==='string'?value:null;}catch{return null;}
+};
+function workRow(id:string):Work|null {
+  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as any;
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms};
+  const peer=db.query('SELECT peer,remote_session_id,outcome,result_json,created_at_ms FROM session_peer_requests WHERE request_id=?').get(id) as any;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms}:null;
+}
+/** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
+type Forward=Work&{root:string|null;inboxInputId:string|null};
+function forwardedReplies():Forward[] {
+  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,thread_root_input_id,
+      json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_communication_requests
+    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+  const peer=(db.query(`SELECT request_id,peer,remote_session_id,outcome,result_json,created_at_ms,thread_root_input_id,
+      json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_peer_requests
+    WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+  return [...local,...peer].sort((first,second)=>first.createdAtMs-second.createdAtMs);
+}
+/** The work whose posted answer his forwarded reply replied to, when he replied to one. */
+function workHisReplyAnswered(forward:Forward):string|null {
+  const input=forward.inboxInputId?getAcceptedSessionInput(forward.inboxInputId):null;
+  if(!input)return null;
+  let messageId:unknown;
+  try{messageId=JSON.parse(input.payload_json)?.replyToMessage?.messageId;}catch{return null;}
+  if(typeof messageId!=='string'||!messageId.startsWith('post:forward:'))return null;
+  const post=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(messageId) as {payload_json:string}|null;
+  const requestId=post?JSON.parse(post.payload_json).requestId:null;
+  return typeof requestId==='string'?requestId:null;
+}
+/** Work still running for a thread: anything sent for one of its roots that has no outcome yet. */
+function workRunningIn(topicId:string):boolean {
+  const roots=new Set(topicRoots(topicId));
+  if(!roots.size)return false;
+  const pending=[...(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE outcome IS NULL').all() as {root:string|null}[]),
+    ...(db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE outcome IS NULL').all() as {root:string|null}[])];
+  return pending.some(row=>!!row.root&&roots.has(row.root));
+}
+function recordOwnerTopicChange(sessionId:number,eventId:string,kind:string,payload:any):boolean {
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
+  recordSessionEvent({eventId,sessionId,kind,payload});
+  applyTopicChange(kind,payload);
+  return true;
+}
+
+/** A change that places new work in a closed thread opens it again, with what its closure ended. */
+const NEW_WORK_CHANGES=new Set(['placed','added','linked','request_reopened']);
+function reopenedForNewWork(change:Change):Change {
+  const topic=change.payload?.topic as StoredTopic|undefined;
+  if(!NEW_WORK_CHANGES.has(change.payload?.change)||topic?.state!=='closed'||topic.closure?.kind==='merged')return change;
+  const restored=restoreExpiredByClosure(topic,nowIso());
+  return {...change,payload:{...change.payload,topic:{...topic,state:'open',closure:null,setAside:null},
+    questions:[...(change.payload.questions??[]),...restored],reopened:'New work was placed in this thread.'}};
+}
+/** Whether a change ended a request or a question: the moment a thread may have become finished. */
+const QUESTION_ENDING_CHANGES=new Set(['settled','reconciled','recorded','acknowledged','followup']);
+function endedSomething(payload:any):boolean {
+  if(typeof payload?.topicId!=='string')return false;
+  if(payload.change==='request_closed')return true;
+  return QUESTION_ENDING_CHANGES.has(payload.change)
+    &&(payload.questions??[]).some((question:StoredQuestion)=>!OPEN_QUESTION_STATES.includes(question.state as any)&&question.state!=='deferred');
+}
+/**
+ * Every live topic change passes here after it is applied, from every path (the router's and his
+ * commands, the owner's own filings, "mark seen"), so no path can skip the rule: something new
+ * waiting on him in a closed thread opens it, and an ending that left nothing closes it.
+ */
+let upkeepDepth=0;
+function keepThreadOpenOrClosed(payload:any) {
+  const topicId=payload?.topicId;
+  if(typeof topicId!=='string'||upkeepDepth)return;
+  upkeepDepth++;
+  try {
+    const row=db.query('SELECT * FROM inbox_topics WHERE topic_id=?').get(topicId) as any;
+    if(!row)return;
+    const topic=toStoredTopic(row);
+    if(topic.state==='closed'&&topic.closure?.kind!=='merged'&&topicQuestions(topicId).some(question=>OPEN_QUESTION_STATES.includes(question.state))) {
+      const why='Something new is waiting on him here.';
+      const next=bumped(topic,{state:'open',closure:null,setAside:null});
+      recordOwnerTopicChange(topic.sessionId,`topic-reopen:waiting:${topicId}:${topic.revision}`,'topic',{change:'reopened',topicId,topic:next,by:OWNER_BY,reason:why,revision:next.revision,questions:[]});
+    } else if(endedSomething(payload)) {
+      closeThreadIfFinished(topicId,String(payload.change));
+    }
+  } finally {upkeepDepth--;}
+}
+/** What still keeps a thread open, or null when nothing does. */
+function whyThreadStaysOpen(topic:StoredTopic):string|null {
+  if(topic.state!=='open')return 'already closed';
+  if(topic.setAside)return 'set aside';
+  if(topicRequests(topic.topicId).some(request=>request.state==='open'))return 'a request is open';
+  if(topicQuestions(topic.topicId).some(question=>OPEN_QUESTION_STATES.includes(question.state)||(question.state==='deferred'&&!!question.deferUntil)))return 'something waits on him';
+  if(workRunningIn(topic.topicId))return 'work is running';
+  return null;
+}
+function closeThreadIfFinished(topicId:string,cause:string):boolean {
+  const topic=db.query('SELECT * FROM inbox_topics WHERE topic_id=?').get(topicId) as any;
+  if(!topic)return false;
+  const stored=toStoredTopic(topic);
+  if(whyThreadStaysOpen(stored))return false;
+  const requests=topicRequests(topicId);
+  const last=[...requests].sort((first,second)=>String(first.closure?.at??first.updatedAt).localeCompare(String(second.closure?.at??second.updatedAt))).at(-1);
+  const why=last?`Everything asked here is finished; the last request, "${last.title}", closed ${last.disposition??'closed'}.`:'Nothing here is open or waiting on him any more.';
+  const at=nowIso(),next=bumped(stored,{state:'closed',closure:{by:OWNER_BY,at,reason:why,scope:null,automatic:true,requests:requests.map(request=>request.requestId)}});
+  const payload={change:'closed',topicId,topic:next,scope:null,by:OWNER_BY,reason:why,revision:next.revision,questions:[]};
+  const recorded=recordOwnerTopicChange(stored.sessionId,`topic-autoclose:${topicId}:${stored.revision}`,'topic',payload);
+  if(recorded)log('info','inbox_thread_closed_itself',{topic_id:topicId,cause,requests:requests.length});
+  return recorded;
+}
+
+/**
+ * His replies to an agent working on a request are that request's work: linked in time order, so
+ * the answer to his reply settles the request exactly as the first answer would have. A reply sent
+ * after the request closed reopens it while that work runs.
+ */
+function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
+  const roots=new Set(topicRoots(topicId));
+  const mine=forwards.filter(forward=>!!forward.root&&roots.has(forward.root));
+  let linked=0;
+  for(const forward of mine) {
+    // The request his reply is about, and only when that is certain: the one whose answer he
+    // replied to, else the one request that agent is still working on here, else (all closed) the
+    // newest it worked on. When it holds several open ones and he replied to none of their answers,
+    // nothing is linked: a guess could close the wrong request completed.
+    const requests=topicRequests(topicId);
+    const answered=workHisReplyAnswered(forward);
+    const worked=requests.filter(request=>request.dispatches.some((dispatch:any)=>{
+      const work=workRow(String(dispatch?.requestId??''));
+      return !!work&&work.id!==forward.id&&work.target===forward.target&&work.createdAtMs<=forward.createdAtMs;
+    }));
+    const open=worked.filter(request=>request.state==='open');
+    const byAnswer=answered?requests.filter(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===answered)):[];
+    const targets=byAnswer.length===1?byAnswer:open.length===1?open:open.length?[]:worked.slice(-1);
+    for(const request of targets) {
+      if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
+      const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
+      const running=forward.outcome===null;
+      if(request.state==='closed'&&!running)continue;
+      const dispatch={requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true};
+      const created=new Map(earlier.map(work=>[work.id,work.createdAtMs]));
+      const dispatches=[...request.dispatches,dispatch].sort((first:any,second:any)=>
+        (created.get(first.requestId)??forward.createdAtMs)-(created.get(second.requestId)??forward.createdAtMs));
+      const reopen=request.state==='closed';
+      const next={...request,dispatches,...(reopen?{state:'open' as const,disposition:null,closure:null}:{}),revision:request.revision+1,updatedAt:nowIso()};
+      const topic=topicRow(topicId);
+      const why=reopen?'His reply to the agent working on it reopened it while that work runs.':'His reply to the agent working on it is part of its work.';
+      const change=reopenedForNewWork({kind:'topic_request',payload:{change:'linked',topicId,topic:bumped(topic),request:next,by:OWNER_BY,reason:why,revision:topic.revision+1}});
+      if(recordOwnerTopicChange(topic.sessionId,`topic-link:forward:${forward.id}:${request.requestId}`,'topic_request',change.payload))linked++;
+    }
+  }
+  return linked;
+}
+
+type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string};
+/**
+ * Settles the open requests whose work has all ended, by the latest answer. Returns the requests
+ * whose work ended without an answer this can act on, for the router.
+ */
+function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
+  const stuck:Stuck[]=[];
+  let settled=0;
+  for(const request of topicRequests(topicId).filter(item=>item.state==='open')) {
+    const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
+    if(!works.length||works.some(work=>work.outcome===null))continue;
+    const latest=works.at(-1)!;
+    const topic=topicRow(topicId);
+    const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
+    const waitingOnHim=questionsOfRequest(topicId,request).length>0||topicQuestions(topicId).some(question=>question.state==='deferred'
+      &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
+    let disposition:string|null=null,why='';
+    if(latest.outcome==='answered'&&(latest.disposition===null||latest.disposition==='completed')) {
+      try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
+      disposition='completed';why='The work sent for it answered as done.';
+    } else if(latest.disposition==='failed'&&!waitingOnHim) {
+      disposition='failed';why='The agent answered that it could not finish; that answer is in this thread.';
+    } else if(latest.outcome==='canceled'&&!waitingOnHim) {
+      disposition='withdrawn';why='The work sent for it was cancelled and nothing replaced it.';
+    } else if(waitingOnHim) {
+      continue;
+    } else {
+      const how=latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
+        :latest.outcome==='unanswered'?'never answered':latest.outcome==='undetermined'?'ended without saying whether it was done'
+        :latest.outcome==='dependency_failed'?'was held behind work that did not succeed':`ended as ${latest.outcome}`;
+      stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest.id,how,key:`${request.requestId}:${request.revision}:${latest.id}`});
+      continue;
+    }
+    const at=nowIso();
+    const next={...request,state:'closed' as const,disposition,closure:{by:OWNER_BY,at,reason:why,evidence:[latest.id]},revision:request.revision+1,updatedAt:at};
+    const questions=expireOpen(questionsOfRequest(topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
+    const topicNext=bumped(topic);
+    if(recordOwnerTopicChange(topic.sessionId,`topic-settle:${request.requestId}:${request.revision}:${latest.id}`,'topic_request',
+      {change:'request_closed',topicId,topic:topicNext,request:next,by:OWNER_BY,reason:why,revision:topicNext.revision,questions}))settled++;
+  }
+  return {stuck,settled};
+}
+
+/**
+ * Links his replies, settles ended requests and closes the thread when that left nothing in it.
+ * `answered` marks an agent's final answer having just arrived here, itself an ending.
+ */
+function keepThreadCurrent(topicId:string,forwards=forwardedReplies(),answered=false):Stuck[] {
+  return db.transaction(()=>{
+    linkForwardedReplies(topicId,forwards);
+    const {stuck,settled}=settleEndedRequests(topicId);
+    if(settled||answered)closeThreadIfFinished(topicId,answered?'answer':'settled');
+    return stuck;
+  })();
+}
+
+/**
+ * His message in a closed thread opens it again: he is talking about it, so it belongs in his list.
+ * Called on every message he sends to the Inbox; a message outside a placed thread changes nothing.
+ */
+export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyToMessageId:unknown) {
+  if(typeof replyToMessageId!=='string')return false;
+  refreshRootMemo();
+  const root=rootOf(sessionId,replyToMessageId);
+  const topicId=root?topicOfRoot(root):null;
+  if(!topicId)return false;
+  const topic=topicRow(topicId);
+  if(topic.state!=='closed'||topic.closure?.kind==='merged')return false;
+  const author=getAcceptedSessionInput(inputId)?.origin;
+  const at=nowIso(),why=author==='human'?'He wrote in this thread.':'An agent wrote in this thread through his entrance (a marked test).';
+  const questions=restoreExpiredByClosure(topic,at);
+  const next=bumped(topic,{state:'open',closure:null,setAside:null});
+  return recordOwnerTopicChange(sessionId,`topic-reopen:his:${inputId}`,'topic',{change:'reopened',topicId,topic:next,by:OWNER_BY,reason:why,revision:next.revision,questions});
+}
+
+/**
+ * The owner's pass over every open thread (and every thread with his reply still being worked on),
+ * on the reading cadence and at startup. Requests whose work ended without an answer it can act on
+ * are flagged to the router once each, in one notice per pass, so it decides what happens to them.
+ */
+export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown) {
+  const session=inboxSession();
+  if(!session)return {threads:0,closed:0,settled:0,flagged:0};
+  refreshRootMemo();
+  const forwards=forwardedReplies();
+  const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
+  const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
+  const closedBefore=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count;
+  const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
+  const stuck:Stuck[]=[];
+  for(const topicId of new Set([...open,...running])) {
+    try{stuck.push(...keepThreadCurrent(topicId,forwards));}
+    catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
+  }
+  const fresh=stuck.filter(item=>!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`topic-flag:${item.key}`));
+  if(fresh.length&&admit) {
+    const lines=fresh.map(item=>`- "${item.title}" (${item.requestId}) in the thread "${item.topicTitle}" (${item.topicId}): the work sent for it (${item.work}) ${item.how}.`);
+    const inputId=`thread-upkeep:${createHash('sha256').update(fresh.map(item=>item.key).sort().join(',')).digest('hex')}`;
+    try {
+      // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
+      if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
+        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
+          text:`These thread requests are still open, but the work sent for them has ended and nothing else is running for them:\n${lines.join('\n')}\nFor each, decide: send the work again (sessions ask … --thread, then topics request link), close it with the disposition that is true (topics request close … --disposition failed|withdrawn|superseded|completed), or, only if no agent can settle it, ask him in that thread. Each thread closes itself once nothing in it is open or waiting on him. You do not need to reply to this.`});
+      for(const item of fresh)recordSessionEvent({eventId:`topic-flag:${item.key}`,sessionId:session.id,kind:'topic_request',
+        payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,reason:`Its work ${item.how}.`}});
+    } catch(error) {
+      log('error','inbox_thread_upkeep_flag_failed',{requests:fresh.length,message:error instanceof Error?error.message:String(error)});
+    }
+  }
+  const closed=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count-closedBefore;
+  const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
+  if(closed||settled||fresh.length)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged:admit?fresh.length:0,stuck:stuck.length});
+  return {threads:open.length,closed,settled,flagged:admit?fresh.length:0};
+}
+
+/* ------------------------------------------------------------------ title drift */
+
+const DRIFT_STOPWORDS=new Set(['about','after','again','also','agent','agents','and','are','been','being','but','can','could','does','doing','done','for','from','have','here','into','its','just','keep','make','more','not','now','one','our','out','should','some','than','that','the','their','them','then','there','these','they','this','thread','threads','through','what','when','where','which','while','will','with','without','work','would','your','his','him','tejas','thnkr','ing','thinkering','concierge','inbox']);
+function driftWords(value:string):Set<string> {
+  return new Set(value.toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/)
+    .filter(word=>word.length>=4&&!DRIFT_STOPWORDS.has(word)).map(word=>word.replace(/(ings|ing|ies|es|ed|s)$/,'')).filter(word=>word.length>=3));
+}
+/**
+ * A thread whose title no longer says what it holds, judged from its own record: the thread's
+ * newest requests share no word with its title. It is a flag for the router, which renames the
+ * thread (or, when he named it, moves the unrelated request into a thread of its own); his own
+ * search and list rely on titles that say what is inside (capture d30a141a: "our thread names
+ * don't make sense, and each thread keeps evolving into something we can't really track").
+ */
+/** Whether he named this thread: its last rename, read within the Inbox's own events (an unscoped read took ~330 ms). */
+function renamedByHim(topic:StoredTopic):boolean {
+  const row=db.query(`SELECT json_extract(payload_json,'$.by.kind') AS by_kind FROM session_owner_events WHERE session_id=? AND kind='topic'
+    AND json_extract(payload_json,'$.topicId')=? AND json_extract(payload_json,'$.change')='renamed' ORDER BY sequence DESC LIMIT 1`).get(topic.sessionId,topic.topicId) as {by_kind:string|null}|null;
+  return row?.by_kind==='human';
+}
+export function titleDrift(topicId:string):{title:string;unrelated:{id:string;title:string}[];namedByHim:boolean}|null {
+  const topic=topicRow(topicId);
+  const title=driftWords(topic.title);
+  if(!title.size)return null;
+  const recent=topicRequests(topicId).slice(-4);
+  const unrelated=recent.filter(request=>![...driftWords(request.title)].some(word=>title.has(word)));
+  const newest=recent.at(-1);
+  if(!newest||!unrelated.includes(newest)||unrelated.length*2<recent.length)return null;
+  return {title:topic.title,unrelated:unrelated.map(request=>({id:request.requestId,title:request.title})),namedByHim:renamedByHim(topic)};
+}
+const titleDriftInstruction=(drift:NonNullable<ReturnType<typeof titleDrift>>)=>drift.namedByHim
+  ?'He named this thread, and its newest requests are about something else: move them into a thread of their own (topics create, then place their messages there) so he can find each by its title.'
+  :'This thread\'s title no longer says what it holds: its newest requests share nothing with it. Rename it (topics rename) to what he would look for, or move the unrelated requests into a thread of their own.';
+
 /* ------------------------------------------------------------------ reply with review */
 
 /** A reply may pin the exact questions it answers, when they belong to the topic it replies in. */
@@ -2145,6 +2492,8 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
       kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));
   }
   const entries=entryIndex();
+  const drift=titleDrift(topicId);
+  if(drift)context.titleDrift={...drift,instruction:titleDriftInstruction(drift)};
   const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
   if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};
   return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
