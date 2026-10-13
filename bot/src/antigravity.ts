@@ -42,6 +42,8 @@ type AntigravityRun = Parameters<AgentProvider["run"]>[0] & {
   transport?: ClaudeCodeTransport;
   /** Taken back from a predecessor's host: its record replays before any decision acts. */
   adopted?: boolean;
+  /** A predecessor's steering message was picked up, or the run ended without picking it up. */
+  onRecoveredSteering?: (clientMessageId: string, outcome: "acknowledged" | "unacknowledged") => void;
 };
 
 type AntigravityEvent = {
@@ -261,7 +263,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     },
     onInterruptReady: interrupt => { interruptInput = interrupt; },
     // A predecessor's steering write: it holds the input open until Gemini picks it up.
-    onReplayedInput: (_line, meta) => { if (meta?.kind === "steering") written.push({ clientMessageId: meta.clientMessageId ?? null }); },
+    // Its pickup or loss is reported to this coordinator, which owns the message's record now.
+    onReplayedInput: (_line, meta) => {
+      if (meta?.kind !== "steering") return;
+      const clientMessageId = meta.clientMessageId ?? null;
+      written.push({ clientMessageId, resolve: () => { if (clientMessageId) input.onRecoveredSteering?.(clientMessageId, "acknowledged"); },
+        reject: () => { if (clientMessageId) input.onRecoveredSteering?.(clientMessageId, "unacknowledged"); } });
+    },
     onReplayEnd: () => {
       replaying = false;
       if (terminal) afterResult();
