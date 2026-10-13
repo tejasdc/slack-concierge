@@ -101,13 +101,16 @@ export class PreparedSessionCards {
     for(const [id,sequence] of changed)this.write(generation,id,sequence,true);
   }
   /**
-   * Cards written before `touch` existed get it in small pages, once per worker process, so the
+   * Cards written before `touch` or the shared presence record existed get them in small pages, once per worker process, so the
    * sidebar learns which sessions are his without a full rebuild of the presentation store.
    * Answers whether any card still lacks it.
    */
   backfillTouch(generation:number,sourceSequence:number,limit=40):boolean{
+    // Cards written before the shared presence record (no presenceRevision) are rewritten the same
+    // way, so an idle session's sidebar card carries the record without waiting for its next change.
     const rows=this.prepared.query(`SELECT session_id FROM presentation_session_cards WHERE generation=?
-      AND json_extract(card_json,'$.touch.rule') IS NOT ? LIMIT ?`).all(generation,TOUCH_RULE,limit) as {session_id:number}[];
+      AND (json_extract(card_json,'$.touch.rule') IS NOT ? OR json_extract(card_json,'$.presenceRevision') IS NULL) LIMIT ?`)
+      .all(generation,TOUCH_RULE,limit) as {session_id:number}[];
     for(const row of rows)this.write(generation,row.session_id,sourceSequence,true);
     return rows.length===limit;
   }
