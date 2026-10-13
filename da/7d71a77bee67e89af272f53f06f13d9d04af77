@@ -1,0 +1,1 @@
+Concierge now shows how long an update has waited without rereading its event history, so a busy disk is less likely to freeze the session owner.
