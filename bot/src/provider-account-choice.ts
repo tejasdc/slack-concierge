@@ -35,6 +35,12 @@ export type AccountRoom = Readonly<{
   /** The primary weekly allowance, when known. This ranks eligible Claude accounts without
    * spending a nearly exhausted week merely because another account's short window is fuller. */
   weeklyUsedPercent?: number | null;
+  /**
+   * When that weekly allowance ends, if known. Room that ends sooner is spent first: an
+   * allowance is lost at its end, so the one with the least time to be used is the one at
+   * risk. A week reset 15 hours before its end (Tejas, 2026-10-13) is the extreme case.
+   */
+  weeklyResetsAtMs?: number | null;
   /** A configuration home this machine holds for it, when it has one of its own. */
   home: string | null;
   /** True for the account the default login already uses, which needs no home. */
@@ -82,6 +88,20 @@ export type AccountChoice = Readonly<
 const launchable = (account: AccountRoom) =>
   !account.problem && account.tightestUsedPercent !== null && (account.home !== null || account.isDefault);
 
+const WEEK_HOURS = 7 * 24;
+
+/**
+ * Percent of weekly room per hour left to use it: the rate at which this account's room has to
+ * be spent before it lapses. Higher means more at risk of being wasted, so it is spent first.
+ */
+export function lapsePressure(account: AccountRoom, nowMs: number): number {
+  const used = account.weeklyUsedPercent ?? account.tightestUsedPercent ?? 100;
+  const room = Math.max(0, 100 - used);
+  const end = account.weeklyResetsAtMs ?? null;
+  const hoursLeft = end !== null && end > nowMs ? Math.max(1, (end - nowMs) / 3_600_000) : WEEK_HOURS;
+  return room / hoursLeft;
+}
+
 export function chooseAccountForTurn(input: {
   accounts: readonly AccountRoom[];
   /** An account this turn must run on or wait for. Only a banked release binds. */
@@ -90,6 +110,8 @@ export function chooseAccountForTurn(input: {
   prefer: string | null;
   /** A fresh Accounts selection wins once, before ordinary room-based dispatch resumes. */
   newlySelected?: boolean;
+  /** The instant the choice is made; the rule takes it so it can be run on past readings. */
+  nowMs?: number;
 }): AccountChoice {
   const usable = input.accounts.filter(launchable);
   if (!usable.length) return { account: null, home: null, because: "nothing-readable" };
@@ -119,10 +141,15 @@ export function chooseAccountForTurn(input: {
   if (input.newlySelected && preferred)
     return { account: preferred.account, home: preferred.home, because: "stayed-on-its-account" };
 
-  const spentWeekOrLimit=(account:AccountRoom)=>account.weeklyUsedPercent??account.tightestUsedPercent!;
+  // Room is ranked by how fast it has to be spent before it lapses: the percent left divided by
+  // the hours until that weekly allowance ends. A full week with 15 hours to its end outranks a
+  // half week with five days (6.7 against 0.4 points an hour), and the 2026-10-10 case still
+  // holds — 13% with two days left (0.3) loses to 83% with five (0.7). An unknown end counts as
+  // a whole week away, the least urgent reading, so it never jumps the queue on a missing date.
+  const pressure = (account: AccountRoom) => lapsePressure(account, input.nowMs ?? Date.now());
   const roomiest = withRoom.reduce((best, account) =>
-    spentWeekOrLimit(account) < spentWeekOrLimit(best)
-      || (spentWeekOrLimit(account) === spentWeekOrLimit(best) && account.account === input.prefer)
+    pressure(account) > pressure(best)
+      || (pressure(account) === pressure(best) && account.account === input.prefer)
       ? account : best);
   if (roomiest.account === input.prefer)
     return { account: roomiest.account, home: roomiest.home, because: "stayed-on-its-account" };
