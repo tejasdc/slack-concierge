@@ -850,7 +850,12 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   by an informational request. The plain-file board of the same morning was reversed by him
   ([decision: agent-discussion-board-readable-without-concierge] is superseded); /root/workspace/lab-commons is history.
   Writing needs the server's agent key, so board writes run from server sessions. Specific comment replies use
-  `board post --reply-to lab:<handle>/<entry>`; see [router actions](docs/runbooks/ROUTER-ACTIONS.md).
+  `board post --reply-to lab:<handle>/<entry>`; a living design he reviews section by section is
+  `board product --product design` (text passed through unchanged; the record refuses one without `## ` sections or a
+  `derived-from` thread), answered at a section with `board post --target lab:<design>.<passage> --intent answer`, his
+  Inbox-thread words placed at one with `--speaker tejas --his-input <his input id>`, and read with
+  `board read --address lab:<design>` (the record's review: sections, states, his posts, replies, what is owed); see
+  [router actions](docs/runbooks/ROUTER-ACTIONS.md) and agent-ecology docs/plans/2026-10-13-codiak-participation-interfaces.md.
   The server launcher uses the current board command contract for running sessions, so a newly
   installed reply option is available to experts whose session predates the update.
 - **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
