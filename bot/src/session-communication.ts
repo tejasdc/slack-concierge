@@ -19,7 +19,7 @@ import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel } from './session-notices';
@@ -1232,9 +1232,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         const responder=getSessionById(request.target_session_id);
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
-            respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.text??''),
+            respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-            answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
+            answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
+            answerGroup:declared.answerGroup??null,
+            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
         db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
     }
     reply(input: {
@@ -1260,6 +1262,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         hand_back?:string;
         /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
         summary?:string;
+        /** Original final body, separate from the mandatory completion evidence. */
+        reply_body?:string;
+        answer_group?:string;
         /** Why Tejas need not read this completed answer: it is posted in his thread but filed for nobody. */
         quiet_because?:string;
     }) {
@@ -1273,6 +1278,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             throw new Error('Question fields belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        if(input.final)input={...input,reply_body:input.text};
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
         // confirmation if it was sent? Just let me know if it was not sent")
         // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
@@ -1292,7 +1298,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
         else if(input.workDisposition==='completed')
-            input={...input,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
+            input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
         if(outsideRequest)
             return this.externalReply(input)!;
         const attached = !!(input.attachments?.length || files(input.files).length);
@@ -1302,7 +1308,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 return this.dependencies.peers.inspectDelivery(input.request_id);
             const actor = this.actor(input.source);
             action(input.action_id);
-            message(input.text, attached);
+            message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));
             if (typeof input.final !== 'boolean')
                 throw new Error('Specify whether this is a final answer.');
             if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
@@ -1310,7 +1316,10 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             // bytes to the origin, which admits them into its own custody.
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
-            return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,
+            return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
+                closingLine:input.final&&input.workDisposition?(input.workDisposition==='completed'
+                    ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
+                    :input.workDisposition==='failed'?'Failed':'Needs your decision'):undefined,
                 final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
@@ -1329,6 +1338,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 const attachments = retained && [...(input.attachments ?? []), ...retained];
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
+                    || payload.answerGroup !== input.answer_group
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || !attachments
                     || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
@@ -1340,12 +1350,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         }
         const actor = this.actor(input.source);
         action(input.action_id);
-        message(input.text, attached);
+        message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));
         if (typeof input.final !== 'boolean')
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
         const requestPayload=JSON.parse(request.payload_json);
         const requestedEffect = requestPayload.requestedEffect;
+        const bodylessFinal=input.final&&!input.reply_body?.trim()&&!attached;
+        if(bodylessFinal&&(!requestPayload.promptAnswer||!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id)))
+            throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
         if(input.answers_question && (input.final || !requestPayload.promptAnswer || !input.text.trim()))
             throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
         if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
@@ -1372,6 +1385,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             ? this.retainAttachments(actor.inputId ?? this.peerActor(actor).inputId, input.action_id, 'reply-file', input)
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
+            ...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),
+            ...(input.answer_group?{answerGroup:input.answer_group}:{}),
+            ...(input.final&&input.workDisposition?{closingLine:input.workDisposition==='completed'
+                ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
+                :input.workDisposition==='failed'?'Failed':'Needs your decision'}:{}),
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
             ...(attachments.length?{attachments}:{}),
@@ -1774,20 +1792,17 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             const payload = declared.workDisposition==='completed' && request.outcome!=='answered'
                 ? JSON.parse(request.result_json!) : declared;
             const current = db.query('SELECT * FROM session_communication_events WHERE event_id=?').get(event.event_id) as EventRow;
-            // One answer reaches the requester once (sameAnswerGroup): an event already carried by
-            // another event's return only follows that return's delivery state.
+            // Historical returns already carried by another event keep their delivery state.
             if (current.accepted_input_id && current.accepted_input_id !== `return:${event.event_id}`) {
                 this.followReturn(current.event_id, current.accepted_input_id);
                 return;
             }
-            const group = current.accepted_input_id ? { carriedBy: null, joining: [] as EventRow[] } : this.sameAnswerGroup(current, request.source_session_id);
-            if (group.carriedBy) {
-                db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy, event.event_id);
-                this.followReturn(event.event_id, group.carriedBy);
-                log('info', 'session_return_merged', { event_id: event.event_id, request_id: request.request_id, carried_by: group.carriedBy });
+            const group=current.accepted_input_id?{carriedBy:null as string|null,joining:[] as EventRow[]}:this.explicitAnswerGroup(current,request.source_session_id);
+            if(group.carriedBy){
+                db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy,event.event_id);
+                this.followReturn(event.event_id,group.carriedBy);
                 return;
             }
-            const requestIds = [request.request_id, ...group.joining.map(joined => joined.request_id)];
             recoverUnsentSteeredInput(`return:${event.event_id}`);
             // A retry dispatches the input already recorded; its text named the requests it closed then.
             const existing = getAcceptedSessionInput(`return:${event.event_id}`);
@@ -1803,8 +1818,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                     followUp:(()=>{const responder=getSessionById(coveredResponder);return responder?sessionAddress(responder):null;})()}),
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
-            for (const joined of group.joining)
-                db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`, joined.event_id);
+            for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);
             const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
             const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
@@ -1821,28 +1835,16 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
     }
-    /**
-     * Finals to the same requester that carry the same answer: the same responding session, the
-     * same words byte for byte and the same disposition. A worker that answers several requests at
-     * once replies to each (every request closes by its own command), and the requester must still
-     * receive that answer once: five identical returns started five Inbox turns and put five lines
-     * on his screen (2026-09-23). `carriedBy` is a return that already delivered this answer; else
-     * `joining` are the not-yet-delivered copies this event's return carries with it. Identical
-     * bytes are the test, never similar words.
-     */
-    private sameAnswerGroup(event: EventRow, requesterSessionId: number): { carriedBy: string | null; joining: EventRow[] } {
-        if (event.kind !== 'final') return { carriedBy: null, joining: [] };
-        const answer = sameAnswerKey(event.payload_json);
-        if (!answer) return { carriedBy: null, joining: [] };
-        const candidates = (db.query(`SELECT event.* FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
-            WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=?
-              -- A copy the owner already posted into a thread has reached its destination; no return carries it.
-              AND NOT (event.status='received' AND event.accepted_input_id IS NULL) ORDER BY event.rowid`)
-            .all(requesterSessionId, event.event_id, event.created_at_ms - 60 * 60 * 1000) as EventRow[])
-            .filter(candidate => sameAnswerKey(candidate.payload_json) === answer);
-        const carrier = candidates.find(candidate => candidate.accepted_input_id === `return:${candidate.event_id}`);
-        return carrier ? { carriedBy: carrier.accepted_input_id, joining: [] }
-            : { carriedBy: null, joining: candidates.filter(candidate => !candidate.accepted_input_id) };
+    private explicitAnswerGroup(event:EventRow,requesterSessionId:number):{carriedBy:string|null;joining:EventRow[]} {
+        if(event.kind!=='final')return {carriedBy:null,joining:[]};
+        const group=JSON.parse(event.payload_json).answerGroup;
+        if(typeof group!=='string'||!group)return {carriedBy:null,joining:[]};
+        const candidates=db.query(`SELECT event.* FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
+            WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
+              AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
+            .all(requesterSessionId,event.event_id,group) as EventRow[];
+        const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
     }
     /** An event carried by another event's return takes that return's delivery state. */
     private followReturn(eventId: string, inputId: string) {

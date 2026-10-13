@@ -31,6 +31,12 @@ test.each(commands)("parses exact %s command identities and content", command =>
   expect(parseRouterSessionsArgs(command.args)).toEqual({ operation: command.operation, body: command.body });
 });
 
+test('a final reply can omit its body while retaining the closing fields',()=>{
+  expect(parseRouterSessionsArgs(['reply','request-one',...nativeSourceFlags,'--action-id','close-one',
+    '--work-disposition','completed','--summary','Work complete','--all-done','--checked','one answer is visible'])).toMatchObject({
+    operation:'reply',body:{request_id:'request-one',text:'',final:true,workDisposition:'completed',summary:'Work complete',all_done:true,checked:'one answer is visible'}});
+});
+
 test("omits optional fields and preserves source timestamps as strings", () => {
   expect(parseRouterSessionsArgs(["search", ...sourceFlags, "--", "concept"])).toEqual({
     operation: "search", body: { source, concepts: ["concept"] },
