@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentProvider, ProviderCapabilities } from "./providers";
 import type { RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
+import { awaitingOutside } from "./storage-observation";
 
 export interface CapabilityRunRef {
   operationId: string;
@@ -313,7 +314,14 @@ export class SessionCapabilityClient {
     return this.post('/captures/note',input);
   }
 
+  /** Every call here waits on Thinkering, another process: inside an owner request that wait is
+   * recorded as `awaited_ms`, never as the owner's own time. The daily ChatGPT transcript refresh
+   * waited 267 s for a rate-limited browser on 2026-10-13 and was counted as owner slowness. */
   private post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+    return awaitingOutside(() => this.send<T>(path, body, signal));
+  }
+
+  private send<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {
       const bytes = JSON.stringify(body);
       const req = request({ socketPath: this.socketPath, method: "POST", path,
