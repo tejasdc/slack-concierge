@@ -37,7 +37,9 @@ repair belong to the canonical owner; see [provider sessions](docs/architecture/
 That repair credits the exact covered taste-mining request to the retained Codex result
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 Automatic new-session choice also remembers typed model-capacity refusals and moves a
-zero-work refused first turn; see [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
+zero-work refused first turn between Claude and Codex. Gemini is only for work Tejas explicitly
+assigns to it, never an automatic start or fallback [decision: gemini-only-when-tejas-asks];
+see [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
 
 Google Antigravity agent sessions use the existing durable execution host and retain the
 Google conversation ID for later turns. Each machine running them has its own sign-in and
