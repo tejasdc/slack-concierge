@@ -37,3 +37,6 @@ The adapter keeps the CLI's input open until every message written to it has bee
 `user_input` step acknowledges the oldest written message. The earlier answer is published as its
 own message, and the run's result is the last answer. After an answer, a message still not
 picked up gets 15 seconds before the run ends and it is left uncertain, never resent.
+
+Gemini's status line writes the account identity through a staging file; it now removes that file
+when the CLI stops it with a signal, which left 92 staging files on the Mac by 2026-10-13.
