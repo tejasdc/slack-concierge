@@ -224,6 +224,8 @@ authorization or a change to the default rapid-iteration policy.
   the shared writer boundary enforces that setting on Linux.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
+  Update status and wait notices read their waiting start from the run row rather than scanning event history;
+  the same durability document owns the 2026-10-13 disk-contention evidence and acceptance check.
   Slow Inbox topic mutations break input retention into bounded, content-free storage phases there.
   Ledger startup batches base schema and legacy upgrades; presentation worker schema setup
   is one atomic transaction with startup timing, without weakening durability;

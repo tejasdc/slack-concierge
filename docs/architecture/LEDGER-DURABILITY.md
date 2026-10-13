@@ -41,17 +41,20 @@ Linux only) changes where the disk is waited for, not what is written or when it
   explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
   ceiling was 4 GB),
   and SQLite's default automatic checkpoint ran in the short-lived update-runner commands instead:
-  each one copied the log and synced the database file on the loaded disk while the owner's
-  commits busy-waited behind it for 0.3–0.9 s (sampled writer-lock holders: `deploy-state.js`,
-  `release-manager.js promote`, in `fsync` of `state.db`).
+  `deploy-state.js` and `release-manager.js promote` were sampled in `fsync` of `state.db`
+  while the owner had 0.3–0.9 s write waits. That overlap shows competing disk work,
+  not which process held the writer lock. SQLite invokes the auto-checkpoint hook
+  [after releasing the write lock](https://www.sqlite.org/c3ref/wal_hook.html), and its
+  [PASSIVE mode does not wait for writers](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html).
 
 On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
 write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
 before the update controller, so that run alone is not an established lock holder. Its ledger
 state commands and other short-lived writers still had SQLite's default auto-checkpoint setting,
 even though the owner had disabled its own. The shared writer boundary now disables it for every
-Linux ledger writer. This removes a known path for a second writer to checkpoint and block the
-owner; the incident's exact lock holder remains unobserved. A future update must be checked with
+Linux ledger writer. This removes a known path for a short-lived writer to checkpoint on the
+loaded disk; it does not establish the cause of the `SQLITE_BUSY` write.
+The incident's exact lock holder remains unobserved. A future update must be checked with
 the owner's loop-lag and slow-sync records before attributing any residual stalls.
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
@@ -69,6 +72,22 @@ gate also constrains this worker's filesystem calls to the lifetime WAL sync des
 the unrelated pressure file; raw SHM inspection refuses the release.
 
 ## What still waits on the loop
+
+The 2026-10-13 update at 22:42 UTC exposed a separate status-read stall: one owner-loop
+interval lasted 10.388 s, including 8.128 s in a `deployment_run_events` timestamp scan.
+The update-run row is inserted together with its first `prepared` event, and its `created_at`
+is the same timestamp. All 331 runs with a prepared or draining event in the October 10 offline
+snapshot had matching timestamps. The live status and wait-notice readers now use that run
+timestamp directly, so neither scans the event table to display how long an update has waited.
+This removes the observed slow statement; another real update under disk load is needed to
+verify the owner's loop-lag outcome. The concurrent Thinkering backup read at least 23.5 GB
+and wrote 3.4 GB during that update on the RAID device backing the ledger's loop filesystem;
+that overlap is evidence of disk contention, not proof it caused every slow ledger operation.
+The earlier 21:56–21:57 stalls preceded the update controller. A Thinkering agent launched a
+worktree build at 21:55:02 and `npm ci` for 959 packages at 21:56:04; the install ran for about
+two minutes. Those were concurrent bulk disk operations, while ledger WAL syncs repeatedly took
+one to three seconds. No retained per-process I/O sample or SQLite lock-holder sample proves
+which operation held any particular ledger statement.
 
 Measured on 2026-10-10 12:55 ET after this change, under agent disk load (IO pressure 17-58%):
 the owner's main thread was in uninterruptible wait 27% of a three-minute sample, with no
