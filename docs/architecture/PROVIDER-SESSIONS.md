@@ -323,6 +323,7 @@ input and request IDs do not change. This applies to native and agent-request
 creation; the Automatic origin is retained with the session, since the create receipt
 records the selected provider. No existing bound conversation or acknowledged or
 ambiguous input changes provider. Saved work retains its chosen provider and time.
+Choosing a model on an Automatic session removes its eligibility for this first-turn switch.
 A safe refusal without a proven available alternative
 uses the ordinary bounded retry policy on its current provider. Explicit selections
 also use that retry policy only when the provider demonstrably received no input.
