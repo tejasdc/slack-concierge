@@ -1,4 +1,5 @@
 import {ownerRequestLabel} from './owner-request-label';
+import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
@@ -1859,6 +1860,28 @@ export class SessionOwner {
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'stop',payload:{runId:input.runId}});
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(this.input(operation.id))};
   }
+  /** A side question answered from a throwaway copy of the session; nothing is retained here and the session is untouched. */
+  async aside(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['asideId','question','passage','earlier']);
+    if(typeof input.asideId!=='string'||!/^[A-Za-z0-9:_-]{8,120}$/.test(input.asideId))throw new SessionOwnerError('A side question needs its id.');
+    const text=(value:unknown,name:string,max:number)=>{
+      if(typeof value!=='string'||!value.trim())throw new SessionOwnerError(`A side question needs its ${name}.`);
+      if(value.length>max)throw new SessionOwnerError(`The ${name} is too long for a side question.`);
+      return value.trim();};
+    const question=text(input.question,'question',4000),passage=text(input.passage,'passage',8000);
+    const earlier=Array.isArray(input.earlier)?input.earlier.slice(-20).map(item=>{const entry=object(item);
+      return {question:text(entry.question,'earlier question',4000),answer:text(entry.answer,'earlier answer',20000)};}):[];
+    if(!['claude-code','codex'].includes(session.provider_id))throw new SessionOwnerError('Side questions are available for Claude and Codex sessions.',409,'CAPABILITY_UNAVAILABLE');
+    if(!session.agent_session_uuid)throw new SessionOwnerError('This session has no conversation to ask about yet.',409,'CAPABILITY_UNAVAILABLE');
+    const meta=sessionMetadata(session),channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
+    const cwd=meta.cwd??channel?.code_path??channel?.vault_path??this.defaultCwd;
+    try {
+      // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
+      return await askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000);
+    } catch(error) {
+      throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
+    }
+  }
   fork(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','boundary','provider']);
     if(typeof input.boundary!=='string'||!input.boundary.trim())throw new SessionOwnerError('An exact native fork boundary is required.');
@@ -2970,6 +2993,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='outage-choice') result=await this.outageChoice(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=await this.bind(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='asides') result=await this.aside(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=this.createTask(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='captures') result=this.captureSelectedMessage(parts[1]!,body);
