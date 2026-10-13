@@ -110,7 +110,6 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let pickups = 0;
   let replaying = !!input.adopted;
   let inputClosed = false;
-  let closeOwed = false;
   let pickupGrace: ReturnType<typeof setTimeout> | null = null;
   let steeringRegistered = false;
   const toolsUsed = new Set<string>();
@@ -122,7 +121,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     input.onInputAcknowledged?.();
   };
   const endInput = (reason: Error) => {
-    if (replaying) { closeOwed = true; return; }
+    if (replaying) return; // decided again from the rebuilt state when the replay ends
     if (inputClosed) return;
     inputClosed = true;
     if (pickupGrace) { clearTimeout(pickupGrace); pickupGrace = null; }
@@ -265,8 +264,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     onReplayedInput: (_line, meta) => { if (meta?.kind === "steering") written.push({ clientMessageId: meta.clientMessageId ?? null }); },
     onReplayEnd: () => {
       replaying = false;
-      if (closeOwed || (terminal && written.length === 0)) endInput(new Error("Gemini finished before reading this message."));
-      else { if (terminal) afterResult(); registerSteering(); }
+      if (terminal) afterResult();
+      registerSteering();
     },
     onStdinReady: (write, close) => {
       closeInput = close;
