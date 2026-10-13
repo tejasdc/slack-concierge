@@ -48,7 +48,7 @@ import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
-import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message-author';
+import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
@@ -2954,7 +2954,7 @@ export class SessionOwner {
         const displays=preparedInboxDisplays(page.keys);
         result=displays.some(value=>value===null)
           ?{root,messages:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:page.coverage.appliedSequence}}
-          :{root,messages:displays,nextCursor:page.nextCursor,coverage:page.coverage};
+          :{root,messages:withCurrentAuthors(displays),nextCursor:page.nextCursor,coverage:page.coverage};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)
         result={session:this.view(this.session(parts[1]!))};
