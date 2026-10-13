@@ -45,9 +45,7 @@ function currentWait(stateDir: string): UpdateWait | null {
   const run = db.query(`SELECT id,created_at FROM deployment_runs WHERE target='concierge'
     AND status IN ('prepared','draining') ORDER BY created_at DESC LIMIT 1`).get() as { id: string; created_at: string } | null;
   if (run) {
-    const since = (db.query(`SELECT MIN(created_at) AS at FROM deployment_run_events WHERE run_id=?
-      AND event IN ('prepared','draining')`).get(run.id) as { at: string | null } | null)?.at ?? run.created_at;
-    return { key: run.id, since: Date.parse(since.endsWith("Z") ? since : `${since.replace(" ", "T")}Z`) };
+    return { key: run.id, since: Date.parse(run.created_at.endsWith("Z") ? run.created_at : `${run.created_at.replace(" ", "T")}Z`) };
   }
   const marker = join(stateDir, MAC_UPDATE_WAITING_FILE);
   if (!existsSync(marker)) return null;

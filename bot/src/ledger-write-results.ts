@@ -7,8 +7,8 @@ import type { Database } from 'bun:sqlite';
 export function ledgerWriteResults(database: Database): Database {
   // A short-lived ledger writer has SQLite's default auto-checkpoint enabled unless it
   // opts out on its own connection. The owner's checkpoint thread is the only checkpointer
-  // on Linux: an outside writer copying and syncing the WAL can hold SQLite's writer lock
-  // through disk pressure while the accepting owner busy-waits on its event loop.
+  // on Linux: an outside writer otherwise copies and syncs the WAL on its calling thread,
+  // competing for disk I/O. SQLite releases the writer lock before auto-checkpointing.
   if (process.platform === 'linux') database.exec('PRAGMA wal_autocheckpoint = 0');
   const directChanges = database.query('SELECT changes() AS count');
   const statements = new WeakMap<object, object>();
