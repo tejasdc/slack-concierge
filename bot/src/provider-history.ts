@@ -371,6 +371,36 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
   pendingRefresh.set(sessionUuid, timer);
 }
 
+function snapshotMatches(meta: ClaudeCacheMeta, source: {path:string;size:number;mtimeMs:number}, cwd: string) {
+  return meta.source_path===source.path && meta.cwd===cwd && !meta.needs_reimport
+    && meta.verified_source_size===source.size && meta.verified_source_mtime_ms===source.mtimeMs;
+}
+
+/**
+ * Brings one conversation's snapshot up to its transcript before anyone opens it, using the
+ * same import and verification children a read would start. A read that found no snapshot
+ * answered with no messages while the import ran, so the first open of most conversations
+ * was blank (2026-10-13). Resolves once this conversation's preparation has finished.
+ */
+export async function prepareClaudeHistory(sessionUuid: string, cwd: string, ownerSessionId: number):
+  Promise<"current"|"prepared"|"unprepared"|"unavailable"> {
+  const source = await sourceVersion(sessionUuid, cwd);
+  if (!source) return "unavailable";
+  const current = () => {
+    const cache = openCache(sessionUuid);
+    if (!cache) return null;
+    try { return snapshotMatches(cache.meta, source, cwd); } finally { cache.db.close(); }
+  };
+  const before = current();
+  if (before) return "current";
+  // Verification walks only the appended bytes, so it comes first whenever a snapshot exists.
+  if (before === false) await queueHistoryVerification(sessionUuid, ownerSessionId);
+  if (current()) return "prepared";
+  queueCanonicalImport(sessionUuid, cwd, source.path, ownerSessionId);
+  await queuedImports.get(sessionUuid);
+  return current() ? "prepared" : "unprepared";
+}
+
 function cacheCoverage(sessionUuid: string): ProviderHistoryPage["coverage"] {
   const retry = Math.max(0, (retryImportAt.get(sessionUuid) || 0) - Date.now());
   return { complete: false, code: retry ? "history_import_failed" : "history_indexing",

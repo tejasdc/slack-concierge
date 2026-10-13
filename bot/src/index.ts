@@ -367,6 +367,12 @@ if (process.platform !== 'darwin') void ensureSpeechWorker(process.env.CONCIERGE
   startMeaningIndex(dirname(db.filename),id=>{const session=getSessionById(id);return session?(sessionMetadata(session).title as string|undefined)??null:null;});
 }
 
+// Claude conversation snapshots are prepared after each turn, in both compositions, so an open never waits on one.
+{
+  const {startProviderHistoryWarmer}=await import('./provider-history-warmer');
+  startProviderHistoryWarmer(process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace');
+}
+
 if(process.env.CONCIERGE_SLACK_ENABLED==='0') {
   const {startSessionRuntime}=await import('./session-runtime');
   await startSessionRuntime();
