@@ -52,7 +52,10 @@ function noteChatgptModel(text:string|undefined):void{
 function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
   const text=error instanceof Error?error.message:String(error);
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
-  if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED'].includes(code))return;
+  // CHATGPT_NOT_SENT means Thinkering restarted while the request waited its turn: nothing reached
+  // ChatGPT and the same run is sent again by itself, so it is a wait, not a channel fault. Eight
+  // queued requests woke the repair agent at once after a release restart on 2026-10-13.
+  if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED','CHATGPT_NOT_SENT'].includes(code))return;
   // Only he can sign in to Google or pass a check the browser could not: tell him at once, with
   // its own Inbox thread and push, so nobody waits blind (Tejas, 2026-10-09: "I'm notified
   // immediately so the agents are like not waiting"). One notice per hour.
