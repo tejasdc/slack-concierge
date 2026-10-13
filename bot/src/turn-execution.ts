@@ -1136,8 +1136,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);
+      // CHATGPT_NOT_SENT is written only when Thinkering restarted while this send waited its pacing
+      // turn: nothing reached ChatGPT. It is a place lost in a queue, not a failed attempt, so it never
+      // spends the retry budget (two queued sends were stopped after five restarts on 2026-10-13) and
+      // goes straight back in line. It can recur only once per Thinkering restart.
+      const chatgptPlaceLost = replaySafe && input.providerId === 'chatgpt' && message.includes('CHATGPT_NOT_SENT');
       let retryable = replaySafe
-        && (authWait || googleUsageWait || structuredFailure?.failureClass === "retryable" ||
+        && (authWait || googleUsageWait || chatgptPlaceLost || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
@@ -1147,7 +1152,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
       if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
-        !invalidGoogleModel) {
+        !invalidGoogleModel && !chatgptPlaceLost) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }
@@ -1180,7 +1185,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             authWait,
             usageHold: heldUntilMs !== null || googleUsageWait,
             usageResetUnknown: googleUsageWait,
-            nextAttemptMs: switchClaudeAccount || providerDispatchError(error)?.immediateRetry
+            nextAttemptMs: switchClaudeAccount || chatgptPlaceLost || providerDispatchError(error)?.immediateRetry
               ? Date.now() : policyRetryAtMs ?? heldUntilMs ?? Date.now() + providerRetryDelayMs(dispatchAttempt),
           })
         : parkRunningTurnAfterProviderFailure({
