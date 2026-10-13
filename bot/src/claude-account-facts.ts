@@ -224,7 +224,11 @@ export async function claudeAccountFacts(account: string, when: (ms: number) => 
   if (kept && nowMs - Date.parse(kept.readAt) < FACTS_REFRESH_MS) return kept;
   const path = claudeCredentialFor(account);
   const token = path ? liveAccessToken(path) : null;
-  if (!token) return kept;
+  if (!token) {
+    // Said in the log, never silently: a row with no plan or credit lines is otherwise undiagnosable.
+    log("info", "claude_account_facts_no_live_login", { credential_found: path !== null, kept: kept !== null });
+    return kept;
+  }
   try {
     const [profile, usage] = await Promise.all([oauthGet(token, "/api/oauth/profile"), oauthGet(token, "/api/oauth/usage")]);
     const organization = profile?.organization ?? {};
