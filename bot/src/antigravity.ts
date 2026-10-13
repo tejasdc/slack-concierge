@@ -201,7 +201,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   // ambiguous run left the request waiting after a definite failed start.
   const refusedBeforeStart = !sawInit && terminal?.status === "ERROR"
     && terminal.num_turns === 0 && terminal.usage?.total_tokens === 0
-    && !observedOutput && toolsUsed.size === 0;
+    && !observedOutput && toolsUsed.size === 0 && !needsSignIn;
   if (!terminal) {
     throw new ProviderDispatchError({ message: needsSignIn ? "Google authentication required on this machine."
       : exit.code === 0
