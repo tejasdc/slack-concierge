@@ -316,27 +316,26 @@ successful turn clears the observation sooner. Automatic creation skips a rememb
 model and uses the other provider only when its own fresh allowance reading proves
 room. A named provider or model remains the caller's choice.
 
-If the first ordinary turn of an Automatic session receives a confirmed capacity rejection
-before a provider turn starts or the input is acknowledged, the owner changes that
-session's provider and puts its **same** retained turn back in the queue. The session,
-input and request IDs do not change. This applies to native and agent-request
-creation; the Automatic origin is retained with the session, since the create receipt
-records the selected provider. No existing bound conversation or acknowledged or
-ambiguous input changes provider. Saved work retains its chosen provider and time.
-Choosing a model on an Automatic session removes its eligibility for this first-turn switch.
-A safe refusal without a proven available alternative
-uses the ordinary bounded retry policy on its current provider. Explicit selections
-also use that retry policy only when the provider demonstrably received no input.
-An acknowledged capacity refusal is retained as parked work for inspection or an
-explicit retry, without automatic replay; capacity alone does not erase the provider's
-acknowledgement.
+Codex accepts the turn first and then ends it with `serverOverloaded` before the model
+does anything: the three October 13 Sol failures all have provider turn IDs and
+acknowledged input timestamps, and their transcripts carry
+`codex_error_info: server_overloaded` with no items. A capacity refusal is therefore
+handled as zero-work, confirmed-terminal work: it reaches this path only when the
+provider confirmed the end and no tool, assistant output or artifact was observed, the
+same proof that already lets a usage refusal wait and run again. Acknowledgement alone
+is not an effect; an ambiguous outcome or any work still blocks replay.
 
-The three October 13 reported Sol failures were terminal turn completions, not
-pre-admission rejections: all have provider turn IDs and acknowledged input timestamps
-in the diagnostic ledger snapshot. Their Codex transcripts carry
-`codex_error_info: server_overloaded`. The owner may use those refusals to avoid Sol
-for later Automatic starts, but cannot replay those same inputs elsewhere without
-breaking the acknowledged-effect boundary.
+If the first ordinary turn of an Automatic session gets such a refusal and the other
+provider's fresh reading proves room, the owner changes that session's provider, drops
+the refused Codex thread and turn IDs, and puts its **same** retained turn back in the
+queue. The session, input and request IDs do not change. This applies to native and
+agent-request creation; the Automatic origin is retained with the session. A bound
+conversation with earlier turns never changes provider. Saved work retains its chosen
+provider and time. Choosing a model on an Automatic session removes its eligibility.
+Every other capacity refusal (an explicit choice, a later turn, or no alternative with
+room) waits and retries on its own provider under the ordinary bounded retry policy,
+instead of failing. The first version of this fix (October 13) required the input to be
+unacknowledged, so it moved none of the refusals that actually occur and parked them.
 
 The owner ignores stale or unreadable allowance as proof of room. If both providers are spent,
 it binds the new request to the provider whose spent window refills first, so the existing
