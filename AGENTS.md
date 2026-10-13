@@ -743,7 +743,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   daily refresh and explicit refresh use the common owner; no competing browser or index.
   The browser is remote-box's always-running real Chrome, which Thinkering keeps signed in
   (remote-box `docs/chatgpt-browser.md`). `sessions ask --provider chatgpt` takes `--effort`
-  as ChatGPT's thinking level (default `pro`, stored as the session's model) and any `--file`;
+  as ChatGPT's thinking level (default `pro`, stored as the session's model; `--gpt` instead opens one GPT from the GPT Store) and any `--file`;
   agents send research and second opinions there first [decision: chatgpt-pro-is-the-big-guns].
   A ChatGPT attachment carries only its custody pin (id, name, type, digest, bytes): Thinkering
   refuses any other field, and an added transcript field broke every ChatGPT file send.

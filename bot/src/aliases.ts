@@ -213,9 +213,23 @@ export const DEFAULT_CHATGPT_THINKING: ChatgptThinkingLevel = "pro";
 // latest model". The model value carries whose chat it is: "tejas:<level>" for his.
 export const DEFAULT_HIS_CHATGPT_THINKING: ChatgptThinkingLevel = "extra-high";
 export const HIS_CHATGPT_PREFIX = "tejas:";
+// A chat with one GPT (from the GPT Store or his own) is "gpt:<g-…>" after the owner prefix: the
+// GPT runs on the model its maker chose, so it carries no thinking level. Tejas, 2026-10-13, asking
+// for a dating-coach GPT rather than plain ChatGPT: "I think they're called GPTs or something.
+// It's just a thing you can talk to." Thinkering's browser adapter reads the same shape.
+export const CHATGPT_GPT_PREFIX = "gpt:";
+/** A GPT named by its address (https://chatgpt.com/g/g-…) or its g-… id; projects (g-p-…) are not GPTs. */
+export function chatgptGpt(input: string | null | undefined): string | null {
+  const value = input?.trim().replace(/^https:\/\/chatgpt\.com\/g\/([^/?#]+).*$/, "$1") ?? "";
+  return /^g-(?!p-)[a-zA-Z0-9]+(?:-[a-z0-9-]+)?$/.test(value) ? value : null;
+}
 export function chatgptSessionModel(effort: string | null | undefined): string | null {
   const his = effort?.startsWith(HIS_CHATGPT_PREFIX) ?? false;
   const rest = his ? effort!.slice(HIS_CHATGPT_PREFIX.length) : effort;
+  if (rest?.startsWith(CHATGPT_GPT_PREFIX)) {
+    const gpt = chatgptGpt(rest.slice(CHATGPT_GPT_PREFIX.length));
+    return gpt ? `${his ? HIS_CHATGPT_PREFIX : ""}${CHATGPT_GPT_PREFIX}${gpt}` : null;
+  }
   const level = rest === undefined || rest === null || rest === "" ? (his ? DEFAULT_HIS_CHATGPT_THINKING : DEFAULT_CHATGPT_THINKING) : chatgptThinkingLevel(rest);
   return level ? `${his ? HIS_CHATGPT_PREFIX : ""}${level}` : null;
 }

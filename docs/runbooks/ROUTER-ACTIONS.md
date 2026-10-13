@@ -402,6 +402,15 @@ sending. `--file` attaches any file type. A Pro answer can take an hour; the req
 ChatGPT finishes. The browser is remote-box's always-running real Chrome
 (`docs/chatgpt-browser.md` there), which Thinkering keeps signed in.
 
+`--gpt <https://chatgpt.com/g/g-…|g-…>` (instead of `--effort`) starts the chat with that GPT, from
+the GPT Store or his own, the way he opens one himself: the browser opens the GPT's page, checks the
+GPT is selected in the composer by the name ChatGPT reports for it, and refuses to send otherwise
+(`CHATGPT_GPT_UNCONFIRMED`). The model value is `[tejas:]gpt:<g-…>`; a GPT runs on the model its
+maker chose, so it has no thinking level, and it is never filed in the Agents project. Find GPTs
+with `/root/workspace/agent-scripts/chatgpt-gpt-search.mjs "<words>"`, which lists the GPT Store's
+matches with their ratings and conversation counts. Added 2026-10-13 when Tejas asked for a
+dating-coach GPT rather than plain ChatGPT.
+
 The exact Slack source pair works too. The owner atomically creates one native
 ChatGPT session and agent-origin first input with the existing request/return
 obligation. The receipt retains `request_id`, `operation_id`, `target_session_id`
