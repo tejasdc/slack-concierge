@@ -9,6 +9,7 @@ import { forkClaudeHistory, readClaudeHistory, readClaudeHistoryDetail, readCode
 import type { ProviderMessageCallback } from "./provider-history";
 import {MANAGED_CODEX} from './provider-activation';
 import { antigravityInstalled, runAntigravityTurn } from "./antigravity";
+import { contractGaps, guaranteeMet } from "./provider-contract";
 
 export type { ProviderInteractionPolicy } from "./provider-policy";
 export type { ProviderHistoryInput, ProviderHistoryMessage, ProviderHistoryPage, ProviderDetailInput } from "./provider-history";
@@ -73,8 +74,8 @@ export interface AgentProvider {
 
 class CodexProvider implements AgentProvider {
   id: ProviderId = "codex";
-  capabilities: ProviderCapabilities = { send: true, stop: true, steer: true, consultation: true,
-    history: true, fork: true, forkBoundary: "turn", consultationFork: false, reason: null };
+  capabilities: ProviderCapabilities = { send: true, stop: guaranteeMet("codex", "stop"), steer: guaranteeMet("codex", "steer"), consultation: true,
+    history: guaranteeMet("codex", "history"), fork: guaranteeMet("codex", "fork"), forkBoundary: "turn", consultationFork: false, reason: null };
   history = readCodexHistory;
   detail = readCodexHistoryDetail;
 
@@ -93,8 +94,8 @@ class CodexProvider implements AgentProvider {
 
 class ClaudeCodeProvider implements AgentProvider {
   id: ProviderId = "claude-code";
-  capabilities: ProviderCapabilities = { send: true, stop: true, steer: true, consultation: true,
-    history: true, fork: true, forkBoundary: "message", consultationFork: false, reason: null };
+  capabilities: ProviderCapabilities = { send: true, stop: guaranteeMet("claude-code", "stop"), steer: guaranteeMet("claude-code", "steer"), consultation: true,
+    history: guaranteeMet("claude-code", "history"), fork: guaranteeMet("claude-code", "fork"), forkBoundary: "message", consultationFork: false, reason: null };
   history = readClaudeHistory;
   detail = readClaudeHistoryDetail;
 
@@ -129,9 +130,10 @@ class UnavailableChatGPTProvider implements AgentProvider {
 
 class AntigravityProvider implements AgentProvider {
   id: ProviderId = "antigravity";
-  capabilities: ProviderCapabilities = { send: antigravityInstalled(), stop: true, steer: false, consultation: false,
-    history: false, fork: false, forkBoundary: null, consultationFork: false,
-    reason: "Google conversations can be continued here; live steering and historical forks are unavailable." };
+  capabilities: ProviderCapabilities = { send: antigravityInstalled(), stop: guaranteeMet("antigravity", "stop"),
+    steer: guaranteeMet("antigravity", "steer"), consultation: false,
+    history: guaranteeMet("antigravity", "history"), fork: guaranteeMet("antigravity", "fork"), forkBoundary: null, consultationFork: false,
+    reason: contractGaps("antigravity") };
 
   run(input: Parameters<AgentProvider["run"]>[0]) {
     return runAntigravityTurn(input);

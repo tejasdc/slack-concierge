@@ -46,6 +46,9 @@ The sanitized account identity, live Gemini quota, credit guard and banked-work 
 [Antigravity sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions).
 An unavailable model fails its session's request without treating the whole Google account as down;
 that section owns the retired-binding rule.
+Every provider answers the [provider contract](docs/architecture/PROVIDER-CONTRACT.md) (steering, Stop,
+carrying on through updates, both machines, history, fork); capability flags and the update rule read it,
+and the candidate check refuses a provider that misses an answer or decides a guarantee by name.
 
 Accepted messages and local forwarded replies retain their next step atomically; recovery
 requires explicit intent and checks prior custody. See [waiting captures and replies](docs/contracts/native-inbox.md)

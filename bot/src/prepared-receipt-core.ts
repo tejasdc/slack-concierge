@@ -198,7 +198,7 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     deploymentHold:(providerId,inputKind)=>{
       if(!source.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
       const survivable=survivableRunKinds(source);
-      return !(inputKind!=='fork'&&(providerId==='claude-code'?survivable.claude:providerId==='codex'?survivable.codexShared:false));
+      return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
     },
     olderBlockingTurn:(sessionId,turnId)=>source.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
       json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
