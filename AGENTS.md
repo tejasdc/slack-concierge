@@ -218,6 +218,8 @@ authorization or a change to the default rapid-iteration policy.
   loop-mounted filesystem (remote-box), moved there once by the update while the coordinator is stopped.
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
+  Short-lived ledger writers also leave automatic checkpointing to the owner's checkpoint thread;
+  the shared writer boundary enforces that setting on Linux.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
   Slow Inbox topic mutations break input retention into bounded, content-free storage phases there.

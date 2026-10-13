@@ -36,12 +36,23 @@ Linux only) changes where the disk is waited for, not what is written or when it
   uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
   `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
   or at 256 MB regardless. It never copies a small log. It is the ledger's only checkpointer on
-  Linux: every connection opened through `state-database.ts` sets `wal_autocheckpoint=0`. On
-  2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old ceiling was 4 GB),
+  Linux: every ledger writer wrapped by `ledgerWriteResults`, including deployment controls,
+  sets `wal_autocheckpoint=0` before preparing statements; the owner's connection also sets it
+  explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
+  ceiling was 4 GB),
   and SQLite's default automatic checkpoint ran in the short-lived update-runner commands instead:
   each one copied the log and synced the database file on the loaded disk while the owner's
   commits busy-waited behind it for 0.3–0.9 s (sampled writer-lock holders: `deploy-state.js`,
   `release-manager.js promote`, in `fsync` of `state.db`).
+
+On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
+write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
+before the update controller, so that run alone is not an established lock holder. Its ledger
+state commands and other short-lived writers still had SQLite's default auto-checkpoint setting,
+even though the owner had disabled its own. The shared writer boundary now disables it for every
+Linux ledger writer. This removes a known path for a second writer to checkpoint and block the
+owner; the incident's exact lock holder remains unobserved. A future update must be checked with
+the owner's loop-lag and slow-sync records before attributing any residual stalls.
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
 The former raw `readFileSync(state.db-shm)` in the checkpoint thread closed a descriptor on
