@@ -916,6 +916,7 @@ export class SessionCommunicationCoordinator {
         action_id: string;
         address?: string;
         provider?: string;
+        smallTask?: boolean;
         effort?: string;
         project?: string;
         title?: string;
@@ -948,6 +949,8 @@ export class SessionCommunicationCoordinator {
         text(input.text);
         const writing=isWritingSession(getSessionById(actor.session)!);
         if(input.requestedEffect==='work'&&writing)throw new Error(WRITING_SESSION_REFUSAL);
+        if(input.smallTask!==undefined&&(input.smallTask!==true||input.provider!=='auto'||input.peer))
+            throw new Error('A small task mark requires a new local Automatic session.');
         // A request carries its sender's authority unless the sender narrows it to a question:
         // unmarked requests from the lab coordinator arrived information-only and three agents
         // declined to build what Tejas had asked for (2026-10-08).
@@ -1088,7 +1091,7 @@ export class SessionCommunicationCoordinator {
 
 ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {

@@ -30,6 +30,7 @@ export type NativeSessionMetadata = {
   claudeSelectionRevision?:number;
   /** Only a zero-work refused first turn may change the provider selected by Automatic. */
   automaticProviderChoice?:boolean;
+  automaticSmallTask?:boolean;
   /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
   claudeAccountNotice?:null;
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;

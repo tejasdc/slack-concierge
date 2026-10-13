@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
-import {resolveProviderAlias} from './aliases';
-import {newWorkCapacity} from './provider-start-choice';
+import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
+import {chooseProviderForNewWork,newWorkCapacity} from './provider-start-choice';
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
@@ -301,10 +301,14 @@ interface AgentSessionStatusProjectionResult {
 
 function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatchAttempt:number,message:string):boolean {
   if(input.presentation!=='native'||!sessionMetadata(input.session).automaticProviderChoice||
-    (input.providerId!=='codex'&&input.providerId!=='claude-code'))return false;
-  const other=input.providerId==='codex'?'claude-code':'codex';
+    input.providerId==='chatgpt')return false;
+  let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
+  try {
+    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),false,
+      !!sessionMetadata(input.session).automaticSmallTask);
+  } catch { return false; }
   const capacity=newWorkCapacity(other);
-  const choice=resolveProviderAlias(other==='codex'?'cx-sol':'cc-opus');
+  const choice=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[other]);
   if(!capacity||capacity.used>=100||!choice.model||modelCapacityRefused(other,choice.model))return false;
   return db.transaction(()=>{
     const session=getSessionById(input.session.id);
@@ -1079,12 +1083,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
+      const invalidGoogleModel = replaySafe && input.providerId === 'antigravity'
+        && structuredFailure?.terminalConfirmed === true && !structuredFailure.assistantOutput
+        && structuredFailure.toolsUsed.length === 0 && /\binvalid model selection\b/i.test(message);
+      if(invalidGoogleModel)void scheduleProviderAccountUsageRefresh().catch(()=>{});
       // Codex accepts the turn and then ends it with serverOverloaded before the model does
       // anything (all three refusals on 2026-10-13 were acknowledged). Reaching this branch
       // already proves no tools, no output and no artifacts, and the provider confirmed the
       // end, so the model did nothing: requiring "never received" made the fix miss every
       // refusal that actually happened.
-      if(structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed&&replaySafe&&
+      if(((structuredFailure?.modelAtCapacity&&structuredFailure.terminalConfirmed)||invalidGoogleModel)&&replaySafe&&
         moveAutomaticFirstTurnOffRefusingModel(input,dispatchAttempt,message)) {
         await progressController?.pauseForRetry();
         await statusController?.stop();
@@ -1135,9 +1143,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // A rejected model is a property of this session's binding, not of the Google
       // account. The request below fails with the provider's reason, but it must not
       // trip an account-wide breaker that would describe healthy Google work as down.
-      const invalidGoogleModel = replaySafe && input.providerId === 'antigravity'
-        && structuredFailure?.terminalConfirmed === true && !structuredFailure.assistantOutput
-        && structuredFailure.toolsUsed.length === 0 && /\binvalid model selection\b/i.test(message);
       if (invalidGoogleModel) retryable = false;
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.

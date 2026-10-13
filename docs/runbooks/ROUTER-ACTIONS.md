@@ -125,8 +125,9 @@ router-actions.sh sessions ask \
 ```
 
 The retained Slack source pair may replace the native pair. Never mix them.
-The owner chooses Claude or Codex from current usable account headroom when no
-provider is supplied. An explicit human provider or model choice stays pinned;
+The owner mixes Claude and Codex using current usable account headroom when no
+provider is supplied. For a bounded task that fits one focused session without
+live steering, `--small-task` also admits Google. An explicit human provider or model choice stays pinned;
 no escalation or fallback is silent.
 `sessions projects` lists current canonical project folders under the workspace root:
 each has a real `AGENTS.md` and Git root. It no longer depends on the retained

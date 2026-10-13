@@ -27,7 +27,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex} from './meaning-index';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
-import {providerDisplayName,CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
+import {providerDisplayName,CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -81,16 +81,16 @@ import type {PeerLinks} from './peer-links';
 import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
-import {chooseProviderForNewWork} from './provider-start-choice';
+import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
 }
-function automaticProvider(canStart: (provider: 'claude-code' | 'codex') => boolean,
-  delegatedFromClaude = false): 'claude-code' | 'codex' {
-  try { return chooseProviderForNewWork(canStart, Date.now(), delegatedFromClaude); }
+function automaticProvider(canStart: (provider: AutomaticProvider) => boolean, choiceKey:string,
+  delegatedFromClaude = false, smallTask = false): AutomaticProvider {
+  try { return chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFromClaude, smallTask); }
   catch (error) { throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN'); }
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
@@ -944,11 +944,11 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
-    const selected=this.requestTarget(input,fromClaude);
+    const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
     const {provider,...metadata}=selected;
     if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
     const session=createNativeSession(provider,{title,summary:input.summary??purposeFromFirstWords(input.firstInput.text),...metadata});
@@ -1446,7 +1446,7 @@ export class SessionOwner {
       throw error;
     }
   }
-  private requestTarget(input:{provider:string;effort?:string;project?:string},delegatedFromClaude=false) {
+  private requestTarget(input:{provider:string;effort?:string;project?:string;choiceKey?:string;smallTask?:boolean},delegatedFromClaude=false) {
     if(input.provider==='chatgpt') {
       if(input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project.');
       // The thinking level travels as the session's model, so the admission names it and the
@@ -1455,8 +1455,9 @@ export class SessionOwner {
       if(!thinking)throw new SessionOwnerError(`ChatGPT's thinking level is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
       return {provider:'chatgpt' as ProviderId,model:thinking,purpose:'chat',cwd:this.defaultCwd};
     }
-    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),delegatedFromClaude):null;
-    const selector=parseProviderSelector(selectedProvider==='codex'?'cx-sol':selectedProvider==='claude-code'?'cc-opus':input.provider);
+    if(input.smallTask&&(input.provider!=='auto'||!input.choiceKey))throw new SessionOwnerError('Small task selection belongs to a new Automatic session.');
+    const selectedProvider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),input.choiceKey??'',delegatedFromClaude,!!input.smallTask):null;
+    const selector=parseProviderSelector(selectedProvider?AUTOMATIC_PROVIDER_ALIASES[selectedProvider]:input.provider);
     if(!selector)throw new SessionOwnerError('Select a supported provider alias.');
     if(input.effort!==undefined) {
       const effort=normalizeReasoningEffort(input.effort);
@@ -1468,7 +1469,7 @@ export class SessionOwner {
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
-      ...(input.provider==='auto'?{automaticProviderChoice:true}:{})};
+      ...(input.provider==='auto'?{automaticProviderChoice:true,...(input.smallTask?{automaticSmallTask:true}:{})}:{})};
   }
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
@@ -1503,9 +1504,9 @@ export class SessionOwner {
       }
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
-      const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider)):input.provider as ProviderId;
-      const providerDefault=provider==='codex'?resolveProviderDefault('codex'):
-        provider==='claude-code'&&input.provider==='auto'?resolveProviderAlias('cc-opus'):
+      const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),action):input.provider as ProviderId;
+      const providerDefault=input.provider==='auto'?resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider as AutomaticProvider]):
+        provider==='codex'?resolveProviderDefault('codex'):
         provider==='antigravity'?resolveProviderAlias('google'):null;
       const preferred=project&&provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;

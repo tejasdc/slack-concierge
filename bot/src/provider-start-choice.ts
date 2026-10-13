@@ -1,19 +1,21 @@
+import {createHash} from 'node:crypto';
 import { currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, usagePressureBrief } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
-import {resolveProviderAlias, providerDisplayName } from './aliases';
+import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
 
-type Candidate = { provider: 'claude-code' | 'codex'; used: number; resetsAt: number | null; windowResetAt: number | null };
+export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
+type Candidate = { provider: AutomaticProvider; used: number; resetsAt: number | null; windowResetAt: number | null };
 const FRESH_MS = 6 * 60_000;
 
 /** New, unbound work only. A running session never changes provider. */
 function candidatesForNewWork(now: number): Candidate[] {
   const candidates: Candidate[] = [];
-  for (const provider of ['claude-code', 'codex'] as const) {
-    const model=resolveProviderAlias(provider==='codex'?'cx-sol':'cc-opus').model;
+  for (const provider of Object.keys(AUTOMATIC_PROVIDER_ALIASES) as AutomaticProvider[]) {
+    const model=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider]).model;
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
     const observedAt = Date.parse(usage?.observedAt ?? '');
@@ -49,7 +51,7 @@ export function newWorkHeadroom(provider: 'claude-code' | 'codex', now = Date.no
   return newWorkCapacity(provider, now)?.used ?? null;
 }
 
-export function newWorkCapacity(provider: 'claude-code' | 'codex', now = Date.now()): Candidate | null {
+export function newWorkCapacity(provider: AutomaticProvider, now = Date.now()): Candidate | null {
   return candidatesForNewWork(now).filter(candidate => candidate.provider === provider)
     .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0] ?? null;
 }
@@ -81,16 +83,31 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
   return [forecast ?? `Budget: this ${name(provider)} provider is at or above ${NOTICE_AT_PERCENT}% of its usable allowance.`, facts, action].join(' ');
 }
 
-export function chooseProviderForNewWork(canStart: (provider: 'claude-code' | 'codex') => boolean,
-  now = Date.now(), delegatedFromClaude = false): 'claude-code' | 'codex' {
-  const candidates = candidatesForNewWork(now).filter(candidate => canStart(candidate.provider));
-  if (delegatedFromClaude && canStart('codex') && codexRoomForClaudeDelegation(now)) return 'codex';
+/** A stable request ID spreads starts in proportion to verified remaining allowance.
+ * The 90% warning is already the reserve boundary: use accounts below it first. */
+export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider) => boolean,
+  choiceKey: string, now = Date.now(), delegatedFromClaude = false, smallTask = false): AutomaticProvider {
+  if (!choiceKey) throw new Error('Automatic provider choice needs the accepted action identity.');
+  const eligible = (smallTask ? ['claude-code','codex','antigravity'] : ['claude-code','codex']) as AutomaticProvider[];
+  const rooms = candidatesForNewWork(now);
+  const candidates = eligible.flatMap(provider => {
+    const candidate = rooms.filter(room => room.provider === provider)
+      .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0];
+    return candidate && canStart(provider) ? [candidate] : [];
+  });
+  if (!smallTask && delegatedFromClaude && canStart('codex') && codexRoomForClaudeDelegation(now)) return 'codex';
   const available = candidates.filter(candidate => candidate.used < 100);
   if (available.length) {
-    const claude = available.filter(candidate => candidate.provider === 'claude-code')
-      .sort((a,b) => a.used - b.used)[0];
-    if (claude && claude.used < NOTICE_AT_PERCENT) return 'claude-code';
-    return available.sort((a,b) => a.used - b.used)[0]!.provider;
+    const belowReserve = available.filter(candidate => candidate.used < NOTICE_AT_PERCENT);
+    const pool = belowReserve.length ? belowReserve : available;
+    const total = pool.reduce((sum,candidate) => sum + 100 - candidate.used, 0);
+    const fraction = createHash('sha256').update(choiceKey).digest().readUInt32BE(0) / 0x1_0000_0000;
+    let point = fraction * total;
+    for (const candidate of pool) {
+      point -= 100 - candidate.used;
+      if (point < 0) return candidate.provider;
+    }
+    return pool.at(-1)!.provider;
   }
   const resetting = candidates.filter(candidate => candidate.resetsAt !== null)
     .sort((a,b) => a.resetsAt! - b.resetsAt!);
