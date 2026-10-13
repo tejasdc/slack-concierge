@@ -9,6 +9,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
+import { SteeringNotSentError } from "./steering";
+import { WriteOutcomeUnknownError } from "./execution-host-client";
 
 /** Execution hosts have a supervisor PATH, so resolve the CLI on the owner before launch. */
 export function antigravityExecutable(): string {
@@ -38,6 +40,8 @@ export function antigravityInstalled(): boolean {
 type AntigravityRun = Parameters<AgentProvider["run"]>[0] & {
   /** The execution host owns the process and replays its exact output after an owner restart. */
   transport?: ClaudeCodeTransport;
+  /** Taken back from a predecessor's host: its record replays before any decision acts. */
+  adopted?: boolean;
 };
 
 type AntigravityEvent = {
@@ -58,6 +62,8 @@ type AntigravityEvent = {
 
 const MAX_PROTOCOL_LINE = 8 * 1024 * 1024;
 const MAX_ERROR_TEXT = 1_000;
+/** How long after a result a message already written may take to be picked up before the run ends. */
+const STEERING_PICKUP_GRACE_MS = 15_000;
 
 /** A Google conversation is named by its exact CLI ID, never by the most recent local project. */
 export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResult> {
@@ -92,7 +98,20 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let permissionDenied = false;
   let stderrTail = "";
   let closeInput: (() => void) | null = null;
+  let writeInput: ((line: string, meta?: { kind: "steering"; clientMessageId: string; commandId: string }) => Promise<void>) | null = null;
   let interruptInput: (() => Promise<void>) | null = null;
+  // Steering: the headless CLI reads one message per stdin line and runs a turn for each, in order,
+  // in this same process. A message written while a turn runs is picked up (its `user_input` step
+  // DONE) as soon as that turn's result is out; it cannot join the turn already running. So the
+  // run's input stays open until every written message has been picked up and answered, and each
+  // pickup acknowledges exactly the oldest written message (FIFO).
+  type Written = { clientMessageId: string | null; resolve?: () => void; reject?: (error: Error) => void };
+  const written: Written[] = [];
+  let pickups = 0;
+  let replaying = !!input.adopted;
+  let inputClosed = false;
+  let pickupGrace: ReturnType<typeof setTimeout> | null = null;
+  let steeringRegistered = false;
   const toolsUsed = new Set<string>();
   const startedAt = Date.now();
 
@@ -100,6 +119,57 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     if (acknowledged) return;
     acknowledged = true;
     input.onInputAcknowledged?.();
+  };
+  const endInput = (reason: Error) => {
+    if (replaying) return; // decided again from the rebuilt state when the replay ends
+    if (inputClosed) return;
+    inputClosed = true;
+    if (pickupGrace) { clearTimeout(pickupGrace); pickupGrace = null; }
+    // Written but never picked up: it reached the CLI's input, so it is uncertain, never resent.
+    for (const entry of written.splice(0)) entry.reject?.(reason);
+    closeInput?.();
+  };
+  const afterResult = () => {
+    if (written.length === 0) { endInput(new Error("Gemini finished before reading this message.")); return; }
+    if (replaying || pickupGrace) return;
+    pickupGrace = setTimeout(() => {
+      pickupGrace = null;
+      if (written.length) endInput(new Error("Gemini did not pick up this message after finishing its answer."));
+    }, STEERING_PICKUP_GRACE_MS);
+  };
+  const registerSteering = () => {
+    if (steeringRegistered || replaying || inputClosed || !writeInput || !acknowledged) return;
+    steeringRegistered = true;
+    input.onSteeringReady?.(steering => new Promise<void>((resolve, reject) => {
+      if (inputClosed || !writeInput) {
+        reject(new SteeringNotSentError("Gemini finished before this message arrived."));
+        return;
+      }
+      const entry: Written = { clientMessageId: steering.clientMessageId, resolve, reject };
+      written.push(entry);
+      void writeInput(JSON.stringify({ event: "user", message: { content: steering.text } }) + "\n",
+        { kind: "steering", clientMessageId: steering.clientMessageId, commandId: `steer-${steering.clientMessageId}` })
+        .catch(error => {
+          const index = written.indexOf(entry);
+          if (index >= 0) written.splice(index, 1);
+          // A write the pipe refused never reached Gemini, so the owner may queue it as ordinary
+          // work; a write whose outcome the host could not confirm stays uncertain.
+          reject(error instanceof WriteOutcomeUnknownError ? error : new SteeringNotSentError(
+            `Gemini did not accept this message: ${error instanceof Error ? error.message : String(error)}`));
+          if (terminal) afterResult();
+        });
+    }));
+  };
+  const pickedUp = () => {
+    pickups += 1;
+    if (pickups === 1) { acknowledge(); registerSteering(); return; }
+    // A new turn began in this run for the oldest written message; the previous result no longer
+    // describes the live work.
+    terminal = null;
+    if (pickupGrace) { clearTimeout(pickupGrace); pickupGrace = null; }
+    const entry = written.shift();
+    if (entry?.clientMessageId) input.onProgress?.({ type: "steering", clientMessageId: entry.clientMessageId });
+    entry?.resolve?.();
   };
   const bind = (id: unknown) => {
     if (typeof id !== "string" || !id) return;
@@ -127,7 +197,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     }
     if (event.event === "step_update" && event.step_update) {
       const step = event.step_update;
-      if (step.step_type === "user_input" && step.state === "DONE") acknowledge();
+      if (step.step_type === "user_input" && step.state === "DONE") pickedUp();
       if (step.step_type === "agent_response" && step.text_delta) {
         observedOutput = true;
         input.onProgress?.({ type: "commentary", text: step.text_delta });
@@ -148,7 +218,15 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
       if (Number.isSafeInteger(event.result.num_turns) && event.result.num_turns! > 0)
         input.onProviderTurnStarted?.(String(event.result.num_turns));
       if (event.result.status === "SUCCESS") acknowledge();
-      closeInput?.();
+      // An answer followed by a steered message's turn is shown as its own message now; the run's
+      // final result is the last answer.
+      if (written.length && conversationId && event.result.response?.trim()) {
+        const answer = splitTurnOutcomeMarker(event.result.response).text;
+        if (answer.trim()) input.onProviderMessage?.({ id: `${conversationId}:${event.result.num_turns ?? createHash("sha256").update(answer).digest("hex").slice(0, 16)}:assistant`,
+          turnId: String(event.result.num_turns ?? ""), role: "assistant", content: answer, tool: null, phase: null,
+          ...(input.model ? { model: input.model, modelSource: "run" as const } : {}) });
+      }
+      afterResult();
     }
   };
 
@@ -182,8 +260,17 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
         permissionDenied = true;
     },
     onInterruptReady: interrupt => { interruptInput = interrupt; },
-    onStdinReady: (_write, close) => {
+    // A predecessor's steering write: it holds the input open until Gemini picks it up.
+    onReplayedInput: (_line, meta) => { if (meta?.kind === "steering") written.push({ clientMessageId: meta.clientMessageId ?? null }); },
+    onReplayEnd: () => {
+      replaying = false;
+      if (terminal) afterResult();
+      registerSteering();
+    },
+    onStdinReady: (write, close) => {
       closeInput = close;
+      writeInput = write;
+      registerSteering();
       input.onCancellationReady?.(async () => {
         if (!interruptInput) throw new Error("The Google process cannot be interrupted yet.");
         cancelRequested = true;
@@ -192,6 +279,8 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     },
   });
   input.onProviderTerminal?.();
+  if (pickupGrace) clearTimeout(pickupGrace);
+  for (const entry of written.splice(0)) entry.reject?.(new Error("Gemini's process ended before reading this message."));
   if (cancelRequested && (terminal?.status === "CANCELED" || terminal?.status === "INTERRUPTED"))
     throw new ProviderTurnCancelledError("The Google turn was stopped.");
   const needsSignIn = /authentication required|please sign in|not logged in|oauth.*expired/i.test(

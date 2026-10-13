@@ -5149,8 +5149,7 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   )
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
-    AND ((session.provider_id='claude-code' AND ?=1)
-      OR (session.provider_id='codex' AND ?=1))))
+    AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
 // Set only while Codex's App Server is being restarted (provider-activation.ts): a Codex turn
@@ -5161,7 +5160,7 @@ export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!hel
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   return [nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
-    survivable ? 1 : 0,survivable?.claude ? 1 : 0,survivable?.codexShared ? 1 : 0,codexAdmissionHeld ? 1 : 0] as const;
+    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {
@@ -5173,7 +5172,7 @@ export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:stri
 /** The owner queue's own admission view, bounded for the stuck-work watch. */
 export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly number[]=[],olderThanMs=10*60_000,limit=30):ClaimableNotClaimedRow[] {
   const survivable=currentClaimSurvivability();
-  if(survivable&&!survivable.claude&&!survivable.codexShared)return [];
+  if(survivable&&!survivable.providers.length)return [];
   const bounded=Math.max(0,Math.min(30,Math.trunc(limit)));
   if(!bounded)return [];
   return (db.query(`SELECT turn.id AS turn_id,turn.session_id,strftime('%Y-%m-%dT%H:%M:%fZ',turn.started_at) AS queued_at
@@ -5195,7 +5194,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     let phase = performance.now();
     const survivable = currentClaimSurvivability();
     survivabilityMs += performance.now() - phase;
-    if (survivable && !survivable.claude && !survivable.codexShared) { outcome='declined'; return null; }
+    if (survivable && !survivable.providers.length) { outcome='declined'; return null; }
     while (true) {
       phase = performance.now();
       const candidate = db.query(`

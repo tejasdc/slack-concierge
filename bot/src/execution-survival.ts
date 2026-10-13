@@ -14,6 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_SUPERVISOR, executionHostsEnabled } from "./execution-host-client";
 import { managedHooksFollowRuns } from "./hook-pins";
+import { PROVIDER_CONTRACT, guaranteeMet } from "./provider-contract";
 
 
 function hasExecutions(database: Database) {
@@ -35,21 +36,39 @@ export function provenRunKinds(database: Database): Set<string> {
   // updater shell has no agent-host launcher), so proof is read from the record alone.
   if (!hasExecutions(database)) return new Set();
   if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
-  return new Set([CHATGPT_RUN_KIND, ...(database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
+  const observed = (database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
     WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind)
-    .filter(kind => kind !== "codex/codex-daemon" || managedHooksFollowRuns())]);
+    .filter(kind => kind !== "codex/codex-daemon" || managedHooksFollowRuns());
+  // The execution host is one program whatever provider it runs: once one provider's run has been
+  // taken back live on a supervisor, every provider whose contract runs in that host and carries on
+  // through an update is trusted there too. Waiting to observe each provider separately could never
+  // finish, because the update waits for every unproven run (Gemini: 20 runs, none taken over, by
+  // 2026-10-13, as ChatGPT before it on 2026-10-09).
+  const hostSupervisors = new Set(observed.filter(kind => PROVIDER_CONTRACT[kind.split("/")[0] as keyof typeof PROVIDER_CONTRACT]?.runsIn === "execution-host")
+    .map(kind => kind.split("/")[1]));
+  const inherited = [...hostSupervisors].flatMap(supervisor => (Object.keys(PROVIDER_CONTRACT) as (keyof typeof PROVIDER_CONTRACT)[])
+    .filter(provider => PROVIDER_CONTRACT[provider].runsIn === "execution-host" && guaranteeMet(provider, "carriesOnThroughUpdate"))
+    .map(provider => `${provider}/${supervisor}`));
+  return new Set([CHATGPT_RUN_KIND, ...observed, ...inherited]);
 }
 // A shared Codex turn's hooks run from the machine-wide wrappers with the daemon's environment. They
 // follow the turn only when the installed wrappers look up its filed helper folder (hook-pins.ts);
 // until then (an older wrapper, the Mac before its password step) an update waits for these turns
 // however well they survive a restart (step-6 review, 2026-10-07).
 
-/** What may start while an update installs: only kinds proven to carry on through its restart. */
-export function survivableRunKinds(database: Database) {
+/**
+ * What may start while an update installs: providers whose runs are proven to carry on through its
+ * restart, from each provider's contract. Execution-host providers also need hosts on this machine.
+ */
+export function survivableRunKinds(database: Database): { providers: string[] } {
   const proven = provenRunKinds(database);
-  // Claude needs a proven host; Codex uses the proven shared daemon directly.
   const hosted = executionHostsEnabled();
-  return { claude: hosted && proven.has(`claude-code/${HOST_SUPERVISOR}`), codexShared: proven.has("codex/codex-daemon") };
+  return { providers: (Object.keys(PROVIDER_CONTRACT) as (keyof typeof PROVIDER_CONTRACT)[]).filter(provider => {
+    const runsIn = PROVIDER_CONTRACT[provider].runsIn;
+    if (runsIn === "execution-host") return hosted && proven.has(`${provider}/${HOST_SUPERVISOR}`);
+    if (runsIn === "codex-daemon") return proven.has(`${provider}/codex-daemon`);
+    return false; // ChatGPT work starts through its own capability host, which an update does not hold.
+  }) };
 }
 
 /** A running turn the next coordinator will take back: its execution is proven and adoptable. */
