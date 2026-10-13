@@ -1,0 +1,1 @@
+Side questions on selected words are answered from a private copy of the conversation, so the session and its agent never see them. TL;DR: Concierge can now answer a quick question about part of a conversation without sending a message into it. It copies the conversation as it stands, answers once, and keeps nothing.
