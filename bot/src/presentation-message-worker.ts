@@ -90,6 +90,9 @@ const {search,cards,receipts,topics,labRequests}=prepared.transaction(()=>{
   const hadRequestRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
     .some(column=>column.name==='request_roots_version');
   if(!hadRequestRoots)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN request_roots_version INTEGER NOT NULL DEFAULT 0');
+  const hadAnswerClosures=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='answer_closures_version');
+  if(!hadAnswerClosures)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN answer_closures_version INTEGER NOT NULL DEFAULT 0');
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
@@ -151,6 +154,40 @@ function writeDisplay(generation:number,sequence:number,sessionId:number,message
 function writeInboxMessage(generation:number,row:{sessionId:number;root:string;sequence:number;messageId:string;inputId:string;createdAt:string;entryKind:string}) {
   insert.run(generation,row.sessionId,row.root,topicOf(row.root),row.sequence,row.messageId,row.inputId,row.createdAt,row.entryKind);
   writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+}
+function refreshClosedAnswer(generation:number,postId:string,changedRoots:Set<string>){
+  const post=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,root_input_id AS root
+    FROM presentation_messages WHERE generation=? AND message_id=?`).get(generation,postId) as
+    {sequence:number;sessionId:number;root:string}|null;
+  if(!post)return;
+  writeDisplay(generation,post.sequence,post.sessionId,postId);
+  changedRoots.add(post.root);
+}
+/** Existing closures were retained before this display version; refresh their posts in bounded pages. */
+async function upgradeAnswerClosures(generation:number){
+  const version=(prepared.query('SELECT answer_closures_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=1)return;
+  const changedRoots=new Set<string>();
+  let after=0;
+  while(true){
+    const rows=source.query(`SELECT sequence,payload_json FROM session_owner_events
+      WHERE sequence>? AND kind='answer_closure' ORDER BY sequence LIMIT 50`).all(after) as
+      {sequence:number;payload_json:string}[];
+    if(!rows.length)break;
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of rows){
+        const postId=JSON.parse(row.payload_json).postId;
+        if(typeof postId==='string')refreshClosedAnswer(generation,postId,changedRoots);
+      }
+    })();
+    after=rows.at(-1)!.sequence;
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=1 WHERE singleton=1').run();})();
 }
 /** Reproject the small set of request and attributed answer rows after this lineage rule changes. */
 async function upgradeRequestRoots(generation:number){
@@ -362,7 +399,7 @@ async function rebuild() {
     }
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -383,6 +420,7 @@ async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
   await upgradeRequestRoots(current.generation);
+  await upgradeAnswerClosures(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
@@ -397,14 +435,19 @@ async function catchUp() {
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
   const changedReturnEvents=new Set<string>();
   const changedRoots=new Set<string>();
+  const closedPosts=new Set<string>();
   for(const change of changes){
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
     if(change.source_table==='session_communication_events'||change.source_table==='session_peer_events')
       changedReturnEvents.add(change.row_key);
     else if(change.source_table==='session_owner_events'){
-      const row=source.query('SELECT kind,input_id,turn_id FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
-        {kind:string;input_id:string|null;turn_id:number|null}|null;
+      const row=source.query('SELECT kind,input_id,turn_id,payload_json FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
+        {kind:string;input_id:string|null;turn_id:number|null;payload_json:string}|null;
       if(row?.kind==='thread_link'&&row.input_id)linkedInputs.add(row.input_id);
+      if(row?.kind==='answer_closure'){
+        const postId=JSON.parse(row.payload_json).postId;
+        if(typeof postId==='string')closedPosts.add(postId);
+      }
       if(row?.turn_id&&['post','turn_outcome'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
   }
@@ -428,6 +471,7 @@ async function catchUp() {
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
+    for(const postId of closedPosts)refreshClosedAnswer(current.generation,postId,changedRoots);
     const dispatchesToReassign=new Set<string>();
     for(const root of movedRoots)if(root.startsWith('request:'))dispatchesToReassign.add(root.slice('request:'.length));
     for(const change of changes.filter(change=>change.source_table==='inbox_requests')){

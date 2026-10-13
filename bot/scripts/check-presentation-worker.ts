@@ -126,8 +126,27 @@ try {
   if(chunks.length<2||new Set(chunks.map(chunk=>chunk.digest)).size!==1
     ||JSON.parse(chunks.map(chunk=>chunk.content).join('')).content!==longText)
     throw new Error('Exact retained detail did not survive bounded chunks.');
+  writer.query(`INSERT INTO session_owner_events(sequence,session_id,event_id,input_id,kind,payload_json,created_at,turn_id)
+    VALUES(?,?,?,?,?,?,?,?)`).run(7,1,'post:closure:long-answer','i1','answer_closure',
+      JSON.stringify({postId:'long-answer',closingLine:'Completed · Checked on the real system: one answer appeared.'}),
+      '2026-10-08T00:00:06Z',null);
+  writer.query('INSERT INTO presentation_change_log(sequence,source_table,row_key) VALUES(?,?,?)')
+    .run(10,'session_owner_events','7');
+  let closedPreview:any=null;
+  for(let attempt=0;attempt<50;attempt++){
+    const row=result.query('SELECT display_json FROM presentation_message_display WHERE generation=1 AND event_sequence=6')
+      .get() as {display_json:string};
+    closedPreview=JSON.parse(row.display_json);
+    if(closedPreview.closingLine)break;
+    await Bun.sleep(100);
+  }
+  if(closedPreview?.closingLine!=='Completed · Checked on the real system: one answer appeared.')
+    throw new Error('A bodyless final did not refresh the answer in the prepared thread display.');
+  const answerPosts=result.query("SELECT COUNT(*) AS count FROM presentation_messages WHERE generation=1 AND entry_kind='post'")
+    .get() as {count:number};
+  if(answerPosts.count!==1)throw new Error('Closing an answer created a second prepared post.');
   writer.close();
-  console.log('presentation worker: cold and live messages, owner versions, search and re-root checked');
+  console.log('presentation worker: cold and live messages, owner versions, search, re-root and one-answer closure checked');
 } finally {
   result?.close();child.kill();await child.exited;
 }

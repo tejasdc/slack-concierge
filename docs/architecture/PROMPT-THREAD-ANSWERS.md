@@ -26,6 +26,9 @@ requires the earlier answer signal for that exact request, closes the request, a
 disposition and checked/not-checked facts as an append-only closure attached to the answer post.
 The final creates no second answer post. If a final has body text, those new words are posted
 verbatim with the closing facts attached. An ordinary progress partial does not satisfy the answer clock.
+The prepared Inbox view refreshes that same answer when the closure arrives. On installation it
+also refreshes answers with closures already retained before this display version, so a thread
+read and its live changes expose the same facts without creating another message.
 The same signal is retained on the Inbox post as `answersQuestion:true`, including the prepared
 message projection. A non-stalled final carries that marker too, whether the request was directly
 forwarded from a human thread reply or dispatched by the Inbox router. Progress and stalled notices
