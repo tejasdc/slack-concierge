@@ -5,6 +5,7 @@ import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
 import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
+import {inboxHistoryAfter,inboxMessage,postForwardedThreadAnswer} from '../src/session-inbox';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
@@ -31,6 +32,80 @@ function run(){
   return {claim,source:{input_id:claim.accepted_input_id!,run_id:nativeRunId(claim.turn_id)}};
 }
 async function ask(source:any,target:any,action='ask',extra:any={}){return communication.ask({source,action_id:action,address:target.session.address,text:'Exact question',...extra});}
+
+test('a prompt answer followed by a bodyless final keeps one thread post with closing facts',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
+  const answer={inboxSessionId:inboxId,requestId:'fixture-request',root,inboxInputId:root,
+    respondingSessionId:'concierge:worker',attachments:[],stalled:false,workDisposition:null,hisInputId:null};
+  const first=postForwardedThreadAnswer({...answer,eventId:'fixture-partial',text:'The answer to your question.',final:false,answersQuestion:true});
+  const firstSequence=(db.query('SELECT sequence FROM session_owner_events WHERE event_id=?').get(first) as {sequence:number}).sequence;
+  const closed=postForwardedThreadAnswer({...answer,eventId:'fixture-final',text:'',final:true,
+    workDisposition:'completed',closingLine:'Completed · Checked on the real system: the thread shows one answer.'});
+  expect(closed).toBe(first);
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')='fixture-request'").get()).toEqual({n:1});
+  const row=db.query('SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text FROM session_owner_events event LEFT JOIN session_inputs input ON input.id=event.input_id LEFT JOIN turns turn ON turn.id=event.turn_id WHERE event.event_id=?').get(first) as any;
+  expect(inboxMessage(row)).toMatchObject({content:'The answer to your question.',closingLine:'Completed · Checked on the real system: the thread shows one answer.'});
+  expect(inboxHistoryAfter(getSessionById(inboxId)!,firstSequence,10)).toEqual([
+    expect.objectContaining({id:first,content:'The answer to your question.',closingLine:'Completed · Checked on the real system: the thread shows one answer.'})]);
+});
+
+test('the request owner accepts a bodyless final only after that request has a prompt answer',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const request=await ask(requester.source,target,'prompt-request',{requestedEffect:'work'});
+  db.query("UPDATE session_communication_requests SET payload_json=json_set(payload_json,'$.promptAnswer',1) WHERE request_id=?").run(request.request_id);
+  await communication.idle();
+  const final={source:worker.source,request_id:request.request_id,text:'',final:true,workDisposition:'completed' as const,
+    all_done:true,checked:'one answer appeared in the thread'};
+  expect(()=>communication.reply({...final,action_id:'early-final'})).toThrow('earlier prompt answer');
+  communication.reply({source:worker.source,request_id:request.request_id,action_id:'prompt-answer',text:'The answer.',final:false,answers_question:true});
+  communication.reply({...final,action_id:'close-after-answer'});
+  expect(communication.inspect(request.request_id)).toMatchObject({outcome:'answered',events:[
+    expect.objectContaining({kind:'progress',payload:expect.objectContaining({text:'The answer.',answersQuestion:true})}),
+    expect.objectContaining({kind:'final',payload:expect.objectContaining({replyBody:'',closingLine:'Completed · Checked on the real system: one answer appeared in the thread'})})]});
+});
+
+test('separate identical answers remain visible unless one command explicitly groups them',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
+  const base={inboxSessionId:inboxId,root,inboxInputId:root,respondingSessionId:'concierge:worker',text:'Done.',
+    attachments:[],stalled:false,final:true,workDisposition:'completed'};
+  postForwardedThreadAnswer({...base,eventId:'ungrouped-one',requestId:'request-one'});
+  postForwardedThreadAnswer({...base,eventId:'ungrouped-two',requestId:'request-two'});
+  postForwardedThreadAnswer({...base,eventId:'grouped-one',requestId:'request-three',answerGroup:'one-command'});
+  postForwardedThreadAnswer({...base,eventId:'grouped-two',requestId:'request-four',answerGroup:'one-command'});
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:3});
+});
+
+test('one explicit multi-request reply produces one return without comparing answer text',async()=>{
+  session();const requester=run(),target=session(),worker=run();
+  const first=await ask(requester.source,target,'first-grouped',{requestedEffect:'work'});
+  const second=await ask(requester.source,target,'second-grouped',{requestedEffect:'work'});
+  await communication.idle();
+  const common={source:worker.source,text:'The shared result.',final:true,workDisposition:'completed' as const,
+    all_done:true,checked:'the shared result was inspected',answer_group:'explicit-group'};
+  communication.reply({...common,action_id:'first-answer',request_id:first.request_id});
+  communication.reply({...common,action_id:'second-answer',request_id:second.request_id});
+  await communication.idle();
+  const a=communication.inspect(first.request_id).events.find(event=>event.kind==='final')!;
+  const b=communication.inspect(second.request_id).events.find(event=>event.kind==='final')!;
+  expect(a.accepted_input_id).toBe(b.accepted_input_id);
+  expect(db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE 'return:%'").get()).toEqual({n:1});
+});
+
+test('a final body after a prompt answer remains a visible new post',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  const root=(db.query('SELECT id FROM session_inputs WHERE session_id=? ORDER BY rowid LIMIT 1').get(inboxId) as {id:string}).id;
+  const base={inboxSessionId:inboxId,requestId:'new-words',root,inboxInputId:root,respondingSessionId:'concierge:worker',
+    attachments:[],stalled:false,workDisposition:null};
+  postForwardedThreadAnswer({...base,eventId:'first-words',text:'Initial answer.',final:false,answersQuestion:true});
+  const final=postForwardedThreadAnswer({...base,eventId:'later-words',text:'A new detail.',final:true,
+    workDisposition:'completed',closingLine:'Completed · Checked on the real system: new detail verified.'});
+  expect(db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post'").get()).toEqual({n:2});
+  const posted=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(final) as {payload_json:string};
+  expect(JSON.parse(posted.payload_json).text).toBe('A new detail.');
+});
 
 function historicalFixture() {
   const digest=(value:string)=>createHash('sha256').update(value).digest('hex');

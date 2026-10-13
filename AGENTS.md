@@ -28,6 +28,9 @@ session queue and preserve each accepted capture's identity; see [waiting captur
 Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
 answer in that thread, with a two-minute reminder and three-minute overdue escalation;
 see [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
+After a prompt-answer partial, a bodyless final closes that exact request and attaches its
+closing facts beneath the existing answer; a final body is new visible text. The same contract
+holds for Mac peers. See [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
 
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).

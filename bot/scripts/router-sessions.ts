@@ -97,7 +97,7 @@ Use sessions outcome once per live turn with that input's exact native source pa
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, and its Timeline lists the dispatch, whatever input started the turn that sent it. The agent's own replies to a work request you sent for a thread are posted into that thread by the owner as the agent's words the moment they arrive, and a final one is filed for Tejas there (a question for needs_decision, a reading item otherwise, with his notification) and closes the thread request it is linked to when done; they never come back to you, and your next turn in that thread lists them as agentAnswers. Hand-backs, stalls, the owner's own settlements and answers to informational asks still return to you. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
-Answer a request or a thread with files: repeated --file <path> sends your own bytes, and repeated --attachment <custody-id> forwards an already retained file (a worker's returned image) without downloading it. ask, reply and post all take both. A reply or post carrying at least one file may omit its text; with neither text nor a file it is refused. The owner retains every file before it acknowledges the reply, and a retry with the same action ID and different bytes conflicts rather than sending a second copy.
+Answer a request or a thread with files: repeated --file <path> sends your own bytes, and repeated --attachment <custody-id> forwards an already retained file (a worker's returned image) without downloading it. ask, reply and post all take both. A reply or post carrying at least one file may omit its text. A final reply may omit its body only when that exact request already has a partial --answers-question reply; its closing facts appear under the existing answer. Other replies and posts need text or a file. The owner retains every file before it acknowledges the reply, and a retry with the same action ID and different bytes conflicts rather than sending a second copy.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
 Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. Each peer session's availability.state is live (the running peer confirmed it) or archived-only (found in the transcript archive or the peer's last catalogue; the peer did not confirm). When the peer is offline, search still returns its sessions as archived-only, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. sessions ask <peer-address> --resurrect keeps the existing archive-copy behavior: it starts a distinct session here from the mirrored transcript. sessions ask <imported-address> --resurrect continues that provider UUID in its original folder on the owning machine, provided the folder and transcript are present there; an unavailable machine refuses the action. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). New work runs here, on the always-on server. A session goes on the Mac only for what the Mac alone can do — its Messages app, Xcode or the Simulator, a file or app that exists only there, a screenshot — or when Tejas names the Mac; creating one there requires --machine-need saying which, and the owner refuses it without. Opening a link in his browser there is not a session: use sessions open. Before starting a Mac session for other agent work, search for an existing Mac session that already owns that work and ask it. The laptop sleeps, so work that merely could run there, or whose last session happened to run there, runs here. The request keeps its return obligation here; the peer session replies with the ordinary sessions reply on its own machine. A peer request cannot use --after-request.
 ${REQUEST_PROTOCOL}
@@ -586,10 +586,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('Choose --text-file or text after --.');
     content.push(readFileSync(textFile,'utf8'));
   }
-  // A reply or post that is only files is a valid message; with neither text nor a file
-  // there is nothing to say.
+  // Files can carry a message without words; a final can instead close an earlier prompt answer.
   const attachmentOnly=(operation==='reply'||operation==='post')&&!!(paths.length||custody.length);
-  if (attachmentOnly ? content.length > 1 : ((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim())) {
+  const bodylessFinal=operation==='reply'&&!partial&&separator<0&&!textFile&&content.length===0;
+  if (attachmentOnly ? content.length > 1 : (!bodylessFinal&&((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim()))) {
     invalid(attachmentOnly ? `${operation} accepts at most one text argument after --.`
       : `${operation} requires exactly one nonempty text argument after --.`);
   }
@@ -659,14 +659,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 export async function runRouterSessions(request: SessionCommunicationRequest) {
   if (request.operation !== 'reply' || !request.body.also?.length)
     return requestApiResponse(`/session-communication/${request.operation}`, request.body);
-  // One answer to several requests is one command: the same words go to each, and the owner
-  // gives them one return and one thread post because they are byte-identical.
+  // One explicit command closes several requests. Its stable group identity, rather than its
+  // words, tells the owner that one post or return carries this answer.
   const { also, ...first } = request.body;
   const answers = [];
   for (const [index, requestId] of [first.request_id, ...also].entries()) {
     // The owner accepts only short alphanumeric action IDs; a literal request-ID suffix broke the second reply.
     const actionId=index===0?first.action_id:`reply_${createHash('sha256').update(first.action_id).update('\0').update(requestId).digest('hex').slice(0,40)}`;
-    const response = await requestApiResponse('/session-communication/reply', { ...first, request_id: requestId, action_id: actionId });
+    const response = await requestApiResponse('/session-communication/reply', { ...first, request_id: requestId, action_id: actionId,
+      answer_group:JSON.stringify([first.source,first.action_id]) });
     if (!response.ok) return response;
     answers.push(response.result);
   }

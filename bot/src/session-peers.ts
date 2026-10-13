@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
-import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
@@ -558,12 +558,14 @@ export class SessionPeers {
     const requestId=row.request_id;
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     // A reply carrying files is a message even without words.
-    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
+    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length&&!(input.kind==='final'&&input.replyBody==='')))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
     const requestPayload=JSON.parse(row.payload_json);
     const requestedEffect=requestPayload.requestedEffect;
     const promptAnswer=!!requestPayload.promptAnswer;
+    if(final&&input.replyBody===''&&!input.files?.length&&(!promptAnswer||!db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(requestId)))
+      throw new SessionOwnerError('A final reply without a body needs an earlier prompt answer to this request.');
     if(input.answersQuestion&&(final||!promptAnswer||!input.text.trim()))throw new SessionOwnerError('A prompt answer must be a partial reply with answer text for a human thread question.');
     if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
@@ -580,6 +582,7 @@ export class SessionPeers {
         .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
+        ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
         ...(input.answersQuestion?{answersQuestion:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
@@ -611,7 +614,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,answersQuestion:reply.answersQuestion??undefined,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -757,9 +760,11 @@ export class SessionPeers {
       const root=answerRoot??row.source_input_id;
       postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
         inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
-        respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.text??''),
+        respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
-        answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null});
+        answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
+        answerGroup:declared.answerGroup??null,
+        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null});
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
       return;
     }
@@ -787,18 +792,15 @@ export class SessionPeers {
       return;
     }
     const payload=declared.workDisposition==='completed'&&row.outcome!=='answered'?JSON.parse(row.result_json!):declared;
-    // One answer reaches the requester once (see the coordinator's sameAnswerGroup): a copy carried by
-    // another event's return only follows that return.
+    // Historical returns already carried by another event keep their delivery state.
     const current=db.query('SELECT * FROM session_peer_events WHERE event_id=?').get(event.event_id) as PeerEventRow;
     if(current.accepted_input_id&&current.accepted_input_id!==`return:${event.event_id}`){this.followReturn(current.event_id,current.accepted_input_id);return;}
-    const group=current.accepted_input_id?{carriedBy:null as string|null,joining:[] as PeerEventRow[]}:this.sameAnswerGroup(current,row.source_session_id);
+    const group=current.accepted_input_id?{carriedBy:null as string|null,joining:[] as PeerEventRow[]}:this.explicitAnswerGroup(current,row.source_session_id);
     if(group.carriedBy){
       db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy,event.event_id);
       this.followReturn(event.event_id,group.carriedBy);
-      log('info','session_peer_return_merged',{event_id:event.event_id,request_id:row.request_id,carried_by:group.carriedBy});
       return;
     }
-    const requestIds=[row.request_id,...group.joining.map(joined=>joined.request_id)];
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const existing=getAcceptedSessionInput(`return:${event.event_id}`);
     const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
@@ -818,15 +820,14 @@ export class SessionPeers {
     db.query('UPDATE session_peer_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:error,accepted.id);
     db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:error,event.event_id);
   }
-  /** Finals to the same requester carrying the same answer; see the coordinator's sameAnswerGroup. */
-  private sameAnswerGroup(event:PeerEventRow,requesterSessionId:number):{carriedBy:string|null;joining:PeerEventRow[]} {
+  private explicitAnswerGroup(event:PeerEventRow,requesterSessionId:number):{carriedBy:string|null;joining:PeerEventRow[]} {
     if(event.kind!=='final')return {carriedBy:null,joining:[]};
-    const answer=sameAnswerKey(event.payload_json);
-    if(!answer)return {carriedBy:null,joining:[]};
-    const candidates=(db.query(`SELECT event.* FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
-      WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=?
-        AND NOT (event.status='received' AND event.accepted_input_id IS NULL) ORDER BY event.rowid`)
-      .all(requesterSessionId,event.event_id,event.created_at_ms-60*60*1000) as PeerEventRow[]).filter(candidate=>sameAnswerKey(candidate.payload_json)===answer);
+    const group=JSON.parse(event.payload_json).answerGroup;
+    if(typeof group!=='string'||!group)return {carriedBy:null,joining:[]};
+    const candidates=db.query(`SELECT event.* FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
+      WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
+        AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
+      .all(requesterSessionId,event.event_id,group) as PeerEventRow[];
     const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
     return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
   }
@@ -1000,7 +1001,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1042,7 +1043,7 @@ export class SessionPeers {
     const files=payload.attachments?.length
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
-    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
@@ -1086,7 +1087,7 @@ export class SessionPeers {
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;answersQuestion?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -1094,10 +1095,13 @@ export class SessionPeers {
     if(input.final&&row.requested_effect==='work'&&input.workDisposition===undefined)throw new Error('A final reply to a work request needs --work-disposition completed, failed or needs_decision.');
     if(input.answersQuestion&&(input.final||!input.text.trim()||!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.promptAnswer))
       throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
+    if(input.final&&input.replyBody===''&&!input.attachments?.length&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(row.request_id))
+      throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
     const target=getAcceptedSessionInput(row.target_input_id);
     if(!target?.turn_id)throw new Error('This request has not been delivered to this session yet.');
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
+      ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
       ...(input.answersQuestion?{answersQuestion:true}:{}),
       // Custody on this instance; the forward reads these exact bytes for the origin.
       ...(input.attachments?.length?{attachments:input.attachments}:{}),

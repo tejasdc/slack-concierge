@@ -1971,12 +1971,14 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
   if(!post||!answer.final||answer.stalled)return post;
+  const postText=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
+  const filedText=postText?String(JSON.parse(postText.payload_json).text??answer.text):answer.text;
   // Filing closes the request before it files his item for this answer; the thread is judged once,
   // after both, below, so it never closes and reopens around one answer.
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:answer.text,
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:filedText,
       quiet:answer.workDisposition==='completed'&&typeof answer.quiet==='string'&&answer.quiet.trim()?answer.quiet.trim():null});
   } catch(error) {
     // The answer is in the thread; what failed is only the filing, which the router can still do.

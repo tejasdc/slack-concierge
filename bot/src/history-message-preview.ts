@@ -57,7 +57,9 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
   if(byteLength(JSON.stringify(preview))<=MESSAGE_BYTES)return preview;
   // Untrusted provider metadata may itself be large. The detail retains all fields, while
   // the list keeps exact identity and the attribution needed for actions and navigation.
+  const closingLine=(message as T&{closingLine?:string}).closingLine;
   const compact={id:message.id,role:message.role,content:prefix(message.content,1024),tool:message.tool,
+    ...(closingLine?{closingLine}:{}),
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
     createdAt:message.createdAt,timestampSource:message.timestampSource,author:message.author,
     detailKey:message.detailKey,contentDetail:detail,
@@ -67,6 +69,7 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
       textHash:source.source.textHash}}:{})};
   if(byteLength(JSON.stringify(compact))<=MESSAGE_BYTES)return compact as T&{contentDetail:HistoryContentDetail};
   const minimal={id:message.id,role:message.role,content:prefix(message.content,256),tool:message.tool,
+    ...(closingLine?{closingLine}:{}),
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
     author:{kind:message.author?.kind??'unknown'},contentDetail:detail,
     ...((source.source&&typeof source.source==='object')?{source:{sourceId:source.source.sourceId,

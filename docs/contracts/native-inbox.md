@@ -374,6 +374,12 @@ before any post into the thread, while a finished turn's unreadable `response` i
 `done`), and any left from before the rule are `expired` at startup with that reason. Tejas met
 two on 2026-09-24 that showed a heading, a link to his own message and a failing Read: "I
 literally cannot read this … I want the answer I have to actually read".
+An agent's prompt-answer partial is one post in the thread. Its later bodyless final closes
+that exact request and exposes `closingLine` on the existing answer message: the disposition
+and checked/not-checked facts. The closure is retained separately from the answer bytes. A
+final containing new body text is posted as a new message with its own closing line. The
+owner never decides whether to show a post by comparing its words, files or hash with an
+earlier post; historical duplicates remain visible.
 `needsYou` counts decisions that are open or partially answered, **ready**,
 blocking or not optional, and not `pendingReply`; `toRead` lists open reading items; both
 are on every topic summary, and `questions.open`, `questions-read open|reading|checking`

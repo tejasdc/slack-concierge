@@ -61,16 +61,19 @@ function inboxHistoryBoundary(cursor:string|null) {
 }
 // The Inbox's dialogue is its own ledger rows, so the page and the delta share one query
 // shape and one mapping; they cannot disagree about what an Inbox message looks like.
-export const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
+const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
     FROM session_owner_events event
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
-    LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
+    LEFT JOIN turns turn ON turn.id=event.turn_id`;
+const inboxRowsWhere=(closures:boolean)=>` WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
+        ${closures?"OR event.kind='answer_closure'":''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
+export const inboxRows=`${inboxRowsFrom}${inboxRowsWhere(false)}`;
+const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
 /** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
 export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post','request'].includes(row.kind)?row.event_id:row.input_id;
 export function inboxMessage(row:any) {
@@ -97,7 +100,10 @@ export function inboxMessage(row:any) {
   // A post carries its own: an agent's completed answer it said he need not read.
   const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id)
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
+  const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
+  const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
@@ -320,7 +326,7 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
   const author=origin==='human'?"a reply Tejas wrote":"a marked agent test reply";
   const reader=origin==='human'?"him":"the test agent";
   const tracking=origin==='human'&&topicId&&inputId?` If he asks a specific question, declare it before answering with sessions topics questions ${topicId}: one kind "asked" entry in his words, sources ["${inputId}"], and owner.dispatchRequestId "${requestId}".`:'';
-  return `Session request ${requestId}: ${author} inside the thnkr.ing Inbox thread you are working on, addressed to you. The Inbox router is not in the middle. Requested effect: work within that thread's request. Answer the question now, even while other work continues: within three minutes use sessions reply ${requestId} --partial --answers-question -- "<answer>". That posts your answer in the thread without closing the work. A progress-only partial does not settle this prompt-answer obligation. If you cannot know the answer yet, say exactly what is unknown and when ${reader} will hear more; the owner will still mark the question overdue until it receives an answer. A final reply with --work-disposition completed|failed|needs_decision --summary "<one line>" also answers it. Write for ${reader} (TL;DR first, product language).${tracking} If the reply settles a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
+  return `Session request ${requestId}: ${author} inside the thnkr.ing Inbox thread you are working on, addressed to you. The Inbox router is not in the middle. Requested effect: work within that thread's request. Answer the question now, even while other work continues: within three minutes use sessions reply ${requestId} --partial --answers-question -- "<answer>". That posts your answer in the thread without closing the work. A progress-only partial does not settle this prompt-answer obligation. If you cannot know the answer yet, say exactly what is unknown and when ${reader} will hear more; the owner will still mark the question overdue until it receives an answer. Once you have answered, close the request with a final reply carrying disposition, summary and checked/not-checked facts but no repeated body. Those closing facts appear under your existing answer. A final body is posted as new words. A final reply without an earlier prompt answer must include the answer in its body. Write for ${reader} (TL;DR first, product language).${tracking} If the reply settles a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
 }
 /**
  * An agent's answer, posted into the thread it was asked from as that agent's words the moment it
@@ -329,39 +335,46 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * sent for a thread (Tejas, 2026-10-07: "if you're only routing the request, and the agent responds
  * back and I get notified from the agent's response, you're not the one who's receiving the
  * responses"). Server and Mac agents take this one road [decision: mac-sessions-have-parity];
- * nothing here wakes the router. One answer is one post: the post is keyed by the reply's event,
- * and the same agent's byte-identical words already posted anywhere in this thread's topic within
- * the hour (one answer it gave to several requests) are not posted, filed or notified again. Returns the post that carries the
- * answer, or null when the reply had nothing to show.
+ * nothing here wakes the router. A bodyless final refers to this request's earlier prompt-answer
+ * post by request identity. Its closing facts are an append-only event projected beneath that post.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
   let carriedBy:string|null=null;
   db.transaction(()=>{
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId)){carriedBy=postId;}
-    else if(text||answer.attachments.length) {
-      // The thread is the topic, not the one capture this request named: the router sends several
-      // requests for one topic each under a different capture of it, and the one answer to all of
-      // them was posted, filed and notified once per capture (three times on 2026-10-09).
-      const same=!answer.stalled?db.query(`SELECT event_id FROM session_owner_events
-          WHERE input_id IN (SELECT ? UNION SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=(SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?))
-          AND session_id=? AND kind='post'
-          AND json_extract(payload_json,'$.postedBySession')=? AND json_extract(payload_json,'$.text')=? AND coalesce(json_extract(payload_json,'$.attachments'),'[]')=json(?)
-          AND coalesce(json_extract(payload_json,'$.answersQuestion'),0)=?
-          AND created_at>=datetime('now','-1 hour') LIMIT 1`)
-        .get(answer.root,answer.root,answer.inboxSessionId,answer.respondingSessionId,text,JSON.stringify(answer.attachments),answersQuestion?1:0) as {event_id:string}|null:null;
-      if(same)carriedBy=same.event_id;
-      else {
+    else if(answer.final&&!text&&!answer.attachments.length&&!answer.stalled) {
+      const earlier=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND kind='post'
+        AND json_extract(payload_json,'$.requestId')=? AND json_extract(payload_json,'$.answersQuestion')=1
+        AND json_extract(payload_json,'$.replyKind')='partial' ORDER BY sequence DESC LIMIT 1`)
+        .get(answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
+      if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
+      carriedBy=earlier.event_id;
+    } else if(answer.final&&answer.answerGroup&&!answer.stalled) {
+      const grouped=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+        AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
+        .get(answer.inboxSessionId,answer.root,answer.answerGroup) as {event_id:string}|null;
+      if(grouped)carriedBy=grouped.event_id;
+      else if(text||answer.attachments.length){
+        recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
+          payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
+            answerGroup:answer.answerGroup,replyKind:'final',answersQuestion:true,workDisposition:answer.workDisposition,
+            ...(answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),postedBy:'owner-forward',postedBySession:answer.respondingSessionId,
+            ...(answer.attachments.length?{attachments:answer.attachments}:{})}});
+        carriedBy=postId;
+      }
+    } else if(text||answer.attachments.length) {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
-      }
     }
+    if(answer.final&&carriedBy&&answer.closingLine)recordSessionEvent({eventId:`post:closure:${carriedBy}`,sessionId:answer.inboxSessionId,inputId:answer.root,
+      kind:'answer_closure',payload:{postId:carriedBy,closingLine:answer.closingLine}});
     if(answer.hisInputId&&(answer.final||answer.stalled)) {
       const to={sessionId:answer.respondingSessionId,requestId:answer.requestId};
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(answer.stalled
@@ -370,7 +383,7 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
     }
   })();
   log('info','inbox_reply_answer_posted',{request_id:answer.requestId,thread:answer.root,responding_session_id:answer.respondingSessionId,stalled:answer.stalled,final:answer.final,
-    routed:!answer.hisInputId,post:carriedBy,...(carriedBy&&carriedBy!==postId?{same_answer_as:carriedBy}:{})});
+    routed:!answer.hisInputId,post:carriedBy});
   return carriedBy;
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
@@ -386,15 +399,23 @@ export function inboxHistory(session:SessionRow,cursor:string|null,limit:number)
   return {messages:page.slice().reverse().map(inboxMessage),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
 }
 /**
- * Every Inbox message the ledger added after `after`, oldest first. Inbox rows are
- * append-only and are never rewritten, so rows after a sequence are the whole change.
+ * Every Inbox message added or closed after `after`, oldest first. A closure event projects
+ * the existing answer message with its new closing line under the same message identity.
  * Returns null when more than `limit` arrived: a client that far behind gains nothing
  * over one latest-page read, which is the bounded primitive for that case.
  */
 export function inboxHistoryAfter(session:SessionRow,after:number,limit:number) {
   if(!sessionMetadata(session).inbox)return null;
-  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
-  return rows.length>limit?null:rows.map(inboxMessage);
+  const rows=db.query(`${inboxDeltaRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
+  if(rows.length>limit)return null;
+  const projected=rows.map(row=>{
+    if(row.kind!=='answer_closure')return inboxMessage(row);
+    const postId=JSON.parse(row.payload_json).postId;
+    const post=db.query(`${inboxRows} AND event.event_id=?`).get(postId) as any;
+    if(!post)throw new Error('The answer closure refers to a missing post.');
+    return inboxMessage(post);
+  });
+  return [...new Map(projected.map(message=>[message.id,message])).values()];
 }
 
 export const INBOX_INSTRUCTIONS = `This is Tejas's native Thinkering Inbox and routing workspace. Incoming captures are already retained with original source and attachment custody. Their owner-generated identity determines author and authority. Use the captureId provided by the owner for note saving and forwarding original diagnostics.
