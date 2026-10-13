@@ -41,17 +41,20 @@ Linux only) changes where the disk is waited for, not what is written or when it
   explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
   ceiling was 4 GB),
   and SQLite's default automatic checkpoint ran in the short-lived update-runner commands instead:
-  each one copied the log and synced the database file on the loaded disk while the owner's
-  commits busy-waited behind it for 0.3–0.9 s (sampled writer-lock holders: `deploy-state.js`,
-  `release-manager.js promote`, in `fsync` of `state.db`).
+  `deploy-state.js` and `release-manager.js promote` were sampled in `fsync` of `state.db`
+  while the owner had 0.3–0.9 s write waits. That overlap shows competing disk work,
+  not which process held the writer lock. SQLite invokes the auto-checkpoint hook
+  [after releasing the write lock](https://www.sqlite.org/c3ref/wal_hook.html), and its
+  [PASSIVE mode does not wait for writers](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html).
 
 On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
 write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
 before the update controller, so that run alone is not an established lock holder. Its ledger
 state commands and other short-lived writers still had SQLite's default auto-checkpoint setting,
 even though the owner had disabled its own. The shared writer boundary now disables it for every
-Linux ledger writer. This removes a known path for a second writer to checkpoint and block the
-owner; the incident's exact lock holder remains unobserved. A future update must be checked with
+Linux ledger writer. This removes a known path for a short-lived writer to checkpoint on the
+loaded disk; it does not establish the cause of the `SQLITE_BUSY` write.
+The incident's exact lock holder remains unobserved. A future update must be checked with
 the owner's loop-lag and slow-sync records before attributing any residual stalls.
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
