@@ -42,6 +42,17 @@ function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
     .get(turn.id,turn.id,turn.id,turn.id,input.id,turn.id);
 }
 
+/**
+ * Whether the owner moved this accepted input to a Codex successor. The line it leaves on the
+ * cancelled Claude turn is the owner speaking, not Claude: Claude never ran, because its usage was
+ * spent. History showed it as Claude's reply and he asked how Claude could answer when it had run
+ * out (2026-10-13), so readers attribute that turn's text to the service.
+ */
+export function movedToCodex(inputId:string):boolean {
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE event_id=? AND kind='provider_recovery'
+    AND json_extract(payload_json,'$.reason')='claude_usage_exhausted'`).get(`provider-recovery:${inputId}`);
+}
+
 function contextPrompt(sourceAddress:string,sourceInputId:string,original:string):string {
   return `The session owner transferred accepted work from a Claude conversation after all usable Claude accounts ran out. `+
     `The original input was not executed there; its exact accepted identity is ${sourceInputId}. `+

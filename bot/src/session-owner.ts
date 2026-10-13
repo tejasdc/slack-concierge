@@ -51,6 +51,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor} from './session-message
 import {localSessionNumber} from './peer-identity';
 import {sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
+import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
@@ -2022,7 +2023,8 @@ export class SessionOwner {
       ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,inputId:acceptedInputForTurn(row.id)!.id,
         ...(acceptedInputForTurn(row.id)?.created_at?{createdAt:iso(acceptedInputForTurn(row.id)!.created_at),timestampSource:'submitted'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},acceptedInputForTurn(row.id)!)]:[{id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,author:{kind:'unknown'}}]),
-      ...(row.agent_text?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,author:{kind:'agent',session:authorSession(session.id)},
+      ...(row.agent_text?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,
+        author:acceptedInputForTurn(row.id)&&movedToCodex(acceptedInputForTurn(row.id)!.id)?{kind:'service',communication:'notice'}:{kind:'agent',session:authorSession(session.id)},
         ...(acceptedInputForTurn(row.id)?{inputId:acceptedInputForTurn(row.id)!.id}:{}),
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};

@@ -231,7 +231,10 @@ claims and transfer serialize on the same ledger writer. Later Claude context as
 excludes transferred source turns, so they cannot reappear as work to replay after reset.
 The successor receives the exact original payload and attachments and an instruction to
 read the retained source conversation and completed effects before acting; provider-private
-Claude state is not claimed to transfer. Results for agent requests follow their original
+Claude state is not claimed to transfer. The line the transfer leaves on the cancelled source
+turn ("Continued in a Codex session after Claude usage ran out.") is the owner's, so history
+shows it as a service notice, never as Claude's reply: Claude never ran (`movedToCodex`; Tejas
+asked on 2026-10-13 how Claude could answer after running out). Results for agent requests follow their original
 request and source return path. The original input receipt and successor lineage show the
 move. This is a bounded safe-subset handoff, not automatic replay of uncertain work.
 
