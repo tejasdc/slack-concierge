@@ -13,6 +13,9 @@ export type StorageWork = {
   db_errors: number;
   db_slowest_fingerprint: string | null;
   db_slowest_ms: number;
+  /** Wall time this operation spent awaiting an answer from outside the owner (a throwaway
+   * provider copy, another service), during which the owner was free for other work. */
+  awaited_ms: number;
 };
 type Scope = { work: StorageWork; closed: boolean };
 const scopes = new AsyncLocalStorage<Scope>();
@@ -46,7 +49,19 @@ function checkRead(work:StorageWork){
 let observationFailures = 0;
 export const storageObservationFailures = () => observationFailures;
 const empty = (): StorageWork => ({ db_calls: 0, db_duration_ms: 0, db_rows: 0,
-  db_result_bytes: 0, db_errors: 0, db_slowest_fingerprint: null, db_slowest_ms: 0 });
+  db_result_bytes: 0, db_errors: 0, db_slowest_fingerprint: null, db_slowest_ms: 0, awaited_ms: 0 });
+
+/** A deliberate wait for an answer from outside the owner. Its wall time is recorded on the
+ * enclosing operation as `awaited_ms`, so the owner's slow-request judgement counts only the
+ * owner's own time: five side questions of 8-11 s each, every other read answering in
+ * milliseconds, were counted as owner slowness and opened a degradation incident on 2026-10-13
+ * (work-flow supervisor incident 838dfa4c). */
+export async function awaitingOutside<T>(wait: () => Promise<T>): Promise<T> {
+  const scope = scopes.getStore();
+  const started = performance.now();
+  try { return await wait(); }
+  finally { if (scope && !scope.closed) scope.work.awaited_ms += Math.round(performance.now() - started); }
+}
 
 export function observeStorageOperation<T>(operation: string, callback: () => T,
   finished: (work: StorageWork) => void): T {
