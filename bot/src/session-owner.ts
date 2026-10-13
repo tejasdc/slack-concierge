@@ -1661,7 +1661,8 @@ export class SessionOwner {
       if(['title','summary','model'].includes(action.kind)) {
         if(typeof action.value!=='string'||(action.kind!=='summary'&&!action.value.trim()))throw new SessionOwnerError('Action value must be text.');
         if(action.kind==='model'&&!this.view(session).capabilities.models.includes(action.value.trim()))throw new SessionOwnerError('This provider does not advertise the selected model.',409,'CAPABILITY_UNAVAILABLE');
-        updateSessionMetadata(session.id,{[action.kind]:action.value.trim()});
+        updateSessionMetadata(session.id,{[action.kind]:action.value.trim(),
+          ...(action.kind==='model'?{automaticProviderChoice:false}:{})});
       } else if(action.kind==='outcome') {
         if(!['open','done','shipped'].includes(action.value))throw new SessionOwnerError('Invalid outcome.');
         updateSessionMetadata(session.id,{outcome:action.value,...(action.value==='open'?{}:{dismissedGeneration:attentionCeiling(meta)})});
