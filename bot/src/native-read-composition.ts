@@ -14,6 +14,7 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
   if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
   const capabilityClient=capabilitySocket?new SessionCapabilityClient({socketPath:capabilitySocket}):null;
   const historyPages=new ProviderHistoryPageClient();
+  historyPages.warm();
   const configuredPeers=peerSettings();
   const cwd=(session:SessionRow)=>{
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;

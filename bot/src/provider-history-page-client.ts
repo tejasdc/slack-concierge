@@ -29,6 +29,8 @@ export class ProviderHistoryPageClient {
     this.worker=worker;
     return worker;
   }
+  /** Loads the worker before the first open asks for a page, instead of during it. */
+  warm(){this.ensure();}
   request(work:Work):Promise<unknown>{
     const worker=this.ensure(),id=this.nextId++;
     return new Promise((resolve,reject)=>{
