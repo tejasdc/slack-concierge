@@ -1,0 +1,1 @@
+A side question asked while a Claude session is working is answered from its last finished answer, not its unfinished work. TL;DR: Side questions on a busy Claude session only see what the agent has finished, as you asked.
