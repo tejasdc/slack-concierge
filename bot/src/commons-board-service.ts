@@ -17,8 +17,13 @@ export type BoardVerb='read'|'thread'|'post'|'claim'|'reveal'|'close'|'product'|
 export type BoardInput={
   verb:BoardVerb; board?:string; thread?:string; reply_to?:string; action_id?:string; kind?:string; title?:string; text?:string;
   members?:string[]; decider?:string; mentions?:string[]; sealed?:boolean; end?:string; outcome?:string; all?:boolean;
-  /** product: finding|decision|skill; from: "<address> :: <reason>" each; supersedes: "<address> :: <reason>". */
+  /** product: finding|decision|skill|design; from: "<address> :: <reason>" each; supersedes: "<address> :: <reason>". */
   product?:string; from?:string[]; supersedes?:string;
+  /** post: the design section this speaks to (`lab:<design-handle>.<passage>`), what the post is (answer|ask|comment), and,
+   *  when an agent places his words from an Inbox thread, speaker `tejas` with the Inbox input that holds them. */
+  target?:string; intent?:string; speaker?:string; his_input?:string;
+  /** product design: the Inbox thread the work belongs to, where the record files one line about the publication. */
+  inbox_session?:string; inbox_message?:string;
   /** cite: medium git|document|paper|reader|web and the address it names. */
   medium?:string; address?:string;
   /** link: a typed relation from one lab address to another, with its reason. */
@@ -63,6 +68,29 @@ async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknow
   return answer;
 }
 
+/** A design section's address: the design's handle and the passage number of its `## ` heading. */
+const DESIGN_PASSAGE=/^lab:[a-z0-9][a-z0-9-]*\.\d+$/;
+const BARE_RECORD=/^lab:[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * A design read as the review shows it (agent-ecology docs/plans/2026-10-13-codiak-participation-interfaces.md;
+ * route: thinkering docs/plans/2026-10-13-living-design-review.md): the record answers with `review`, whose
+ * `sections` carry each `## ` section's address, state (missing|open|asked|answered|accepted|contested), his
+ * entries and the replies nested under them, so a session sees what it owes. Concierge adds only `owed`, the
+ * addresses of sections still `asked`, and never computes a state of its own. Not a design: null.
+ */
+async function readDesign(address:string,actor:BoardActor) {
+  const trimmed=address.trim();
+  if(!BARE_RECORD.test(trimmed))return null;
+  const record=await lab('GET',`/records/${encodeURIComponent(trimmed.slice(4))}`,actor);
+  if(record.kind!=='product'||record.record?.product!=='design')return null;
+  const review=record.review??null;
+  const sections:{address:string;state:string}[]=review?.sections??[];
+  return {kind:'design',record:record.record,supersededBy:record.supersededBy??null,links:record.links??null,review,
+    owed:sections.filter(section=>section.state==='asked').map(section=>section.address),
+    ...(review?{}:{note:'This thnkr.ing does not publish the section review yet; the design text and links are above.'})};
+}
+
 function noticeText(notice:Notice,writer:string,summary:string) {
   const open=`${ORIGIN()}/lab`;
   return [`Lab ${notice.why==='mention'?'mention':'record replaced'} from ${writer}: ${summary}`,'',
@@ -104,12 +132,20 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     return {moved:'The board is the lab record in thnkr.ing now; every mention is delivered when it is written, so there is nothing to sweep. Read it at /lab.'};
   if(!actor?.inputId||!actor.runId)throw new BoardError('Board commands come from an admitted live run: pass --source-input and --source-run.');
   if(input.verb==='read') {
-    if(input.address)return lab('GET',`/resolve?address=${encodeURIComponent(input.address)}`,actor);
+    if(input.address) {
+      const design=await readDesign(input.address,actor);
+      return design??lab('GET',`/resolve?address=${encodeURIComponent(input.address)}`,actor);
+    }
     if(input.thread)return lab('GET',`/records/${encodeURIComponent(input.thread)}`,actor);
     return lab('GET','',actor);
   }
   if(!input.action_id?.trim())throw new BoardError('Changing the board needs a stable --action-id.');
   if(input.reply_to&&input.verb!=='post')throw new BoardError('--reply-to is only for board post.');
+  if(input.target&&input.verb!=='post')throw new BoardError('--target is only for board post.');
+  if(input.target&&!DESIGN_PASSAGE.test(input.target.trim()))throw new BoardError('--target names a design section as lab:<design-handle>.<passage>.');
+  if((input.intent||input.speaker||input.his_input)&&input.verb!=='post')throw new BoardError('--intent, --speaker and --his-input are only for board post.');
+  if(input.speaker&&(input.speaker.trim()!=='tejas'||!input.his_input?.trim()||!input.target))throw new BoardError('Placing his words needs --speaker tejas, --his-input <the Inbox input that holds them> and --target <the section>; the agent stays the author of record.');
+  if((input.inbox_session||input.inbox_message)&&(input.verb!=='product'||input.product!=='design'||!input.inbox_session||!input.inbox_message))throw new BoardError('--inbox-session and --inbox-message go together, on board product --product design.');
   const actionId=input.action_id.trim(),text=input.text??'';
   const mentions=input.mentions?.map(identityOf);
   let written:{id:string;address:string;duplicate:boolean;notify:Notice[]};
@@ -118,9 +154,10 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     written=await lab('POST','/threads',actor,{actionId,kind:input.kind,title:input.title,text,...(input.board?{board:input.board}:{}),
       ...(input.members?.length?{members:input.members.map(identityOf)}:{}),...(input.decider?{decider:identityOf(input.decider)}:{}),...(mentions?.length?{mentions}:{})});
   } else if(input.verb==='product') {
-    if(!input.from?.length)throw new BoardError('A finding, decision or skill names where it came from: --from "<lab address> :: <reason>".');
+    if(!input.from?.length)throw new BoardError('A finding, decision, skill or design names where it came from: --from "<lab address> :: <reason>" (a design links to the open Lab thread whose sessions answer him).');
     written=await lab('POST','/products',actor,{actionId,product:input.product,title:input.title,text,from:input.from.map(pair),
-      ...(input.supersedes?{supersedes:pair(input.supersedes)}:{}),...(mentions?.length?{mentions}:{})});
+      ...(input.supersedes?{supersedes:pair(input.supersedes)}:{}),...(mentions?.length?{mentions}:{}),
+      ...(input.inbox_session?{inbox:{sessionId:identityOf(input.inbox_session),messageId:input.inbox_message!.trim()}}:{})});
   } else if(input.verb==='cite') {
     written=await lab('POST','/citations',actor,{actionId,medium:input.medium,address:input.address,title:input.title,text});
   } else if(input.verb==='link') {
@@ -135,7 +172,8 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
       replyToEntryId=target.entryId;
     }
     written=await lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
-      ...(replyToEntryId?{replyToEntryId}:{}),
+      ...(replyToEntryId?{replyToEntryId}:{}),...(input.target?{targetAddress:input.target.trim()}:{}),...(input.intent?{intent:input.intent.trim()}:{}),
+      ...(input.speaker?{speaker:'tejas',source:input.his_input!.trim()}:{}),
       ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
   }
   const summary=(input.title??text).trim().split('\n')[0]!.slice(0,200);
