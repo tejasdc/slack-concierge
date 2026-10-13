@@ -52,7 +52,10 @@ same input on retry or reconciliation and creates at most one queued turn.
 The private `accepted-input-admission-fixture.ts` exercises rollback for local forwarding,
 retained peer intent and exact-input recovery after turn insertion refusal,
 same-action duplicate and changed-payload refusal. Recovery acts only on explicit
-queue or forwarding intents with no turn, steering, request or source-run custody;
+queue or forwarding intents with no turn, steering or request custody. A marked
+agent test reply may retain source-run custody: its peer forwarding intent advances
+only when those source fields exactly match its retained agent source. Other agent
+inputs cannot enter this recovery path. Ordinary human input has no source-run custody;
 an exact duplicate of an older unbound message without that proof gets an explicit
 unconfirmed receipt and remains held for exact investigation.
 It does not exercise peer delivery or prove an installed recovery.
