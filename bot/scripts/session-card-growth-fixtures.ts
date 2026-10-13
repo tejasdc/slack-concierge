@@ -158,7 +158,9 @@ function visibleCardFacts(){
   const read=()=>JSON.parse((prepared.query('SELECT card_json FROM presentation_session_cards WHERE generation=1 AND session_id=1')
     .get() as {card_json:string}).card_json);
   const card=read();
-  assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',running:true});
+  // The card carries the same presence the owner's full view does (session-presence.ts).
+  assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',endedAt:null,workStartedAt:null,running:true,workMs:null});
+  assert.equal(card.execution,'running');assert.equal(typeof card.presenceRevision,'number');assert.ok('agentName' in card);
   assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
   assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
   assert.equal(card.savedWork.turnId,7,'the card must carry the exact control identity beyond the first saved-work page');
