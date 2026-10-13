@@ -64,8 +64,9 @@ An older session retains its recorded model even after Google withdraws it. Its 
 request fails with the model refusal; Concierge does not silently change the model
 or replay the prompt elsewhere. A person can explicitly choose an offered model
 for later turns, or an agent can start a fresh Google session with the source
-brief. A confirmed invalid-model refusal belongs to that session, not the Google
-account, and does not trip the account-wide retry breaker. The October 13 audit
+brief only for work Tejas explicitly assigned to Gemini. A confirmed invalid-model
+refusal belongs to that session, not the Google account, and does not trip the
+account-wide retry breaker. The October 13 audit
 was restarted in a fresh Google session with the identical brief; its old
 zero-work request remains withdrawn.
 Each machine using
@@ -91,9 +92,12 @@ additive tables, leaving the installed Claude and Codex schema intact.
 Thinkering reads that owner projection in Provider accounts; each instance picks
 only its currently signed-in Google account for explicit Google sessions and
 banked work. Banked work uses the same fresh-reading and reserve rule as the
-other providers. Automatic new-session choice remains Claude/Codex until a
-matched historical-task replay establishes a useful Google role; an existing
-session never changes its provider. A Google quota refusal is replay-safe only
+other providers. Automatic new-session choice uses Claude and Codex only,
+including when both have reached capacity and when a zero-work first turn moves
+to the other provider. Gemini requires Tejas to name it for the specific work;
+capacity readings or model evaluations do not add it to Automatic or make it a
+fallback [decision: gemini-only-when-tejas-asks]. An existing session never
+changes its provider. A Google quota refusal is replay-safe only
 when the CLI confirms both zero turns and zero tokens and there is no observed
 output or tool activity. If a fresh structured reading names the exhausted
 window's reset, the input waits until then. If the reset is unreadable, it
@@ -305,8 +309,9 @@ callers can also request `--provider auto` explicitly. At creation, the session 
 recent allowance data for accounts this machine can actually launch. Claude remains the
 ordinary choice while its roomiest usable account is below the existing 90% warning level.
 Once Claude reaches that level, the owner starts the new session on whichever provider has
-more headroom. An explicitly chosen provider, model or effort is never replaced. An existing
-session keeps its provider; this is a creation decision, not a fallback or replay chain.
+more headroom among Claude and Codex. An explicitly chosen provider, model or
+effort is never replaced. An existing session keeps its provider; this is a
+creation decision, not a fallback or replay chain.
 
 An allowance reading cannot show whether a model is accepting turns. Codex App Server's
 `TurnError.codexErrorInfo=serverOverloaded` is a model-capacity refusal, separate from a
