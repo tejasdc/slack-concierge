@@ -2202,10 +2202,17 @@ function linkForwardedReplies(topicId:string,forwards:(Work&{root:string|null})[
   const mine=forwards.filter(forward=>!!forward.root&&roots.has(forward.root));
   let linked=0;
   for(const forward of mine) {
-    for(const request of topicRequests(topicId)) {
+    // The requests that agent was working on in this thread before his reply: the open ones, or
+    // when all are closed, only the newest, so one reply never reopens a thread's whole history.
+    const worked=topicRequests(topicId).filter(request=>request.dispatches.some((dispatch:any)=>{
+      const work=workRow(String(dispatch?.requestId??''));
+      return !!work&&work.id!==forward.id&&work.target===forward.target&&work.createdAtMs<=forward.createdAtMs;
+    }));
+    const open=worked.filter(request=>request.state==='open');
+    const targets=open.length?open:worked.slice(-1);
+    for(const request of targets) {
       if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
       const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
-      if(!earlier.some(work=>work.target===forward.target&&work.createdAtMs<=forward.createdAtMs))continue;
       const running=forward.outcome===null;
       if(request.state==='closed'&&!running)continue;
       const dispatch={requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true};
@@ -2236,7 +2243,9 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
     if(!works.length||works.some(work=>work.outcome===null))continue;
     const latest=works.at(-1)!;
     const topic=topicRow(topicId);
-    const waitingOnHim=questionsOfRequest(topicId,request).length>0;
+    const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
+    const waitingOnHim=questionsOfRequest(topicId,request).length>0||topicQuestions(topicId).some(question=>question.state==='deferred'
+      &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
     let disposition:string|null=null,why='';
     if(latest.outcome==='answered'&&(latest.disposition===null||latest.disposition==='completed')) {
       try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
