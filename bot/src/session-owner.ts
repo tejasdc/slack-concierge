@@ -1877,7 +1877,7 @@ export class SessionOwner {
     const cwd=meta.cwd??channel?.code_path??channel?.vault_path??this.defaultCwd;
     try {
       // Under the gateway's 120 s command deadline; a longer answer is collected by asking again with the same id.
-      return await askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,passage,question,earlier}),90_000);
+      return await askAsideOnce(`${session.id}:${input.asideId}`,()=>({provider:session.provider_id,sessionUuid:session.agent_session_uuid!,cwd,model:meta.model??null,running:this.view(session).execution==='running',passage,question,earlier}),90_000);
     } catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),502,'ASIDE_FAILED');
     }

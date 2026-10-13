@@ -1,4 +1,7 @@
 import {spawn} from 'node:child_process';
+import {unlink} from 'node:fs/promises';
+import {forkSession,getSessionMessages} from '@anthropic-ai/claude-agent-sdk';
+import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {mkdtempSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -16,7 +19,8 @@ import {log} from './log';
  */
 export type AsideExchange={question:string;answer:string};
 export type AsideInput={provider:string;sessionUuid:string;cwd:string;model:string|null;
-  passage:string;question:string;earlier:AsideExchange[]};
+  /** The session is working now: its unfinished turn is left out, so the copy ends at its last finished answer. */
+  running:boolean;passage:string;question:string;earlier:AsideExchange[]};
 export type AsideAnswer={answer:string;model:string|null;durationMs:number};
 
 const ASIDE_TIMEOUT_MS=180_000;
@@ -49,10 +53,37 @@ function run(command:string,args:string[],options:{cwd:string;env:NodeJS.Process
   });
 }
 
+/**
+ * Where the last finished answer ends: the agent's last message that ended its turn. Tejas,
+ * 2026-10-13: work still running is not an answer; "the final response is what tells us if you are
+ * behind or ahead". Prompts are no guide, because a running turn also carries text written into it
+ * (his mid-turn messages, notices). Null when no answer has finished, and the copy is then whole.
+ */
+async function finishedBoundary(sessionUuid:string,cwd:string):Promise<string|null> {
+  const rows=await getSessionMessages(sessionUuid,{dir:cwd}) as Array<{type?:string;uuid?:string;message?:{stop_reason?:unknown}}>;
+  for(let index=rows.length-1;index>=0;index--){
+    const row=rows[index]!;
+    if(row.type==='assistant'&&row.message?.stop_reason==='end_turn'&&row.uuid)return row.uuid;
+  }
+  return null;
+}
+
 async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const started=Date.now();
   const home=selectedClaudeHome();
   const env={...process.env,...(home?{CLAUDE_CONFIG_DIR:home.home}:{})};
+  // A busy session is copied only up to its last finished answer, through a trimmed transcript
+  // that exists for this one question and is deleted after it.
+  const boundary=input.running?await finishedBoundary(input.sessionUuid,input.cwd).catch(()=>null):null;
+  const trimmed=boundary?(await forkSession(input.sessionUuid,{dir:input.cwd,upToMessageId:boundary,title:'Side question copy'})).sessionId:null;
+  try {
+    return await claudeAnswer({...input,sessionUuid:trimmed??input.sessionUuid},prompt,env,started);
+  } finally {
+    if(trimmed){const file=await locateClaudeTranscript(claudeConfigDir(env as Record<string,string>),trimmed).catch(()=>null);if(file)await unlink(file).catch(()=>{});}
+  }
+}
+
+async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv,started:number):Promise<AsideAnswer> {
   // --fork-session copies the transcript, --no-session-persistence keeps the copy off disk, and
   // --tools "" leaves it nothing to act with, so the session's files and history stay untouched.
   const args=['-p','--resume',input.sessionUuid,'--fork-session','--no-session-persistence','--tools','',
