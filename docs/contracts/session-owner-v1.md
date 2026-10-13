@@ -296,6 +296,24 @@ text: a later named dispatch may initialize them, or the authenticated user may
 set their title through the existing control. This delivery does not claim a
 historical backfill or retroactively resolve all rows in that screenshot.
 
+### Agent presence: one identity and status record
+
+A full `SessionView`, a prepared session card and every message author session carry the same
+presence, computed by one rule (`bot/src/session-presence.ts`): `provider`, `model`,
+`reasoningEffort`, `agentName` (the exact name every surface shows, from `agentDisplayName` in
+`aliases.ts`; `null` means unknown and is shown as unknown, never as another provider), and on
+views and cards `execution`, `timing` (`{startedAt,endedAt,workStartedAt,running,workMs}`) and
+`presenceRevision`. `presenceRevision` is the session's newest change-journal sequence when the
+presence was read; a client holding a card and a view of the same session shows the higher one on
+every surface. Author sessions (`author.session`, `originatingHuman.session`, `quoted.session`)
+are `{id,title,provider,model,reasoningEffort,agentName}` with nulls for unknown facts; a peer
+session absent from this machine's catalogue is unknown rather than Claude. The turn-state names
+(`TURN_STATE`) and provider names (`providerDisplayName`) each have one home, and
+`bot/scripts/check-agent-presence.ts` in the build refuses a guessed provider name, a defaulted
+provider and a second turn-state table. Added after one Gemini agent was shown as Gemini in the
+sidebar, Claude on its thread answer, and running in the sidebar while its page said completed
+(2026-10-13).
+
 ### Exact response wrappers and native view fields
 
 These wrappers resolve the native owner's four integration questions in input1789456322.159849. They apply to the Unix owner API; Thinkering may retain its authenticated browser route spelling while forwarding to these routes.

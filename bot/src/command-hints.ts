@@ -1,6 +1,6 @@
 import manifest from "../../slack-app-manifest.json";
 import { PROVIDER_ALIASES, REASONING_EFFORTS, configuredProviderDefault, resolveProviderAlias,
-  resolveProviderDefault, type ProviderAliasKey, type ProviderAliasTarget } from "./aliases";
+  resolveProviderDefault, type ProviderAliasKey, type ProviderAliasTarget, providerDisplayName } from "./aliases";
 import type { ChannelRow } from "./state";
 import type { SkillRoute } from "./skill-routes";
 
@@ -9,7 +9,7 @@ export function isHintCommand(input: { text: string; files?: unknown[]; prebuilt
 }
 
 function targetLabel(target: ProviderAliasTarget): string {
-  const provider = target.provider === "codex" ? "Codex" : "Claude Code";
+  const provider = providerDisplayName(target.provider) ?? "an unknown agent";
   const effort = target.reasoning_effort ? ` · ${target.reasoning_effort} effort` : "";
   return `${provider} · ${target.model || "provider default model"}${effort}`;
 }

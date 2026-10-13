@@ -390,6 +390,10 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   channel binding hide canonical sessions or claim complete historical coverage. Missing
   historical channel metadata omits that candidate with explicit coverage, preserving
   other candidates without recreating a channel or authorizing resume.
+- Who an agent is and what it is doing (provider, model, effort, shown name, running/completed,
+  timing) is one record from `session-presence.ts`, carried on views, sidebar cards and message
+  authors; unknown stays null, never a defaulted provider. The build's `check-agent-presence.ts`
+  refuses a second source. See [agent presence](docs/contracts/session-owner-v1.md#agent-presence-one-identity-and-status-record).
 - Session names use the canonical metadata `title` shown in Thinkering. Router
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.

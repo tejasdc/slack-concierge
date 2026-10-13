@@ -1,3 +1,4 @@
+import { providerDisplayName } from "./aliases";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -84,7 +85,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
-    const product=context.session(input.session_id).providerId==='codex'?'Codex':'Claude';
+    const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account has room until ${when}, when the first one frees up. Your message is kept and starts then by itself, or straight away if you add an account with room in Accounts.`
       :`No ${product} account has room, and none has said when it frees up. Your message is kept and starts by itself as soon as one has room, or straight away if you add an account with room in Accounts.`,clearsAt:next,automaticRetry:true};
@@ -103,7 +104,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(context.dependencyPending(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
   if(older?.status==='queued'&&(older.dispatch_hold==='usage'||older.dispatch_failure_class==='usage_wait'||older.continuation_refusal==='usage')){
     const reset=older.dispatch_next_attempt_ms!==null&&older.dispatch_next_attempt_ms>context.now()?older.dispatch_next_attempt_ms:null;
-    const product=session.providerId==='codex'?'Codex':'Claude';
+    const product=providerDisplayName(session.providerId)??String(session.providerId);
     return {code:'PROVIDER_USAGE_HELD',message:reset
       ?`No ${product} account has room until ${context.formatTime(reset)}, when the first one frees up. This message waits behind earlier work and is read after that work resumes; an account with room can resume it sooner.`
       :`No ${product} account has room. This message waits behind earlier work and is read after that work resumes when an account has room.`,

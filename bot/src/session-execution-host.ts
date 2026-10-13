@@ -19,7 +19,7 @@ import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
-import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES} from './aliases';
+import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 
 /**
@@ -252,7 +252,7 @@ export class SessionExecutionHost {
       lastSignIn:this.lastSignIn.get(provider)??null,
       message:account?(provider==='claude-code'?this.claudeInUseSentence(account.label,usage):'')
         :ownHomes?'No Claude account is selected for agents on this machine. Sign in to one or switch to one below.'
-        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
+        :`This machine has no ${providerDisplayName(provider)??provider} account yet.`,
       account,profiles:checked,usage};
   }
   /**

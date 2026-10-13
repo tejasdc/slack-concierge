@@ -1,7 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
-import {sessionCatalogueLabels} from './session-labels';
+import {authorSessionOf} from './session-presence';
 
 type Input={id:string;session_id:number;scope:string;action_id:string;kind:string;origin:'human'|'agent'|'service';
   payload_json:string;turn_id:number|null;source_input_id:string|null;source_run_id:string|null;request_id:string|null;created_at:string};
@@ -21,22 +21,8 @@ const captureDevices:Record<string,string>={'ios-share-extension':'iPhone share'
 
 /** Storage-neutral attribution used by both the owner and the prepared Inbox display worker. */
 export function inboxAttribution(db:Database){
-  const authorSession=(id:number)=>{
-    const row=db.query('SELECT provider_id,native_metadata_json,slack_channel_id,slack_thread_ts FROM sessions WHERE id=?')
-      .get(id) as {provider_id:string;native_metadata_json:string|null;slack_channel_id:string|null;slack_thread_ts:string|null}|null;
-    if(!row)return undefined;
-    return {id:`concierge:${id}`,title:sessionCatalogueLabels(db,row).title,provider:row.provider_id};
-  };
-  const sessionAuthor=(id:string)=>{
-    const local=localSessionNumber(id);
-    if(local!==null)return authorSession(local);
-    const colon=id.indexOf(':');if(colon<=0)return undefined;
-    const peer=id.slice(0,colon),remote=id.slice(colon+1);
-    const row=db.query(`SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id IN (?,?)
-      ORDER BY updated_at_ms DESC LIMIT 1`).get(peer,remote,`concierge:${remote}`) as {view_json:string}|null;
-    const view=row?JSON.parse(row.view_json):null;
-    return {id,title:view?.title??`Session on ${peer}`,provider:view?.provider??'claude-code'};
-  };
+  const authorSession=(id:number)=>authorSessionOf(db,`concierge:${id}`);
+  const sessionAuthor=(id:string)=>authorSessionOf(db,id);
   const sourceIdentity=(inputId:string|null,runId:string|null):Record<string,unknown>=>{
     if(!inputId||!runId)return {};
     const source=inputById(db,inputId);
@@ -210,7 +196,9 @@ export function inboxAttribution(db:Database){
     }
     const kind=display.author?.kind??(display.role==='user'?'unknown':'agent');
     const {fromSession,...author}=display.author??{};
-    const named=typeof fromSession==='string'?sessionAuthor(fromSession):undefined;
+    // A named author this machine cannot resolve stays that author, unknown; it is never the
+    // session the message is shown in (that named another agent's answer after the Inbox).
+    const named=typeof fromSession==='string'?sessionAuthor(fromSession)??{id:fromSession,title:'Agent session',provider:null,model:null,reasoningEffort:null,agentName:null}:undefined;
     return {...display,author:{...author,kind,...(kind==='agent'?{session:named??authorSession(sourceSessionId)}:{})}};
   };
 }

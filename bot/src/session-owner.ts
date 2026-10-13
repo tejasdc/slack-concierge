@@ -27,7 +27,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex} from './meaning-index';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
-import {CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
+import {providerDisplayName,CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -62,6 +62,7 @@ import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
+import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
@@ -73,7 +74,7 @@ import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
-import {inputExecutionFacts,receiptOperationState} from './session-receipt-state';
+import {TURN_STATE,inputExecutionFacts,receiptOperationState} from './session-receipt-state';
 import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-status';
 import type {ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
@@ -704,24 +705,13 @@ export class SessionOwner {
     return this.executionOf(session,sessionMetadata(session)).execution;
   }
   private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
-    const fields='id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms';
-    const latest=db.query(`SELECT ${fields} FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
-    const active=db.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
-    const queued=(db.query("SELECT count(*) AS count FROM turns WHERE session_id=? AND status='queued'").get(session.id) as {count:number}).count;
-    const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
-    const lastStarted=db.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status<>'queued' AND started_at IS NOT NULL ORDER BY id DESC LIMIT 1`).get(session.id) as any|null;
-    // External provider work has no owner input/run. Project its evidence without manufacturing one.
-    const matchingExternal=observed?.turnId?db.query('SELECT 1 FROM turns WHERE session_id=? AND provider_turn_id=? LIMIT 1').get(session.id,observed.turnId):null;
-    const external=observed&&observed.state!=='idle'&&!active&&!matchingExternal
-
-      && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
-    const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
-    return {latest,active,queued,external,execution};
+    return sessionExecution(db,session,meta);
   }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
-    const {latest,active,queued,external,execution}=this.executionOf(session,meta);
-    const timedRun=active??latest;
+    // Who the agent is and what it is doing come from the one presence rule the sidebar card
+    // also uses, never from a second derivation here.
+    const {presence,facts:{latest,active,queued,external,execution}}=sessionPresence(db,session,meta);
     const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
     const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
@@ -734,10 +724,10 @@ export class SessionOwner {
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
-      timing:external?{startedAt:external.startedAt,endedAt:external.endedAt,workStartedAt:external.startedAt,running:external.state==='running',workMs:external.workMs}:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
+      timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
-      workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
+      workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:presence.model,reasoningEffort:presence.reasoningEffort,
       account:session.provider_id==='claude-code'?meta.claudeAccount??null:null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,space:sessionSpace(session),touch:sessionTouch(db,session.id,meta,(session as any).last_turn_at??(session as any).created_at),
@@ -1295,7 +1285,7 @@ export class SessionOwner {
     const selected=this.selectedMessage(session,input.reference),dialogue=this.selectedDialogue(session,selected);
     const prompts=dialogue.filter(message=>message.role==='user').map(message=>({messageId:message.id,text:message.content}));
     if(!prompts.length)throw new SessionOwnerError('A comparison requires at least one retained user request through the selected message.',409,'MESSAGE_REFERENCE_UNAVAILABLE');
-    const metadata=sessionMetadata(session),coding=input.provider!=='chatgpt',child=createNativeSession(input.provider,{title:`Compare: ${metadata.title??'Agent session'}`,summary:`Answers the same question as “${metadata.title??'the original conversation'}” with ${input.provider==='chatgpt'?'ChatGPT':'another model'}, so you can compare.`,purpose:coding?(metadata.purpose??'chat'):'chat',cwd:metadata.cwd??this.defaultCwd,project:coding?metadata.project??null:null,origin:'native',lineage:{boundary:selected.reference.messageId,sourceVersion:selected.reference.source.sourceVersion}});
+    const metadata=sessionMetadata(session),coding=input.provider!=='chatgpt',child=createNativeSession(input.provider,{title:`Compare: ${metadata.title??'Agent session'}`,summary:`Answers the same question as “${metadata.title??'the original conversation'}” with ${providerDisplayName(input.provider)??'another model'}, so you can compare.`,purpose:coding?(metadata.purpose??'chat'):'chat',cwd:metadata.cwd??this.defaultCwd,project:coding?metadata.project??null:null,origin:'native',lineage:{boundary:selected.reference.messageId,sourceVersion:selected.reference.source.sourceVersion}});
     db.query('UPDATE sessions SET parent_session_id=? WHERE id=?').run(session.id,child.id);
     const preparedPrompt=`This is a fresh comparison session. The original agent responses are deliberately omitted. The JSON array contains the source conversation's user requests in chronological order through the exact selected message. Treat the final request as active. Respond to it directly; do not mention this wrapper or evaluate the other agent.\n\n${JSON.stringify(prompts)}`;
     // A comparison's child exists the moment it is accepted, so its receipt names it from the
@@ -2669,7 +2659,7 @@ export class SessionOwner {
     const session=getSessionById(turn.session_id)!,meta=sessionMetadata(session),input=acceptedInputForTurn(turn.id);
     const payload=input?JSON.parse(input.payload_json):{};
     const failure=input?.receipt_json?JSON.parse(input.receipt_json).error:null;
-    const state=({done:'completed',error:'failed',cancelled:'canceled',interrupted:'uncertain',parked:'uncertain',delivery_parked:'uncertain',delivering:'running'} as any)[turn.status]??turn.status;
+    const state=TURN_STATE[turn.status]??turn.status;
     return {id,threadId:`concierge:${session.id}`,provider:session.provider_id,purpose:meta.purpose??'chat',state,
       createdAt:iso(turn.started_at),updatedAt:iso(turn.ended_at??turn.started_at),sessionId:session.agent_session_uuid,turnId:turn.provider_turn_id??null,
       error:['failed','uncertain'].includes(state)?(typeof failure==='string'?failure:failure?.message)??turn.agent_text??null:null,worktree:meta.cwd??null,changedFiles:[],verification:null,selection:payload.selection??payload.firstInput?.selection??[],nativeBinding:meta.nativeBinding??null};

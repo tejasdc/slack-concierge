@@ -11,11 +11,14 @@ function fixture(count:number){
   source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
     agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
+      native_run_id TEXT,ended_at TEXT,provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
       saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER,
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT);
     CREATE INDEX session_inputs_session_kind ON session_inputs(session_id,kind);
+    CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY AUTOINCREMENT,source_table TEXT,row_key TEXT,session_id INTEGER);
+    CREATE INDEX presentation_changes_session ON presentation_change_log(session_id,sequence);
     CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);
     CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,target_session_id INTEGER,
       source_input_id TEXT,action_id TEXT,created_at_ms INTEGER);
@@ -155,7 +158,9 @@ function visibleCardFacts(){
   const read=()=>JSON.parse((prepared.query('SELECT card_json FROM presentation_session_cards WHERE generation=1 AND session_id=1')
     .get() as {card_json:string}).card_json);
   const card=read();
-  assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',running:true});
+  // The card carries the same presence the owner's full view does (session-presence.ts).
+  assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',endedAt:null,workStartedAt:null,running:true,workMs:null});
+  assert.equal(card.execution,'running');assert.equal(typeof card.presenceRevision,'number');assert.ok('agentName' in card);
   assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
   assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
   assert.equal(card.savedWork.turnId,7,'the card must carry the exact control identity beyond the first saved-work page');

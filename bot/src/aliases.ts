@@ -120,6 +120,33 @@ export function modelDisplayName(model: string | null | undefined): string {
   return (MODEL_LABELS as Record<string, string>)[model] ?? RETIRED_MODEL_LABELS[model] ?? model;
 }
 
+/**
+ * Which agent a provider is, as he reads it. The only provider names in Concierge: keyed by the
+ * provider union, so a new provider without a name is a build error. Every message that names a
+ * provider reads it here; `check-agent-presence.ts` refuses a `codex ? "Codex" : "Claude"`
+ * guess, which called every Google (Gemini) session "Claude" in waiting notices (2026-10-13).
+ */
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  "claude-code": "Claude",
+  codex: "Codex",
+  antigravity: "Gemini",
+  chatgpt: "ChatGPT",
+};
+
+/** A provider he can read; an unknown or missing provider is null, never another provider's name. */
+export function providerDisplayName(provider: string | null | undefined): string | null {
+  return provider ? (PROVIDER_LABELS as Record<string, string>)[provider] ?? null : null;
+}
+
+/**
+ * The one name an agent is shown under, everywhere: its model as he reads it when the session
+ * recorded one, else its provider, else null (shown as unknown). Sidebar, header, thread answers
+ * and notices all carry this exact string from `session-presence.ts`.
+ */
+export function agentDisplayName(provider: string | null | undefined, model: string | null | undefined): string | null {
+  return (model ? modelDisplayName(model) : "") || providerDisplayName(provider);
+}
+
 export interface ModelCatalogueEntry {
   id: string;
   label: string;

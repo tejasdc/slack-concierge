@@ -3,11 +3,16 @@
 export type ReceiptTurnFacts={status:string;provider_input_acknowledged_at:string|null}|null;
 export type ReceiptSteeringFacts={status:string;provider_sent_at:string|null}|null;
 
+/**
+ * What a turn's stored status is called on every surface: a session's presence, a run and an
+ * input receipt. The only copy; `check-agent-presence.ts` refuses another.
+ */
+export const TURN_STATE:Readonly<Record<string,string>>={done:'completed',error:'failed',cancelled:'canceled',interrupted:'uncertain',
+  delivery_parked:'uncertain',parked:'uncertain',delivering:'running'};
+
 export function inputExecutionFacts(turn:ReceiptTurnFacts,steering:ReceiptSteeringFacts){
   const acknowledgedAt=steering?.provider_sent_at??(!steering?turn?.provider_input_acknowledged_at:null)??null;
-  const turnState=({done:'completed',error:'failed',cancelled:'canceled',interrupted:'uncertain',
-    delivery_parked:'uncertain',parked:'uncertain',delivering:'running'} as Record<string,string>)[turn?.status??'']
-    ??turn?.status??'waiting';
+  const turnState=TURN_STATE[turn?.status??'']??turn?.status??'waiting';
   const terminalSteeringTurn=steering?.status==='ambiguous'&&['done','error','cancelled'].includes(turn?.status??'');
   const state=steering?steering.status==='sent'||terminalSteeringTurn?turnState:
     steering.status==='ambiguous'?'uncertain':steering.status==='failed'?'failed':'queued':turnState;

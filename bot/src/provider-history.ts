@@ -16,23 +16,30 @@ import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./prov
 import { codexTranscriptTimestamps } from './provider-transcript-metadata';
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 
+/**
+ * The session a message came from, and who that agent is by the one presence rule
+ * (`agentIdentity` in session-presence.ts): `agentName` is the exact name the sidebar and header
+ * show for it. A fact this machine does not know is null, never another provider's name.
+ */
+export type AuthorSession = {id:string;title:string;provider:string|null;model:string|null;reasoningEffort:string|null;agentName:string|null};
+
 export type MessageAuthor = {
   kind: 'human'|'agent'|'service'|'unknown';
   outsideAgent?: {name:string;label:string};
-  session?: {id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};
+  session?: AuthorSession;
   inputId?:string; runId?:string; requestId?:string;
   /** `notice`: the service wrote it itself with no agent behind it (a retry that gave up, a failed update). */
   communication?:'request'|'reply'|'result'|'overdue'|'post'|'notice'; replyKind?:'partial'|'final';
   /** Whether a delegated request may change anything, resolved across its whole chain. */
   effectScope?:'informational'|'work';
   /** The human request this ultimately acts for, which can differ from the immediate sender. */
-  originatingHuman?:{session?:{id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};inputId:string;runId:string;captureId?:string};
+  originatingHuman?:{session?:AuthorSession;inputId:string;runId:string;captureId?:string};
   /** Which way his own message came in: "iPhone Action Button", "Mac quick capture", "web". */
   via?:string;
   /** This was recorded as Tejas's words but an agent posted it; the record says why. */
   correction?:{reason:string;at:string};
   /** He saved another author's message: the act is his, the words are theirs. */
-  quoted?:{kind:'agent'|'human'|'unknown';session?:{id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'}};
+  quoted?:{kind:'agent'|'human'|'unknown';session?:AuthorSession};
 };
 
 export interface ProviderHistoryMessage {

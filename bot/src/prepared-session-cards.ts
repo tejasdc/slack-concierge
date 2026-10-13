@@ -3,6 +3,7 @@ import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
 import {savedStartAt} from './saved-start-time';
 import {sessionAddress} from './session-address';
+import {sessionPresence,type SessionTiming} from './session-presence';
 
 type SourceSession={id:number;provider_id:string;status:string;native_metadata_json:string|null;
   agent_session_uuid:string|null;binding_generation:number|null;slack_channel_id:string|null;slack_thread_ts:string|null;created_at:string;last_turn_at:string|null};
@@ -15,7 +16,7 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
   interactionPolicy:'standard'|'consultation-only';account:string|null;accountTruncated:boolean;
-  timing:{startedAt:string|null;running:boolean}|null;
+  timing:SessionTiming|null;agentName:string|null;presenceRevision:number;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;startsAt:string|null;savedAt:string|null;
     expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
   turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;
@@ -132,33 +133,20 @@ export class PreparedSessionCards {
     const meta=JSON.parse(session.native_metadata_json||'{}');
     const labels=this.labels(this.source,session);
     const title=preview(labels.title,480),summary=preview(labels.summary,1200),project=labels.project?preview(labels.project,600):null;
-    const latest=this.source.query('SELECT id,status,started_at FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(sessionId) as
-      {id:number;status:string;started_at:string|null}|null;
-    const active=this.source.query("SELECT id,started_at FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1")
-      .get(sessionId) as {id:number;started_at:string|null}|null;
+    // The same presence rule the owner's full view uses (`session-presence.ts`): one derivation of
+    // who the agent is and what it is doing, so the sidebar and the session page cannot disagree.
+    const {presence,facts:{queued}}=sessionPresence(this.source,session,meta);
     const saved=this.source.query(`SELECT id,saved_kind,status,dispatch_failure_class,dispatch_next_attempt_ms,
       saved_at_ms,saved_expires_at_ms,saved_account,saved_window,saved_repeat_ms,saved_sequence FROM turns
       WHERE session_id=? AND saved_kind IS NOT NULL AND status='queued' ORDER BY id DESC LIMIT 1`).get(sessionId) as
       {id:number;saved_kind:'scheduled'|'banked';status:string;dispatch_failure_class:string|null;dispatch_next_attempt_ms:number|null;
        saved_at_ms:number|null;saved_expires_at_ms:number|null;saved_account:string|null;saved_window:string|null;saved_repeat_ms:number|null;saved_sequence:number|null}|null;
-    const queued=(this.source.query("SELECT COUNT(*) AS n FROM turns WHERE session_id=? AND status='queued'").get(sessionId) as {n:number}).n;
-    const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid
-      ?meta.codexLifecycle:null;
-    const lastStarted=this.source.query("SELECT started_at FROM turns WHERE session_id=? AND status<>'queued' AND started_at IS NOT NULL ORDER BY id DESC LIMIT 1")
-      .get(sessionId) as {started_at:string}|null;
-    const observedTurn=observed?.turnId?this.source.query('SELECT 1 FROM turns WHERE session_id=? AND provider_turn_id=? LIMIT 1')
-      .get(sessionId,observed.turnId):null;
-    const external=observed&&observed.state!=='idle'&&!active&&!observedTurn&&
-      (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)))?observed:null;
-    const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:
-      queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as Record<string,string>)[latest.status]??'idle':'idle';
     const inboxAttention=meta.inbox?this.inboxAttention?.(session)??null:null;
     const needsAttention=meta.inbox?inboxAttention:Array.isArray(meta.needs)
       ?meta.needs.some((need:{generation?:number})=>(need.generation??0)>(meta.dismissedGeneration??0)):false;
     const origin=meta.origin??'native';
     const account=session.provider_id==='claude-code'&&typeof meta.claudeAccount==='string'?preview(meta.claudeAccount,240):null;
     const question=typeof meta.turnOutcome?.question==='string'?preview(meta.turnOutcome.question,512):null;
-    const timed=active??latest;
     const touch=sessionTouch(this.source,sessionId,meta,session.last_turn_at??session.created_at);
     const projectName=labels.project?preview(basename(labels.project.replace(/\/+$/,'')),255):null;
     const card:SessionCard={id:`concierge:${sessionId}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,
@@ -169,21 +157,26 @@ export class PreparedSessionCards {
       createdAt:iso(session.created_at),updatedAt:iso(session.last_turn_at??session.created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,
       outcome:meta.outcome??'open',space:spaceForCwd(meta.cwd),needsAttention,attentionCoverage:needsAttention===null?'catching_up':'complete',
-      unread:(meta.generation??0)>(meta.readGeneration??0),execution,pendingCount:queued,
+      unread:(meta.generation??0)>(meta.readGeneration??0),execution:presence.execution,pendingCount:queued,
       interactionPolicy:meta.interactionPolicy==='consultation-only'?'consultation-only':'standard',
       account:account?.text??null,accountTruncated:account?.truncated??false,
-      timing:external?{startedAt:external.startedAt??null,running:external.state==='running'}:
-        timed?{startedAt:timed.started_at?iso(timed.started_at):null,running:!!active}:null,
+      timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved),
         savedAt:saved.saved_at_ms?new Date(saved.saved_at_ms).toISOString():null,
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,sequence:saved.saved_sequence}:null,
-      model:typeof meta.model==='string'?preview(meta.model,120).text:null,
-      reasoningEffort:typeof meta.reasoningEffort==='string'?preview(meta.reasoningEffort,80).text:null,
+      model:presence.model?preview(presence.model,120).text:null,
+      reasoningEffort:presence.reasoningEffort?preview(presence.reasoningEffort,80).text:null,
       turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'
         ?{outcome:meta.turnOutcome.outcome,inputId:meta.turnOutcome.inputId??null,at:meta.turnOutcome.at,
           question:question?.text??null,questionTruncated:question?.truncated??false}:null,touch};
-    const encoded=JSON.stringify(card);
+    // An unchanged presence keeps the revision it was first seen at, so a session whose journal
+    // moves without changing what is shown writes no new card change. A newer full view still
+    // orders after it, and every presence change is a new card with the current revision.
+    const prior=previous?JSON.parse(previous.card_json) as Partial<SessionCard>:null;
+    const samePresence=!!prior&&typeof prior.presenceRevision==='number'&&prior.execution===card.execution&&prior.agentName===card.agentName
+      &&prior.provider===card.provider&&prior.model===card.model&&prior.reasoningEffort===card.reasoningEffort&&JSON.stringify(prior.timing)===JSON.stringify(card.timing);
+    const encoded=JSON.stringify(samePresence?{...card,presenceRevision:prior!.presenceRevision}:card);
     if(Buffer.byteLength(encoded)>MAX_CARD_BYTES)throw new Error('SESSION_CARD_EXCEEDS_PREPARED_RECORD_BOUND');
     if(previous?.card_json===encoded)return;
     const sortMs=Date.parse(card.updatedAt);
