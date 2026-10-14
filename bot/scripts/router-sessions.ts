@@ -29,11 +29,11 @@ router-actions.sh sessions note <captureId> <source-flags> --action-id A --summa
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
-router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
-router-actions.sh sessions notify-when --thread <human-message-id> --session <concierge:N|mac:N> [--on done,needs-you,hold] --summary "<what he asked>" <source-flags> --action-id A
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
-router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--partial [--answers-question] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--partial [--answers-question] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+--notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. A bodyless final cannot use it.
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A [--reason <reason>]
 router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--model <model>] [--effort <level>] [--session-name <title>] --reason "<why>" <source-flags> --action-id A
@@ -129,12 +129,11 @@ export type SessionCommunicationRequest =
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
-  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
+  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string } }
-  | { operation: "notify-when"; body: { source: Source; action_id:string; thread:string; session:string; on?:string; summary:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
@@ -477,14 +476,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const outcome = operation === 'outcome' ? args.shift() : undefined;
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "notify-when" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, notify-when, note, title, post, outcome, reply, get, or cancel.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "notify-when" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "notify-when" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -502,6 +501,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   let outside = false;
   let returnToRequester = false;
   let keepWorking = false;
+  let notify = false;
   let bySession = false;
   while (options.length) {
     const flag = options.shift()!;
@@ -513,6 +513,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       if (keepWorking) invalid("Repeated --keep-working option.");
       keepWorking = true;
       continue;
+    }
+    if(flag==='--notify'&&(operation==='post'||operation==='reply')){
+      if(notify)invalid('Repeated --notify option.');
+      notify=true;continue;
     }
     if (flag === "--detach" && operation === "thread") {
       if (detach) invalid("Repeated --detach option.");
@@ -564,10 +568,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
-      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "notify-when" || operation === "thread" || operation === "cancel"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
       || (flag === '--reason' && operation === 'cancel')
-      || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context" || operation === "notify-when"))
-      || ((flag === "--session" || flag === "--on") && operation === "notify-when")
+      || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
@@ -591,7 +594,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--consult' && operation === 'ask')
       || (flag === '--work-disposition' && operation === 'reply')
       || (flag === '--also' && operation === 'reply')
-      || (flag === '--summary' && (operation === 'ask' || operation === 'reply' || operation === 'notify-when'))
+      || (flag === '--summary' && (operation === 'ask' || operation === 'reply'))
       || (flag === '--answer-view' && operation === 'ask');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -649,12 +652,6 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   const actionId = flags.get("--action-id");
   if (!actionId) invalid(`${operation} requires an explicit stable --action-id.`);
-  if(operation==='notify-when') {
-    if(separator>=0)invalid('notify-when takes no text after --.');
-    const thread=flags.get('--thread'),session=flags.get('--session'),summary=flags.get('--summary');
-    if(!thread||!session||!summary)invalid('notify-when needs --thread, --session, and --summary.');
-    return {operation,body:{source,action_id:actionId,thread,session,summary,...(flags.has('--on')?{on:flags.get('--on')!}:{})}};
-  }
   if(operation==='cancel') {
     if(separator>=0)invalid('cancel does not accept text or a -- separator.');
     return {operation,body:{source,action_id:actionId,request_id:identity!,...(flags.has('--reason')?{reason:flags.get('--reason')!}:{})}};
@@ -725,7 +722,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='post') {
     const thread=flags.get('--thread');
     if(!thread)invalid('post requires --thread with the exact message ID the thread is rooted at or continues.');
-    return {operation,body:{source,action_id:actionId,thread,text:message,...attached,
+    if(notify&&!message.trim())invalid('--notify requires words in the post.');
+    return {operation,body:{source,action_id:actionId,thread,text:message,...attached,...(notify?{notify:true}:{}),
       ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(keepWorking?{keep_working:true}:{})}};
   }
   // A project and no address mean a new coding session. Resolve that choice in the owner,
@@ -750,6 +748,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(answersQuestion&&!partial)invalid('--answers-question belongs to a partial reply; a final reply already answers the question.');
   if(answersQuestion&&!message?.trim())invalid('--answers-question requires answer text.');
   if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
+  if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
   if(operation==='ask'&&(provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
@@ -779,7 +778,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   return operation === "ask"
     ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
-    : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),
+    : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--decision-id','decision_id'],['--approval-action','approval_action'],['--checked','checked'],['--not-checked','not_checked'],['--hand-back','hand_back'],['--quiet-because','quiet_because']]

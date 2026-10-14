@@ -4,7 +4,7 @@ import {resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
-import {retainNotificationPromise,showNotificationPromise} from './notify-when';
+import {armThreadNotification} from './thread-notifications';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 
 export type AcceptedSessionInput = {
@@ -191,7 +191,6 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
   db.transaction(()=>{
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
-    if((input.kind==='accepted'||input.kind==='inbox_capture')&&input.inputId)showNotificationPromise(input.inputId);
   })();
   executionChanged();
 }
@@ -249,7 +248,7 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
   timed('insertMs',()=>db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null));
-  retainNotificationPromise({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
+  armThreadNotification({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
   if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
     .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
   return {input:timed('readbackMs',()=>getAcceptedSessionInput(id))!,duplicate:false};

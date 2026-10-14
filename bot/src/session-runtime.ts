@@ -33,7 +33,6 @@ import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} f
 import {interruptOrphanedTurn} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
-import {startLocalNotificationPromiseWatch} from './notify-when';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -140,7 +139,6 @@ export async function startSessionRuntime() {
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null);
   host.markOwnerServing();
-  const stopNotificationWatch=startLocalNotificationPromiseWatch(host.owner,()=>draining);
   // Retained pause intent outlives the coordinator and a sleeping peer. Reissue native
   // cancellation after execution-host adoption, and deliver the latest generation on contact.
   void host.owner.syncGlobalPausePeers();
@@ -175,7 +173,7 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearSandboxReadyReceipt(runtime);stopNotificationWatch();stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

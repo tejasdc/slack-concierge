@@ -350,7 +350,6 @@ import {installSessionProjection} from './session-projection';
 import {fillMissingSessionPurposes} from './session-purpose';
 import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcilePlacedRequestAnswers,wakeDeferredQuestions,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
-import {startLocalNotificationPromiseWatch} from './notify-when';
 import {CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
@@ -537,7 +536,6 @@ try {expireUnreadableReadingItems();} catch(error) {log('error','inbox_unreadabl
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
 try {fileServiceNotices();} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
-startLocalNotificationPromiseWatch(sessionExecutionHost.owner,()=>draining);
 // A retry notice whose breaker has since cleared says it is running again and closes.
 try {resolveRetryNotices();} catch(error) {log('error','inbox_retry_notices_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {

@@ -267,6 +267,14 @@ export function initializeSessionOwnerSchema(db: Database) {
         );
         CREATE INDEX IF NOT EXISTS inbox_notification_promises_pending ON inbox_notification_promises(state,expires_at_ms);
         CREATE INDEX IF NOT EXISTS inbox_notification_promises_target ON inbox_notification_promises(target_session,state);
+        CREATE TABLE IF NOT EXISTS inbox_thread_notifications (
+          input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          inbox_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          consumed_by_message_id TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          consumed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS inbox_thread_notifications_pending ON inbox_thread_notifications(inbox_session_id,consumed_by_message_id);
         CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
         -- Resolving which thread an Inbox message belongs to looks events up by their input; without
         -- this the first Threads list after a restart scanned the whole ledger per message (85 s, 2026-09-22).
