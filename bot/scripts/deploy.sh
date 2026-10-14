@@ -518,7 +518,7 @@ cleanup_failed_deployment() {
 handoff_failed_deployment_to_repair() {
   local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
   local incident_output incident_id unit_name repair_status restored_health=0
-  lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
+  lkg_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
   failed_commit=${FAILED_CANDIDATE_COMMIT:-${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}}
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
@@ -821,7 +821,7 @@ restore_last_known_good_and_start_repair() {
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
   restore_line=$((LINENO + 1))
-  restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control) || {
+  restore_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control) || {
     restore_status=$?
     record_deployment_ambiguity \
       "Candidate failed and no last-known-good release could be restored. $failure_error" \

@@ -1,20 +1,11 @@
 #!/usr/bin/env bun
 
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/deployment-release";
-import {
-  getLastKnownGoodRelease,
-  promoteDeploymentRelease,
-  recordDeploymentTurnReactionDiscoveryFailure,
-  recordDeploymentReleaseActivationIntent,
-  recordDeploymentReleaseActivated,
-  recordDeploymentReleasePrepared,
-  registerDeploymentTurnReactionTargets,
-} from "../src/deployment-state";
-import {ownerServedReleaseCommand} from "../src/state-database";
+import { ledgerAccess } from "../src/ledger-access-policy";
 import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
-import { handleControlRecovery } from "../src/deployment-control-recovery";
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -44,17 +35,43 @@ async function ownerReleaseMutation(operation: string, input: Record<string, unk
   return result;
 }
 
-function releaseMutation<T>(operation:string,input:Record<string,unknown>,direct:()=>T):Promise<T>{
-  return ownerServedReleaseCommand ? ownerReleaseMutation(operation,input) : Promise.resolve(direct());
-}
-
 try {
+  const command = process.argv[2];
+  // File-only commands and owner-served commands must not open SQLite at all. A read-only
+  // short-lived connection still took WAL writer/checkpoint locks during live updates.
+  const stateDir=process.env.CONCIERGE_STATE_DIR;
+  const ownerServedReleaseCommand=stateDir
+    ? ledgerAccess(realpathSync(stateDir),Bun.main,false).ownerServedReleaseCommand
+    : false;
+  const directStateRequired=!ownerServedReleaseCommand
+    && ['prepare','activate','restore-lkg','promote','lkg'].includes(command??'');
+  const state=directStateRequired
+    ? await import('../src/deployment-state')
+    : {} as typeof import('../src/deployment-state');
+  const {getLastKnownGoodRelease,promoteDeploymentRelease,
+    recordDeploymentTurnReactionDiscoveryFailure,recordDeploymentReleaseActivationIntent,
+    recordDeploymentReleaseActivated,recordDeploymentReleasePrepared,
+    registerDeploymentTurnReactionTargets}=state;
+  const releaseMutation=<T>(operation:string,input:Record<string,unknown>,direct:()=>T):Promise<T> =>
+    ownerServedReleaseCommand ? ownerReleaseMutation(operation,input) : Promise.resolve(direct());
+  const lastKnownGoodRelease=async ():Promise<ReturnType<typeof getLastKnownGoodRelease>> => {
+    if (!ownerServedReleaseCommand) return getLastKnownGoodRelease();
+    if(!stateDir)throw new Error('CONCIERGE_STATE_DIR is required for release state.');
+    const response=await fetch('http://localhost/internal/deployment-last-known-good',{
+      unix:join(stateDir,'request-owner.sock'),method:'GET',
+    } as RequestInit);
+    const result=await response.json();
+    if(!response.ok)throw new Error(`Serving owner refused last-known-good read: ${JSON.stringify(result)}`);
+    return result;
+  };
   const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
   const sourceRoot = process.env.CONCIERGE_DEPLOYMENT_SOURCE_ROOT || repositoryRoot;
   const controlRoot = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT;
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
-  const command = process.argv[2];
-  if (command?.startsWith("recovery-")) finish(0, await handleControlRecovery(command, option, manager));
+  if (command?.startsWith("recovery-")) {
+    const {handleControlRecovery}=await import('../src/deployment-control-recovery');
+    finish(0, await handleControlRecovery(command, option, manager));
+  }
   if (command === "install-runtime") {
     manager.installRuntime(
       controlRoot ? join(controlRoot, "deployment-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-launcher.sh"),
@@ -85,7 +102,7 @@ try {
     const timedAsync = async <T>(name: string, work: () => Promise<T>): Promise<T> => { const start = performance.now(); try { return await work(); } finally { steps[name] = Math.round(performance.now() - start); } };
     const report = () => console.error(JSON.stringify({ event: "deployment_activate_steps", run_id: runId, steps_ms: steps }));
     const release = timed("verify", () => manager.verify(artifact));
-    const lastKnownGood = timed("read_last_known_good", () => getLastKnownGoodRelease());
+    const lastKnownGood = await timedAsync("read_last_known_good", lastKnownGoodRelease);
     const intent = await timedAsync("record_intent", () => releaseMutation('activation-intent',{runId,artifactDigest:release.artifact_digest,allowSupersede:process.argv.includes("--allow-supersede")},
       () => recordDeploymentReleaseActivationIntent(runId,release.artifact_digest,process.argv.includes("--allow-supersede"))));
     if ("supersededCommit" in intent) {
@@ -112,7 +129,7 @@ try {
     finish(0, { status: "activated", ...manifest });
   }
   if (command === "restore-lkg") {
-    const release = getLastKnownGoodRelease();
+    const release = await lastKnownGoodRelease();
     if (!release) throw new Error("No last-known-good release has been recorded.");
     if (process.argv.includes('--keep-control') && !manager.controlArtifactPath())
       throw new Error('Cannot retain a missing deployment controller.');
@@ -125,7 +142,8 @@ try {
     const artifactDigest = required("--artifact-digest");
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
-    const promoted = promoteDeploymentRelease(runId, artifactDigest);
+    const promoted = await releaseMutation('promote',{runId,artifactDigest},
+      () => promoteDeploymentRelease(runId,artifactDigest));
     manager.activateControl(required("--artifact"));
     finish(0, { status: "promoted", artifact_digest: promoted.artifact_digest, git_commit: promoted.git_commit });
   }
@@ -135,7 +153,7 @@ try {
     finish(0, { status: "current", artifact_path: artifactPath, ...manager.verify(artifactPath) });
   }
   if (command === "lkg") {
-    const release = getLastKnownGoodRelease();
+    const release = await lastKnownGoodRelease();
     if (!release) finish(1, { status: "missing" });
     const manifest = manager.verify(release.artifact_path);
     finish(0, { status: "lkg", artifact_path: release.artifact_path, ...manifest });

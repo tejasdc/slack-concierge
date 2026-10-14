@@ -24,13 +24,13 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const ownerServedReleaseCommand = live && process.platform === 'linux'
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'release-manager'
-    && ['prepare', 'activate'].includes(process.argv[2] ?? '');
+    && ['prepare', 'activate', 'restore-lkg', 'lkg', 'promote'].includes(process.argv[2] ?? '');
   // Claiming a run was still an independent live writer after release preparation moved
   // to the owner. Its short-lived connection held WAL locks while it closed under disk load.
   const ownerServedDeploymentCommand = live && process.platform === 'linux'
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'deploy-state'
-    && ['claim', 'phase'].includes(process.argv[2] ?? '');
+    && ['claim', 'phase', 'show', 'desired'].includes(process.argv[2] ?? '');
   const readonly = readWorker || ownerServedReleaseCommand || ownerServedDeploymentCommand
     || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',

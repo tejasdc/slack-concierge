@@ -1,8 +1,21 @@
 #!/usr/bin/env bun
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import {
+import { ledgerAccess } from "../src/ledger-access-policy";
+import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
+import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
+
+// A served claim or phase needs only the private socket. Opening even a read-only SQLite
+// connection in this short-lived helper can acquire WAL writer/checkpoint locks on close.
+const stateDir = process.env.CONCIERGE_STATE_DIR;
+const ownerServedDeploymentCommand = stateDir
+  ? ledgerAccess(realpathSync(stateDir), Bun.main, false).ownerServedDeploymentCommand
+  : false;
+const state = ownerServedDeploymentCommand
+  ? {} as typeof import("../src/deployment-state")
+  : await import("../src/deployment-state");
+const {
   beginDeploymentRepair,
   claimDeploymentRun,
   claimDeploymentRepair,
@@ -15,12 +28,9 @@ import {
   recordPreservedCheckout,
   requestDeployment,
   requestOperatorDeployment,
-} from "../src/deployment-state";
-import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
-import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
-import { ownerServedDeploymentCommand } from "../src/state-database";
+} = state;
 
-async function ownerDeploymentMutation(operation: "claim" | "phase", input: Record<string, unknown>): Promise<any> {
+async function ownerDeploymentMutation(operation: "claim" | "phase" | "show" | "desired", input: Record<string, unknown>): Promise<any> {
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required for deployment state.");
   const response = await fetch("http://localhost/internal/deployment-run", {
@@ -108,10 +118,16 @@ try {
         bootId: identity.bootId,
         startTicks: identity.startTicks,
       };
-      run = ownerServedDeploymentCommand
-        ? await ownerDeploymentMutation("claim", claim)
-        : claimDeploymentRun(claim);
+      if (ownerServedDeploymentCommand) {
+        const result = await ownerDeploymentMutation("claim", claim);
+        if (result?.terminal && result?.run) finish(0, {
+          status: "terminal", run_status: result.run.status,
+          run_id: result.run.id, unit_name: result.run.unit_name,
+        });
+        run = result;
+      } else run = claimDeploymentRun(claim);
     } catch (error) {
+      if (ownerServedDeploymentCommand) throw error;
       const terminalRun = getDeploymentRun(runId);
       if (terminalRun && ["succeeded", "failed", "ambiguous"].includes(terminalRun.status)) {
         finish(0, {
@@ -128,7 +144,12 @@ try {
   }
 
   if (command === "desired") {
-    const run = getDeploymentRun(requiredOption("--run-id"));
+    const runId = requiredOption("--run-id");
+    if (ownerServedDeploymentCommand) {
+      const answer = await ownerDeploymentMutation("desired", { runId });
+      finish(0, answer);
+    }
+    const run = getDeploymentRun(runId);
     // A read: repair retries and resumed runs read it too, so it never refuses a run that has
     // already been activated; only an unactivated run is ever moved to a newer commit.
     // An operator-requested run starts without one and installs fetched main instead.
@@ -207,7 +228,10 @@ try {
   }
 
   if (command === "show") {
-    const run = getDeploymentRun(requiredOption("--run-id"));
+    const runId = requiredOption("--run-id");
+    const run = ownerServedDeploymentCommand
+      ? await ownerDeploymentMutation("show", { runId })
+      : getDeploymentRun(runId);
     finish(run ? 0 : 1, run || { status: "error", error: "deployment run not found" });
   }
 

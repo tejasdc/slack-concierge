@@ -16,7 +16,8 @@ import {getAcceptedSessionInput} from './session-inputs';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
-  recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase} from './deployment-state';
+  recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase,getDeploymentRun,
+  getLastKnownGoodRelease,promoteDeploymentRelease} from './deployment-state';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -116,6 +117,8 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
+        return Response.json(getLastKnownGoodRelease());
       if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
         const input=await request.json() as any;
         if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
@@ -130,15 +133,27 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
           recordDeploymentReleaseActivated(input.runId,input.artifactDigest);
           return Response.json({ok:true});
         }
+        if(input.operation==='promote')return Response.json(promoteDeploymentRelease(input.runId,input.artifactDigest));
         throw new Error('Unknown deployment release operation.');
       }
       if(request.method==='POST'&&url.pathname==='/internal/deployment-run'&&owner){
         const input=await request.json() as any;
         if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(input.operation==='show')return Response.json(getDeploymentRun(input.runId));
+        if(input.operation==='desired'){
+          const run=getDeploymentRun(input.runId);
+          if(!run)throw new Error('The deployment run does not exist.');
+          return Response.json({desired_commit:run.desired_commit??null,activated:run.activation_state!==null});
+        }
         if(input.operation==='claim'){
           if(!Number.isSafeInteger(input.pid)||input.pid<=1||typeof input.bootId!=='string'||typeof input.startTicks!=='string')
             throw new Error('Invalid deployment runner identity.');
-          return Response.json(claimDeploymentRun({runId:input.runId,pid:input.pid,bootId:input.bootId,startTicks:input.startTicks}));
+          try {return Response.json(claimDeploymentRun({runId:input.runId,pid:input.pid,bootId:input.bootId,startTicks:input.startTicks}));}
+          catch(error){
+            const run=getDeploymentRun(input.runId);
+            if(run&&['succeeded','failed','ambiguous'].includes(run.status))return Response.json({terminal:true,run});
+            throw error;
+          }
         }
         if(input.operation==='phase'){
           if(!['updating','restarting','verifying','releasing'].includes(input.phase)
