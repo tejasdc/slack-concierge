@@ -5115,12 +5115,13 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  * move; ordinary timed retries and paused, archived or stopped inputs stay as they
  * were. Returns the number of actual turn rows released.
  */
-export function releaseScheduledProviderRetries(providerId: ProviderId): number {
+export function releaseScheduledProviderRetries(providerId: ProviderId, ordinaryOnly = false): number {
   const released = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
     WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
+      AND (?=0 OR saved_kind IS NULL)
       AND COALESCE(dispatch_next_attempt_ms,0)>0
       AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
-    RETURNING id`).all(providerId) as {id:number}[]).length;
+    RETURNING id`).all(ordinaryOnly ? 1 : 0,providerId) as {id:number}[]).length;
   if (released) executionChanged();
   return released;
 }

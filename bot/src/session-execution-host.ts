@@ -102,7 +102,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -335,10 +335,16 @@ export class SessionExecutionHost {
    */
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
-    const outcome=await useCodexResetCredit(account);
-    if(outcome.status==='used'&&outcome.accountId){
-      clearCodexAccountUsage(outcome.accountId);
-      if(currentAccount('codex')?.id===outcome.accountId){releaseUsageHeldWork('codex','verified_reset');this.options.wake();}
+    let outcome=await useCodexResetCredit(account);
+    if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedAtMs){
+      try {
+        const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedAtMs);
+        if(cleared&&currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+        else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but current launch availability is unconfirmed. Work remains held.'};
+      } catch(error) {
+        log('error','codex_reset_cache_clear_failed',errorFields(error));
+        outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but recovery could not be confirmed. Work remains held.'};
+      }
     }
     if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none')
       await scheduleProviderAccountUsageRefresh().catch(()=>{});

@@ -240,8 +240,8 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
  */
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
   spend: (account: string, idempotencyKey: string, beforeConsume: () => void) => Promise<{ status: string; detail: string;
-    accountId?: string; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
-  afterUse: () => Promise<number>): Promise<void> {
+    accountId?: string; verifiedAtMs?: number; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
+  afterUse: (accountId: string) => Promise<number>): Promise<void> {
   const provider = input.provider;
   const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn JOIN sessions session ON session.id=turn.session_id
     WHERE turn.id=? AND session.provider_id=? AND turn.status='queued'
@@ -292,19 +292,24 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
     record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
       payload: { provider, account: decision.account, because: decision.because } });
   });
-  if (outcome.status !== "used" || !outcome.accountId) {
+  if (outcome.status !== "used" || !outcome.accountId || !outcome.verifiedAtMs) {
     log("warn", "provider_reset_auto_not_confirmed", {
       provider, account_known: true, outcome: outcome.status,
     });
     return;
   }
-  clearCodexAccountUsage(outcome.accountId);
+  let cleared = false;
+  try { cleared = clearCodexAccountUsage(outcome.accountId, outcome.verifiedAtMs); }
+  catch (error) { log("error", "provider_reset_auto_cache_clear_failed", {
+    provider, error: error instanceof Error ? error.message : String(error) }); }
+  let released = 0;
   if (currentAccount('codex')?.id !== outcome.accountId) {
     log("warn", "provider_reset_auto_account_changed", { provider, account_known: true });
-    return;
+  } else if (cleared) {
+    try { released = await afterUse(outcome.accountId); }
+    catch (error) { log("error", "provider_reset_auto_release_failed", {
+      provider, error: error instanceof Error ? error.message : String(error) }); }
   }
-  // Awaited so the remaining count below is read after the account was re-read, not before.
-  const released = await afterUse();
   const remaining = outcome.remainingCredits ?? null;
   const nextExpiresAt = outcome.nextExpiresAt ?? null;
   record({
@@ -319,7 +324,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
           account: decision.account, remaining, releasedInputs: released,
           nextExpiresAt,
           summary: resetUsedSentence({ account: decision.account, remaining, releasedInputs: released,
-            nextExpiresAt }),
+            nextExpiresAt, roomConfirmed: cleared && currentAccount('codex')?.id === outcome.accountId }),
         },
       },
     },

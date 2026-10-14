@@ -120,7 +120,7 @@ import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-re
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
-import { releaseUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
+import { releaseCodexOrdinaryUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
@@ -1277,11 +1277,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on
         // 2026-09-23: "You don't have to wait for me to reset the usage."
         void useResetIfWorkStopped(hold, recordSessionEvent,
-          (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async () => {
-          await scheduleProviderAccountUsageRefresh().catch(() => {});
-          // Only the scheduled instant moves; nothing is replayed. The queue pumps as this
-          // failing turn finishes, so the released work is picked up then.
-          return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
+          (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {
+          // Count the exact ordinary releases before the asynchronous Accounts refresh.
+          // That refresh uses the same ordinary-only Codex wake contract.
+          const released=releaseCodexOrdinaryUsageHeldWork(accountId);
+          void scheduleProviderAccountUsageRefresh().catch(()=>{});
+          return released;
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
       if (authWait && (input.providerId === 'codex' || input.providerId === 'claude-code' || input.providerId === 'antigravity')) noticeAuthHold({provider: input.providerId,

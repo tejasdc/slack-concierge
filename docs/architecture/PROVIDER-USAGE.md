@@ -627,6 +627,12 @@ this is a defensive normalization change, not evidence that the live Accounts ba
 The reset-credit block has its own provider fetch context and may have a different age from
 the included-allowance bar. Refreshing one does not prove the other fresh; a direct limits
 read confirms a grant before automatic redemption.
+The installed 0.162.0 [App Server handler](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server/src/request_processors/account_processor.rs)
+handles each limits RPC by asking its [backend client](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/backend-client/src/client/rate_limit_resets.rs)
+for a new HTTP GET to the account usage endpoint; it does not answer from its own stored bar.
+The response does not expose the backend's original measurement timestamp, so a new GET
+cannot prove the remote service did not itself serve a cached value. Missing or elapsed
+window reset instants still decline finite spending.
 
 The installed Codex App Server (0.162.0, generated protocol checked 2026-10-14;
 [upstream account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/account.rs))
@@ -640,8 +646,12 @@ windows; the grant's `reset_type` remains its declared scope. After confirmed re
 Concierge reads limits again through the same account home. Both readings must carry the
 same nonempty account ID as that home's sign-in; a missing or changed ID never proves
 that the named account recovered. Only a matching fresh read saying ordinary included
-work is allowed invalidates that account's old refusal and makes applicable held work
-eligible to retry. Eligibility is not provider admission or completed work. A read-only probe of
+work is allowed invalidates that account's old refusal, preserving a per-account ordering
+marker so an earlier in-flight failure cannot restore it while another account's refusal
+can still be recorded. A refusal recorded after the confirming limits read is never cleared
+by that read. Only ordinary held work on the active Codex login becomes
+eligible to retry. If the selected login changed meanwhile, redemption is still reported,
+with zero work made eligible. Eligibility is not provider admission or completed work. A read-only probe of
 the installed server on 2026-10-14 confirmed that its limits response supplies an
 account ID matching the local sign-in and a boolean `ordinaryUsageAllowed`; no credit
 was consumed by that probe.
@@ -705,7 +715,7 @@ never causes an automatic second attempt. Across machines, OpenAI owns the credi
 that another machine's differently keyed attempt succeeded.
 
 After confirmed redemption and a fresh account read permitting ordinary work, only that
-account's cached refusal is invalidated. Applicable held work can then become eligible to
+account's cached refusal is invalidated. Ordinary held work on the active login can then become eligible to
 retry; nothing is replayed without the normal queue. The notice reports the count made
 eligible, including zero, and the remaining grant count only when the direct postread
 confirmed it. Unknown and redeemed-but-unverified

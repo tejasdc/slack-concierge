@@ -107,6 +107,9 @@ export function recordUsageExhaustion(attempt: UsageAttempt, resetAt: number | n
     const state = read(attempt.provider);
     if (state.generation !== attempt.generation) return false;
     prune(state);
+    // A later exact-account reset or refusal supersedes an older in-flight failure.
+    // Comparing only this scope avoids losing a different account's real refusal.
+    if ((state.limits[attempt.scope]?.revision ?? -1) > attempt.revision) return false;
     const validReset = resetAt !== null && Number.isSafeInteger(resetAt) && resetAt > Date.now() ? resetAt : null;
     state.limits[attempt.scope] = { resetAt: validReset ?? state.limits[attempt.scope]?.resetAt ?? null,
       observedAt: Date.now(), revision: ++state.revision };
@@ -156,18 +159,27 @@ export function clearProviderUsage(provider: UsageProvider) {
 }
 
 /** A verified Codex reset invalidates only the account that redeemed it. */
-export function clearCodexAccountUsage(accountId: string): void {
+export function clearCodexAccountUsage(accountId: string, verifiedAtMs: number): boolean {
   if (!accountId) throw new Error("A verified Codex account ID is required to clear its refusal.");
-  db.transaction(() => {
+  if (!Number.isSafeInteger(verifiedAtMs) || verifiedAtMs > Date.now())
+    throw new Error("A confirming Codex read time is required to clear its refusal.");
+  const cleared = db.transaction(() => {
     const state = read("codex");
-    // The shared Codex App Server runs one account at a time. Advancing its generation
-    // fences an older refusal still returning after this account's confirmed reset.
-    state.generation++;
-    state.revision++;
-    delete state.limits[accountId];
+    if ((state.limits[accountId]?.observedAt ?? -1) >= verifiedAtMs) return false;
+    // Keep a scope tombstone with newer revision, so an old A failure cannot restore
+    // A's limit. B's concurrent failure remains recordable under B's own scope.
+    state.limits[accountId] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
     write("codex", state);
+    return true;
   }).immediate();
-  log("info", "codex_account_usage_cleared_after_reset", { account_known: true });
+  log("info", "codex_account_usage_cleared_after_reset", { account_known: true, cleared });
+  return cleared;
+}
+
+/** The verified reset permits ordinary work on the active Codex login, not saved bindings. */
+export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
+  if (!accountId || currentAccount("codex")?.id !== accountId) return 0;
+  return releaseScheduledProviderRetries("codex", true);
 }
 
 /**
@@ -176,7 +188,11 @@ export function clearCodexAccountUsage(accountId: string): void {
  * Called where a credential change becomes effective; it schedules, it does not replay.
  */
 export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
-  const released = releaseScheduledProviderRetries(provider);
+  // A Codex login is shared by all new turns, while saved work may be bound to a
+  // different account or time. A generic room observation only wakes ordinary work.
+  const released = provider === "codex"
+    ? releaseCodexOrdinaryUsageHeldWork(currentAccount("codex")?.id ?? "")
+    : releaseScheduledProviderRetries(provider);
   if (released > 0) {
     log("info", "provider_usage_hold_released", { provider, released, released_by: releasedBy });
   }
