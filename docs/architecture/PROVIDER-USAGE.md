@@ -271,12 +271,18 @@ all." A press while a pass is already running joins that pass instead of startin
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude auth login`, then
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> cswap add`. Never `/logout`; that can
   revoke the account being left.
-  `cswap list` answers from claude-swap's own usage cache and will serve a reading minutes
-  old without going to claude.ai, so tightening our interval alone changed nothing for
-  Claude — measured on the box, `list` reported 18% while the account was really at 25%.
-  Each pass therefore asks for `cswap status --json` first, which fetches the active account
-  and writes that cache, and reads the list after it. The active account is the one being
-  spent, so it is the one whose number has to be right; the rest are idle and barely move.
+  `cswap list --json` checks every managed account due under claude-swap's shared
+  per-account poll plan, then returns its account-specific source fetch time. An older
+  value can remain on screen after a failed or delayed fetch; Concierge retains that
+  original time and treats the value as historical once its decision limit passes.
+  The tool can space idle or exhausted accounts up to ten minutes apart to respect
+  the usage endpoint's request budget, so a six-minute decision may temporarily
+  lack fresh evidence for one of them; another scan cannot turn that into fresh data.
+  `cswap status --json` checks only the terminal-active account and is not used here:
+  a Concierge turn may run on another saved home without changing terminal selection.
+  When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
+  server readings with their source times; local sign-in and selection need local evidence.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
@@ -599,10 +605,60 @@ spending, so when the weekly state cannot be established the answer is no. The f
 window is frequently absent from the Codex reading altogether, which is why only the weekly
 one is required.
 
-What a grant clears is still recorded, because it still cannot be chosen: the grant carries
-its own `reset_type`, the consume call validates only that a credit id is present, and the
-response reports `windows_reset` afterwards. `codex-reset-credit.ts` keeps both on every
-spend. His own Accounts button is unchanged.
+The stored CodexBar row is an early screen, never authorization to spend a finite credit.
+Before automatic use, Concierge reads each other saved Codex home directly. Its verified
+account ID, blocked ordinary included allowance, and an exact spent Codex five-hour or
+weekly window must all agree. An unreadable home or one with possible room declines the
+automatic spend. It then rereads the target home last and requires the same account ID,
+blocked ordinary included allowance, the exact spent weekly window (or the 95% weekly
+exception with a spent five-hour window), and a matching available grant. These direct
+observations expire after 60 seconds or their first window reset, whichever comes first.
+The attempt is durably reserved only after this preflight, immediately before the consume
+request in the same initialized App Server session as the final target read; a preflight
+decline before reservation does not mark the episode spent. A retained hold is reconsidered
+on an existing wake or a manual action, not by a new polling loop. This is intentionally
+stricter than ordinary attempt policy because spending a grant is irreversible.
+
+The installed Codex App Server's raw primary/secondary positions did not match a fixed
+five-hour/weekly naming assumption in the 2026-10-14 read. CodexBar normalized that observed
+response to a weekly secondary window correctly. Concierge now names Codex windows from
+CodexBar's actual `windowMinutes` value and retains `usage.updatedAt` as the source time;
+this is a defensive normalization change, not evidence that the live Accounts bar was mislabeled.
+The reset-credit block has its own provider fetch context and may have a different age from
+the included-allowance bar. Refreshing one does not prove the other fresh; a direct limits
+read confirms a grant before automatic redemption.
+The installed 0.162.0 [App Server handler](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server/src/request_processors/account_processor.rs)
+handles each limits RPC by asking its [backend client](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/backend-client/src/client/rate_limit_resets.rs)
+for a new HTTP GET to the account usage endpoint; it does not answer from its own stored bar.
+The response does not expose the backend's original measurement timestamp, so a new GET
+cannot prove the remote service did not itself serve a cached value. Missing or elapsed
+window reset instants still decline finite spending.
+
+The installed Codex App Server (0.162.0, generated protocol checked 2026-10-14;
+[upstream account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/account.rs))
+requires an idempotency key as well as a credit id for a
+consume attempt. The automatic hold episode supplies that key; an Accounts button press
+generates one for its request. The response has four explicit outcomes: `reset` and
+`alreadyRedeemed` confirm that attempt redeemed a credit, while `nothingToReset` and
+`noCredit` did not. A transport failure or unrecognized response is unknown, never
+success or proof that nothing was spent. The current response names no individual
+windows; the grant's `reset_type` remains its declared scope. After confirmed redemption,
+Concierge reads limits again through the same account home. Both readings must carry the
+same nonempty account ID as that home's sign-in; a missing or changed ID never proves
+that the named account recovered. Only a matching fresh read saying ordinary included
+work is allowed invalidates that account's old refusal, preserving a per-account ordering
+marker so an earlier in-flight failure cannot restore it while another account's refusal
+can still be recorded. A refusal recorded after the confirming limits read begins, including
+while its HTTP request is in flight, is never cleared
+by that read. Only ordinary held work on the active Codex login becomes
+eligible to retry. If the selected login changed meanwhile, redemption is still reported,
+with zero work made eligible. Eligibility is not provider admission or completed work. A read-only probe of
+the installed server on 2026-10-14 confirmed that its limits response supplies an
+account ID matching the local sign-in and a boolean `ordinaryUsageAllowed`; no credit
+was consumed by that probe.
+If redemption is confirmed but the read fails or still denies ordinary work, the credit
+is reported redeemed and the work stays held. The Accounts button retains its two-press
+confirmation.
 
 ## Banked resets, so none of them lapses unused
 
@@ -652,18 +708,20 @@ thing read is whether a grant is still there at the instant work stopped. If he 
 spent it there is nothing to spend; if he has not, waiting for him to wake is the stall he
 asked us to end. There is no presence model anywhere in this.
 
-**One reset can never be spent twice.** Within an instance, the decision is recorded under
-an event id keyed to the exact hold episode *before* the attempt, so a second observer is
-refused by SQLite rather than by timing, and a crash mid-call cannot produce a second try.
-Across machines the provider is the lock: both instances can see the same exhausted account,
-and `consume` answers `alreadyRedeemed`, which is treated as "someone already did it" and
-not as a failure. Nothing tries to decide which machine goes first, because the only
-authority on whether a grant still exists is OpenAI.
+**One hold episode cannot automatically spend twice.** Within an instance, the attempt
+is recorded after preflight and before the consume request, so a second observer is refused by SQLite. The episode
+is also the consume request's idempotency key. A crash or ambiguous transport response
+never causes an automatic second attempt. Across machines, OpenAI owns the credit state;
+`alreadyRedeemed` means the *same key* previously completed a reset. It does not prove
+that another machine's differently keyed attempt succeeded.
 
-Afterwards the account is re-read, the work that was waiting on that reset instant is
-released with `releaseUsageHeldWork` (only the scheduled instant moves; nothing is
-replayed), and one notice says which account, why, how much work carried on and how many
-resets are left. There is deliberately no "about to use one" step before it: the hour-ahead
+After confirmed redemption and a fresh account read permitting ordinary work, only that
+account's cached refusal is invalidated. Ordinary held work on the active login can then become eligible to
+retry; nothing is replayed without the normal queue. The notice reports the count made
+eligible, including zero, and the remaining grant count only when the direct postread
+confirmed it. Unknown and redeemed-but-unverified
+outcomes leave work held and publish no "reset used" notice. There is deliberately no
+"about to use one" step before it: the hour-ahead
 forecast notice already exists, and adding a wait for acknowledgement would be the stall
 this removes. The Accounts button stays for when he wants to spend one himself.
 
@@ -704,7 +762,7 @@ and by agents through `sessions usage` and their budget brief):
 | Provider | What a reset restores | What happens to the clock | Source |
 | --- | --- | --- | --- |
 | Claude | The five-hour or the weekly limit it was offered for, back to full; cannot be undone; works before a limit is hit; expires on the offer's date | **Nothing.** "Your weekly limits still reset on their usual day and time." | support.claude.com 17007452 (What is a limit reset?), 11049741 (Max plan) |
-| Codex (banked grant) | The account's limits, at once; which windows is recorded in `windows_reset` the first time one is spent | For a purchased weekly reset OpenAI says the weekly clock restarts with the first request afterwards, seven days to the next | help.openai.com 20001507 |
+| Codex (banked grant) | The consume response confirms whether a grant redeemed, without naming individual windows; a fresh limits read shows current room | The clock behavior of a banked grant is not established by this response. The documented purchased weekly reset is a different mechanism. | Codex App Server 0.162.0 generated protocol; help.openai.com 20001507 for purchased weekly resets |
 
 This ledger's own readings of the account he reset (`provider_usage_readings`, 2026-10-13): the
 weekly stood at 100% all afternoon with its end at 08:00 UTC on Oct 14; at 16:50 UTC it read 0%

@@ -68,40 +68,14 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
 }
 
 /** A refusal from this account's attempted Claude model survives a process restart. */
-export function claudeAccountCachedReset(account:string):number|null {
+export function claudeAccountCachedReset(account:string,model?:string|null):number|null {
   const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
   const state=read('claude-code');
-  const resets=Object.entries(state.limits).filter(([scope,limit])=>scope.startsWith(prefix)&&limit.resetAt!==null&&limit.resetAt>Date.now())
+  const exact=model?`${prefix}${canonicalClaudeUsageModel(model.trim())}`:null;
+  const resets=Object.entries(state.limits).filter(([scope,limit])=>(exact?scope===exact:scope.startsWith(prefix))
+    &&limit.resetAt!==null&&limit.resetAt>Date.now())
     .map(([,limit])=>limit.resetAt!);
   return resets.length?Math.max(...resets):null;
-}
-
-const claudeAccountScopePrefix=(account:string)=>`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
-
-/** When the oldest refusal still blocking this Claude account was observed, or null when none blocks it. */
-export function claudeAccountRefusedSince(account:string):number|null {
-  const prefix=claudeAccountScopePrefix(account);
-  const since=Object.entries(read('claude-code').limits)
-    .filter(([scope,limit])=>scope.startsWith(prefix)&&limit.resetAt!==null&&limit.resetAt>Date.now())
-    .map(([,limit])=>limit.observedAt);
-  return since.length?Math.min(...since):null;
-}
-
-/**
- * Forgets every refusal recorded against one Claude account, because a later reading proves its
- * allowance was reset. A refusal is otherwise cleared only by a successful run on that account, and
- * no run is tried while the refusal stands: on 2026-10-10 the Mac held all Claude work for a refusal
- * "until Oct 11, 11 PM" that his 2:05 AM reset had already ended.
- */
-export function forgetClaudeAccountRefusals(account:string):number {
-  const prefix=claudeAccountScopePrefix(account);
-  return db.transaction(()=>{
-    const state=read('claude-code');
-    const scopes=Object.keys(state.limits).filter(scope=>scope.startsWith(prefix));
-    for(const scope of scopes)delete state.limits[scope];
-    if(scopes.length){state.revision++;write('claude-code',state);}
-    return scopes.length;
-  }).immediate();
 }
 
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {
@@ -133,6 +107,9 @@ export function recordUsageExhaustion(attempt: UsageAttempt, resetAt: number | n
     const state = read(attempt.provider);
     if (state.generation !== attempt.generation) return false;
     prune(state);
+    // A later exact-account reset or refusal supersedes an older in-flight failure.
+    // Comparing only this scope avoids losing a different account's real refusal.
+    if ((state.limits[attempt.scope]?.revision ?? -1) > attempt.revision) return false;
     const validReset = resetAt !== null && Number.isSafeInteger(resetAt) && resetAt > Date.now() ? resetAt : null;
     state.limits[attempt.scope] = { resetAt: validReset ?? state.limits[attempt.scope]?.resetAt ?? null,
       observedAt: Date.now(), revision: ++state.revision };
@@ -178,8 +155,31 @@ export function clearProviderUsage(provider: UsageProvider) {
     return { generation: state.generation, released: releaseScheduledProviderRetries(provider) };
   }).immediate();
   log("info", "provider_usage_cleared", { provider, generation: cleared.generation, released: cleared.released });
-  if (cleared.released > 0) announceUsageHoldEnded(provider, "usage_cleared", cleared.released);
   return { provider, generation: cleared.generation, cleared: true, resumed_work: cleared.released > 0 };
+}
+
+/** A verified Codex reset invalidates only the account that redeemed it. */
+export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtMs: number): boolean {
+  if (!accountId) throw new Error("A verified Codex account ID is required to clear its refusal.");
+  if (!Number.isSafeInteger(verifiedReadStartedAtMs) || verifiedReadStartedAtMs > Date.now())
+    throw new Error("A confirming Codex read start time is required to clear its refusal.");
+  const cleared = db.transaction(() => {
+    const state = read("codex");
+    if ((state.limits[accountId]?.observedAt ?? -1) >= verifiedReadStartedAtMs) return false;
+    // Keep a scope tombstone with newer revision, so an old A failure cannot restore
+    // A's limit. B's concurrent failure remains recordable under B's own scope.
+    state.limits[accountId] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
+    write("codex", state);
+    return true;
+  }).immediate();
+  log("info", "codex_account_usage_cleared_after_reset", { account_known: true, cleared });
+  return cleared;
+}
+
+/** The verified reset permits ordinary work on the active Codex login, not saved bindings. */
+export function releaseCodexOrdinaryUsageHeldWork(accountId: string): number {
+  if (!accountId || currentAccount("codex")?.id !== accountId) return 0;
+  return releaseScheduledProviderRetries("codex", true);
 }
 
 /**
@@ -188,10 +188,13 @@ export function clearProviderUsage(provider: UsageProvider) {
  * Called where a credential change becomes effective; it schedules, it does not replay.
  */
 export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
-  const released = releaseScheduledProviderRetries(provider);
+  // A Codex login is shared by all new turns, while saved work may be bound to a
+  // different account or time. A generic room observation only wakes ordinary work.
+  const released = provider === "codex"
+    ? releaseCodexOrdinaryUsageHeldWork(currentAccount("codex")?.id ?? "")
+    : releaseScheduledProviderRetries(provider);
   if (released > 0) {
-    log("info", "provider_usage_hold_released", { provider, released });
-    announceUsageHoldEnded(provider, releasedBy, released);
+    log("info", "provider_usage_hold_released", { provider, released, released_by: releasedBy });
   }
   return released;
 }
@@ -220,31 +223,28 @@ export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, 
       if(row)moved.push(row.id);}
     return moved;
   }).immediate();
-  if(turnIds.length){log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});announceUsageHoldEnded(attempt.provider,'manual_check',turnIds.length,new Set(turnIds));}
+  if(turnIds.length)log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});
   return {released:turnIds.length,turnIds};
 }
 
 /**
- * Held work is moving again, so every notice that said it was waiting on this provider's
- * allowance gets a resolution event, which Thinkering turns into taking that notice back from
- * his phone. Nothing said so before: on 2026-10-07 the switch to his other account released six
- * held inputs at 5:59 PM, and two "Claude has no usage left" notices stayed on his Lock Screen
- * past 8 PM. The sign-in hold already announces its end the same way (provider-activation.ts).
+ * Resolve a waiting notice only when its own provider turn settles successfully. Releasing a
+ * queued retry or seeing an initial pickup says nothing about model admission or recovery of
+ * the account named in the old notice.
  */
-function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, released: number, turnIds?: ReadonlySet<number>) {
+export function resolveUsageHoldNoticesForSettledTurn(provider: UsageProvider, turnId: number): void {
   try {
     const notices = db.query(`SELECT event_id, session_id, input_id, turn_id FROM session_owner_events e
-      WHERE kind='provider_outage' AND created_at > datetime('now','-2 days')
-        AND (event_id LIKE ? OR event_id LIKE ? OR event_id LIKE ?)
+      WHERE kind='provider_outage' AND turn_id=? AND (event_id LIKE ? OR event_id LIKE ?)
         AND NOT EXISTS (SELECT 1 FROM session_owner_events r WHERE r.event_id = e.event_id || ':resolved')`)
-      .all(`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`, `provider-usage-forecast:${provider}:%`) as
+      .all(turnId,`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`) as
       { event_id: string; session_id: number; input_id: string | null; turn_id: number | null }[];
-    for (const notice of notices.filter(notice=>!turnIds||notice.turn_id!==null&&turnIds.has(notice.turn_id)))
+    for (const notice of notices)
       recordSessionEvent({ eventId: `${notice.event_id}:resolved`, sessionId: notice.session_id, inputId: notice.input_id,
         turnId: notice.turn_id, kind: "provider_outage_resolved",
-        payload: { provider, usage: { released_by: releasedBy, released_inputs: released } } });
+        payload: { provider, usage: { released_by: 'provider_succeeded', settled_turn_id: turnId } } });
   } catch (error) {
-    log("error", "provider_usage_hold_resolution_failed", { provider, released_by: releasedBy,
+    log("error", "provider_usage_hold_resolution_failed", { provider, turn_id: turnId,
       error: error instanceof Error ? error.message : String(error) });
   }
 }

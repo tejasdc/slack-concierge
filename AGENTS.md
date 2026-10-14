@@ -1059,10 +1059,10 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   his "especially if both our accounts are running low" — and a reset still on the blocked
   account. Whether he has acted, or is awake, is never inferred; the only thing read is
   whether a grant is still there when work stopped, because waiting for him is the stall he
-  asked us to end. One is never spent twice: the decision is recorded under the exact hold
-  episode before the attempt, and across machines the provider is the lock, answering
-  `alreadyRedeemed` — treated as someone already did it, never as a failure. Afterwards the
-  held work is released and one notice says which account, why, and what is left. Only
+  asked us to end. The exact hold episode is retained before the attempt and used as the
+  provider idempotency key. Only a confirmed redemption plus a fresh read that permits
+  ordinary work releases holds and announces a usable reset; an uncertain result does
+  neither. Only
   Codex grants these; Anthropic publishes no per-account list to spend. The Accounts button
   stays for when he wants to spend one himself. See
   [banked resets](docs/architecture/PROVIDER-USAGE.md#banked-resets-so-none-of-them-lapses-unused).
@@ -1087,16 +1087,18 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   and held work already carries the instant it clears; `provider_usage_hold_released` fired
   three times in the 36 hours to 2026-10-08 releasing 6, 7 and 3 held inputs, no grant
   involved. A window this cannot identify in the reading stays null and null never argues for
-  spending, so an unreadable weekly refuses. What a grant clears is still recorded rather than
-  chosen: the grant carries its own `reset_type`, the consume call takes only a credit id, and
-  the response reports `windows_reset` afterwards.
+  spending, so an unreadable weekly refuses. The grant carries its own `reset_type`;
+  the installed consume call requires a credit id and idempotency key, and its response
+  names the outcome but no individual reset windows.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
   That command remains for recovery; Accounts Refresh now makes one user-requested retry
   of queued usage-held work, and a successful Codex reset-credit
-  use wakes usage-held work on its active account. Clearing it, and
-  activating a different account, also release work that was waiting on the old
+  use wakes usage-held work on its active account. Automatic reset spending requires a
+  direct, same-account, unexpired allowance read for every saved Codex account before a
+  finite credit is consumed; see [provider usage](docs/architecture/PROVIDER-USAGE.md#a-grant-is-spent-only-against-a-spent-weekly-allowance).
+  Clearing it, and activating a different account, also release work that was waiting on the old
   account's reset. Fresh Claude usage readings also release only usage-held queued work when
   the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md). Whether each account is out and until when has one answer (`accountAvailability`); a hold waits until
   the first launchable account frees up, never only the refusing account's reset.

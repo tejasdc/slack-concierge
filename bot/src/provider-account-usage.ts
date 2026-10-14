@@ -3,10 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
+import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows} from './account-allowance-observation';
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -32,6 +33,8 @@ import { resolveProviderAlias } from "./aliases";
 export type UsageWindow = Readonly<{
   name: string;
   usedPercent: number;
+  /** Provider duration, when supplied; slot position does not name a Codex window. */
+  durationMinutes?: number | null;
   resetsAt: string | null;
   willLastToReset: boolean | null;
   runsOutAt: string | null;
@@ -70,6 +73,9 @@ export type AccountUsage = Readonly<{
   resetCredits?: ResetCredits | null;
   /** Read by the other machine for this same account, because this one cannot read it. */
   viaPeer?: boolean;
+  /** Peer provenance; account identity was matched by label, not by a credential subject. */
+  sourcePeer?: string;
+  peerMatch?: 'label-only';
   /**
    * When the reading tool last got these numbers from the provider, where it says so.
    * A forecast is a rate, so it has to know whether it is being handed a fresh number or
@@ -77,6 +83,10 @@ export type AccountUsage = Readonly<{
    * climb. Absent where the tool does not report it.
    */
   readAt?: string | null;
+  /** Accounts view: source observation and measured window room, with unknown distinct from
+   * spent. Room does not prove model admission, sign-in, or authorization to spend credits. */
+  allowance?: Readonly<{ observedAt: string | null; evaluatedAt: string; validUntil: string | null;
+    status: 'current' | 'old' | 'unknown' | 'unreadable'; hasRoom: boolean | null }>;
   /**
    * What a reset would do for this account right now, written for the row and for agents;
    * attached at read time by `withResetAdvice`, never stored, because it says how long is left.
@@ -222,10 +232,14 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   }
   const usage = row?.usage ?? {}, pace = row?.pace ?? {};
   const windows: UsageWindow[] = [];
-  const add = (name: string, window: any, windowPace: any) => {
+  const add = (slot: string, window: any, windowPace: any) => {
     const used = percent(window?.usedPercent);
     if (used === null) return;
-    windows.push({ name, usedPercent: used, resetsAt: iso(window?.resetsAt),
+    const durationMinutes = Number.isSafeInteger(window?.windowMinutes) && window.windowMinutes > 0
+      ? window.windowMinutes as number : null;
+    const name = durationMinutes === 300 ? "5-hour" : durationMinutes === 10080 ? "Weekly"
+      : durationMinutes !== null ? `${durationMinutes}-minute allowance` : `${slot} allowance (duration unknown)`;
+    windows.push({ name, durationMinutes, usedPercent: used, resetsAt: iso(window?.resetsAt),
       willLastToReset: typeof windowPace?.willLastToReset === "boolean" ? windowPace.willLastToReset : null,
       runsOutAt: windowPace?.willLastToReset === false ? runsOut(windowPace?.etaSeconds) : null });
   };
@@ -268,19 +282,20 @@ async function readCodex(): Promise<ProviderUsage> {
 
 async function readClaude(): Promise<ProviderUsage> {
   if (!existsSync(CSWAP)) return { observedAt: new Date().toISOString(), accounts: [], problem: "claude-swap is not installed on this host." };
-  // `list` answers from claude-swap's own usage cache and will happily serve a reading
-  // minutes old without going to claude.ai, so tightening our interval alone would have
-  // changed nothing: measured on the box, `list` reported 18% while the account was really
-  // at 25%. `status` fetches the active account and writes that cache, so asking for it
-  // first is what makes the list that follows current. It is the account being spent, so it
-  // is the one whose number has to be right; the others are idle and barely move.
-  try { await run(CSWAP, ["status", "--json"]); } catch { /* the list below still answers */ }
+  // `list` checks every managed account that is due under claude-swap's shared
+  // per-account poll plan. `status` checks only the terminal-active account, which
+  // need not be the account a Concierge execution is spending. Keep the tool's
+  // per-account fetch timestamp: its cache can serve an older reading on failure.
   let list: any;
   try { list = JSON.parse(await run(CSWAP, ["list", "--json"])); }
   catch { return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." }; }
+  if (!Array.isArray(list?.accounts))
+    return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." };
   const accounts: AccountUsage[] = [];
-  for (const account of Array.isArray(list?.accounts) ? list.accounts : []) {
-    const usage = account?.usage ?? account?.lastGoodUsage ?? null;
+  for (const account of list.accounts) {
+    const hasCurrentUsage = account?.usage != null;
+    const usage = hasCurrentUsage ? account.usage : account?.lastGoodUsage ?? null;
+    const readAt = iso(hasCurrentUsage ? account?.usageFetchedAt : account?.lastGoodFetchedAt);
     const windows: UsageWindow[] = [];
     const add = (name: string, window: any) => {
       const used = percent(window?.pct);
@@ -304,7 +319,7 @@ async function readClaude(): Promise<ProviderUsage> {
     // Plan tier and credits ride on the same login the bars come from; a login whose token
     // has lapsed keeps its last facts, and a never-read one simply has none yet.
     const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
-    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt),
+    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
@@ -472,32 +487,36 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
       for (const view of views) {
         if (view?.provider !== provider) continue;
         for (const account of view?.usage?.accounts ?? [])
-          if (account?.label && !account.viaPeer && account.windows?.length) found.push({ ...account, viaPeer: true });
+          if (account?.label && !account.viaPeer && account.windows?.length) {
+            // A source host's rendered eligibility is point-in-time UI data. The receiving
+            // host recomputes it from readAt when its own Accounts page is read.
+            const {allowance:_renderedAllowance,...source}=account;
+            found.push({...source,current:false,viaPeer:true,sourcePeer:peer.name,peerMatch:'label-only'});
+          }
       }
     } catch { /* an unreachable peer simply contributes nothing */ }
   }
   return found;
 }
 
-/** A reading this machine took itself and can stand behind. */
-const hasOwnReading = (account: AccountUsage) => !!account.windows.length;
-
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
       let usage = await read();
-      // Only gaps are filled, and a local reading always wins: this adds accounts this
-      // machine cannot read at all, and replaces ones it read nothing for.
-      if (usage.accounts.some(account => !hasOwnReading(account)) || !usage.accounts.length || usage.problem) {
-        const borrowed = await peerAccounts(provider);
-        if (borrowed.length) {
-          const merged = usage.accounts.filter(hasOwnReading);
-          const labels = new Set(merged.map(account => account.label));
-          for (const account of borrowed) if (!labels.has(account.label)) { merged.push(account); labels.add(account.label); }
-          // Every account now carries numbers, so the host-level "tool missing" note would
-          // only contradict what is on the screen beside it.
-          usage = { ...usage, accounts: merged, problem: merged.length ? null : usage.problem };
+      // The provider's source time chooses between two observations for the same label.
+      // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
+      // The join is label-only and retained as such, never described as credential proof.
+      const borrowed=usage.problem||!usage.accounts.length
+        ||usage.accounts.some(account=>!accountReadingFresh(provider,usage,account))
+        ?await peerAccounts(provider):[];
+      if (borrowed.length) {
+        const merged = new Map(usage.accounts.map(account=>[account.label,account]));
+        for (const account of borrowed) {
+          const local=merged.get(account.label);
+          merged.set(account.label,local?chooseAccountObservation(provider,usage,local,account):account);
         }
+        usage={...usage,accounts:[...merged.values()],problem:[...merged.values()].some(account=>account.windows.length)
+          ?null:usage.problem};
       }
       db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
@@ -505,30 +524,30 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);
-      releaseIfAccountChanged(provider, usage);
+      // Claude's reader can temporarily activate another login in the terminal's folder.
+      // Only this machine's agent selection is an account change for queued work.
+      const agentUsage=withAgentsAccountCurrent(provider,usage);
+      releaseIfAccountChanged(provider, agentUsage);
       if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
-      const current=usage.accounts.find(account=>account.current);
-      const activeHasRoom=!!current && !current.problem && current.windows.length>0
-        && current.windows.every(window=>window.usedPercent<100);
-      // A refusal is cleared only by a run that succeeds on that account, and none is tried while it
-      // stands. A reading that shows the account with room and lower usage than when it was refused
-      // proves a reset in between, so the refusal is forgotten here (the Mac held all work on 2026-10-10).
-      if(provider==='claude-code')for(const account of usage.accounts){
-        const refusedAt=claudeAccountRefusedSince(account.label);
-        if(refusedAt===null||account.problem||!account.windows.length||account.windows.some(window=>window.usedPercent>=100))continue;
-        if(!usageFellSince(provider,account.label,refusedAt))continue;
-        log("info","provider_usage_refusal_overruled_by_reset",{provider,forgotten:forgetClaudeAccountRefusals(account.label)});
-      }
-      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null);
+      const current=agentUsage.accounts.find(account=>account.current);
+      // A provider-wide release has no turn model. It needs evidence across every Claude
+      // window; an Opus-only reading cannot wake a Fable hold.
+      const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
+      const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
+        && activeWindows.every(window=>window.usedPercent<100)
+        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null));
+      // A percentage drop cannot identify which window caused a model-specific refusal.
+      // The exact model's success, a manual clear, or its stated reset retires that cache.
+      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null,null);
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
       if(provider==='codex'&&activeHasRoom&&!cachedUsageLimit(usageAttempt('codex')))
         releaseUsageHeldWork('codex','usable_account_observed');
       // Still none with room: held work waits only until the first account frees up, by this reading.
-      const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt():earliestRoomAt(provider);
+      const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt(null):earliestRoomAt(provider);
       if(firstRoomAt!==null&&firstRoomAt>Date.now()){
         const moved=moveUsageHoldsEarlier(provider,firstRoomAt);
         if(moved)log("info","provider_usage_hold_moved_earlier",{provider,moved,until:new Date(firstRoomAt).toISOString()});
@@ -553,7 +572,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
     if (account) {
       const { releaseAuthHold } = await import("./provider-activation");
       releaseAuthHold(provider, "interval");
-      if (account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
+      if (accountReadingFresh(provider,usage,account) && account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
         releaseUsageContinuationHolds(provider);
         releaseUsageHeldWork(provider, "usable_account_observed");
       } else {
@@ -586,11 +605,13 @@ export async function refreshProviderAccountUsage(): Promise<void> {
 const accountInUse = new Map<ProviderKey, string>();
 function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): void {
   const current = usage.accounts.find(account => account.current);
-  if (!current?.label || !current.windows.length) return;
+  if (!current?.label || !accountReadingFresh(provider,usage,current,Date.now(),undefined,null)
+    || !includedAllowanceWindows(provider,current,null).length) return;
   const previous = accountInUse.get(provider);
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;
-  if (current.windows.some(window => window.usedPercent >= 100)) {
+  if (includedAllowanceWindows(provider,current,null).some(window => window.usedPercent >= 100)
+    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)) {
     log("info", "provider_account_changed_still_spent", { provider });
     return;
   }

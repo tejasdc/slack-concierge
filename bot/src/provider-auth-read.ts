@@ -1,6 +1,7 @@
 import { providerDisplayName } from "./aliases";
-import {ACCOUNT_READING_MAX_AGE_MS,currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
+import {currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
+import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
 import {withResetAdvice} from './provider-usage-forecast';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
 import {claudeAccountSelection} from './provider-account-selection';
@@ -11,14 +12,17 @@ import type {ProviderAuthView} from './session-execution-host';
 
 function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
   const reading=usage?.accounts.find(item=>item.label===chosen);
-  const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
+  if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
+  const full=includedAllowanceWindows('claude-code',reading).filter(window=>window.usedPercent>=100&&window.resetsAt);
   if(!full.length)return '';
   const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
-  const other=usage?.accounts.find(item=>item.label!==chosen&&!item.problem&&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+  const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
+    &&includedAllowanceWindows('claude-code',item).length>0
+    &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
   const when=noticeTime(db,until);
   return other
-    ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
-    :`${chosen} is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
+    ?`${chosen}'s included Claude allowance is fully used until ${when}. A fresh allowance reading shows ${other.label} has included room; new Claude work checks launch eligibility when requested.`
+    :`${chosen}'s included Claude allowance is fully used until ${when}, and no other account has confirmed included room. New Claude work checks again before routing.`;
 }
 
 /** Account listing runs in an isolated reader. Login state comes from the command owner. */
@@ -28,10 +32,9 @@ export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly Provide
 
 export function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
   const stored=providerAccountUsage('antigravity');
-  const fresh=stored!==null && Date.parse(stored.observedAt)>=Date.now()-ACCOUNT_READING_MAX_AGE_MS;
-  const usage=stored?fresh?{...stored,refreshing:ephemera.usageRefreshing}
-    :{...stored,accounts:[],problem:'Google account and allowance reading expired.',refreshing:ephemera.usageRefreshing}:null;
-  const current=usage?.accounts.find(item=>item.current&&item.label===ephemera.antigravityAccount?.label)??null;
+  const usage=stored?{...markUncurrentAccountReadings('antigravity',stored),refreshing:ephemera.usageRefreshing}:null;
+  const current=usage?.accounts.find(item=>item.current&&item.label===ephemera.antigravityAccount?.label
+    &&accountReadingFresh('antigravity',usage,item))??null;
   const account=current?{id:current.label,label:current.label,detail:current.plan}:null;
   const signedIn=!!account&&!current?.signedOut;
   return {provider:'antigravity',mode:'host-managed',pending:false,signInKeepsCurrent:true,
@@ -58,7 +61,8 @@ function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):Pr
   const storedUsage=providerAccountUsage(provider);
   // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
   // This reader answers the Accounts page; the command owner's own view says the same.
-  const usage=storedUsage?{...withResetAdvice(provider,storedUsage),refreshing:ephemera.usageRefreshing}:null;
+  const usage=storedUsage?{...markUncurrentAccountReadings(provider,withResetAdvice(provider,storedUsage)),
+    refreshing:ephemera.usageRefreshing}:null;
   const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
   const brokenInUse=provider==='codex'&&ephemera.codexSignIn==='signed-out';
   const listed=provider==='codex'&&account&&!profiles.some(profile=>profile.current)

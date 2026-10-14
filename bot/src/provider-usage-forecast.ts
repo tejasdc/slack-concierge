@@ -2,7 +2,8 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import { ACCOUNT_READING_MAX_AGE_MS, BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
+import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,withLocalCurrentAccount} from './account-allowance-observation';
+import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { claudeAccountCachedReset } from "./provider-usage";
@@ -96,8 +97,7 @@ export function storedUsage(provider: AccountIdentityProvider): ProviderUsage | 
 export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usage: ProviderUsage): ProviderUsage {
   if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
   const chosen = selectedClaudeHome()?.label ?? null;
-  if (!chosen) return usage;
-  return { ...usage, accounts: usage.accounts.map(account => ({ ...account, current: account.label === chosen })) };
+  return withLocalCurrentAccount(usage,chosen);
 }
 
 /**
@@ -106,13 +106,12 @@ export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usag
  * a zero, because a zero would read as "plenty left".
  */
 export function recordUsageReading(provider: AccountIdentityProvider, usage: ProviderUsage): void {
-  const passAt = at(usage.observedAt) ?? Date.now();
   db.transaction(() => {
     for (const account of usage.accounts) {
-      if (account.problem) continue;
+      if (!accountReadingFresh(provider,usage,account)) continue;
       // When the tool says when it actually got these numbers, that is the sample's time:
       // a remembered reading recorded as if it were fresh would flatten a real climb.
-      const observedAt = at(account.readAt) ?? passAt;
+      const observedAt = accountReadingAt(account)!;
       for (const window of account.windows) {
         db.query(`INSERT OR REPLACE INTO provider_usage_readings
           (provider, account, window_name, observed_at_ms, used_percent, resets_at_ms) VALUES (?,?,?,?,?,?)`)
@@ -228,10 +227,9 @@ function forecastWindow(provider: AccountIdentityProvider, account: AccountUsage
 export function usageForecasts(provider: AccountIdentityProvider): UsageForecast[] {
   const usage = storedUsage(provider);
   if (!usage || usage.problem) return [];
-  if (provider === "antigravity" && (usage.problem ||
-    (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
-  return usage.accounts.flatMap(account => account.problem ? []
-    : account.windows.map(window => forecastWindow(provider, account, window, account.readAt ?? "")));
+  return usage.accounts.flatMap(account => !accountReadingFresh(provider,usage,account) ? []
+    : account.windows.map(window => forecastWindow(provider, account, window,
+      new Date(accountReadingAt(account)!).toISOString())));
 }
 
 /** The one window closest to stopping work on the account the agents are actually using. */
@@ -282,40 +280,23 @@ export function accountsNearlySpent(provider: AccountIdentityProvider): UsageFor
  * which was chann.app's weekly reset alone; his personal account refilled at 11:20 PM.
  */
 export type AccountAvailability = Readonly<{ account: string; selected: boolean; hasRoom: boolean; freeAt: number | null }>;
-export function accountAvailability(provider: AccountIdentityProvider): AccountAvailability[] {
+export function accountAvailability(provider: AccountIdentityProvider,model?:string|null): AccountAvailability[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
-    if (provider === "antigravity" && (usage.problem ||
-      (at(account.readAt ?? usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
-    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
+    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model) : null;
+    if (!accountReadingFresh(provider,usage,account,Date.now(),undefined,model))
+      return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
-    if (account.problem || !account.windows.length)
+    const relevant=includedAllowanceWindows(provider,account,model);
+    if (account.problem || !relevant.length)
       return refusedUntil === null ? [] : [{ account: account.label, selected: account.current, hasRoom: false, freeAt: refusedUntil }];
-    const spent = account.windows.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
+    const spent = relevant.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
     const hasRoom = !spent.length && refusedUntil === null;
     const resets = refusedUntil === null ? spent : [...spent, refusedUntil];
     const freeAt = hasRoom || resets.some(reset => reset === null) ? null : Math.max(...resets as number[]);
     return [{ account: account.label, selected: account.current, hasRoom, freeAt }];
   });
-}
-
-/**
- * Whether some window of this account now reads lower than it did at or before `sinceMs`. Usage only
- * falls when an allowance resets, so a fall proves a reset happened after that moment. A reading that
- * merely lags behind a refusal (still 98% after Claude said "limit") does not fall, so it proves nothing.
- */
-export function usageFellSince(provider: AccountIdentityProvider, account: string, sinceMs: number): boolean {
-  const rows = db.query(`SELECT window_name, used_percent, observed_at_ms FROM provider_usage_readings
-    WHERE provider=? AND account=? ORDER BY observed_at_ms`).all(provider, account) as
-    { window_name: string; used_percent: number; observed_at_ms: number }[];
-  const before = new Map<string, number>(), latest = new Map<string, number>();
-  for (const row of rows) (row.observed_at_ms <= sinceMs ? before : latest).set(row.window_name, row.used_percent);
-  for (const [window, now] of latest) {
-    const then = before.get(window);
-    if (then !== undefined && now < then) return true;
-  }
-  return false;
 }
 
 /** The earliest moment any account of this provider can take work: now when one has room, null when unknown. */
@@ -327,16 +308,16 @@ export function earliestRoomAt(provider: AccountIdentityProvider): number | null
 }
 
 /** Accounts other than `account` with room now. */
-export function accountsWithRoomBesides(provider: AccountIdentityProvider, account: string): string[] {
-  return accountsWithRoom(provider).filter(label => label !== account);
+export function accountsWithRoomBesides(provider: AccountIdentityProvider, account: string,model?:string|null): string[] {
+  return accountsWithRoom(provider,model).filter(label => label !== account);
 }
 
 /**
  * Every account with room now, the one agents are selected to use included. It used to leave the
  * selected account out, so with only that one free it read as "no account has room" (2026-10-09).
  */
-export function accountsWithRoom(provider: AccountIdentityProvider): string[] {
-  return accountAvailability(provider).filter(room => room.hasRoom).map(room => room.account);
+export function accountsWithRoom(provider: AccountIdentityProvider,model?:string|null): string[] {
+  return accountAvailability(provider,model).filter(room => room.hasRoom).map(room => room.account);
 }
 
 /**
@@ -353,8 +334,9 @@ export function withResetAdvice(provider: AccountIdentityProvider, usage: Provid
   if (provider === "antigravity") return usage;
   return { ...usage, accounts: usage.accounts.map(account => ({
     ...account,
-    resetAdvice: account.problem || !account.windows.length ? null : resetAdvice({
-      provider, windows: account.windows, nowMs,
+    resetAdvice: !accountReadingFresh(provider,usage,account,nowMs)
+      || !includedAllowanceWindows(provider,account).length ? null : resetAdvice({
+      provider, windows: includedAllowanceWindows(provider,account), nowMs,
       othersWithRoom: accountsWithRoomBesides(provider, account.label).length > 0,
       when: ms => noticeTime(db, ms),
     }),
@@ -364,10 +346,10 @@ export function withResetAdvice(provider: AccountIdentityProvider, usage: Provid
 export function usageSignal(provider: AccountIdentityProvider) {
   const usage = storedUsage(provider);
   const advised = usage && provider !== "antigravity" ? withResetAdvice(provider, usage) : null;
-  const staleGoogle = provider === "antigravity" && (!usage || !!usage.problem ||
-    (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS);
+  const staleGoogle = provider === "antigravity" && (!usage || !usage.accounts.some(account=>account.current
+    &&accountReadingFresh(provider,usage,account)));
   const tightest = tightestCurrentWindow(provider);
-  const spare = accountsWithRoom(provider);
+  const spare = accountsWithRoom(provider,null);
   return {
     provider,
     observedAt: usage?.observedAt ?? null,

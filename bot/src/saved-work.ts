@@ -1,9 +1,10 @@
-import {db,claimNextQueuedTurn,executionChanged,getSessionById,globalPauseHoldsSession,type QueuedTurnClaimRow} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
 import type {AccountIdentityProvider} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
 import {savedStartAt} from './saved-start-time';
@@ -103,8 +104,12 @@ export function reconsiderBankedWork(now=Date.now()):number {
     if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
     const provider=session.provider_id as AccountIdentityProvider;
     const usage=providerAccountUsage(provider);
-    const rooms=usage?savedWorkAccountRooms(provider,usage,now):[];
+    const model=provider==='claude-code'
+      ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
+    const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
     const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
+      &&usage.accounts.some(account=>account.label===window.account
+        &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
       && (usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
         ||window.source!=='unknown'&&!window.runsOutBeforeReset)

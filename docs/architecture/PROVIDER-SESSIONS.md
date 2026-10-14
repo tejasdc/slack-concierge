@@ -258,6 +258,14 @@ hold when an account it can launch has room. The action API now refuses the inci
 `budget-pause-*` action identity and an explicit `usage` or `budget` Pause value. This
 prevents the known outside steering pattern from turning a temporary allowance decision
 into an indefinite human-style Pause. A deliberate Pause still requires Continue.
+On a Claude machine with saved account homes, the locally selected agent account is the
+account-change identity; a terminal sign-in briefly activated by the usage reader is not.
+Releasing a held queue entry means it may retry. Its outage notice remains until that
+exact turn settles successfully with the provider, because Claude's initial prompt pickup
+can precede a later model refusal. A different account's reading cannot close notices
+for inputs that have not run. Banked work retains its saved account binding at dispatch.
+Accounts describes another account's fresh measured allowance as such; its reader does
+not prove the saved home's credentials or promise which account a later turn will use.
 
 Withdrawing an agent request now also terminalizes its already queued target turn, not
 only an unqueued target input. The communication reconciler applies the same rule to
@@ -326,6 +334,49 @@ shifts toward the roomier account. No selection promises that a running turn can
 consume the last of a five-hour allowance. If all verified candidates are spent, the
 owner binds to the earliest verified reset under the existing hold protocol. Unknown
 or stale room never becomes a guessed start.
+
+An allowance observation belongs to the exact account and carries the time its reader
+obtained the numbers from the provider. The time a host stored the batch or received a
+peer copy never refreshes an account's observation. Accounts exposes that source time,
+whether the observation is current, old, unreadable or missing, and measured room only
+for a current observation. It supplies the expiration time so an open page can stop
+claiming current room when the source reading ages or a measured window reaches its
+stated reset. Old percentages remain historical evidence; missing source
+time gives unknown room, not zero or full usage. New work, saved work, room notices,
+forecasts and Accounts use that same freshness rule. Measured room does not override a
+provider's model refusal, a failed sign-in or the need for a proven Claude home. The
+Accounts room field concerns ordinary Automatic work: Claude Opus excludes its separate
+Fable-only weekly cap. An actual Claude turn, side question, refusal retry or banked
+release uses its session model instead; Fable work includes that cap, and an unknown
+model includes it conservatively. A new
+Automatic request with no current candidate asks the existing usage reader to refresh,
+then refuses with unknown capacity; a later request can use the fresh observation.
+
+When a local cached account observation is old, a peer observation for the same label may
+replace its percentages only if its provider source time is stronger. The receiving host
+keeps its own current-account flag: a peer's selected login is not this machine's login.
+This peer join is label-only, with its source machine and match method retained; the
+provider has not supplied a credential-subject proof that the two labels identify the
+same subscription. Briefs for a running Claude turn use its chosen execution account,
+while a usage-hold notice uses the failed attempt's account and scopes its episode and
+held count there. A brief prepared before account choice makes no Claude allowance
+claim; the chosen account's brief is appended immediately before its provider call.
+Cached Claude refusals are matched to the attempted model for dispatch; a Fable refusal
+does not turn an Opus account into measured 100% usage. A selected login whose usage is
+unreadable may still receive one provider attempt, and a manually proven waiting turn
+may spend its one-time proof; those permissions are separate from measured percentages.
+An account reading does not identify which allowance window caused a model refusal.
+A drop in another window therefore never clears that refusal early; only the stated
+reset, that exact model's successful attempt, or an explicit cache clear can retire it.
+Refresh actions that wake or advance turns across models require current evidence for
+every Claude window. Per-turn dispatch still considers only its actual model's windows.
+Ordinary dispatch ranks only source-timed readings still valid for its requested model;
+an old percentage, weekly reset or peer transfer time gives an alternate no rank. A
+Claude session with no model binding passes no model flag to Claude Code, whose configured
+default is not proven here, so its account choice checks every allowance window and all
+model-scoped cached refusals conservatively. Generic usage warnings make the same
+all-window claim. Claude Code's existing model fallback after account choice remains a
+separate model transition whose account admission needs further review.
 
 This replaces Claude-first-until-90%, which spent Claude's five-hour allowance before
 using Codex, and the earlier explicit-only Google rule. Sending every task to Google

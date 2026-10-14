@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
-import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
+import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,getClaudePreferredModel,getSessionById,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
@@ -13,7 +13,7 @@ import {startRoutedRequestApi} from './routed-request-api';
 import {peerSettings} from './session-peers';
 import {createSessionPeerServices} from './session-peer-services';
 import {GHOST_TURN_INTERRUPT_AGE_MS,reconcileRecoverableTurns,sweepGhostRunningTurns} from './turn-recovery';
-import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
+import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput,sessionMetadata} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
@@ -66,7 +66,10 @@ export async function startSessionRuntime() {
       const usage=providerAccountUsage(provider);
       const account=usage?.accounts.find(item=>item.label===row.saved_account);
       const window=account?.windows.find(item=>item.name===row.saved_window);
-      const room=usage?savedWorkAccountRooms(provider,usage).find(item=>item.account===row.saved_account):null;
+      const owningSession=provider==='claude-code'?getSessionById(row.session_id):null;
+      const model=provider==='claude-code'
+        ?getClaudePreferredModel(row.session_id,row.id)??(owningSession?sessionMetadata(owningSession).model:null)??null:undefined;
+      const room=usage?savedWorkAccountRooms(provider,usage,Date.now(),model).find(item=>item.account===row.saved_account):null;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
         !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
         ||!window||window.usedPercent>=100-reserve)

@@ -3,7 +3,7 @@ import {ledgerDurable} from './ledger-durability-barrier';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
@@ -87,6 +87,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
+import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
 import {antigravityAuthView} from './provider-auth-read';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
@@ -101,7 +102,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -230,7 +231,7 @@ export class SessionExecutionHost {
     // account whose usage reading was refused, so the row offers "Sign in again".
     // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
     const stored=providerAccountUsage(provider);
-    const usage=stored?withResetAdvice(provider,stored):null;step('usage_ms');
+    const usage=stored?markUncurrentAccountReadings(provider,withResetAdvice(provider,stored)):null;step('usage_ms');
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
     // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it
@@ -272,14 +273,17 @@ export class SessionExecutionHost {
     const cached=claudeAccountCachedReset(chosen);
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
-    const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
+    if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
+    const full=includedAllowanceWindows('claude-code',reading).filter(window=>window.usedPercent>=100&&window.resetsAt);
     if(!full.length)return '';
     const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
-    const other=usage?.accounts.find(item=>item.label!==chosen&&!item.problem&&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+    const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
+      &&includedAllowanceWindows('claude-code',item).length>0
+      &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
     const when=noticeTime(db,until);
     return other
-      ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
-      :`${chosen} is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
+      ?`${chosen}'s included Claude allowance is fully used until ${when}. A fresh allowance reading shows ${other.label} has included room; new Claude work checks launch eligibility when requested.`
+      :`${chosen}'s included Claude allowance is fully used until ${when}, and no other account has confirmed included room. New Claude work checks again before routing.`;
   }
 /**
    * The account list, answered from what this machine last knew, with the checks run behind it.
@@ -331,9 +335,19 @@ export class SessionExecutionHost {
    */
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
-    const outcome=await useCodexResetCredit(account);
-    if(outcome.status==='used'&&currentAccount('codex')?.label===account){clearProviderUsage('codex');this.options.wake();}
-    if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
+    let outcome=await useCodexResetCredit(account);
+    if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
+      try {
+        const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
+        if(cleared&&currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+        else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but current launch availability is unconfirmed. Work remains held.'};
+      } catch(error) {
+        log('error','codex_reset_cache_clear_failed',errorFields(error));
+        outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but recovery could not be confirmed. Work remains held.'};
+      }
+    }
+    if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none')
+      await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;
   }
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
@@ -560,8 +574,11 @@ export class SessionExecutionHost {
     }
     if(!full)markClaudeHomeVerified(home);
     selectClaudeAccount(profile.id,profile.label);
-    const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
-    const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
+    const observed=providerAccountUsage(key);
+    const reading=observed?.accounts.find(item=>item.label===profile.label);
+    const hasRoom=!!observed&&!!reading&&accountReadingFresh(key,observed,reading)
+      &&includedAllowanceWindows(key,reading).length>0
+      &&includedAllowanceWindows(key,reading).every(window=>window.usedPercent<100);
     if(hasRoom)releaseUsageHeldWork(key);
     // The account just proved it answers, so work held for a sign-in may go to it now.
     if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
@@ -848,7 +865,10 @@ export class SessionExecutionHost {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
         ?providerAccountUsage(session.provider_id):null;
       const rooms=usage&&['codex','claude-code','antigravity'].includes(session.provider_id)
-        ?savedWorkAccountRooms(session.provider_id as ProviderKey|'antigravity',usage):[];
+        ?savedWorkAccountRooms(session.provider_id as ProviderKey|'antigravity',usage,Date.now(),
+          session.provider_id==='claude-code'
+            ?claim.provider_model??getClaudePreferredModel(session.id,claim.turn_id)??sessionMetadata(session).model??null
+            :undefined):[];
       const choice=chooseAccountForTurn({accounts:rooms,
         bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
       if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()
@@ -940,8 +960,8 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='codex'||session.provider_id==='claude-code'
-        ?budgetBriefWithProviderRoom(session.provider_id, Date.now(), boundAccount?.account):null,
+      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='codex'
+        ?budgetBriefWithProviderRoom('codex', Date.now()):null,
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
           isWritingSession(session)?WRITING_SESSION_STANDING:null,
           saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null}):undefined,
@@ -1193,9 +1213,9 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
   const usage=storedUsage('codex');
   if(!inUse||!usage)return null;
   const current=usage.accounts.find(account=>account.label===inUse);
-  if(!current||current.problem||!current.windows.some(window=>window.usedPercent>=100))return null;
+  if(!current||!accountReadingFresh('codex',usage,current)||!current.windows.some(window=>window.usedPercent>=100))return null;
   const used=(account:{windows:readonly {usedPercent:number}[]})=>Math.max(...account.windows.map(window=>window.usedPercent));
-  const room=usage.accounts.filter(account=>account.label!==inUse&&!account.problem&&!account.signedOut&&account.windows.length>0
+  const room=usage.accounts.filter(account=>account.label!==inUse&&accountReadingFresh('codex',usage,account)&&!account.signedOut&&account.windows.length>0
     &&account.windows.every(window=>window.usedPercent<100)).sort((a,b)=>used(a)-used(b));
   const profiles=listProfiles('codex');
   for(const account of room){

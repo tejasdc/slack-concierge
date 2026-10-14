@@ -81,7 +81,7 @@ async function finishedBoundary(sessionUuid:string,cwd:string):Promise<string|nu
 
 async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const started=Date.now();
-  const account=claudeAsideAccount();
+  const account=claudeAsideAccount(input.model);
   const env={...process.env,...(account?.home?{CLAUDE_CONFIG_DIR:account.home}:{})};
   // A busy session is copied only up to its last finished answer, through a trimmed transcript
   // that exists for this one question and is deleted after it.
@@ -101,8 +101,8 @@ async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> 
  * ran on an account at its weekly limit while the other had 95% left, and he saw only "Claude could
  * not answer". When no account can take it, he is told that and when one frees up.
  */
-function claudeAsideAccount():{account:string;home:string|null}|null {
-  try { return chooseClaudeDispatch(null); }
+function claudeAsideAccount(model:string|null):{account:string;home:string|null}|null {
+  try { return chooseClaudeDispatch(null,0,undefined,model); }
   catch(error) {
     if(error instanceof ProviderDispatchError&&error.failureClass==='parked_terminal'){
       const when=error.clearsAtMs?` until ${noticeTime(db,error.clearsAtMs)}`:'';

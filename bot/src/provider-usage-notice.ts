@@ -1,4 +1,5 @@
 import { providerDisplayName } from "./aliases";
+import {createHash} from 'node:crypto';
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
@@ -11,11 +12,13 @@ import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./p
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
+import {accountReadingFresh} from './account-allowance-observation';
 import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
-import type { UsageProvider } from "./provider-usage";
+import { clearCodexAccountUsage, type UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
 import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 
 /** A day, in the milliseconds the expiry arithmetic below counts in. */
 const DAY_MS = 24 * 60 * 60_000;
@@ -85,32 +88,40 @@ type RecordEvent = (event: {
 }) => void;
 
 /** How many accepted inputs are waiting on this same reset instant, this one included. */
-function heldInputCount(clearsAtMs: number): number {
-  const row = db.query(`SELECT count(*) AS held FROM turns
-    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_next_attempt_ms=?`)
-    .get(clearsAtMs) as { held: number };
+function heldInputCount(clearsAtMs: number,provider:UsageProvider,account:string|null): number {
+  if(provider==='claude-code'&&!account)return 1;
+  const row = provider==='claude-code'
+    ?db.query(`SELECT count(*) AS held FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+        AND turn.dispatch_next_attempt_ms=? AND session.provider_id=?
+        AND EXISTS (SELECT 1 FROM executions execution WHERE execution.turn_id=turn.id
+          AND execution.created_at_ms=(SELECT max(latest.created_at_ms) FROM executions latest WHERE latest.turn_id=turn.id)
+          AND json_extract(execution.processor_json,'$.account.account')=?)`).get(clearsAtMs,provider,account) as {held:number}
+    :db.query(`SELECT count(*) AS held FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+        AND turn.dispatch_next_attempt_ms=? AND session.provider_id=?`).get(clearsAtMs,provider) as {held:number};
   return Math.max(1, row.held);
 }
 
 export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): void {
-  const eventId = `provider-usage-hold:${input.provider}:${input.clearsAtMs}`;
+  const account=input.provider==='claude-code'?input.account??null:currentAccount(input.provider)?.label??null;
+  const accountId=account?createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,16):'unknown';
+  const eventId = `provider-usage-hold:${input.provider}:${accountId}:${input.model??'unknown'}:${input.clearsAtMs}`;
   if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) return;
   const turn = db.query("SELECT session_id, accepted_input_id FROM turns WHERE id=?")
     .get(input.turnId) as { session_id: number; accepted_input_id: string | null } | null;
   if (!turn?.accepted_input_id || !getSessionById(turn.session_id)) return;
   const inputId = turn.accepted_input_id;
   try {
-    // The account agents run on, never the terminal's login in the main folder.
-    const account = (input.provider === "claude-code" && claudeRunsFromOwnHomes() ? selectedClaudeHome()?.label : null)
-      ?? currentAccount(input.provider)?.label ?? null;
-    const alternatives = accountsWithRoom(input.provider);
+    // Claude's failed attempt names its execution account. Selection is not evidence of it.
+    const alternatives = accountsWithRoom(input.provider,input.model);
     // Each account's own state, so nothing reading this notice has to infer one account's
     // reset from another's: which is out, and until when.
-    const accounts = accountAvailability(input.provider).map(room => ({ account: room.account, hasRoom: room.hasRoom,
+    const accounts = accountAvailability(input.provider,input.model).map(room => ({ account: room.account, hasRoom: room.hasRoom,
       freeAt: room.freeAt === null ? null : new Date(room.freeAt).toISOString() }));
     const inbox=input.provider==='claude-code'?inboxSession():null;
     const inboxClaudeExhausted=!!inbox&&inbox.provider_id==='claude-code'&&alternatives.length===0;
-    const held = heldInputCount(input.clearsAtMs);
+    const held = heldInputCount(input.clearsAtMs,input.provider,account);
     record({
       eventId, sessionId: turn.session_id, inputId, turnId: input.turnId,
       kind: "provider_outage",
@@ -221,26 +232,25 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
  *  - Within this instance, the decision is recorded under an event id keyed to the exact
  *    hold episode *before* the attempt, so a second observer of the same episode is refused
  *    by SQLite rather than by timing.
- *  - Across machines, the provider is the lock. Both instances can see the same exhausted
- *    account, and `consume` answers `alreadyRedeemed`, which is treated as "someone already
- *    did it" and not as a failure. Nothing here tries to be clever about which machine goes
- *    first, because the only authority on whether a grant is still there is OpenAI.
+ *  - The exact hold episode is also the provider idempotency key. A repeated attempt with
+ *    that key can report `alreadyRedeemed`, meaning that attempt completed successfully.
+ *    Two machines may race with distinct hold episodes; OpenAI decides whether the named
+ *    credit remains available. Only a confirmed reset followed by a fresh account read
+ *    that permits ordinary work releases a hold.
  */
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
-  spend: (account: string) => Promise<{ status: string; detail: string }>,
-  afterUse: () => Promise<number>): Promise<void> {
+  spend: (account: string, idempotencyKey: string, beforeConsume: () => void) => Promise<{ status: string; detail: string;
+    accountId?: string; verifiedReadStartedAtMs?: number; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
+  afterUse: (accountId: string) => Promise<number>): Promise<void> {
   const provider = input.provider;
-  const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn WHERE turn.id=?`).get(input.turnId) as {saved_kind:string|null}|null;
-  // Held ordinary work is named by the hold marks the rest of this file uses. It cannot be
-  // matched on the clearance instant any more: a usage hold now records no next attempt at
-  // all, so an instant comparison found nothing and the reset credit was withheld while his
-  // own work sat waiting for it.
-  const ordinaryHeld=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
-    WHERE session.provider_id=? AND turn.status='queued' AND turn.saved_kind IS NOT 'banked'
-      AND turn.dispatch_failure_class IN ('usage_wait','backoff') LIMIT 1`)
-    .get(provider);
-  if(held?.saved_kind==='banked'&&!ordinaryHeld){
-    log('info','provider_reset_not_used',{provider,reason:'only_banked_work_is_held'});
+  const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE turn.id=? AND session.provider_id=? AND turn.status='queued'
+      AND turn.dispatch_hold='usage' AND turn.dispatch_failure_class IN ('usage_wait','backoff')`)
+    .get(input.turnId,provider) as {saved_kind:string|null}|null;
+  // The exact refused turn must be ordinary work held for usage. An unrelated retry backoff
+  // elsewhere in the queue is not evidence for spending a finite credit on this episode.
+  if(!held||held.saved_kind==='banked'){
+    log('info','provider_reset_not_used',{provider,reason:'no_ordinary_usage_hold_on_this_turn'});
     return;
   }
   const usage = providerAccountUsage(provider);
@@ -271,21 +281,37 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const turn = db.query("SELECT session_id FROM turns WHERE id=?").get(input.turnId) as { session_id: number } | null;
   const session = turn && getSessionById(turn.session_id) ? turn.session_id : inboxSession()?.id;
   if (!session) return;
-  try {
-    // Recorded before the attempt, so this episode can never be attempted a second time
-    // even if what follows throws or the process dies mid-call.
+  const digest = createHash("sha256").update(episode).digest("hex");
+  // Stable across restarts and short enough for the provider's recommended UUID shape.
+  const idempotencyKey = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+  const outcome = await spend(decision.account, idempotencyKey, () => {
+    // Reserve only after direct preflight succeeds, immediately before the provider call.
+    // A declined preflight leaves the hold eligible for a later existing wake or manual action.
+    if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(episode))
+      throw new Error("This reset episode already has an attempt.");
     record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
       payload: { provider, account: decision.account, because: decision.because } });
-  } catch { return; }
-  const outcome = await spend(decision.account);
-  if (outcome.status === "failed") {
-    log("warn", "provider_reset_auto_failed", { provider, account_known: true });
+  });
+  if (outcome.status !== "used" || !outcome.accountId || !outcome.verifiedReadStartedAtMs) {
+    log("warn", "provider_reset_auto_not_confirmed", {
+      provider, account_known: true, outcome: outcome.status,
+    });
     return;
   }
-  // Awaited so the remaining count below is read after the account was re-read, not before.
-  const released = await afterUse();
-  const after = providerAccountUsage(provider)?.accounts.find(account => account.label === decision.account);
-  const remaining = after?.resetCredits?.available ?? 0;
+  let cleared = false;
+  try { cleared = clearCodexAccountUsage(outcome.accountId, outcome.verifiedReadStartedAtMs); }
+  catch (error) { log("error", "provider_reset_auto_cache_clear_failed", {
+    provider, error: error instanceof Error ? error.message : String(error) }); }
+  let released = 0;
+  if (currentAccount('codex')?.id !== outcome.accountId) {
+    log("warn", "provider_reset_auto_account_changed", { provider, account_known: true });
+  } else if (cleared) {
+    try { released = await afterUse(outcome.accountId); }
+    catch (error) { log("error", "provider_reset_auto_release_failed", {
+      provider, error: error instanceof Error ? error.message : String(error) }); }
+  }
+  const remaining = outcome.remainingCredits ?? null;
+  const nextExpiresAt = outcome.nextExpiresAt ?? null;
   record({
     eventId: `${episode}:used`, sessionId: session, kind: "provider_outage",
     payload: {
@@ -296,9 +322,9 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
         // What makes this a report of something already done rather than an offer.
         resetUsed: {
           account: decision.account, remaining, releasedInputs: released,
-          nextExpiresAt: after?.resetCredits?.expiresAt ?? null,
+          nextExpiresAt,
           summary: resetUsedSentence({ account: decision.account, remaining, releasedInputs: released,
-            nextExpiresAt: after?.resetCredits?.expiresAt ?? null }),
+            nextExpiresAt, roomConfirmed: cleared && currentAccount('codex')?.id === outcome.accountId }),
         },
       },
     },
@@ -410,12 +436,9 @@ function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account
   const usage = storedUsage(provider);
   if (!usage || usage.problem) return [];
   const now = Date.now();
-  const fresh = new Set(usage.accounts.filter(value => {
-    const readAt = Date.parse(value.readAt ?? '');
-    return !value.problem && Number.isFinite(readAt) && readAt <= now
-      && now - readAt <= BUDGET_NOTICE_MAX_AGE_MS;
-  }).map(value => value.label));
-  return accountsWithRoomBesides(provider, account).filter(label => fresh.has(label));
+  const fresh = new Set(usage.accounts.filter(value => accountReadingFresh(provider,usage,value,now,BUDGET_NOTICE_MAX_AGE_MS))
+    .map(value => value.label));
+  return accountsWithRoomBesides(provider, account, null).filter(label => fresh.has(label));
 }
 
 function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
@@ -434,7 +457,7 @@ function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare
 }
 
 /**
- * A warning whose window has refilled is no longer something to read: its thread says so and
+ * A warning whose stated reset time passed is no longer something to read: its thread says so and
  * closes, ending the reading item, the way a retry notice closes when its breaker clears.
  */
 function settleRefilledUsageWarnings(): void {
@@ -463,8 +486,8 @@ function settleRefilledUsageWarnings(): void {
       if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
         text: payload.providers
-          ? `The first allowance refilled at ${noticeTime(db, resetsAtMs)}. The both-providers warning has ended.`
-          : `${payload.account ?? "The account"} refilled at ${noticeTime(db, resetsAtMs)}. Nothing waits on you.` });
+          ? `The first allowance's stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; the both-providers warning has ended.`
+          : `${payload.account ?? "The account"}'s stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; nothing waits on you.` });
     } catch (error) {
       log("error", "provider_usage_warning_settle_failed", { input_id: row.id, error: String(error) });
     }
