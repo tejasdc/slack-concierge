@@ -1,7 +1,7 @@
 export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: number }> {
   /** Clock-driven queue maintenance runs once before each wake pass, not before each claim. */
   beforeClaims?(): void;
-  claim(): TClaim | null;
+  claim(activeTurnIds: readonly number[]): TClaim | null;
   run(claim: TClaim): Promise<unknown>;
   shouldStop(): boolean;
   onError(claim: TClaim, error: unknown): void;
@@ -119,7 +119,7 @@ export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
    */
   private claimOrNull(): TClaim | null {
     try {
-      const claim = this.options.claim();
+      const claim = this.options.claim([...this.activeTurnIds]);
       this.claimFailures = 0;
       return claim;
     } catch (error) {

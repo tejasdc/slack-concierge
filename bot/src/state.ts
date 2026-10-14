@@ -5183,7 +5183,7 @@ export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly n
     .map(row=>({turnId:row.turn_id,sessionId:row.session_id,queuedAt:row.queued_at}));
 }
 
-export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
+export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = [], activeTurnIds: readonly number[] = []): QueuedTurnClaimRow | null {
   const started = performance.now();
   let survivabilityMs = 0, candidateMs = 0, dependencyMs = 0, mutationMs = 0, projectionMs = 0;
   let outcome: 'empty' | 'claimed' | 'archived' | 'declined' | 'error' = 'error';
@@ -5202,9 +5202,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         FROM turns turn
         JOIN sessions session ON session.id=turn.session_id
         WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
+          AND turn.id NOT IN (SELECT value FROM json_each(?))
         ORDER BY turn.id
         LIMIT 1
-      `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable)) as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),JSON.stringify(activeTurnIds)) as { turn_id: number; session_id: number; session_status: string } | null;
       candidateMs += performance.now() - phase;
       if (!candidate) { outcome='empty'; return null; }
 

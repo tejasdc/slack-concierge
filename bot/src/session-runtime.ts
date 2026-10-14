@@ -93,7 +93,7 @@ export async function startSessionRuntime() {
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   try {reconcilePlacedRequestAnswers();} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({beforeClaims:prepareSavedWorkForClaims,
-    claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
+    claim:activeTurnIds=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions,[...new Set([...activeTurnIds,...active])]),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{

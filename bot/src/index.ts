@@ -446,6 +446,7 @@ let grafanaAlerts: GrafanaAlerts | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let codexSessionObserver: CodexSessionObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
+const adoptedTurnIds = new Set<number>();
 let routedRequestServer: Awaited<ReturnType<typeof startRoutedRequestApi>> | null = null;
 let sessionCommunication: SessionCommunicationCoordinator | null = null;
 const routedRequests = new RoutedRequestCoordinator({
@@ -2475,7 +2476,7 @@ function startSessionTurnQueue() {
   if (sessionTurnQueue) return;
   sessionTurnQueue = new SessionTurnQueueCoordinator({
     beforeClaims: prepareSavedWorkForClaims,
-    claim: () => claimNextQueuedTurn(instanceId,Date.now(),activeTurnDispatch.activeSessions),
+    claim: activeTurnIds => claimNextQueuedTurn(instanceId,Date.now(),activeTurnDispatch.activeSessions,[...new Set([...activeTurnIds,...adoptedTurnIds])]),
     run: runPersistedQueuedTurn,
     shouldStop: () => draining,
     nextAttemptMs: () => nextQueuedTurnAttemptMs(),
@@ -3743,10 +3744,13 @@ async function reconcilePriorInstanceTurns() {
   cleanExpiredArtifactStaging();
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
-  const runAdopted = (adoption: Adoption) => void sessionExecutionHost.run(adoption.claim, adoption).catch((error) => {
-    log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
-    settleClaimedTurnSetupFailure(adoption.claim, error);
-  });
+  const runAdopted = (adoption: Adoption) => {
+    adoptedTurnIds.add(adoption.claim.turn_id);
+    void sessionExecutionHost.run(adoption.claim, adoption).catch((error) => {
+      log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
+      settleClaimedTurnSetupFailure(adoption.claim, error);
+    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
+  };
   const executions = await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive });
   for (const adoption of executions.adopted) runAdopted(adoption);
   for (const held of executions.held) watchHeldExecution(held, { stopped: () => draining, adopt: runAdopted,
@@ -3758,7 +3762,7 @@ async function reconcilePriorInstanceTurns() {
   const recoveryOutcome = await reconcileRecoverableTurns({
     client: app.client,
     instanceId,
-    activeTurnIds: [...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? [])],
+    activeTurnIds: [...new Set([...activeTurnDispatch.activeTurns, ...(sessionTurnQueue?.activeTurns ?? []),...adoptedTurnIds])],
     isOwnerAlive: isProcessIdentityAlive,
     services: {
       deliverNativeResult:result=>sessionExecutionHost.deliverResult(result),
