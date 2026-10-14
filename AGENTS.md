@@ -1,5 +1,9 @@
 # Concierge agent guide
 
+The Inbox capture space reads a bounded page of retained inputs, with attachment
+metadata separated from bytes. The owner contract and query are in
+[capture presentation](docs/architecture/CAPTURE-PRESENTATION.md).
+
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
