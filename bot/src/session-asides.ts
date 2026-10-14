@@ -5,7 +5,10 @@ import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch'
 import {mkdtempSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {selectedClaudeHome} from './provider-account-dispatch';
+import {chooseClaudeDispatch} from './provider-account-dispatch';
+import {ProviderDispatchError} from './provider-failures';
+import {db} from './state-database';
+import {noticeTime} from './notice-time';
 import {MANAGED_CODEX} from './codex-daemon-file-limit';
 import {log} from './log';
 
@@ -78,8 +81,8 @@ async function finishedBoundary(sessionUuid:string,cwd:string):Promise<string|nu
 
 async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> {
   const started=Date.now();
-  const home=selectedClaudeHome();
-  const env={...process.env,...(home?{CLAUDE_CONFIG_DIR:home.home}:{})};
+  const account=claudeAsideAccount();
+  const env={...process.env,...(account?.home?{CLAUDE_CONFIG_DIR:account.home}:{})};
   // A busy session is copied only up to its last finished answer, through a trimmed transcript
   // that exists for this one question and is deleted after it.
   const boundary=input.running?await finishedBoundary(input.sessionUuid,input.cwd).catch(()=>null):null;
@@ -88,6 +91,24 @@ async function claudeAside(input:AsideInput,prompt:string):Promise<AsideAnswer> 
     return await claudeAnswer({...input,sessionUuid:trimmed??input.sessionUuid},prompt,env,started);
   } finally {
     if(trimmed){const file=await locateClaudeTranscript(claudeConfigDir(env as Record<string,string>),trimmed).catch(()=>null);if(file)await unlink(file).catch(()=>{});}
+  }
+}
+
+/**
+ * The account a side question runs on is the one an ordinary turn would run on now, chosen by the
+ * same rules, so an account out of its allowance is passed over for one with room. It used to run on
+ * the selected account (or the main folder's login) whatever its room: on 2026-10-14 his Mac's copy
+ * ran on an account at its weekly limit while the other had 95% left, and he saw only "Claude could
+ * not answer". When no account can take it, he is told that and when one frees up.
+ */
+function claudeAsideAccount():{account:string;home:string|null}|null {
+  try { return chooseClaudeDispatch(null); }
+  catch(error) {
+    if(error instanceof ProviderDispatchError&&error.failureClass==='parked_terminal'){
+      const when=error.clearsAtMs?` until ${noticeTime(db,error.clearsAtMs)}`:'';
+      throw new Error(`Every Claude account on this machine is out of its allowance${when}, so this side question cannot be answered now.`);
+    }
+    throw new Error(`No Claude account on this machine can answer side questions now: ${error instanceof Error?error.message:String(error)}`.slice(0,300));
   }
 }
 
@@ -105,7 +126,12 @@ async function claudeAnswer(input:AsideInput,prompt:string,env:NodeJS.ProcessEnv
   try{const json=JSON.parse(result.stdout.slice(result.stdout.search(/[\[{]/)));parsed=Array.isArray(json)?json.findLast((event:any)=>event?.type==='result')??null:json;}catch{}
   if(!parsed||parsed.is_error||typeof parsed.result!=='string'){
     // The provider's own words stay in the log; what goes back is a sentence he can read.
-    log('warn','session_aside_failed',{provider:'claude-code',code:result.code,result:String(parsed?.result??'').slice(0,300),stderr:result.stderr.slice(-300)});
+    const said=String(parsed?.result??'');
+    log('warn','session_aside_failed',{provider:'claude-code',code:result.code,result:said.slice(0,300),stderr:result.stderr.slice(-300)});
+    // A limit is the one refusal he can act on (wait, or switch accounts), and Claude's own
+    // sentence says which limit and when it resets, so it is passed on as said.
+    if(/\blimit\b|out of (extra )?usage/i.test(said))
+      throw new Error(`The Claude account answering side questions is out of its allowance (${said.trim().slice(0,160)}), so this one was not answered.`);
     throw new Error('Claude could not answer the side question.');
   }
   const model=Object.keys(parsed.modelUsage??{})[0]??input.model;
