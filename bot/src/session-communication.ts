@@ -708,7 +708,7 @@ export class SessionCommunicationCoordinator {
         const currentOwnRoot=inboxThreadRoot(actor.session,actor.inputId);
         if(!currentRoot||!currentOwnRoot||currentRoot!==currentOwnRoot&&(!topicOfRoot(currentRoot)||topicOfRoot(currentRoot)!==topicOfRoot(currentOwnRoot)))
           throw new Error('--thread moved out of the Inbox topic this turn is handling.');
-        const arranged=pointNotificationPromise({inputId,root,target:input.session,conditions:(input.on??'done,needs-you,hold').split(',').map(value=>value.trim()),summary:input.summary,peerView});
+        const arranged=pointNotificationPromise({inputId,root:currentRoot,target:input.session,conditions:(input.on??'done,needs-you,hold').split(',').map(value=>value.trim()),summary:input.summary,peerView});
         if(!input.session.startsWith('concierge:'))this.dependencies.peers?.wake();
         return arranged;
     }
