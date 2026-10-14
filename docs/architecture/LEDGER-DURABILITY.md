@@ -156,12 +156,14 @@ quiet-disk checkpoints.
 ## Release controller while the owner serves
 
 The release controller builds the artifact outside the owner, but release state belongs to the
-owner until it stops. A root-only request on `request-owner.sock` records preparation, activation
-intent, reaction targets and activation through the owner's ledger connection. The request reply
-passes the existing durability barrier. The prepared release row and its event commit in one
-transaction. The controller's connection is read-only for `prepare` and
-`activate`, including its provenance reads, so a candidate build cannot hold the WAL writer lock
-on behalf of the controller. The one-time legacy repair cutover and stopped-owner recovery
+owner until it stops. A root-only request on `request-owner.sock` records the run claim and phase
+transitions as well as preparation, activation intent, reaction targets and activation through
+the owner's ledger connection. The request reply passes the existing durability barrier. The
+owner commits the prepared release row and its event together in one transaction. The controller's connection is
+read-only for its ordinary `claim`, `phase`, `prepare` and `activate` commands, including its
+provenance reads, so a candidate build or a short-lived claim helper cannot hold the WAL writer
+lock on behalf of the controller. The one-time legacy repair cutover, stopped-owner recovery and
+bootstrap with an already stopped owner
 explicitly retain direct writes; they have separate drain rules. A failed owner request fails an
 ordinary update without falling back to a live direct writer.
 
@@ -173,6 +175,15 @@ storage work. The controller had printed `prepared` only after the lock ended. T
 identifies the process and interval; it does not isolate which SQLite operation inside that
 process held those locks. Controller transaction phase timings and `/proc/locks` distinguish
 future acquisition, work and commit delays.
+
+The first update using owner-served preparation still showed a separate lock holder at its start:
+the controller's run claim owned WAL writer and checkpoint locks for approximately 2.55 seconds
+at 03:32:14.978–17.526 UTC, overlapping a 1.95 second owner loop lag. The claim's transaction
+did not emit a slow-transaction record, so connection cleanup or another SQLite operation in
+that helper remains the likely part of the hold. Moving the claim and phase commands to the
+owner removes this second live writer. The lock recorder stopped before that update's preparation,
+so its absence of later controller locks was not established by the trace; a later real update
+must verify the full preparation and activation interval.
 
 ## Failure handling
 

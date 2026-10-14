@@ -25,7 +25,13 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'release-manager'
     && ['prepare', 'activate'].includes(process.argv[2] ?? '');
-  const readonly = readWorker || ownerServedReleaseCommand
+  // Claiming a run was still an independent live writer after release preparation moved
+  // to the owner. Its short-lived connection held WAL locks while it closed under disk load.
+  const ownerServedDeploymentCommand = live && process.platform === 'linux'
+    && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
+    && name === 'deploy-state'
+    && ['claim', 'phase'].includes(process.argv[2] ?? '');
+  const readonly = readWorker || ownerServedReleaseCommand || ownerServedDeploymentCommand
     || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',
     'native-pipeline-continuation', 'clear-stale-account-notices', 'repair-inbox-needs']);
@@ -60,5 +66,5 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
         throw new Error('Live schema setup requires the supervised owner startup or a fully stopped coordinator.');
     }
   }
-  return { live, schema, readonly, ownerServedReleaseCommand };
+  return { live, schema, readonly, ownerServedReleaseCommand, ownerServedDeploymentCommand };
 }

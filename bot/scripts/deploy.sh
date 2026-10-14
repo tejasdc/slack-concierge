@@ -217,7 +217,7 @@ handoff_from_concierge_service() {
 claim_deployment_run() {
   local claim_output claim_status
   [ -n "$DEPLOY_RUN_ID" ] || return 0
-  claim_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
+  claim_output=$(CONCIERGE_RELEASE_OFFLINE="${CONCIERGE_RELEASE_OFFLINE:-${CONCIERGE_BOOTSTRAP_STOPPED:-0}}" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
     --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
   printf '%s\n' "$claim_output"
   claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
@@ -238,7 +238,7 @@ record_deployment_phase() {
   detail=${2:-}
   [ -n "$detail" ] || detail='{}'
   [ -n "$DEPLOY_RUN_ID" ] || return 0
-  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
+  CONCIERGE_RELEASE_OFFLINE="${CONCIERGE_RELEASE_OFFLINE:-${CONCIERGE_BOOTSTRAP_STOPPED:-0}}" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
     --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
 }
 
@@ -1193,6 +1193,7 @@ control_recovery_failed() {
 }
 
 recover_control() {
+  export CONCIERGE_RELEASE_OFFLINE=1
   local receipt prior_activation app_server_before
   DEPLOY_RUN_ID="$CONCIERGE_CONTROL_RECOVERY_RUN_ID"
   cd "$REPO"
