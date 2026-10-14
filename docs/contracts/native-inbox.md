@@ -463,6 +463,45 @@ dispatched or deleted, and the manifest `{roots,topics,requests,questions,unreso
 written into the guard event and logged as counts only. New roots stay unplaced until the
 router or a human places them; they appear as the `sorting` pile on the topics read.
 
+## Filing before stopping
+
+“Never filed” means a retained Inbox message's root has no topic placement. It is
+independent of execution: a queued message is waiting for the provider to receive it;
+an answered message can still be unfiled. Both are stored in Concierge's server ledger,
+not in the provider's conversation memory. The topic owner resolves replies through their
+root, so replying inside an existing topic does not require another placement.
+
+Each unplaced input carries the existing `<topic-placement>` reminder when delivered.
+The router can inspect the sorting pile with `sessions topics list`; that display includes
+queued messages too and previews only five. There is no periodic “pile nonempty” agent
+notification. The shared owed-reply Stop hook now asks the owner on every normal Stop
+attempt for all unfiled human message inputs that this Inbox session received, including
+earlier turns. Initial delivery is evidenced by provider acknowledgment (or the exact
+currently stopping turn); steering requires its sent receipt. Merely queued, imported,
+corrected agent authorship, service returns, worker requests and topic actions do not block.
+Outside-agent captures delivered into router turns follow the same filing check, providing
+the live agent-marked acceptance path without claiming human authorship.
+
+`/session-communication/owed` returns `unfiled` beside its existing reply obligations.
+The hook names every input, a short data-only preview, its resolved root and ready-to-fill
+`sessions topics place/create` commands with the current source pair and stable action IDs.
+There is no five-item display limit. Repeated `stop_hook_active`, background jobs and
+waiting on another request do not excuse filing; the existing one-reminder rule for
+communication replies remains separate. A blocked Stop retains its browser processes.
+
+Noise needs no new discard store: create a topic for that input, then use the existing
+`sessions topics close <returned-topic-id> --scope <input-id> ... -- 'Noise: <reason>'`.
+The close requires a scope and nonempty reason. The original message and closure remain
+auditable in the closed thread. Filing into any topic also satisfies the check immediately;
+the check enforces placement, not the router's judgment about the chosen topic.
+
+This runs in Claude and Codex's existing Stop mechanism, not a new watcher or queue.
+It prevents voluntary completion when the owner reports outstanding filing. It cannot
+prevent a user Stop, crash or provider error. The hook's existing owner-unavailable
+fail-open behavior remains; retained obligations are checked again on the next Stop.
+Running turns keep their pinned hook version; the new hook applies to turns started after
+activation. Outside CLI conversations without a running Concierge turn pass through.
+
 ## Authorized recovery continuation
 
 Human `1789510460.238219` authorizes one bounded wake for Inbox recovery. The operator

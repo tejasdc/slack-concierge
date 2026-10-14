@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn,
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -513,10 +513,11 @@ export class SessionCommunicationCoordinator {
         const running=db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
             JOIN turns turn ON turn.session_id=session.id WHERE session.provider_id=? AND session.agent_session_uuid=?
             AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`).get(input.provider,input.provider_session_id) as {session_id:number;turn_id:number;accepted_input_id:string|null}|null;
-        if(!running?.accepted_input_id)return {owed:[] as OwedRequest[],waiting:false,source:null};
+        if(!running?.accepted_input_id)return {owed:[] as OwedRequest[],unfiled:[],waiting:false,source:null};
         const runId=nativeRunId(running.turn_id);
         const source={input_id:running.accepted_input_id,run_id:runId};
-        if(waitingOnLiveRequest(running.session_id))return {owed:[] as OwedRequest[],waiting:true,source};
+        const unfiled=unfiledReceivedInputs(running.session_id,running.turn_id);
+        if(waitingOnLiveRequest(running.session_id))return {owed:[] as OwedRequest[],unfiled,waiting:true,source};
         const owed:OwedRequest[]=[];
         for(const request of db.query(`SELECT * FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL
             AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL AND created_at_ms>=? ORDER BY rowid`).all(running.session_id,REMINDERS_SINCE_MS) as RequestRow[]) {
@@ -536,7 +537,7 @@ export class SessionCommunicationCoordinator {
             owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
                 requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
         }
-        return {owed,waiting:false,source};
+        return {owed,unfiled,waiting:false,source};
     }
     /**
      * How much allowance each provider has left on this machine, and when the account in
