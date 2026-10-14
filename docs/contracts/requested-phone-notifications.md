@@ -17,6 +17,9 @@ filed by a local or Mac worker uses the same path. A router response counts only
 when its turn did not dispatch work from that asking input; the router's post or
 result must supply the actual message ID and words. An acknowledgement of work
 in progress leaves the arm for the dispatched answer.
+If an answer also asks for Tejas's decision, its topic question remains a
+decision; the requested phone event uses the `response` outcome required by
+thnkr.ing's one-shot requested-result path.
 
 An agent may explicitly request one push for its own message with `sessions
 post --notify` or `sessions reply --notify`. The owner requires a new message
