@@ -612,13 +612,12 @@ export class SessionOwner {
       const remainsPaused=paused||chosen.length>0;
       db.query('UPDATE global_pause SET paused=?,generation=?,action_id=?,changed_at_ms=? WHERE singleton=1')
         .run(remainsPaused?1:0,nextGeneration,clientActionId,now);
-      db.query('INSERT INTO global_pause_actions(action_id,paused,generation,session_ids_json) VALUES(?,?,?,?)')
-        .run(paused?1:0,nextGeneration,clientActionId,JSON.stringify(chosen));
+      db.query(`INSERT INTO global_pause_actions(action_id,paused,generation,session_ids_json)
+        VALUES($actionId,$paused,$generation,$sessionIds)`)
+        .run({$actionId:clientActionId,$paused:paused?1:0,$generation:nextGeneration,$sessionIds:JSON.stringify(chosen)});
       if(paused){
         if(current.paused)db.query(`INSERT OR IGNORE INTO global_pause_targets(generation,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id)
           SELECT ?,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id FROM global_pause_targets WHERE generation=?`).run(nextGeneration,current.generation);
-        if(current.paused)db.query(`INSERT OR IGNORE INTO global_pause_exceptions(generation,machine,session_id)
-          SELECT ?,machine,session_id FROM global_pause_exceptions WHERE generation=?`).run(nextGeneration,current.generation);
         if(generation!==undefined)for(const sessionId of peerAllowed)db.query('INSERT OR IGNORE INTO global_pause_exceptions(generation,machine,session_id) VALUES(?,?,?)')
           .run(nextGeneration,this.selfMachine,sessionId);
         db.query(`INSERT OR IGNORE INTO global_pause_targets(generation,turn_id,session_id,run_id,title,requested_at_ms)
@@ -731,7 +730,8 @@ export class SessionOwner {
       if(state.generation===0)return;
       await Promise.all(this.peers!.names().map(async name=>{
         const row=db.query('SELECT acknowledged_generation FROM global_pause_peer_state WHERE peer=?').get(name) as {acknowledged_generation:number}|null;
-        if(row?.acknowledged_generation===state.generation)return;
+        const acknowledged=row?.acknowledged_generation===state.generation;
+        if(acknowledged&&!state.paused)return;
         try {
           const allowed=db.query('SELECT session_id FROM global_pause_exceptions WHERE generation=? AND machine=?')
             .all(state.generation,name) as Array<{session_id:number}>;
@@ -739,8 +739,10 @@ export class SessionOwner {
             .get(state.generation) as {session_ids_json:string}|null;
           const continued=(JSON.parse(action?.session_ids_json??'[]') as string[])
             .filter(id=>id.startsWith(`${name}:`)).map(id=>Number(id.slice(name.length+1)));
-          const snapshot=await this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
-            {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false);
+          const snapshot=acknowledged
+            ?await this.peers!.client(name).request('GET','/sessions/v1/pause-all',undefined,5_000,false)
+            :await this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
+              {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false);
           db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,snapshot_json,updated_at_ms)
             VALUES(?,?,?,?,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
             acknowledged_generation=excluded.acknowledged_generation,last_error=NULL,snapshot_json=excluded.snapshot_json,updated_at_ms=excluded.updated_at_ms`)
