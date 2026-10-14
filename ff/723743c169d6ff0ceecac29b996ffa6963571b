@@ -1,0 +1,1 @@
+Claude account readings now keep each account’s original measurement time, including when an older value is shown after a failed refresh.
