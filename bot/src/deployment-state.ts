@@ -6,7 +6,33 @@ import { recordRepairNotice } from "./repair-notices";
 
 function writeDeploymentTransaction<T>(work: () => T): () => T {
   // The runner and service share WAL: claim writer ownership before reading state we may change.
-  return () => db.transaction(work).immediate();
+  return () => {
+    const started = performance.now();
+    let entered = 0;
+    let workFinished = 0;
+    try {
+      return db.transaction(() => {
+        entered = performance.now();
+        try { return work(); }
+        finally { workFinished = performance.now(); }
+      }).immediate();
+    } finally {
+      const finished = performance.now();
+      if (finished - started >= 250) {
+        try {
+          console.error(JSON.stringify({
+            event: "deployment_ledger_transaction_slow",
+            pid: process.pid,
+            command: Bun.main.split("/").at(-1),
+            total_ms: Math.round(finished - started),
+            writer_acquire_ms: Math.round((entered || finished) - started),
+            work_ms: entered ? Math.round((workFinished || finished) - entered) : 0,
+            commit_ms: workFinished ? Math.round(finished - workFinished) : 0,
+          }));
+        } catch { /* Observation must not change the transaction result. */ }
+      }
+    }
+  };
 }
 
 export type DeploymentRunStatus =

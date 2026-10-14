@@ -56,6 +56,12 @@ Linux ledger writer. This removes a known path for a short-lived writer to check
 loaded disk; it does not establish the cause of the `SQLITE_BUSY` write.
 The incident's exact lock holder remains unobserved. A future update must be checked with
 the owner's loop-lag and slow-sync records before attributing any residual stalls.
+Deployment ledger transactions taking at least 250 ms emit `deployment_ledger_transaction_slow`
+with the process and separate durations for acquiring SQLite's writer, running the transaction
+body, and finishing its commit. Acquisition time includes the `BEGIN IMMEDIATE` call, so a long
+controller command that waited behind the owner is not misreported as a long writer hold. The
+incident investigation must also sample the live WAL write lock to identify its holder while
+a stall is in progress; neither duration alone names a competing process.
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
 The former raw `readFileSync(state.db-shm)` in the checkpoint thread closed a descriptor on
