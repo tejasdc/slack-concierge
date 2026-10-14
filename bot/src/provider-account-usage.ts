@@ -276,19 +276,20 @@ async function readCodex(): Promise<ProviderUsage> {
 
 async function readClaude(): Promise<ProviderUsage> {
   if (!existsSync(CSWAP)) return { observedAt: new Date().toISOString(), accounts: [], problem: "claude-swap is not installed on this host." };
-  // `list` answers from claude-swap's own usage cache and will happily serve a reading
-  // minutes old without going to claude.ai, so tightening our interval alone would have
-  // changed nothing: measured on the box, `list` reported 18% while the account was really
-  // at 25%. `status` fetches the active account and writes that cache, so asking for it
-  // first is what makes the list that follows current. It is the account being spent, so it
-  // is the one whose number has to be right; the others are idle and barely move.
-  try { await run(CSWAP, ["status", "--json"]); } catch { /* the list below still answers */ }
+  // `list` checks every managed account that is due under claude-swap's shared
+  // per-account poll plan. `status` checks only the terminal-active account, which
+  // need not be the account a Concierge execution is spending. Keep the tool's
+  // per-account fetch timestamp: its cache can serve an older reading on failure.
   let list: any;
   try { list = JSON.parse(await run(CSWAP, ["list", "--json"])); }
   catch { return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." }; }
+  if (!Array.isArray(list?.accounts))
+    return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." };
   const accounts: AccountUsage[] = [];
-  for (const account of Array.isArray(list?.accounts) ? list.accounts : []) {
-    const usage = account?.usage ?? account?.lastGoodUsage ?? null;
+  for (const account of list.accounts) {
+    const hasCurrentUsage = account?.usage != null;
+    const usage = hasCurrentUsage ? account.usage : account?.lastGoodUsage ?? null;
+    const readAt = iso(hasCurrentUsage ? account?.usageFetchedAt : account?.lastGoodFetchedAt);
     const windows: UsageWindow[] = [];
     const add = (name: string, window: any) => {
       const used = percent(window?.pct);
@@ -312,7 +313,7 @@ async function readClaude(): Promise<ProviderUsage> {
     // Plan tier and credits ride on the same login the bars come from; a login whose token
     // has lapsed keeps its last facts, and a never-read one simply has none yet.
     const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
-    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt),
+    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
