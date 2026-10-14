@@ -18,11 +18,14 @@ The filed answer's existing requested-result event pushes once; the promise sett
 in that same ledger transaction, with a visible fulfilled entry and no second push.
 An Inbox router turn cannot close as `done`, `failed`, or `needs_you` with an
 unarranged result promise: it must dispatch work from the input, answer with
-`response`, or point the promise at an existing session. Once pointed, an
-immediate `response` for that same input would push early and then push again
-when the session ends; the owner refuses an explicit one and treats an already
-finished turn's inferred response as `done`. The router can post a status in
-the thread and close `done` while the promise waits.
+`response`, or point the promise at an existing session. A router `response`
+settles the promise only when it answered without dispatching work or pointing
+at a session. An acknowledgement that work has started leaves the promise
+pending for the dispatched answer. Once pointed, an immediate `response` for
+that same input would push early and then push again when the session ends; the
+owner refuses an explicit one and treats an already finished turn's inferred
+response as `done`. The router can post a status in the thread and close `done`
+while the promise waits.
 
 The router points it with `router-actions.sh sessions notify-when --thread
 <human-message-id> --session concierge:N|mac:N [--on done,needs-you,hold]
@@ -42,6 +45,10 @@ records `fired`, posts one short service entry in the asking thread, and emits
 one `needs_you` response event with the asking input as `notificationInputId`.
 thnkr.ing's existing attention notifier reads that receipt and sends the push
 to registered devices. Concierge does not call a second push path.
+Only the router's own answer, a filed agent answer, and a fired watched-session
+promise carry `notificationInputId` for a requested result. Service notices have
+service-authored inputs and do not become requested results through an event's
+ordinary `inputId`.
 
 For a Mac target the server stores a cursor through the Mac's durable run and
 outcome events. It reads exact input receipts for account, sign-in, and usage
