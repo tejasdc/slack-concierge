@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
+import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows} from './account-allowance-observation';
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
@@ -525,27 +525,22 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
       const current=agentUsage.accounts.find(account=>account.current);
-      const activeWindows=current?includedAllowanceWindows(provider,current):[];
-      const activeHasRoom=!!current && accountReadingFresh(provider,usage,current) && activeWindows.length>0
-        && activeWindows.every(window=>window.usedPercent<100);
-      // A refusal is cleared only by a run that succeeds on that account, and none is tried while it
-      // stands. A reading that shows the account with room and lower usage than when it was refused
-      // proves a reset in between, so the refusal is forgotten here (the Mac held all work on 2026-10-10).
-      if(provider==='claude-code')for(const account of usage.accounts){
-        const refusedAt=claudeAccountRefusedSince(account.label);
-        const windows=includedAllowanceWindows(provider,account);
-        if(refusedAt===null||!accountReadingFresh(provider,usage,account)||!windows.length||windows.some(window=>window.usedPercent>=100))continue;
-        if(!usageFellSince(provider,account.label,refusedAt))continue;
-        log("info","provider_usage_refusal_overruled_by_reset",{provider,forgotten:forgetClaudeAccountRefusals(account.label)});
-      }
-      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null);
+      // A provider-wide release has no turn model. It needs evidence across every Claude
+      // window; an Opus-only reading cannot wake a Fable hold.
+      const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
+      const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
+        && activeWindows.every(window=>window.usedPercent<100)
+        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null));
+      // A percentage drop cannot identify which window caused a model-specific refusal.
+      // The exact model's success, a manual clear, or its stated reset retires that cache.
+      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null,null);
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
       if(provider==='codex'&&activeHasRoom&&!cachedUsageLimit(usageAttempt('codex')))
         releaseUsageHeldWork('codex','usable_account_observed');
       // Still none with room: held work waits only until the first account frees up, by this reading.
-      const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt():earliestRoomAt(provider);
+      const firstRoomAt=provider==='claude-code'?claudeEveryAccountClearsAt(null):earliestRoomAt(provider);
       if(firstRoomAt!==null&&firstRoomAt>Date.now()){
         const moved=moveUsageHoldsEarlier(provider,firstRoomAt);
         if(moved)log("info","provider_usage_hold_moved_earlier",{provider,moved,until:new Date(firstRoomAt).toISOString()});
@@ -603,12 +598,13 @@ export async function refreshProviderAccountUsage(): Promise<void> {
 const accountInUse = new Map<ProviderKey, string>();
 function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): void {
   const current = usage.accounts.find(account => account.current);
-  if (!current?.label || !accountReadingFresh(provider,usage,current)
-    || !includedAllowanceWindows(provider,current).length) return;
+  if (!current?.label || !accountReadingFresh(provider,usage,current,Date.now(),undefined,null)
+    || !includedAllowanceWindows(provider,current,null).length) return;
   const previous = accountInUse.get(provider);
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;
-  if (includedAllowanceWindows(provider,current).some(window => window.usedPercent >= 100)) {
+  if (includedAllowanceWindows(provider,current,null).some(window => window.usedPercent >= 100)
+    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)) {
     log("info", "provider_account_changed_still_spent", { provider });
     return;
   }

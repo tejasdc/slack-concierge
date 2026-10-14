@@ -365,6 +365,11 @@ Cached Claude refusals are matched to the attempted model for dispatch; a Fable 
 does not turn an Opus account into measured 100% usage. A selected login whose usage is
 unreadable may still receive one provider attempt, and a manually proven waiting turn
 may spend its one-time proof; those permissions are separate from measured percentages.
+An account reading does not identify which allowance window caused a model refusal.
+A drop in another window therefore never clears that refusal early; only the stated
+reset, that exact model's successful attempt, or an explicit cache clear can retire it.
+Refresh actions that wake or advance turns across models require current evidence for
+every Claude window. Per-turn dispatch still considers only its actual model's windows.
 Ordinary dispatch ranks only source-timed readings still valid for its requested model;
 an old percentage, weekly reset or peer transfer time gives an alternate no rank. A
 Claude session with no model binding passes no model flag to Claude Code, whose configured

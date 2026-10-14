@@ -299,24 +299,6 @@ export function accountAvailability(provider: AccountIdentityProvider,model?:str
   });
 }
 
-/**
- * Whether some window of this account now reads lower than it did at or before `sinceMs`. Usage only
- * falls when an allowance resets, so a fall proves a reset happened after that moment. A reading that
- * merely lags behind a refusal (still 98% after Claude said "limit") does not fall, so it proves nothing.
- */
-export function usageFellSince(provider: AccountIdentityProvider, account: string, sinceMs: number): boolean {
-  const rows = db.query(`SELECT window_name, used_percent, observed_at_ms FROM provider_usage_readings
-    WHERE provider=? AND account=? ORDER BY observed_at_ms`).all(provider, account) as
-    { window_name: string; used_percent: number; observed_at_ms: number }[];
-  const before = new Map<string, number>(), latest = new Map<string, number>();
-  for (const row of rows) (row.observed_at_ms <= sinceMs ? before : latest).set(row.window_name, row.used_percent);
-  for (const [window, now] of latest) {
-    const then = before.get(window);
-    if (then !== undefined && now < then) return true;
-  }
-  return false;
-}
-
 /** The earliest moment any account of this provider can take work: now when one has room, null when unknown. */
 export function earliestRoomAt(provider: AccountIdentityProvider): number | null {
   const rooms = accountAvailability(provider);
