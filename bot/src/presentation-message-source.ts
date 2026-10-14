@@ -4,10 +4,20 @@ import {inboxRequestRoot} from './inbox-request-root';
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
 
+/**
+ * One input is one Inbox message. A queued message that later joins the running turn records a
+ * second acceptance under the same input (2026-10-14, release 478b7876); only the first, where he
+ * sent it, is the message. The owner's history and this projection share this one predicate.
+ */
+export const FIRST_ACCEPTANCE=`NOT EXISTS (SELECT 1 FROM session_owner_events earlier
+              WHERE earlier.input_id=event.input_id AND earlier.session_id=event.session_id
+                AND earlier.kind='accepted' AND earlier.sequence<event.sequence)`;
+
 /** This is the Inbox's retained message predicate, with a bounded event-sequence walk. */
 export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event.event_id,event.input_id,event.kind,event.created_at,
   json_extract(owner.native_metadata_json,'$.inbox') AS is_inbox,input.origin AS input_origin,
   CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.capture') IS NOT NULL ELSE 0 END AS has_capture,
+  CASE WHEN event.kind='accepted' THEN NOT ${FIRST_ACCEPTANCE} ELSE 0 END AS repeated_acceptance,
   CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.alreadyPostedInThread') IS 1 ELSE 0 END AS already_posted_in_thread,
   CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
   CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
@@ -22,7 +32,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
   input_origin:string|null;
-  is_inbox:number|null;has_capture:number;already_posted_in_thread:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
+  is_inbox:number|null;has_capture:number;repeated_acceptance:number;already_posted_in_thread:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
   return row.kind==='result'||row.kind==='post'||row.kind==='request'?row.event_id:row.input_id;
 }
@@ -81,7 +91,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox)return [];
     if(!(['result','inbox_capture','post','request'].includes(row.kind)
-      ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
+      ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread&&!row.repeated_acceptance))return [];
     if(row.kind==='result'&&!row.has_result_text&&!row.has_attachments)return [];
     const messageId=sourceMessageId(row);
     if(!messageId)return [];
