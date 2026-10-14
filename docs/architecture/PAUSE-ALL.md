@@ -48,6 +48,8 @@ paused sheet shows running and queued sessions, peer acknowledgements and select
 all resume. It never calls a provider directly.
 
 Pause all governs Concierge session admission and the providers' running turns. It does
-not stop arbitrary processes or independent tools started outside Concierge. If a
+not stop arbitrary processes or independent tools started outside Concierge, nor the run of an
+outside request (`sessions ask --outside`), which is outside Concierge by design; Stop on that
+session still ends it, and its next turn waits for the pause like any other. If a
 provider has detached background work, its own lifecycle and the running session's
 record remain the source of truth; the pause status must not label that work stopped.

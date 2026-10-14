@@ -629,13 +629,16 @@ export class SessionOwner {
           FROM turns turn JOIN sessions session ON session.id=turn.session_id
           WHERE turn.status='running' AND turn.native_run_id IS NOT NULL AND turn.stop_requested_at IS NULL
             AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router'
+            AND COALESCE(json_extract(session.native_metadata_json,'$.outside'),0)=0
             AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
               AND allowed.machine=? AND allowed.session_id=session.id)`).run(nextGeneration,now,nextGeneration,this.selfMachine);
         db.query(`UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),
           stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns))
           WHERE status='running' AND native_run_id IS NOT NULL
             AND session_id IN (SELECT id FROM sessions WHERE provider_id<>'chatgpt'
-              AND COALESCE(json_extract(native_metadata_json,'$.inboxRole'),'')<>'project-router')
+              AND COALESCE(json_extract(native_metadata_json,'$.inboxRole'),'')<>'project-router'
+              -- An outside request's run is outside Concierge's controls; Stop on its session still ends it.
+              AND COALESCE(json_extract(native_metadata_json,'$.outside'),0)=0)
             AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
               AND allowed.machine=? AND allowed.session_id=turns.session_id)`).run(nextGeneration,this.selfMachine);
       } else if(chosen.length){
@@ -1186,12 +1189,14 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;summary?:string;smallTask?:boolean;outside?:boolean;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
     const title=normalizeSessionTitle(input.title);
     const source=input.sourceInputId?getAcceptedSessionInput(input.sourceInputId):null;
     const fromClaude=!!source&&getSessionById(source.session_id)?.provider_id==='claude-code';
     const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
-    const {provider,...metadata}=selected;
+    // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
+    if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
+    const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{})};
     if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
     const session=createNativeSession(provider,{title,summary:input.summary??purposeFromFirstWords(input.firstInput.text),...metadata});
     this.validateAttachments(session,input.firstInput.attachments);

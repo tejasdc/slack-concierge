@@ -12,6 +12,7 @@ import type {TurnSteeringController} from './steering';
 import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
 import type {AgentProvider} from './providers';
 import {antigravityExecutable} from './antigravity';
+import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
 import type {ProviderId} from './state';
 import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
 import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-session-controls';
@@ -886,10 +887,14 @@ export class SessionExecutionHost {
           let actual=prepared;
           // New Codex turns always use the shared daemon. Retain the old host path only
           // to finish an execution recorded before this change.
-          const privateCodex=session.provider_id==='codex'&&!!adoption&&adoption.execution.supervisor!=='codex-daemon';
+          const outside=session.provider_id==='codex'&&metadata.outside===true;
+          const privateCodex=session.provider_id==='codex'&&!outside&&!!adoption&&adoption.execution.supervisor!=='codex-daemon';
           const kept={replayPrompt,runAdditionalDirs,staging,account:prepared.accountLabel&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||privateCodex)
             ?{account:prepared.accountLabel,home:(session.provider_id==='codex'?prepared.environment?.CODEX_HOME:prepared.environment?.CLAUDE_CONFIG_DIR)??null}:null};
-          if(session.provider_id==='antigravity') {
+          if(outside) {
+            if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','An outside run needs an execution host on this machine.');
+            actual=adoption?this.adoptedOutsideRun(prepared,adoption):this.outsideRun(prepared,claim,session,kept);
+          } else if(session.provider_id==='antigravity') {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
             actual=adoption?this.adoptedRun(prepared,adoption,antigravityExecutable())
               :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
@@ -928,6 +933,7 @@ export class SessionExecutionHost {
                 log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
               .then(result=>{noteChatgptModel(result.text);return result;},error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
+          if(outside)return runOutsideCodexTurn(actual as OutsideRun);
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
           return underlying.run(actual);
         }};
@@ -948,7 +954,8 @@ export class SessionExecutionHost {
       ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
-        if(provider==='codex')void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
+        // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
+        if(provider==='codex'&&!metadata.outside)void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
       },deliverResult:result=>this.deliverResult(result)},
       });
     } finally {
@@ -992,6 +999,26 @@ export class SessionExecutionHost {
       onProviderThreadStarted?.(threadId);
     }} as any;
   }
+  /**
+   * An outside request's run: the Codex command line in its own execution host, recorded before the
+   * host starts like a Claude run, but with no inactivity limit and nothing ever written to it
+   * (outside-codex.ts). Its opening words go in a private file beside the state, read once by the CLI.
+   */
+  private outsideRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    const outside={...prepared,promptFile:join(stateDir,'outside-prompts',executionId),codexExecutable:MANAGED_CODEX};
+    const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
+      onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=outside as any;
+    retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
+      directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
+    return {...outside,transport:this.hostedTransport('launch',executionId,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+  }
+  private adoptedOutsideRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption):Parameters<AgentProvider['run']>[0] {
+    const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
+    return {...prepared,...adoption.processor.run,adopted:true,
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,'/bin/sh',{inactivityMs:null})} as any;
+  }
   /** Follow the daemon's turn by its exact thread and turn; never start one (design §4.2). */
   private adoptedCodexRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,session:SessionRow):Parameters<AgentProvider['run']>[0] {
     const current=getSessionById(session.id)!;
@@ -1005,7 +1032,7 @@ export class SessionExecutionHost {
       onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
   }
-  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string) {
+  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null}) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
     const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??claudeExecutable(),
@@ -1014,7 +1041,7 @@ export class SessionExecutionHost {
         log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
         if(mode==='adopt'&&!status.exit)recordLiveAdoption(executionId);
       },
-      onExited:exit=>recordExecutionExited(executionId,exit)});
+      onExited:exit=>recordExecutionExited(executionId,exit)},timeouts);
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);

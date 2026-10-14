@@ -33,6 +33,8 @@ export type NativeSessionMetadata = {
   automaticSmallTask?:boolean;
   /** Retired 2026-09-29: nothing is said to him about accounts. Written null so old ones clear. */
   claudeAccountNotice?:null;
+  /** Every turn runs as the Codex command line in its own unit, started and watched, never driven (outside-codex.ts). */
+  outside?:boolean;
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;

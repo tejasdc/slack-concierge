@@ -40,14 +40,16 @@ export function provenRunKinds(database: Database): Set<string> {
     WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind)
     .filter(kind => kind !== "codex/codex-daemon" || managedHooksFollowRuns());
   // The execution host is one program whatever provider it runs: once one provider's run has been
-  // taken back live on a supervisor, every provider whose contract runs in that host and carries on
-  // through an update is trusted there too. Waiting to observe each provider separately could never
+  // taken back live on a supervisor, every provider that carries on through an update is trusted in
+  // that host too, including a Codex command line an outside request runs there (outside-codex.ts),
+  // which the next coordinator only reads. Waiting to observe each provider separately could never
   // finish, because the update waits for every unproven run (Gemini: 20 runs, none taken over, by
-  // 2026-10-13, as ChatGPT before it on 2026-10-09).
+  // 2026-10-13, as ChatGPT before it on 2026-10-09), and an agent changing Concierge from outside
+  // would hold the very update it is shipping.
   const hostSupervisors = new Set(observed.filter(kind => PROVIDER_CONTRACT[kind.split("/")[0] as keyof typeof PROVIDER_CONTRACT]?.runsIn === "execution-host")
     .map(kind => kind.split("/")[1]));
   const inherited = [...hostSupervisors].flatMap(supervisor => (Object.keys(PROVIDER_CONTRACT) as (keyof typeof PROVIDER_CONTRACT)[])
-    .filter(provider => PROVIDER_CONTRACT[provider].runsIn === "execution-host" && guaranteeMet(provider, "carriesOnThroughUpdate"))
+    .filter(provider => guaranteeMet(provider, "carriesOnThroughUpdate"))
     .map(provider => `${provider}/${supervisor}`));
   return new Set([CHATGPT_RUN_KIND, ...observed, ...inherited]);
 }
