@@ -1903,7 +1903,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 return;
             }
             const binding = this.binding(request);
-            const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
+            const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at,provider_input_acknowledged_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
             // Work in progress under a live owner is not a stall. Wait another interval rather
             // than report a healthy run as one; its answer settles this request when it ends.
             const healthy = turn?.status === 'running' ? !turn.stop_requested_at && !!turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id)
@@ -1919,7 +1919,13 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 const what = summary.summary ?? summary.title ?? 'your question';
                 db.transaction(() => {
                     if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null) return;
-                    this.event(request, 'overdue', { text: `ChatGPT is still writing its answer to "${what}" after ${STILL_WAITING_MINUTES} minutes. Pro answers can take an hour. It will arrive here by itself when it is done; nothing needs to be resent.`, health: 'still being answered by ChatGPT' });
+                    // A send not yet acknowledged has not reached ChatGPT: it is waiting its pacing turn
+                    // (6 an hour, 2 minutes apart). Saying "still writing" then told session 6065 an answer
+                    // existed that had never been asked (2026-10-13).
+                    const sent = !!turn?.provider_input_acknowledged_at;
+                    this.event(request, 'overdue', sent
+                        ? { text: `ChatGPT is still writing its answer to "${what}" after ${STILL_WAITING_MINUTES} minutes. Pro answers can take an hour. It will arrive here by itself when it is done; nothing needs to be resent.`, health: 'still being answered by ChatGPT' }
+                        : { text: `"${what}" has not been sent to ChatGPT yet after ${STILL_WAITING_MINUTES} minutes: it is waiting its turn, because sends to his ChatGPT are spaced out to at most 6 an hour, 2 minutes apart. It goes out by itself and its answer arrives here; nothing needs to be resent.`, health: 'waiting its turn to be sent to ChatGPT' });
                     db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
                 })();
                 return;
