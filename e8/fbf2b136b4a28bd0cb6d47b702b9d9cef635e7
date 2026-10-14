@@ -1,0 +1,1 @@
+Update completion and failure records now pass through the serving owner, removing the last observed release helper ledger writer.
