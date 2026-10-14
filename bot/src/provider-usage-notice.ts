@@ -432,7 +432,7 @@ function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare
 }
 
 /**
- * A warning whose window has refilled is no longer something to read: its thread says so and
+ * A warning whose stated reset time passed is no longer something to read: its thread says so and
  * closes, ending the reading item, the way a retry notice closes when its breaker clears.
  */
 function settleRefilledUsageWarnings(): void {
@@ -461,8 +461,8 @@ function settleRefilledUsageWarnings(): void {
       if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
         text: payload.providers
-          ? `The first allowance refilled at ${noticeTime(db, resetsAtMs)}. The both-providers warning has ended.`
-          : `${payload.account ?? "The account"} refilled at ${noticeTime(db, resetsAtMs)}. Nothing waits on you.` });
+          ? `The first allowance's stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; the both-providers warning has ended.`
+          : `${payload.account ?? "The account"}'s stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; nothing waits on you.` });
     } catch (error) {
       log("error", "provider_usage_warning_settle_failed", { input_id: row.id, error: String(error) });
     }

@@ -1,7 +1,7 @@
 import { providerDisplayName } from "./aliases";
 import {currentAccount,listProfiles,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
-import {accountReadingFresh,markUncurrentAccountReadings} from './account-allowance-observation';
+import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
 import {withResetAdvice} from './provider-usage-forecast';
 import {claudeRunsFromOwnHomes} from './provider-account-dispatch';
 import {claudeAccountSelection} from './provider-account-selection';
@@ -13,15 +13,16 @@ import type {ProviderAuthView} from './session-execution-host';
 function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
   const reading=usage?.accounts.find(item=>item.label===chosen);
   if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
-  const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
+  const full=includedAllowanceWindows('claude-code',reading).filter(window=>window.usedPercent>=100&&window.resetsAt);
   if(!full.length)return '';
   const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
   const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
-    &&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+    &&includedAllowanceWindows('claude-code',item).length>0
+    &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
   const when=noticeTime(db,until);
   return other
     ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
-    :`${chosen} is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
+    :`${chosen} is at its limit until ${when}, and no other account has confirmed room. New Claude work checks again before routing and waits if none is available.`;
 }
 
 /** Account listing runs in an isolated reader. Login state comes from the command owner. */

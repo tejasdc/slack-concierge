@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
-import { accountReadingFresh } from './account-allowance-observation';
+import { accountReadingFresh,includedAllowanceWindows } from './account-allowance-observation';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
@@ -31,7 +31,7 @@ function candidatesForNewWork(now: number): Candidate[] {
       const account = usage.accounts.find(value => value.label === room.account);
       if (!account || !accountReadingFresh(provider,usage,account,now)) continue;
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
-      const relevant = account.windows.filter(window => window.name !== 'Weekly · Fable only');
+      const relevant = includedAllowanceWindows(provider,account);
       if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
       const used = cachedReset ? 100 : Math.max(...relevant.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)

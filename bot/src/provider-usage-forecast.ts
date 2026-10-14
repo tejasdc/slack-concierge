@@ -2,7 +2,7 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import {accountReadingAt,accountReadingFresh} from './account-allowance-observation';
+import {accountReadingAt,accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -289,9 +289,10 @@ export function accountAvailability(provider: AccountIdentityProvider): AccountA
     if (!accountReadingFresh(provider,usage,account))
       return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
-    if (account.problem || !account.windows.length)
+    const relevant=includedAllowanceWindows(provider,account);
+    if (account.problem || !relevant.length)
       return refusedUntil === null ? [] : [{ account: account.label, selected: account.current, hasRoom: false, freeAt: refusedUntil }];
-    const spent = account.windows.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
+    const spent = relevant.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
     const hasRoom = !spent.length && refusedUntil === null;
     const resets = refusedUntil === null ? spent : [...spent, refusedUntil];
     const freeAt = hasRoom || resets.some(reset => reset === null) ? null : Math.max(...resets as number[]);
@@ -352,8 +353,9 @@ export function withResetAdvice(provider: AccountIdentityProvider, usage: Provid
   if (provider === "antigravity") return usage;
   return { ...usage, accounts: usage.accounts.map(account => ({
     ...account,
-    resetAdvice: !accountReadingFresh(provider,usage,account,nowMs) || !account.windows.length ? null : resetAdvice({
-      provider, windows: account.windows, nowMs,
+    resetAdvice: !accountReadingFresh(provider,usage,account,nowMs)
+      || !includedAllowanceWindows(provider,account).length ? null : resetAdvice({
+      provider, windows: includedAllowanceWindows(provider,account), nowMs,
       othersWithRoom: accountsWithRoomBesides(provider, account.label).length > 0,
       when: ms => noticeTime(db, ms),
     }),

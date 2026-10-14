@@ -87,7 +87,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
-import {accountReadingFresh,markUncurrentAccountReadings} from './account-allowance-observation';
+import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
 import {antigravityAuthView} from './provider-auth-read';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
@@ -274,15 +274,16 @@ export class SessionExecutionHost {
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
     if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
-    const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
+    const full=includedAllowanceWindows('claude-code',reading).filter(window=>window.usedPercent>=100&&window.resetsAt);
     if(!full.length)return '';
     const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
     const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
-      &&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+      &&includedAllowanceWindows('claude-code',item).length>0
+      &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
     const when=noticeTime(db,until);
     return other
       ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
-      :`${chosen} is at its limit until ${when}, and no other account has room, so new Claude work waits until then.`;
+      :`${chosen} is at its limit until ${when}, and no other account has confirmed room. New Claude work checks again before routing and waits if none is available.`;
   }
 /**
    * The account list, answered from what this machine last knew, with the checks run behind it.
@@ -566,7 +567,8 @@ export class SessionExecutionHost {
     const observed=providerAccountUsage(key);
     const reading=observed?.accounts.find(item=>item.label===profile.label);
     const hasRoom=!!observed&&!!reading&&accountReadingFresh(key,observed,reading)
-      &&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
+      &&includedAllowanceWindows(key,reading).length>0
+      &&includedAllowanceWindows(key,reading).every(window=>window.usedPercent<100);
     if(hasRoom)releaseUsageHeldWork(key);
     // The account just proved it answers, so work held for a sign-in may go to it now.
     if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});

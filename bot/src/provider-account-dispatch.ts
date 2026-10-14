@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {chooseAccountForTurn,type AccountReason} from './provider-account-choice';
 import {accountHome,currentAccount,keptProfileCount,listProfiles,profileId,type AccountIdentityProvider,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage} from './provider-account-usage';
-import {accountReadingFresh} from './account-allowance-observation';
+import {accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
@@ -163,7 +163,8 @@ function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink
 /** Homes with credentials that this owner can use without switching a live login. */
 function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage):number|null {
   if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
-  return account.windows.length?Math.max(...account.windows.map(window=>window.usedPercent)):null;
+  const windows=includedAllowanceWindows(provider,account);
+  return windows.length?Math.max(...windows.map(window=>window.usedPercent)):null;
 }
 
 /**

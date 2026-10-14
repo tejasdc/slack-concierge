@@ -332,10 +332,13 @@ obtained the numbers from the provider. The time a host stored the batch or rece
 peer copy never refreshes an account's observation. Accounts exposes that source time,
 whether the observation is current, old, unreadable or missing, and measured room only
 for a current observation. It supplies the expiration time so an open page can stop
-claiming current room when the source reading ages. Old percentages remain historical evidence; missing source
+claiming current room when the source reading ages or a measured window reaches its
+stated reset. Old percentages remain historical evidence; missing source
 time gives unknown room, not zero or full usage. New work, saved work, room notices,
 forecasts and Accounts use that same freshness rule. Measured room does not override a
-provider's model refusal, a failed sign-in or the need for a proven Claude home. A new
+provider's model refusal, a failed sign-in or the need for a proven Claude home. The
+Accounts room field concerns ordinary Automatic work: Claude Opus excludes its separate
+Fable-only weekly cap. A new
 Automatic request with no current candidate asks the existing usage reader to refresh,
 then refuses with unknown capacity; a later request can use the fresh observation.
 
