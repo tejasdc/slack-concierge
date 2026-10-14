@@ -546,6 +546,11 @@ cleanup ends rather than being claimed and rejected as a duplicate owner. This i
 read of the same registry, not another queue or execution lock. A prior turn's `pending` or `sending` artifact delivery is
 also a session-scoped admission and promotion blocker, so an independent queue
 wake cannot enter the provider while the completed turn still owns artifact I/O.
+If a provider proves it never received a turn and requeues it before its local run
+has finished unwinding, the claim query excludes that turn ID while the queue or
+adopted-run wrapper still owns it. Cleanup wakes the queue after releasing the ID.
+The queued turn remains intact and another session can claim in the meantime;
+it is never claimed and terminalized as a duplicate local run.
 Startup performs dead-owner turn recovery before scanning
 queued rows, so an ambiguous or interrupted provider boundary is never blindly
 replayed as queued work. If a session is archived after accepting queued input,
