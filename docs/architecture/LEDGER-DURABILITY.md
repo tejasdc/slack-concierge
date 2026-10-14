@@ -158,7 +158,8 @@ quiet-disk checkpoints.
 The release controller builds the artifact outside the owner, but release state belongs to the
 owner until it stops. A root-only request on `request-owner.sock` records preparation, activation
 intent, reaction targets and activation through the owner's ledger connection. The request reply
-passes the existing durability barrier. The controller's connection is read-only for `prepare` and
+passes the existing durability barrier. The prepared release row and its event commit in one
+transaction. The controller's connection is read-only for `prepare` and
 `activate`, including its provenance reads, so a candidate build cannot hold the WAL writer lock
 on behalf of the controller. The one-time legacy repair cutover and stopped-owner recovery
 explicitly retain direct writes; they have separate drain rules. A failed owner request fails an

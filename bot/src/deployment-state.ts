@@ -892,27 +892,29 @@ export function recordDeploymentReleasePrepared(
   ]) {
     if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("Release provenance contains an invalid digest.");
   }
-  db.query(`INSERT INTO deployment_releases (
+  return writeDeploymentTransaction(() => {
+    db.query(`INSERT INTO deployment_releases (
       artifact_digest, run_id, git_commit, source_tree_digest, runtime_digest,
       compatibility_digest, artifact_path, state
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared')
     ON CONFLICT(artifact_digest) DO UPDATE SET
       run_id=excluded.run_id,
       artifact_path=excluded.artifact_path
-  `).run(
-    manifest.artifact_digest,
-    runId,
-    manifest.git_commit,
-    manifest.source_tree_digest,
-    manifest.runtime_digest,
-    manifest.compatibility_digest,
-    artifactPath,
-  );
-  appendRunEvent(runId, "release_prepared", {
-    artifact_digest: manifest.artifact_digest,
-    git_commit: manifest.git_commit,
-  });
-  return getDeploymentRelease(manifest.artifact_digest)!;
+    `).run(
+      manifest.artifact_digest,
+      runId,
+      manifest.git_commit,
+      manifest.source_tree_digest,
+      manifest.runtime_digest,
+      manifest.compatibility_digest,
+      artifactPath,
+    );
+    appendRunEvent(runId, "release_prepared", {
+      artifact_digest: manifest.artifact_digest,
+      git_commit: manifest.git_commit,
+    });
+    return getDeploymentRelease(manifest.artifact_digest)!;
+  })();
 }
 
 export function getDeploymentRelease(artifactDigest: string): DeploymentReleaseRow | null {
