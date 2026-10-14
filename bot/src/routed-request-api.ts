@@ -52,6 +52,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
         const readOnly=operation==='search'||operation==='projects'||operation==='peers'||operation==='usage'
+          ||operation==='pause'&&input.verb==='status'
           ||operation==='get'||operation==='context'||operation==='obligations'
           ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
           ||operation==='saved'&&input.verb==='list'||operation==='topics'&&['read','list','questions'].includes(input.verb);
@@ -68,6 +69,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
             ? await usageBreakdown(input.period==='week'?'week':'today') : current);
         }
         if (operation === 'saved') return Response.json(sessions.saved(input));
+        if (operation === 'pause') return Response.json(await sessions.pause(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));

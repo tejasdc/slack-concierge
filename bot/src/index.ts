@@ -4229,6 +4229,10 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null));
             sessionExecutionHost.markOwnerServing();
+            await sessionExecutionHost.owner.refreshGlobalPauseFromOwner(true);
+            void sessionExecutionHost.owner.syncGlobalPausePeers();
+            const globalPauseReconcile=setInterval(()=>void sessionExecutionHost.owner.syncGlobalPausePeers(),5_000);
+            globalPauseReconcile.unref?.();
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
             startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);
             if (peering.listen) {
