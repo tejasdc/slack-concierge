@@ -288,8 +288,9 @@ docs/plans/2026-10-13-living-design-review.md.
 
 Another Concierge instance is a peer: `sessions peers` lists them, and `--peer <instance>`
 on `projects`, `search` and `ask` targets that instance's projects and sessions. A peer
-request keeps its return obligation here; the recipient on the peer replies with the
-ordinary `sessions reply`. See [peer instances](PEER-INSTANCES.md). Creating a session on a
+request and its result destination stay here; the recipient on the peer replies with the
+ordinary `sessions reply`. A named Inbox thread receives the result directly unless
+the requester explicitly asks for a copy. See [peer instances](PEER-INSTANCES.md). Creating a session on a
 peer needs `--machine-need "<what only that machine can do>"`; new work runs on the server.
 
 A call that lands while Concierge restarts for an update waits it out (`ownerRestart`, 90 s;
@@ -526,11 +527,12 @@ and the agent-science-lab coordinator's requests to three builders were
 declined until resent; its resend was then refused because the run had been
 opened by a planner's question even though Tejas was talking to it in that run.
 
-Every `ask` creates a return obligation that only its recipient can discharge
-with `reply`. Writing "no reply needed" in the body does not settle it; the
-helper exposes no cancel verb, so an unsettled request waits for its deadline
-and wakes an overdue inspection. Send information a recipient must act on as an
-`ask` and accept that it owes a reply, and do not open one purely to inform.
+Every `ask` requires its recipient to close it with `reply`. Writing "no reply
+needed" in the body does not settle it; `sessions cancel` can withdraw a request
+the sender no longer needs. A named Inbox thread receives the answer and any
+overdue notice directly unless the sender explicitly requests its own return.
+Send information a recipient must act on as an `ask` and accept that it owes a
+reply, and do not open one purely to inform.
 
 Several asks to one busy session usually land in one turn: the first opens it and
 the rest steer in. Reply to each of them, and when one answer covers several, say
