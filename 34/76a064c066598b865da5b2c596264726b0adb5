@@ -1,0 +1,1 @@
+The Inbox router now checks every received message before ending its turn and must file anything still missing a thread.
