@@ -83,13 +83,24 @@ export function workerWillWake(owner: SessionOwner, sessionId: number, sinceMs =
 
 export type StrandedStep =
     | { step: 'none' }
+    | { step: 'report-back' }
     | { step: 'stall'; reason: string };
 
 /**
+ * Requests asked from this instant on are owed one report-back when their worker stops without
+ * replying and its end-of-turn check could not send it back. Older open requests keep the old
+ * behaviour, so the release that adds this wakes nobody about work from before it.
+ */
+export const REPORT_BACK_SINCE_MS = 1792000000000; // 2026-10-14T17:46:40Z
+
+/**
  * The next step for an open request whose worker's turn has ended with no final reply. The
- * worker was already held to the protocol at the moment it tried to end its turn, by the Stop hook
- * both Claude Code and Codex run (owed-reply-stop-hook.ts); there is no second reminder turn. So
- * a stranded request is reported to its requester once, and stays open for a late final.
+ * worker is normally held to the protocol at the moment it tries to end its turn, by the Stop hook
+ * both Claude Code and Codex run (owed-reply-stop-hook.ts). When that check could not send it back
+ * (Concierge was restarting or down, as it can be under an outside agent, or the request arrived
+ * after the check ran), the owner asks the worker once to report back (Tejas, 2026-10-14: "detect
+ * that it actually stopped with no response, and then ask it to report back"). A request still
+ * stranded after either reminder is reported once as stalled, and stays open for a late final.
  */
 export function strandedStep(owner: SessionOwner, input: { requestId: string; workerSessionId: number; createdAtMs: number; remindedAtMs: number | null; remindedVia: string | null; stalledAtMs: number | null }): StrandedStep {
     if (input.createdAtMs < REMINDERS_SINCE_MS || input.stalledAtMs !== null) return { step: 'none' };
@@ -98,10 +109,22 @@ export function strandedStep(owner: SessionOwner, input: { requestId: string; wo
     const session = getSessionById(input.workerSessionId);
     if (!session || !owner.canSend(session))
         return { step: 'stall', reason: 'the worker session is paused, archived or no longer available' };
+    if (input.remindedVia === null && input.createdAtMs >= REPORT_BACK_SINCE_MS) return { step: 'report-back' };
+    // A reminder counts only once it reached the worker's queue: one retained by a run that died
+    // before dispatching it is dispatched again, never taken for delivered.
+    if (input.remindedVia === 'owner' && !getAcceptedSessionInput(`report-back:${input.requestId}`)?.turn_id) return { step: 'report-back' };
     return { step: 'stall', reason: input.remindedVia === 'hook'
         ? 'it was sent back with the reply command when it tried to end its turn, and ended again without a final reply'
+        : input.remindedVia === 'owner'
+        ? 'its run ended without a final reply, it was asked once to report back, and it ended again without one'
         : 'its turn ended without a final reply, and its end-of-turn check did not send it back (the check was unavailable, or the request arrived after it ran)' };
 }
+
+/** What a worker that stopped without replying is told, once, by the owner. */
+export const reportBackNotice = (label: string, command: string) =>
+    `Your run ended before you sent your final reply to ${label}, and your end-of-turn check could not send you back (Concierge may have been restarting). `
+    + `Its requester has not been answered. Check what you finished and what is still open, then reply now with router-actions.sh ${command}, `
+    + 'using this input\'s source pair. If the work is not finished, finish it first or say exactly what is left.';
 
 export const stalledNotice = (reason: string, lastPartial: string | null) =>
     `The agent stopped before answering this request: ${reason}. `

@@ -400,11 +400,12 @@ export type HostedExecution = {
  */
 export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
   constructor(private readonly execution: HostedExecution,
-    private readonly timeouts: { inactivityMs?: number; shutdownGraceMs?: number } = {}) {}
+    /** `inactivityMs: null` sets no limit: an outside run is watched, never policed (outside-codex.ts). */
+    private readonly timeouts: { inactivityMs?: number | null; shutdownGraceMs?: number } = {}) {}
 
   run(input: Parameters<ClaudeCodeTransport["run"]>[0]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const execution = this.execution;
-    const inactivityMs = this.timeouts.inactivityMs ?? 30 * 60_000;
+    const inactivityMs = this.timeouts.inactivityMs === null ? null : this.timeouts.inactivityMs ?? 30 * 60_000;
     const shutdownGraceMs = this.timeouts.shutdownGraceMs ?? 2_000;
     const directory = executionDirectory(execution.stateDir, execution.executionId);
     const socketPath = hostSocketPath(directory);
@@ -445,7 +446,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       // No provider activity is the provider's silence, not the host's: a host that stopped reading
       // because its disk is full is waiting on space, and the timer waits with it.
       const resetInactivity = () => {
-        if (!replayEnded) return;
+        if (!replayEnded || inactivityMs === null) return;
         if (inactivity) clearTimeout(inactivity);
         inactivity = setTimeout(() => {
           if (settled) return;

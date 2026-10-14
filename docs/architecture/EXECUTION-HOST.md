@@ -138,7 +138,17 @@ are command hooks in `--settings`, held by the unchanged process).
 
 ## Codex runs (design step 5)
 
-- **Every new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
+- **Outside requests are the exception** (`sessions ask --outside`, `bot/src/outside-codex.ts`):
+  their session's turns run the Codex command line (`/bin/sh` handing a private prompt file to
+  `codex exec --json`, or `codex exec resume <thread>` for a later turn) in an ordinary execution
+  host, recorded as provider `codex` on the host supervisor. The coordinator only reads the record:
+  it never writes to the process, sets no inactivity limit, and Pause all skips these sessions;
+  Stop signals the process. Adoption, release and the update rule are the host's own, and a host
+  supervisor proven by any provider trusts every provider that carries on through an update, so an
+  agent shipping Concierge from outside never holds its own update. The CLI shares `~/.codex/auth.json`
+  with the App Server; Codex 0.162 reloads that file before renewing and skips the renewal when
+  another process already renewed, so the two never spend each other's login.
+- **Every other new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
   Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
   After a restart the next coordinator follows the turn by its exact thread (the session's bound
   provider id) and recorded provider turn id (`adoptTurn` in `runCodexTurnShared`): it resumes the

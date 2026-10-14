@@ -20,7 +20,7 @@ import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
-import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel } from './session-notices';
@@ -978,6 +978,8 @@ export class SessionCommunicationCoordinator {
         address?: string;
         provider?: string;
         smallTask?: boolean;
+        /** Run the new Codex session's turns outside Concierge (outside-codex.ts); otherwise an ordinary request. */
+        outside?: boolean;
         effort?: string;
         project?: string;
         title?: string;
@@ -1018,6 +1020,8 @@ export class SessionCommunicationCoordinator {
         // declined to build what Tejas had asked for (2026-10-08).
         if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
         if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
+        if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
+            throw new Error('An outside request starts a new local Codex session: --outside with --project and an optional Codex alias.');
         if(input.consult!==undefined) {
             if(!input.provider||input.provider==='chatgpt')throw new Error('--consult points a new coding session at earlier work; it needs --provider.');
             if(typeof input.consult!=='string'||!/^([\w-]+\/)?session:[\w-]+$/.test(input.consult))throw new Error('--consult takes an exact session address from discovery.');
@@ -1098,6 +1102,7 @@ export class SessionCommunicationCoordinator {
             ...(input.return_to_requester?{returnToRequester:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
+            ...(input.outside?{outside:true}:{}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
         const prior = () => actor.inputId
@@ -1156,7 +1161,7 @@ export class SessionCommunicationCoordinator {
 
 ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {
@@ -1511,6 +1516,26 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         const owner = this.dependencies.owner!;
         const next = strandedStep(owner, { requestId: request.request_id, workerSessionId: request.target_session_id,
             createdAtMs: request.created_at_ms, remindedAtMs: request.reminded_at_ms, remindedVia: request.reminded_via, stalledAtMs: request.stalled_at_ms });
+        if (next.step === 'report-back') {
+            // The reminder input and the mark that it was sent are one transaction: a restart can
+            // neither use the reminder up unsent nor leave a sent one unrecorded. Its stable ID makes
+            // any repeat the same input. Dispatch follows the commit, as for every admitted input.
+            const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(turnId) as { native_run_id: string | null } | null;
+            const inputId = `report-back:${request.request_id}`;
+            const marked = db.transaction(() => {
+                if (db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='owner' WHERE request_id=? AND reminded_via IS NULL AND outcome IS NULL")
+                    .run(this.now(), request.request_id).changes !== 1) return false;
+                retainSessionInput({ id: inputId, sessionId: request.target_session_id, scope: `session:${request.target_input_id}`, actionId: inputId,
+                    kind: 'input', origin: 'service', sourceInputId: request.target_input_id!, sourceRunId: turn?.native_run_id ?? nativeRunId(turnId), requestId: request.request_id,
+                    payload: { text: reportBackNotice(requestLabel(request.payload_json).replace(/^your /, 'the '), replyCommand(request.request_id, effect ?? 'informational')) } });
+                return true;
+            })();
+            const reminder = getAcceptedSessionInput(inputId);
+            if (!reminder || (!marked && reminder.turn_id)) return;
+            owner.dispatch(reminder);
+            log('info', 'session_request_report_back', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}` });
+            return;
+        }
         if (next.step !== 'stall')
             return;
         db.transaction(() => {

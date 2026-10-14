@@ -302,6 +302,11 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   its named authorship and pollable reply live in the owner ledger, with no invented requester session.
   Outside capture retries keep one stable ID, and outside requests use the ordinary reminder and stall limits.
   The [router helper](docs/runbooks/ROUTER-ACTIONS.md) and [wire contract](docs/contracts/session-owner-v1.md) own this entrance.
+- An agent that must keep working through Concierge restarts or faults is asked for with
+  `sessions ask --outside`: an ordinary request whose Codex session runs as `codex exec` in its own
+  execution host, read but never driven, paused or timed out by Concierge (`outside-codex.ts`).
+  A worker that stops without replying while its Stop hook could not run gets one report-back
+  notice before the stall is recorded (`strandedStep`). See [outside requests](docs/runbooks/ROUTER-ACTIONS.md#outside-requests).
 - Retained audio attachments keep their original bytes and an optional transcript
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch

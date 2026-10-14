@@ -30,6 +30,31 @@ logger counters, but does not answer on behalf of a frozen canonical owner; the 
 own unanswered-ping deadline still controls recovery. Stuck work is watched inside Concierge, not through this
 socket; see the shared wire contract.
 
+## Outside requests
+
+`sessions ask --outside --project <project> --session-name <title> --summary <line> [--thread <id>] -- <brief>`
+is an ordinary request whose agent runs outside Concierge. The owner creates a normal Codex
+session (Concierge's Codex default model, or the Codex alias given with `--provider`) and runs
+each of its turns as the Codex command line, `codex exec --json`, in its own
+`concierge-exec-<id>` system unit. Concierge reads the run's record but never writes to it,
+times it out or pauses it: a Concierge restart, update or Pause all leaves it working, and only
+Stop on its session ends it. The next Concierge takes the run back from its record like any
+hosted run.
+
+The rest is the request protocol unchanged. The agent is told to close the request with
+`sessions reply` and to retry a command while Concierge restarts; its answers post to the named
+thread and the requester is not woken; the managed Codex Stop hook finds the run by its Codex
+thread and sends it back if it tries to stop owing a reply. If it stopped while that check could
+not run (Concierge down or restarting), the owner admits one report-back notice into the same
+conversation, and only a second silent stop is recorded as stalled in the thread. Follow-ups to
+the session queue and run as the next outside turn (`codex exec resume`); an outside run cannot
+be steered. Its history is Codex's own record of the conversation.
+
+Use it for work that changes Concierge itself or must outlive trouble in Concierge. It replaces
+starting `codex exec` by hand as a background job or through a launcher script with a file watch
+on its report. When Concierge cannot accept a request at all, the Codex command line on the
+server remains the way in. Design notes: `bot/src/outside-codex.ts`.
+
 ## Thread request returns
 
 `sessions ask --thread <message-id>` delivers replies and notices directly to that thread.
