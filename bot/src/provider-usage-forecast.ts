@@ -2,7 +2,7 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import { ACCOUNT_READING_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { claudeAccountCachedReset } from "./provider-usage";
@@ -231,7 +231,7 @@ export function usageForecasts(provider: AccountIdentityProvider): UsageForecast
   if (provider === "antigravity" && (usage.problem ||
     (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
   return usage.accounts.flatMap(account => account.problem ? []
-    : account.windows.map(window => forecastWindow(provider, account, window, account.readAt ?? usage.observedAt)));
+    : account.windows.map(window => forecastWindow(provider, account, window, account.readAt ?? "")));
 }
 
 /** The one window closest to stopping work on the account the agents are actually using. */
@@ -259,7 +259,7 @@ export function accountsNearlySpent(provider: AccountIdentityProvider): UsageFor
   const now = Date.now();
   for (const forecast of usageForecasts(provider)) {
     const observedAt = at(forecast.observedAt);
-    if (observedAt === null || observedAt > now || now - observedAt > ACCOUNT_READING_MAX_AGE_MS) continue;
+    if (observedAt === null || observedAt > now || now - observedAt > BUDGET_NOTICE_MAX_AGE_MS) continue;
     // A spent window is the usage hold's to report, with what is waiting on it.
     if (forecast.usedPercent < NOTICE_AT_PERCENT || forecast.usedPercent >= 100) continue;
     const held = fullest.get(forecast.account);

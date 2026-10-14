@@ -22,6 +22,8 @@ import { storedProviderAccountLabels } from "./provider-account-usage";
 export type ProviderKey = "codex" | "claude-code";
 export type AccountIdentityProvider = ProviderKey | "antigravity";
 export const ACCOUNT_READING_MAX_AGE_MS = 6 * 60_000;
+/** A threshold warning needs the provider's own recent reading for that account. */
+export const BUDGET_NOTICE_MAX_AGE_MS = 60_000;
 
 export type ProviderAccount = Readonly<{ id: string; label: string; detail: string | null }>;
 // `signedIn` is false when the kept login can no longer renew, so the surface offers a sign-in

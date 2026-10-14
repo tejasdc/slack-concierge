@@ -1,7 +1,7 @@
 import { providerDisplayName } from "./aliases";
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
-import { ACCOUNT_READING_MAX_AGE_MS, currentAccount } from "./provider-accounts";
+import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
@@ -411,9 +411,9 @@ function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account
   if (!usage || usage.problem) return [];
   const now = Date.now();
   const fresh = new Set(usage.accounts.filter(value => {
-    const readAt = Date.parse(value.readAt ?? usage.observedAt);
+    const readAt = Date.parse(value.readAt ?? '');
     return !value.problem && Number.isFinite(readAt) && readAt <= now
-      && now - readAt <= ACCOUNT_READING_MAX_AGE_MS;
+      && now - readAt <= BUDGET_NOTICE_MAX_AGE_MS;
   }).map(value => value.label));
   return accountsWithRoomBesides(provider, account).filter(label => fresh.has(label));
 }

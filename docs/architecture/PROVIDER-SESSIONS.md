@@ -391,8 +391,8 @@ a previously started Claude run gets the current choice without a router message
 provider named by the agent remains explicit; the source session and its admitted work
 stay on Claude. Provider-native child tools still use their parent's provider.
 
-The usage watch tells a running session about a fresh, provider-measured window only at
-or above 90%. The brief names the machine, account, window, measured percentage and
+The usage watch tells a running session about a provider-measured window only at
+or above 90% when that account's provider observation is at most one minute old. The brief names the machine, account, window, measured percentage and
 observation time from the Accounts view. For Claude it uses the account retained with
 that run, so a later selection change cannot relabel an older run. An unreadable or stale
 reading, earlier provider refusal, or rate forecast cannot create a threshold brief.
