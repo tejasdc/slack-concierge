@@ -2,8 +2,7 @@ import {withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
-import {legacyNotificationRequest} from './session-notification-request';
-import {notificationAnswerEligible,notificationPromiseTerminal,settleNotificationByAnswer} from './notify-when';
+import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNotified,notifyAgentPost} from './thread-notifications';
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
@@ -1990,9 +1989,13 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * to swipe away is worse than none. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean}):string|null {
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
+  if(post&&!answer.final&&(answer.notify||answer.answersQuestion&&hasPendingThreadNotification(answer.inboxSessionId,answer.root))){
+    const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
+    notifyAgentPost(answer.inboxSessionId,answer.root,post,String(row?JSON.parse(row.payload_json).text??'':answer.text),answer.notify===true);
+  }
   if(!post||!answer.final||(answer.stalled&&answer.quiet))return post;
   const postText=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
   const filedText=postText?String(JSON.parse(postText.payload_json).text??answer.text):answer.text;
@@ -2004,7 +2007,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet});
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet,notify:answer.notify});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
@@ -2061,7 +2064,7 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   return reconciled;
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -2070,16 +2073,6 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
   const seen=(eventId:string)=>!!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId);
   const by:TopicBy={kind:'owner',sessionId:answer.respondingSessionId};
   const agent=answer.respondingTitle||'The agent working on this';
-  // The root locates the Inbox thread; a later request in that thread has its own human input.
-  // Delivery intent belongs to that asking input, never to the thread's first capture.
-  const dispatched=(db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=?').get(answer.dispatchRequestId)
-    ??db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=?').get(answer.dispatchRequestId)) as {source_input_id:string}|null;
-  const askingInput=dispatched?getAcceptedSessionInput(dispatched.source_input_id):null;
-  const notificationInputId=askingInput&&humanAuthored(askingInput)?askingInput.id:null;
-  const words=askingInput?JSON.parse(askingInput.payload_json):null;
-  const requestedResult=notificationInputId&&(Object.hasOwn(words,'notificationRequest')?words.notificationRequest:
-    legacyNotificationRequest(String(words.text??words.firstInput?.text??'')))==='result'
-    &&notificationAnswerEligible(notificationInputId);
   db.transaction(()=>{
     // Done work closes the thread request it was sent for, exactly when the router could have closed it.
     if(answer.disposition==='completed') {
@@ -2101,21 +2094,29 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     if(seen(filedId))return;
     // Completed work its agent said he need not read is posted and closes its request, and is filed
     // for nobody: no reading item, no notification [decision: sends-notify-only-on-failure].
-    if(answer.quiet&&answer.disposition==='completed'&&!requestedResult){
+    if(answer.quiet&&answer.disposition==='completed'&&!answer.notify&&(!answer.text.trim()||!hasPendingThreadNotification(session.id,answer.root))){
       log('info','inbox_answer_quiet',{thread:answer.root,post:answer.postId,request_id:answer.dispatchRequestId});
       return;
     }
     const decision=answer.disposition==='needs_decision';
     const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
     // One answer posted once is filed once, however many requests it closed.
-    if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId)))return;
+    if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId))){
+      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true);
+      return;
+    }
     const words=answer.text.trim();
     const brief=decision
       ?{decision:words.slice(0,2000),why:{text:`${agent} needs this from you to go on. Reply in this thread: your reply goes straight to that agent.`,sources:[answer.postId]},
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
       :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
-    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)))return;
+    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision))){
+      if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true);
+      return;
+    }
+    const notificationInputId=words?consumeThreadNotification(session.id,answer.root,answer.postId):null;
+    const requestedResult=!!notificationInputId||!!words&&!!answer.notify&&!messageAlreadyNotified(session.id,answer.postId);
     const at=nowIso(),generation=raiseGeneration(session);
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
@@ -2128,10 +2129,10 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     recordSessionEvent({eventId:filedId,sessionId:session.id,kind:'topic_question',payload});
     applyTopicChange('topic_question',payload);
     // The thread's one notification slot: the Inbox session, the thread's root as its input, shaped like a new question's.
-    if(decision||!notificationInputId||!notificationPromiseTerminal(notificationInputId))
-      recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
-        payload:{outcome:decision?'needs_you':'response',question:brief.decision,inputId:answer.root,notificationInputId,generation,topicId,questionId:question.questionId,postId:answer.postId}});
-    if(notificationInputId&&requestedResult)settleNotificationByAnswer(notificationInputId,`needs_you:${filedId}`);
+    recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
+      payload:{outcome:decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
+        inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId,
+        ...(requestedResult?{requestedNotification:true}:{}),...(notificationInputId?{notificationInputId}:{})}});
   })();
 }
 

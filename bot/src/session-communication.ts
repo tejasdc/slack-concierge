@@ -19,7 +19,7 @@ import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import {notificationPromiseCovered,pointNotificationPromise,requestedNotificationInput} from './notify-when';
+import {notifyAgentPost} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -642,12 +642,13 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;keep_working?:boolean;attachments?:string[];files?:AttachedFile[]}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
         // A post carrying files is a message even without words: the mockups are the answer.
         const text=message(typeof input.text==='string'?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
+        if(input.notify&&!text.trim())throw new Error('--notify requires words in the message being posted.');
         if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
@@ -668,49 +669,19 @@ export class SessionCommunicationCoordinator {
                 :[];
             const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
-                    ...(input.topic?{topic:input.topic}:{}),...(input.keep_working?{keepWorking:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+                    ...(input.topic?{topic:input.topic}:{}),...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
             const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,turnId:actor.turn,kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(attachments.length?{attachments}:{})}});
+            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
             const topic=input.keep_working?null:releaseFocusForPost(session,rootInputId,input.topic??null);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
-    }
-    async notifyWhen(input:{source:CommunicationSource;action_id:string;thread:string;session:string;on?:string;summary:string}) {
-        if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.fenced(this.actor(input.source));action(input.action_id);
-        const session=getSessionById(actor.session)!;
-        if(!sessionMetadata(session).inbox||!actor.inputId)throw new Error('Only the live Inbox agent can set a phone notification for its human request.');
-        const root=inboxThreadRoot(actor.session,input.thread);
-        const ownRoot=inboxThreadRoot(actor.session,actor.inputId);
-        const sameTopic=!!root&&!!ownRoot&&(root===ownRoot||!!topicOfRoot(root)&&topicOfRoot(root)===topicOfRoot(ownRoot));
-        if(!sameTopic)throw new Error('--thread must be a human message in the Inbox topic this turn is handling.');
-        const asking=getAcceptedSessionInput(input.thread);
-        if(asking?.session_id!==actor.session||asking.origin!=='human'||!requestedNotificationInput(asking.id))
-          throw new Error('--thread must name his exact message with a pending result notification.');
-        const inputId=asking.id;
-        const peer=/^([a-z][a-z0-9-]{0,31}):([1-9]\d*)$/.exec(input.session);
-        const peerClient=peer&&peer[1]!=='concierge'?this.dependencies.peers?.client(peer[1]):null;
-        if(peer&&peer[1]!=='concierge'&&!peerClient)throw new Error('This owner has no connection to the named peer.');
-        const peerView=peerClient
-          ?await peerClient.request<{session:{activeRunId?:string|null;latestRunId?:string|null}}>(
-              'GET',`/sessions/v1/sessions/concierge:${peer![2]}/view`,undefined,3_000,false)
-              .then(value=>value.session).catch(error=>{if(error?.status===404)throw error;return null;})
-          :null;
-        // The network read is outside the mutation. The live run is rechecked before writing.
-        this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
-        const currentRoot=inboxThreadRoot(actor.session,input.thread);
-        const currentOwnRoot=inboxThreadRoot(actor.session,actor.inputId);
-        if(!currentRoot||!currentOwnRoot||currentRoot!==currentOwnRoot&&(!topicOfRoot(currentRoot)||topicOfRoot(currentRoot)!==topicOfRoot(currentOwnRoot)))
-          throw new Error('--thread moved out of the Inbox topic this turn is handling.');
-        const arranged=pointNotificationPromise({inputId,root:currentRoot,target:input.session,conditions:(input.on??'done,needs-you,hold').split(',').map(value=>value.trim()),summary:input.summary,peerView});
-        if(!input.session.startsWith('concierge:'))this.dependencies.peers?.wake();
-        return arranged;
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
@@ -738,12 +709,6 @@ export class SessionCommunicationCoordinator {
             throw new Error(`This turn answers another agent's message in a thread, and its closing text never shows there. Post the answer first: sessions post --thread ${owed} --action-id <A> -- <the answer for Tejas>. Then declare the outcome.`);
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
-            const inbox=sessionMetadata(getSessionById(actor.session)!).inbox;
-            const marked=inbox?db.query(`SELECT id FROM session_inputs WHERE origin='human'
-              AND json_extract(payload_json,'$.notificationRequest')='result'
-              AND (turn_id=? OR id IN (SELECT accepted_input_id FROM turn_steering_messages WHERE turn_id=?))`).all(actor.turn,actor.turn) as {id:string}[]:[];
-            for(const asked of marked)if(!(input.outcome==='response'&&asked.id===actor.inputId)&&!notificationPromiseCovered(asked.id))
-                throw new Error(`This turn has an unarranged requested phone notification for ${asked.id}. Dispatch its work, answer with response, or point it at the existing session: sessions notify-when --thread ${asked.id} --session concierge:N|mac:N --summary "<what he asked>" --action-id <A>.`);
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{})},
                 sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
@@ -1337,7 +1302,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
             answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
             answerGroup:declared.answerGroup??null,
-            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,
+            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
             informational:JSON.parse(request.payload_json).requestedEffect==='informational'});
     }
     reply(input: {
@@ -1368,6 +1333,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         answer_group?:string;
         /** Why Tejas need not read this completed answer: it is posted in his thread but filed for nobody. */
         quiet_because?:string;
+        notify?:boolean;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -1421,7 +1387,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 closingLine:input.final&&input.workDisposition?(input.workDisposition==='completed'
                     ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
                     :input.workDisposition==='failed'?'Failed':'Needs your decision'):undefined,
-                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{})});
+                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1440,6 +1406,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
                     || payload.answerGroup !== input.answer_group
+                    || payload.notify !== (input.notify||undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || !attachments
                     || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
@@ -1456,8 +1423,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
         const requestPayload=JSON.parse(request.payload_json);
+        if(input.notify){
+            const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
+            const inbox=getSessionById(request.source_session_id);
+            if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))
+                throw new Error('--notify requires a reply that posts into an Inbox thread.');
+        }
         const requestedEffect = requestPayload.requestedEffect;
         const bodylessFinal=input.final&&!input.reply_body?.trim()&&!attached;
+        if(input.notify&&(!input.text.trim()||bodylessFinal))throw new Error('--notify requires a new reply message with words.');
         if(bodylessFinal&&(!requestPayload.promptAnswer||!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id)))
             throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
         if(input.answers_question && (input.final || !requestPayload.promptAnswer || !input.text.trim()))
@@ -1492,6 +1466,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
                 :input.workDisposition==='failed'?'Failed':'Needs your decision'}:{}),
             ...(input.summary?{summary:input.summary}:{}),
+            ...(input.notify?{notify:true}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),

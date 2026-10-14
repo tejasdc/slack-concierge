@@ -1,77 +1,41 @@
 # Requested phone delivery
 
-The owner classifies an Inbox input's retained human words at admission as `result`,
-`scheduled`, or `null`. “Send a notification”, “notify me”, “ping me”, “alert me”,
-"let me know when", an account or sign-in dependency, and close variants select
-`result`; “remind me” selects `scheduled`. Negated requests and machine diagnostics
-in a bug report do not make a phone request. An ordinary request for an
-explanation (“let me know how”) remains quiet, as does a saved quotation filed
-as a note. The mark belongs to the exact asking input, including a later reply in the
-same thread, and cannot be added by an agent's text. New receipts retain even a
-`null` classification, so later phrase-rule changes cannot reinterpret them;
-older receipts without a stored mark keep their original classifier.
+The owner classifies the retained words of a human Inbox input as `result`,
+`scheduled`, or `null` at admission. Ordinary requests to notify, ping, alert, or
+let Tejas know when work finishes select `result`; “remind me” selects
+`scheduled`. The mark is derived only from his words. A quoted note, an agent's
+text, a negated request, and a routine request for explanation do not arm delivery.
 
-For every `result` Inbox input, admission creates one durable promise keyed by that
-input. Its default condition is the next agent answer filed into that thread for
-the same input. Admission writes a visible service entry after the human message.
-The filed answer's existing requested-result event pushes once; the promise settles
-in that same ledger transaction, with a visible fulfilled entry and no second push.
-A fixed startup backfill covers result-marked human Inbox messages accepted in the
-24 hours before the first deployment at 16:02 ET on October 14, 2026. It uses the
-original acceptance time for the 14-day expiry, writes the same visible promise
-entry, and never repeats an existing row. It skips a thread that has already
-emitted a requested-result response since that message was accepted. The
-historical phone-send record was checked separately before this repair: the
-eligible messages had no requested-result push. The fixed window does not slide
-forward with later restarts.
-An Inbox router turn cannot close as `done`, `failed`, or `needs_you` with an
-unarranged result promise: it must dispatch work from the input, answer with
-`response`, or point the promise at an existing session. A router `response`
-settles the promise only when it answered without dispatching work or pointing
-at a session. An acknowledgement that work has started leaves the promise
-pending for the dispatched answer. Once pointed, an immediate `response` for
-that same input would push early and then push again when the session ends; the
-owner refuses an explicit one and treats an already finished turn's inferred
-response as `done`. The router can post a status in the thread and close `done`
-while the promise waits.
+A `result` input arms its Inbox topic. The owner retains the exact human input
+that armed it. The first agent answer in that topic consumes every pending arm
+and emits one requested notification whose `postId` names that answer. The push
+body is the agent's posted words, carried as the event's `question`; it cannot
+be fabricated from Tejas's request. A later answer is quiet. A later marked
+human input inserts a new arm, so a later exchange can request another push.
+The arm and notification event commit in one ledger transaction. An answer
+filed by a local or Mac worker uses the same path. A router response counts only
+when its turn did not dispatch work from that asking input; the router's post or
+result must supply the actual message ID and words. An acknowledgement of work
+in progress leaves the arm for the dispatched answer.
 
-The router points it with `router-actions.sh sessions notify-when --thread
-<human-message-id> --session concierge:N|mac:N [--on done,needs-you,hold]
---summary "<his request>"` plus its exact source and stable action ID. The thread
-may name the current or an earlier message written by Tejas with a pending
-promise in the Inbox topic the live turn is handling. The owner checks topic
-membership again after a peer read, requires a quotation from that exact
-message, and refuses silent retargeting. The default conditions are
-`done,needs-you,hold`. A local target
-binds to its current run or the next run after the command. A Mac target uses
-the same rule against the Mac owner's retained event stream and exact input
-receipt, rather than a possibly coalesced catalogue card. A failed or canceled
-run also satisfies `done`, and says that it ended without finishing.
+An agent may explicitly request one push for its own message with `sessions
+post --notify` or `sessions reply --notify`. The owner requires a new message
+with words, names that message in the event, and emits
+`requestedNotification:true`. This also consumes an open topic arm, so the
+same answer never creates a second requested push. A partial reply can use the
+flag; a bodyless final cannot. These commands are available on both local and
+peer sessions. The resulting push uses the answer's own words and the normal
+thnkr.ing attention notifier. There is no direct push call from Concierge.
 
-The server owner keeps one promise state: `pending`, `fired`, or `expired`.
-`pending` survives owner restarts. It expires after 14 days, long enough for ordinary
-multi-day work while bounding stale promises, with an entry in
-the thread; no push is claimed for expiry. The first matching condition atomically
-records `fired`, posts one short service entry in the asking thread, and emits
-one `needs_you` response event with the asking input as `notificationInputId`.
-thnkr.ing's existing attention notifier reads that receipt and sends the push
-to registered devices. Concierge does not call a second push path.
-Only the router's own answer, a filed agent answer, and a fired watched-session
-promise carry `notificationInputId` for a requested result. Service notices have
-service-authored inputs and do not become requested results through an event's
-ordinary `inputId`.
+The old per-input session promises, session watcher, peer replay, expiry,
+backfill, and service posts are retired. Their historical ledger rows remain
+inert, including any pending rows. They no longer create notifications or
+Timeline entries. This means an earlier marked request with no new arm does
+not silently ring later; Tejas can ask again in that thread or an agent can use
+`--notify` when it answers. The retired watcher had recorded sleeping-peer gaps
+and account holds, but could also treat an unrelated run finish as fulfillment;
+the replacement fires only from an agent message in the topic.
 
-For a Mac target the server stores a cursor through the Mac's durable run and
-outcome events. It reads exact input receipts for account, sign-in, and usage
-holds. A sleeping or unreachable Mac leaves the promise pending and adds one
-visible observation-gap entry; when it returns, replay resumes from the saved
-cursor and the thread records reconnection. A hold that starts and clears wholly
-while the Mac is unreachable is unavailable from current receipts: the gap is
-visible, and Concierge does not claim it observed that hold. The current/next
-run selection for an offline Mac compares the Mac's retained event times with
-the attachment time; clock disagreement at that boundary is a remaining risk.
-
-For `scheduled`, agents continue to use Concierge's durable scheduled wake and
-thnkr.ing's root-only requested-notification capability with one stable key.
-That time path is separate from result promises, because a normal answer may
-arrive before the requested reminder time.
+For `scheduled`, Concierge still uses its durable scheduled wake and
+thnkr.ing's requested-notification capability with a stable key. A time reminder
+does not consume a thread result arm.
