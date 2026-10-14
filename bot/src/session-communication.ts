@@ -1627,10 +1627,28 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
      * wait for a choice already made, with nothing left that could release it.
      */
     private heldPrerequisite(request: RequestRow, dependencies = ((JSON.parse(request.payload_json).after ?? []) as string[]).map(id => this.row(id))) {
-        return dependencies.find(dependency => HOLDING_OUTCOMES.includes(dependency.outcome ?? '')
-            && !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
+        const ask=db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`request:${request.request_id}`) as {sequence:number}|null;
+        return dependencies.find(dependency => {
+            if(!HOLDING_OUTCOMES.includes(dependency.outcome ?? ''))return false;
+            const resultEventId=JSON.parse(dependency.result_json??'{}').event_id;
+            const directPost=resultEventId?db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`post:forward:${resultEventId}`) as {sequence:number}|null:null;
+            const declared=resultEventId?db.query("SELECT payload_json FROM session_communication_events WHERE event_id=?").get(resultEventId) as {payload_json:string}|null:null;
+            const group=declared?JSON.parse(declared.payload_json).answerGroup:null;
+            const root=inboxRequestRoot(db,dependency.request_id,dependency.thread_root_input_id);
+            const groupedPost=!directPost&&typeof group==='string'&&root
+                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+                    AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
+                    .get(dependency.source_session_id,root,group) as {sequence:number}|null:null;
+            const answerPost=!directPost&&!groupedPost&&root
+                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+                    AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
+                    .get(dependency.source_session_id,root,dependency.request_id) as {sequence:number}|null:null;
+            const postSequence=(directPost??groupedPost??answerPost)?.sequence;
+            if(ask&&postSequence!==undefined&&postSequence<=ask.sequence)return false;
+            return !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
                 WHERE outcome.id=? AND outcome.session_id=ask.session_id AND outcome.rowid<=ask.rowid`)
-                .get(request.source_input_id, `return:${JSON.parse(dependency.result_json ?? '{}').event_id}`)) ?? null;
+                .get(request.source_input_id, `return:${resultEventId}`);
+        })??null;
     }
     private async dispatch(request: RequestRow) {
         if (request.outcome || this.stopped)
