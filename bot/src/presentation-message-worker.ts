@@ -501,8 +501,9 @@ async function catchUp() {
       const existing=prepared.query(`SELECT DISTINCT root_input_id AS root FROM presentation_messages
         WHERE generation=? AND input_id=?`).all(current.generation,inputId) as {root:string}[];
       for(const row of existing)changedRoots.add(row.root);
-      prepared.query(`UPDATE presentation_messages SET entry_kind=? WHERE generation=? AND input_id=?`)
-        .run(event?.kind==='final'?'final':'other',current.generation,inputId);
+      // The router's own result cites this input too; only the accepted return is the worker's answer.
+      prepared.query(`UPDATE presentation_messages SET entry_kind=? WHERE generation=? AND input_id=? AND message_id=?`)
+        .run(event?.kind==='final'?'final':'other',current.generation,inputId,inputId);
     }
     for(const row of newTopicEvents){insertTopicEvent.run(current.generation,row.topicId,row.sequence,row.sessionId,row.eventId);topics.writeEvent(current.generation,row.sequence);}
     for(const row of newOwnerMessages)writeOwnerVersion(current.generation,row);
