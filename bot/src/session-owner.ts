@@ -1766,7 +1766,8 @@ export class SessionOwner {
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(existing) {
-        if(existing.kind!=='create'||stablePayload(JSON.parse(existing.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
+        const kept=JSON.parse(existing.payload_json);delete kept.notificationRequest;
+        if(existing.kind!=='create'||stablePayload(kept)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
@@ -1814,7 +1815,7 @@ export class SessionOwner {
     // in the session as failure"). Exact-run steering stays for service notices, which are not this route.
     const asQueued=(value:Record<string,any>)=>{const {expectedRunId:_run,...rest}=value;return {...rest,delivery:'queue'};};
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
-    if(prior){const kept=stablePayload(JSON.parse(prior.payload_json));if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
+    if(prior){const payload=JSON.parse(prior.payload_json);delete payload.notificationRequest;const kept=stablePayload(payload);if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
       this.recoverAcceptedInput(prior);
       return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
     this.validateAttachments(session,input.attachments);
