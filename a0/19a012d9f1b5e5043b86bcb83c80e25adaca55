@@ -1,0 +1,1 @@
+Automatic Codex resets now verify fresh allowance for the signed-in account and every saved account before spending a credit, and recovery notices say whether held work is actually ready to retry.
