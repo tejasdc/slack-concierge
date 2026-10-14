@@ -93,7 +93,7 @@ export class TurnCancellationController {
   }
 
   private dispatch() {
-    if (!this.cancel || this.dispatched || this.waitForTools && this.activeTools.size>0) return;
+    if (!this.requested || !this.cancel || this.dispatched || this.waitForTools && this.activeTools.size>0) return;
     this.dispatched = true;
     const cancel = this.cancel;
     this.cancel = null;
