@@ -2987,14 +2987,22 @@ export class SessionOwner {
    */
   eventPage(after=0,sessionId?:string|null,runId?:string|null,filter?:EventFilter) {
     const runIds=list(runId),kinds=list(filter?.kind),limit=filter?.limit??null;
-    const rows=(db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+    // The notify watcher pages one session's run evidence from its durable cursor. A direct
+    // session/kind predicate uses the existing index; the optional-filter form scans the
+    // whole event log before it reaches a recently created Mac session.
+    const notifyPage=!!sessionId&&!runIds&&kinds?.length===3&&['accepted','run','turn_outcome'].every(kind=>kinds.includes(kind));
+    const rows=((notifyPage
+      ?db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+        WHERE event.sequence>? AND event.session_id=? AND event.kind IN ('accepted','run','turn_outcome')
+        ORDER BY event.sequence LIMIT ?`).all(after,parseSessionId(sessionId!),limit??-1)
+      :db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
       WHERE event.sequence>? AND (? IS NULL OR event.session_id=?)
         AND (? IS NULL OR turn.native_run_id IN (SELECT value FROM json_each(?)))
         AND (? IS NULL OR event.kind IN (SELECT value FROM json_each(?)))
       ORDER BY event.sequence LIMIT ?`)
       .all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,
         runIds?1:null,JSON.stringify(runIds??[]),kinds?1:null,JSON.stringify(kinds??[]),
-        limit??-1) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
+        limit??-1)) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
     const entries=rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]);
     const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
     const events=rows.map(row=>{
