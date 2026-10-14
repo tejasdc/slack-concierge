@@ -235,7 +235,7 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
  let found:{sequence:number;at:string;inputId:string}|null=null;
  for(const root of roots){
   const final=prepared.query(`SELECT event_sequence AS sequence,created_at AS at,message_id AS inputId
-   FROM presentation_messages WHERE generation=? AND root_input_id=? AND entry_kind='final'
+   FROM presentation_messages WHERE generation=? AND root_input_id=? AND entry_kind='final' AND message_id=input_id
    ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string;inputId:string}|null;
   if(!final||iso(final.at)!<relaySince)continue;
   const post=prepared.query(`SELECT event_sequence AS sequence FROM presentation_messages
