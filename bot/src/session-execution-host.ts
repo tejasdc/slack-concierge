@@ -102,7 +102,7 @@ import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome} from './provider-accounts';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearProviderUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -282,8 +282,8 @@ export class SessionExecutionHost {
       &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
     const when=noticeTime(db,until);
     return other
-      ?`${chosen} is at its limit until ${when}. A fresh allowance reading shows ${other.label} below its limit; new Claude work checks launch eligibility when requested.`
-      :`${chosen} is at its limit until ${when}, and no other account has confirmed room. New Claude work checks again before routing and waits if none is available.`;
+      ?`${chosen}'s included Claude allowance is fully used until ${when}. A fresh allowance reading shows ${other.label} has included room; new Claude work checks launch eligibility when requested.`
+      :`${chosen}'s included Claude allowance is fully used until ${when}, and no other account has confirmed included room. New Claude work checks again before routing.`;
   }
 /**
    * The account list, answered from what this machine last knew, with the checks run behind it.
@@ -336,7 +336,10 @@ export class SessionExecutionHost {
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
     const outcome=await useCodexResetCredit(account);
-    if(outcome.status==='used'&&currentAccount('codex')?.label===account){clearProviderUsage('codex');this.options.wake();}
+    if(outcome.status==='used'&&outcome.accountId){
+      clearCodexAccountUsage(outcome.accountId);
+      if(currentAccount('codex')?.id===outcome.accountId){releaseUsageHeldWork('codex','verified_reset');this.options.wake();}
+    }
     if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none')
       await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;

@@ -605,6 +605,29 @@ spending, so when the weekly state cannot be established the answer is no. The f
 window is frequently absent from the Codex reading altogether, which is why only the weekly
 one is required.
 
+The stored CodexBar row is an early screen, never authorization to spend a finite credit.
+Before automatic use, Concierge reads each other saved Codex home directly. Its verified
+account ID, blocked ordinary included allowance, and an exact spent Codex five-hour or
+weekly window must all agree. An unreadable home or one with possible room declines the
+automatic spend. It then rereads the target home last and requires the same account ID,
+blocked ordinary included allowance, the exact spent weekly window (or the 95% weekly
+exception with a spent five-hour window), and a matching available grant. These direct
+observations expire after 60 seconds or their first window reset, whichever comes first.
+The attempt is durably reserved only after this preflight, immediately before the consume
+request in the same initialized App Server session as the final target read; a preflight
+decline before reservation does not mark the episode spent. A retained hold is reconsidered
+on an existing wake or a manual action, not by a new polling loop. This is intentionally
+stricter than ordinary attempt policy because spending a grant is irreversible.
+
+The installed Codex App Server's raw primary/secondary positions did not match a fixed
+five-hour/weekly naming assumption in the 2026-10-14 read. CodexBar normalized that observed
+response to a weekly secondary window correctly. Concierge now names Codex windows from
+CodexBar's actual `windowMinutes` value and retains `usage.updatedAt` as the source time;
+this is a defensive normalization change, not evidence that the live Accounts bar was mislabeled.
+The reset-credit block has its own provider fetch context and may have a different age from
+the included-allowance bar. Refreshing one does not prove the other fresh; a direct limits
+read confirms a grant before automatic redemption.
+
 The installed Codex App Server (0.162.0, generated protocol checked 2026-10-14;
 [upstream account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/account.rs))
 requires an idempotency key as well as a credit id for a
@@ -617,7 +640,8 @@ windows; the grant's `reset_type` remains its declared scope. After confirmed re
 Concierge reads limits again through the same account home. Both readings must carry the
 same nonempty account ID as that home's sign-in; a missing or changed ID never proves
 that the named account recovered. Only a matching fresh read saying ordinary included
-work is allowed releases held work and announces a usable reset. A read-only probe of
+work is allowed invalidates that account's old refusal and makes applicable held work
+eligible to retry. Eligibility is not provider admission or completed work. A read-only probe of
 the installed server on 2026-10-14 confirmed that its limits response supplies an
 account ID matching the local sign-in and a boolean `ordinaryUsageAllowed`; no credit
 was consumed by that probe.
@@ -673,17 +697,18 @@ thing read is whether a grant is still there at the instant work stopped. If he 
 spent it there is nothing to spend; if he has not, waiting for him to wake is the stall he
 asked us to end. There is no presence model anywhere in this.
 
-**One hold episode cannot automatically spend twice.** Within an instance, the decision
-is recorded before the attempt, so a second observer is refused by SQLite. The episode
+**One hold episode cannot automatically spend twice.** Within an instance, the attempt
+is recorded after preflight and before the consume request, so a second observer is refused by SQLite. The episode
 is also the consume request's idempotency key. A crash or ambiguous transport response
 never causes an automatic second attempt. Across machines, OpenAI owns the credit state;
 `alreadyRedeemed` means the *same key* previously completed a reset. It does not prove
 that another machine's differently keyed attempt succeeded.
 
-After confirmed redemption and a fresh account read permitting ordinary work, the work
-that was waiting on that reset instant is released with `releaseUsageHeldWork` (only the
-scheduled instant moves; nothing is replayed), and one notice says which account, why,
-how much work carried on and how many resets are left. Unknown and redeemed-but-unverified
+After confirmed redemption and a fresh account read permitting ordinary work, only that
+account's cached refusal is invalidated. Applicable held work can then become eligible to
+retry; nothing is replayed without the normal queue. The notice reports the count made
+eligible, including zero, and the remaining grant count only when the direct postread
+confirmed it. Unknown and redeemed-but-unverified
 outcomes leave work held and publish no "reset used" notice. There is deliberately no
 "about to use one" step before it: the hour-ahead
 forecast notice already exists, and adding a wait for acknowledgement would be the stall

@@ -155,6 +155,21 @@ export function clearProviderUsage(provider: UsageProvider) {
   return { provider, generation: cleared.generation, cleared: true, resumed_work: cleared.released > 0 };
 }
 
+/** A verified Codex reset invalidates only the account that redeemed it. */
+export function clearCodexAccountUsage(accountId: string): void {
+  if (!accountId) throw new Error("A verified Codex account ID is required to clear its refusal.");
+  db.transaction(() => {
+    const state = read("codex");
+    // The shared Codex App Server runs one account at a time. Advancing its generation
+    // fences an older refusal still returning after this account's confirmed reset.
+    state.generation++;
+    state.revision++;
+    delete state.limits[accountId];
+    write("codex", state);
+  }).immediate();
+  log("info", "codex_account_usage_cleared_after_reset", { account_known: true });
+}
+
 /**
  * The allowance that was blocking work belongs to the account that earned it, so
  * activating a different account releases anything waiting on the old one's reset.

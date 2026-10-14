@@ -432,6 +432,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
 
   let runningClaudeAccount:string|null=null;
   let runningClaudeModel:string|null=null;
+  let runningCodexAccount:string|null=null;
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
@@ -600,6 +601,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
     runningClaudeHome=claudeChoice?.home??null;
     const actualClaudeBrief=input.presentation==='native'&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
@@ -1268,13 +1270,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (heldUntilMs !== null && (input.providerId === "codex" || input.providerId === "claude-code")) {
         const hold = { provider: input.providerId,
           model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs,
-          account:input.boundAccount?.account??null };
+          account:input.providerId==='codex'?runningCodexAccount:input.boundAccount?.account??null };
         noticeUsageHold({...hold,model:input.providerId==='claude-code'?runningClaudeModel:hold.model,
           account:input.providerId==='claude-code'?runningClaudeAccount:hold.account}, recordSessionEvent);
         // Work has actually stopped, so a banked reset is spent if the rule in
         // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on
         // 2026-09-23: "You don't have to wait for me to reset the usage."
-        void useResetIfWorkStopped(hold, recordSessionEvent, useCodexResetCredit, async () => {
+        void useResetIfWorkStopped(hold, recordSessionEvent,
+          (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async () => {
           await scheduleProviderAccountUsageRefresh().catch(() => {});
           // Only the scheduled instant moves; nothing is replayed. The queue pumps as this
           // failing turn finishes, so the released work is picked up then.

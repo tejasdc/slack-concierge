@@ -15,7 +15,7 @@ import { providerAccountUsage } from "./provider-account-usage";
 import {accountReadingFresh} from './account-allowance-observation';
 import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
-import type { UsageProvider } from "./provider-usage";
+import { clearCodexAccountUsage, type UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
 import { hostname } from "node:os";
 import { createHash } from "node:crypto";
@@ -239,20 +239,18 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
  *    that permits ordinary work releases a hold.
  */
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
-  spend: (account: string, idempotencyKey: string) => Promise<{ status: string; detail: string }>,
+  spend: (account: string, idempotencyKey: string, beforeConsume: () => void) => Promise<{ status: string; detail: string;
+    accountId?: string; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
   afterUse: () => Promise<number>): Promise<void> {
   const provider = input.provider;
-  const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn WHERE turn.id=?`).get(input.turnId) as {saved_kind:string|null}|null;
-  // Held ordinary work is named by the hold marks the rest of this file uses. It cannot be
-  // matched on the clearance instant any more: a usage hold now records no next attempt at
-  // all, so an instant comparison found nothing and the reset credit was withheld while his
-  // own work sat waiting for it.
-  const ordinaryHeld=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
-    WHERE session.provider_id=? AND turn.status='queued' AND turn.saved_kind IS NOT 'banked'
-      AND turn.dispatch_failure_class IN ('usage_wait','backoff') LIMIT 1`)
-    .get(provider);
-  if(held?.saved_kind==='banked'&&!ordinaryHeld){
-    log('info','provider_reset_not_used',{provider,reason:'only_banked_work_is_held'});
+  const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE turn.id=? AND session.provider_id=? AND turn.status='queued'
+      AND turn.dispatch_hold='usage' AND turn.dispatch_failure_class IN ('usage_wait','backoff')`)
+    .get(input.turnId,provider) as {saved_kind:string|null}|null;
+  // The exact refused turn must be ordinary work held for usage. An unrelated retry backoff
+  // elsewhere in the queue is not evidence for spending a finite credit on this episode.
+  if(!held||held.saved_kind==='banked'){
+    log('info','provider_reset_not_used',{provider,reason:'no_ordinary_usage_hold_on_this_turn'});
     return;
   }
   const usage = providerAccountUsage(provider);
@@ -283,26 +281,32 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const turn = db.query("SELECT session_id FROM turns WHERE id=?").get(input.turnId) as { session_id: number } | null;
   const session = turn && getSessionById(turn.session_id) ? turn.session_id : inboxSession()?.id;
   if (!session) return;
-  try {
-    // Recorded before the attempt, so this episode can never be attempted a second time
-    // even if what follows throws or the process dies mid-call.
-    record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
-      payload: { provider, account: decision.account, because: decision.because } });
-  } catch { return; }
   const digest = createHash("sha256").update(episode).digest("hex");
   // Stable across restarts and short enough for the provider's recommended UUID shape.
   const idempotencyKey = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-  const outcome = await spend(decision.account, idempotencyKey);
-  if (outcome.status !== "used") {
+  const outcome = await spend(decision.account, idempotencyKey, () => {
+    // Reserve only after direct preflight succeeds, immediately before the provider call.
+    // A declined preflight leaves the hold eligible for a later existing wake or manual action.
+    if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(episode))
+      throw new Error("This reset episode already has an attempt.");
+    record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
+      payload: { provider, account: decision.account, because: decision.because } });
+  });
+  if (outcome.status !== "used" || !outcome.accountId) {
     log("warn", "provider_reset_auto_not_confirmed", {
       provider, account_known: true, outcome: outcome.status,
     });
     return;
   }
+  clearCodexAccountUsage(outcome.accountId);
+  if (currentAccount('codex')?.id !== outcome.accountId) {
+    log("warn", "provider_reset_auto_account_changed", { provider, account_known: true });
+    return;
+  }
   // Awaited so the remaining count below is read after the account was re-read, not before.
   const released = await afterUse();
-  const after = providerAccountUsage(provider)?.accounts.find(account => account.label === decision.account);
-  const remaining = after?.resetCredits?.available ?? 0;
+  const remaining = outcome.remainingCredits ?? null;
+  const nextExpiresAt = outcome.nextExpiresAt ?? null;
   record({
     eventId: `${episode}:used`, sessionId: session, kind: "provider_outage",
     payload: {
@@ -313,9 +317,9 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
         // What makes this a report of something already done rather than an offer.
         resetUsed: {
           account: decision.account, remaining, releasedInputs: released,
-          nextExpiresAt: after?.resetCredits?.expiresAt ?? null,
+          nextExpiresAt,
           summary: resetUsedSentence({ account: decision.account, remaining, releasedInputs: released,
-            nextExpiresAt: after?.resetCredits?.expiresAt ?? null }),
+            nextExpiresAt }),
         },
       },
     },

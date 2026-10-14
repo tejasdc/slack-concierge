@@ -21,8 +21,8 @@ function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
     &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
   const when=noticeTime(db,until);
   return other
-    ?`${chosen} is at its limit until ${when}. A fresh allowance reading shows ${other.label} below its limit; new Claude work checks launch eligibility when requested.`
-    :`${chosen} is at its limit until ${when}, and no other account has confirmed room. New Claude work checks again before routing and waits if none is available.`;
+    ?`${chosen}'s included Claude allowance is fully used until ${when}. A fresh allowance reading shows ${other.label} has included room; new Claude work checks launch eligibility when requested.`
+    :`${chosen}'s included Claude allowance is fully used until ${when}, and no other account has confirmed included room. New Claude work checks again before routing.`;
 }
 
 /** Account listing runs in an isolated reader. Login state comes from the command owner. */

@@ -110,13 +110,14 @@ export function decideAutomaticReset(situation: ResetSituation): ResetDecision {
 
 /** What he is told afterwards, in his words rather than the protocol's. */
 export function resetUsedSentence(input: {
-  account: string; remaining: number; nextExpiresAt: string | null; releasedInputs: number;
+  account: string; remaining: number | null; nextExpiresAt: string | null; releasedInputs: number;
 }): string {
-  const left = input.remaining === 0 ? "That was the last one on this account."
+  const left = input.remaining === null ? "The remaining reset count could not be confirmed."
+    : input.remaining === 0 ? "That was the last one on this account."
     : `${input.remaining} left on this account`
       + (input.nextExpiresAt ? `, the next expiring ${input.nextExpiresAt.slice(0, 10)}.` : ".");
   const work = input.releasedInputs > 0
-    ? `${input.releasedInputs} piece${input.releasedInputs === 1 ? "" : "s"} of work that had stopped can carry on.`
-    : "Work that had stopped can carry on.";
-  return `Used a free reset on ${input.account}: it had run out and no other account had room. ${work} ${left}`;
+    ? `${input.releasedInputs} held piece${input.releasedInputs === 1 ? "" : "s"} of work became eligible to retry; provider acceptance has not been confirmed.`
+    : "No held work was made eligible to retry yet.";
+  return `Used a free reset on ${input.account} after direct readings showed its ordinary included allowance blocked and no saved account with confirmed room. The account now reports room for ordinary work. ${work} ${left}`;
 }

@@ -11,11 +11,18 @@ export function withLocalCurrentAccount(usage:ProviderUsage,selected:string|null
 /** Windows that constrain the ordinary Claude Opus start; Fable has a separate weekly cap. */
 export function includedAllowanceWindows(provider:AccountIdentityProvider,account:AccountUsage,
   model?:string|null):AccountUsage['windows'] {
+  if(provider==='codex')
+    return account.windows.length&&account.windows.every(window=>Number.isSafeInteger(window.durationMinutes)
+      &&(window.durationMinutes??0)>0)?account.windows:[];
   // A null model is genuinely unknown: include the Fable cap so a launch cannot be
   // authorized on an assumption. Undefined is the ordinary Automatic Opus view.
-  return provider==='claude-code'&&model!==null&&!/fable/i.test(model??'')
-    ?account.windows.filter(window=>window.name!=='Weekly · Fable only')
-    :account.windows;
+  if(provider==='claude-code'){
+    const relevant=model!==null&&!/fable/i.test(model??'')
+      ?account.windows.filter(window=>window.name!=='Weekly · Fable only'):account.windows;
+    const required=['5-hour','Weekly',...(model===null||/fable/i.test(model??'')?['Weekly · Fable only']:[])];
+    return required.every(name=>relevant.some(window=>window.name===name))?relevant:[];
+  }
+  return account.windows;
 }
 
 /** A provider observation belongs to an account, not to the batch or peer transfer. */

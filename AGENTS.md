@@ -1093,8 +1093,10 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
   That command remains for recovery; Accounts Refresh now makes one user-requested retry
   of queued usage-held work, and a successful Codex reset-credit
-  use wakes usage-held work on its active account. Clearing it, and
-  activating a different account, also release work that was waiting on the old
+  use wakes usage-held work on its active account. Automatic reset spending requires a
+  direct, same-account, unexpired allowance read for every saved Codex account before a
+  finite credit is consumed; see [provider usage](docs/architecture/PROVIDER-USAGE.md#a-grant-is-spent-only-against-a-spent-weekly-allowance).
+  Clearing it, and activating a different account, also release work that was waiting on the old
   account's reset. Fresh Claude usage readings also release only usage-held queued work when
   the actual dispatch choice has an account with room; see [provider usage](docs/architecture/PROVIDER-USAGE.md). Whether each account is out and until when has one answer (`accountAvailability`); a hold waits until
   the first launchable account frees up, never only the refusing account's reset.

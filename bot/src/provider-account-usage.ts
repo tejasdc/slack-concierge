@@ -33,6 +33,8 @@ import { resolveProviderAlias } from "./aliases";
 export type UsageWindow = Readonly<{
   name: string;
   usedPercent: number;
+  /** Provider duration, when supplied; slot position does not name a Codex window. */
+  durationMinutes?: number | null;
   resetsAt: string | null;
   willLastToReset: boolean | null;
   runsOutAt: string | null;
@@ -230,10 +232,14 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   }
   const usage = row?.usage ?? {}, pace = row?.pace ?? {};
   const windows: UsageWindow[] = [];
-  const add = (name: string, window: any, windowPace: any) => {
+  const add = (slot: string, window: any, windowPace: any) => {
     const used = percent(window?.usedPercent);
     if (used === null) return;
-    windows.push({ name, usedPercent: used, resetsAt: iso(window?.resetsAt),
+    const durationMinutes = Number.isSafeInteger(window?.windowMinutes) && window.windowMinutes > 0
+      ? window.windowMinutes as number : null;
+    const name = durationMinutes === 300 ? "5-hour" : durationMinutes === 10080 ? "Weekly"
+      : durationMinutes !== null ? `${durationMinutes}-minute allowance` : `${slot} allowance (duration unknown)`;
+    windows.push({ name, durationMinutes, usedPercent: used, resetsAt: iso(window?.resetsAt),
       willLastToReset: typeof windowPace?.willLastToReset === "boolean" ? windowPace.willLastToReset : null,
       runsOutAt: windowPace?.willLastToReset === false ? runsOut(windowPace?.etaSeconds) : null });
   };
