@@ -1,0 +1,1 @@
+Automatic work now checks the allowance windows for the Claude model it will use, so a Fable-only limit does not hide Opus room.
