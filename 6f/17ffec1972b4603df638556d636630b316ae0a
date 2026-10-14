@@ -1,0 +1,1 @@
+Replies and notices for an Inbox thread now stay in that thread without starting another router turn; agents can explicitly request a return when they need one.
