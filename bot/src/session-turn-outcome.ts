@@ -3,6 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
+import {notificationPromisePointed,responseSettlesNotification,settleNotificationByAnswer} from './notify-when';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -74,11 +75,17 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   if(!session)throw new Error('Unknown session.');
   const meta=sessionMetadata(session),at=new Date().toISOString();
   const inputId=outcomeInputFor(input.sessionId,input.inputId);
+  const notificationInputId=responseSettlesNotification(input.inputId)?input.inputId:null;
   // In the Inbox a `response` is a promise that there is something to read in this thread: the
   // turn's post there, or its closing text. A response with nothing behind it became an item
   // that showed him a heading and a link to his own message (Tejas, 2026-09-24: "I literally
   // cannot read this"), so it is refused when declared, and a finished turn's is recorded done.
   let outcome=input.outcome;
+  if(outcome==='response'&&notificationPromisePointed(input.inputId)){
+    if(input.refuseUnreadable)throw new Error('This input already has or had its pointed phone notification. Post current status into its thread, then declare done with --quiet-because explaining why this status needs no separate push.');
+    log('info','pointed_notification_response_deferred',{session_id:input.sessionId,input_id:input.inputId,event_id:input.eventId});
+    outcome='done';
+  }
   if(outcome==='response'&&meta.inbox&&!readsForTurn(input.sessionId,input.turnId,new Set([inputId])).length) {
     if(input.refuseUnreadable)throw new Error('response needs something to read: post the answer into this thread first (sessions post), then declare it.');
     log('warn','turn_response_without_reads',{session_id:input.sessionId,turn_id:input.turnId,input_id:inputId,event_id:input.eventId});
@@ -110,7 +117,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,question,inputId,generation}));
+      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,question,inputId,generation,...(notificationInputId?{notificationInputId}:{})}));
+    if(outcome==='response'&&notificationInputId)settleNotificationByAnswer(notificationInputId,`needs_you:${input.eventId}`);
   }
   updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at,...(quiet?{quiet}:{})}});
   executionChanged();

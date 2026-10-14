@@ -3,6 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
+import {hasPeerNotificationPromises,reconcilePeerNotificationPromises} from './notify-when';
 import {sessionProject} from './session-projects';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
@@ -1225,6 +1226,8 @@ export class SessionPeers {
       this.reconciliationDirty=false;
       // Catalogue refreshes have their own task owner and bounded interval.
       for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
+      for(const [name,client] of this.dependencies.clients)if(hasPeerNotificationPromises(name))
+        this.schedule(`notify-when:${name}`,async()=>{if(await reconcilePeerNotificationPromises(name,client))this.wake();});
       await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
         row=>this.closeStranded(row));
       await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
@@ -1271,7 +1274,8 @@ export class SessionPeers {
   private arm() {
     this.disarm?.();this.disarm=null;
     if(this.stopped)return;
-    const owed=this.dependencies.hasPendingOperations?.()||this.unrecovered.size>0||(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
+    const owed=this.dependencies.hasPendingOperations?.()||this.unrecovered.size>0||(db.query("SELECT 1 FROM inbox_notification_promises WHERE target_session IS NOT NULL AND target_session NOT LIKE 'concierge:%' AND state='pending' LIMIT 1").get()
+      ||db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;

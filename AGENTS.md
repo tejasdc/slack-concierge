@@ -18,7 +18,9 @@ open obligations move only on acceptance. See [provider-change handoff](docs/arc
 and [router commands](docs/runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 Session location is hidden behind the shared owner and peer composition; the candidate check
 refuses divergent server/Mac peer wiring. See [session location and parity](docs/architecture/SESSION-LOCATION-PARITY.md).
-Explicit requests for phone delivery are carried on the retained human input receipt;
+Explicit phone requests create one durable Inbox-thread promise from the exact human
+input; the router must dispatch, answer, or point it at an existing session, and
+Concierge fires the requested-result push once. Mac runs replay through peer events;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 
 The coordinated responsiveness release follows the dependency checkpoints in

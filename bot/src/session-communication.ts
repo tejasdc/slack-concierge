@@ -19,6 +19,7 @@ import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
+import {notificationPromiseCovered,pointNotificationPromise,requestedNotificationInput} from './notify-when';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -680,6 +681,33 @@ export class SessionCommunicationCoordinator {
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
     }
+    async notifyWhen(input:{source:CommunicationSource;action_id:string;thread:string;session:string;on?:string;summary:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        const session=getSessionById(actor.session)!;
+        if(!sessionMetadata(session).inbox||!actor.inputId)throw new Error('Only the live Inbox agent can set a phone notification for its human request.');
+        const root=inboxThreadRoot(actor.session,input.thread);
+        const ownRoot=inboxThreadRoot(actor.session,actor.inputId);
+        if(!root||root!==ownRoot)throw new Error('--thread must be a message in the human request this turn is handling.');
+        const asking=getAcceptedSessionInput(input.thread);
+        const sameTurnAsk=asking?.origin==='human'&&requestedNotificationInput(asking.id)
+          &&(asking.turn_id===actor.turn||!!db.query('SELECT 1 FROM turn_steering_messages WHERE turn_id=? AND accepted_input_id=?').get(actor.turn,asking.id));
+        const inputId=sameTurnAsk?asking.id:actor.inputId;
+        if(!requestedNotificationInput(inputId))throw new Error('The exact asking input did not request a result notification.');
+        const peer=/^([a-z][a-z0-9-]{0,31}):([1-9]\d*)$/.exec(input.session);
+        const peerClient=peer&&peer[1]!=='concierge'?this.dependencies.peers?.client(peer[1]):null;
+        if(peer&&peer[1]!=='concierge'&&!peerClient)throw new Error('This owner has no connection to the named peer.');
+        const peerView=peerClient
+          ?await peerClient.request<{session:{activeRunId?:string|null;latestRunId?:string|null}}>(
+              'GET',`/sessions/v1/sessions/concierge:${peer![2]}/view`,undefined,3_000,false)
+              .then(value=>value.session).catch(error=>{if(error?.status===404)throw error;return null;})
+          :null;
+        // The network read is outside the mutation. The live run is rechecked before writing.
+        this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
+        const arranged=pointNotificationPromise({inputId,root,target:input.session,conditions:(input.on??'done,needs-you,hold').split(',').map(value=>value.trim()),summary:input.summary,peerView});
+        if(!input.session.startsWith('concierge:'))this.dependencies.peers?.wake();
+        return arranged;
+    }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -706,6 +734,12 @@ export class SessionCommunicationCoordinator {
             throw new Error(`This turn answers another agent's message in a thread, and its closing text never shows there. Post the answer first: sessions post --thread ${owed} --action-id <A> -- <the answer for Tejas>. Then declare the outcome.`);
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
+            const inbox=sessionMetadata(getSessionById(actor.session)!).inbox;
+            const marked=inbox?db.query(`SELECT id FROM session_inputs WHERE origin='human'
+              AND json_extract(payload_json,'$.notificationRequest')='result'
+              AND (turn_id=? OR id IN (SELECT accepted_input_id FROM turn_steering_messages WHERE turn_id=?))`).all(actor.turn,actor.turn) as {id:string}[]:[];
+            for(const asked of marked)if(!(input.outcome==='response'&&asked.id===actor.inputId)&&!notificationPromiseCovered(asked.id))
+                throw new Error(`This turn has an unarranged requested phone notification for ${asked.id}. Dispatch its work, answer with response, or point it at the existing session: sessions notify-when --thread ${asked.id} --session concierge:N|mac:N --summary "<what he asked>" --action-id <A>.`);
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'turn-outcome',outcome:input.outcome,text:content||null,...(quiet?{quiet}:{})},
                 sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});

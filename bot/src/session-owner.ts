@@ -58,7 +58,7 @@ import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROJECT,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
-import {notificationRequest} from './session-notification-request';
+import {legacyNotificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
@@ -1092,7 +1092,7 @@ export class SessionOwner {
       // people read the retained message itself, the same text its history row shows.
       text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
       notificationRequest:input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
-        ?parsed.notificationRequest??notificationRequest(String(parsed.text??parsed.firstInput?.text??'')):null,
+        ?(Object.hasOwn(parsed,'notificationRequest')?parsed.notificationRequest:legacyNotificationRequest(String(parsed.text??parsed.firstInput?.text??''))):null,
       // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.
       ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
         return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
@@ -1766,7 +1766,8 @@ export class SessionOwner {
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(existing) {
-        if(existing.kind!=='create'||stablePayload(JSON.parse(existing.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
+        const kept=JSON.parse(existing.payload_json);delete kept.notificationRequest;
+        if(existing.kind!=='create'||stablePayload(kept)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
@@ -1814,7 +1815,7 @@ export class SessionOwner {
     // in the session as failure"). Exact-run steering stays for service notices, which are not this route.
     const asQueued=(value:Record<string,any>)=>{const {expectedRunId:_run,...rest}=value;return {...rest,delivery:'queue'};};
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
-    if(prior){const kept=stablePayload(JSON.parse(prior.payload_json));if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
+    if(prior){const payload=JSON.parse(prior.payload_json);delete payload.notificationRequest;const kept=stablePayload(payload);if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
       this.recoverAcceptedInput(prior);
       return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
     this.validateAttachments(session,input.attachments);
@@ -2986,14 +2987,22 @@ export class SessionOwner {
    */
   eventPage(after=0,sessionId?:string|null,runId?:string|null,filter?:EventFilter) {
     const runIds=list(runId),kinds=list(filter?.kind),limit=filter?.limit??null;
-    const rows=(db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+    // The notify watcher pages one session's run evidence from its durable cursor. A direct
+    // session/kind predicate uses the existing index; the optional-filter form scans the
+    // whole event log before it reaches a recently created Mac session.
+    const notifyPage=!!sessionId&&!runIds&&kinds?.length===3&&['accepted','run','turn_outcome'].every(kind=>kinds.includes(kind));
+    const rows=((notifyPage
+      ?db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+        WHERE event.sequence>? AND event.session_id=? AND event.kind IN ('accepted','run','turn_outcome')
+        ORDER BY event.sequence LIMIT ?`).all(after,parseSessionId(sessionId!),limit??-1)
+      :db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
       WHERE event.sequence>? AND (? IS NULL OR event.session_id=?)
         AND (? IS NULL OR turn.native_run_id IN (SELECT value FROM json_each(?)))
         AND (? IS NULL OR event.kind IN (SELECT value FROM json_each(?)))
       ORDER BY event.sequence LIMIT ?`)
       .all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,
         runIds?1:null,JSON.stringify(runIds??[]),kinds?1:null,JSON.stringify(kinds??[]),
-        limit??-1) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
+        limit??-1)) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
     const entries=rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]);
     const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
     const events=rows.map(row=>{
