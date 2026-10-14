@@ -1,4 +1,3 @@
-import { providerDisplayName } from "./aliases";
 import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
@@ -150,8 +149,8 @@ const sameWindow = (left: number | null, right: number | null) =>
  * Comparing those instants for **exact equality** is what silenced every early warning.
  * With millisecond jitter, almost every reading looked like a new window: the series was cut
  * to its last row, the span fell to zero, no rate could be computed, and so no window was
- * ever "expected to run out before it refills" — which is the one condition both the warning
- * to Tejas and the budget brief to a running agent are gated on. On 2026-09-23 that account
+ * ever "expected to run out before it refills" — which was the condition the old pace
+ * warning used. On 2026-09-23 that account
  * climbed 67% → 100% in 34 minutes with a reset three hours away, all of it recorded, and
  * nothing was sent. The same stored samples, grouped with a tolerance, give 27 readings over
  * 119 minutes and about 49% an hour.
@@ -249,8 +248,8 @@ export function tightestCurrentWindow(provider: AccountIdentityProvider): UsageF
  * No pace, no forecast. On 2026-10-08 a pace projection told him at 3:10 AM that an account 21%
  * through its five-hour window would run out by 3:52, and he said: "I do not want to be notified
  * when it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually,
- * 90% of above" [decision: usage-notice-only-at-90-percent]. Forecasts still exist for agents'
- * own briefs; nothing here reads them.
+ * 90% of above" [decision: usage-notice-only-at-90-percent]. Forecasts remain diagnostic;
+ * neither the human threshold notice nor the running-session brief reads them.
  */
 export const NOTICE_AT_PERCENT = 90;
 
@@ -416,42 +415,4 @@ export function usageReadingIsUrgent(): boolean {
     }
   }
   return false;
-}
-
-/**
- * What a session should be told when the account it is running on is getting low, in the
- * words it needs to act on: the numbers, how they were arrived at, and where the room
- * actually is. Null when that provider is not close to a wall.
- *
- * A running session keeps its own model. The account comparison and delegation action
- * are attached by the new-session choice owner from fresh, launchable account readings.
- */
-export function usagePressureBrief(provider: AccountIdentityProvider): string | null {
-  const tight = tightestCurrentWindow(provider);
-  if (!tight || tight.minutesLeft === null || tight.minutesLeft * 60_000 > WARN_LEAD_MS) return null;
-  const name = (key: AccountIdentityProvider) => providerDisplayName(key) ?? key;
-  const basis = tight.source === "provider"
-    ? `${name(provider)}'s own projection`
-    : `this machine's readings (${tight.samples} in the last ${tight.spanMinutes ?? 0} minutes, climbing about ${tight.ratePerHour ?? 0}% an hour)`;
-  const spare = accountsWithRoomBesides(provider, tight.account);
-  const banked = (storedUsage(provider)?.accounts ?? []).flatMap(account => account.resetCredits?.available
-    ? [{ account: account.label, available: account.resetCredits.available }] : []);
-  const stored = storedUsage(provider);
-  const advice = stored && provider !== "antigravity"
-    ? withResetAdvice(provider, stored).accounts.find(account => account.label === tight.account)?.resetAdvice ?? null : null;
-  return [
-    `Budget: the ${name(provider)} account this session runs on is ${tight.usedPercent}% through its ${tight.window} window`
-      + ` and, by ${basis}, is expected to run out in about ${Math.max(0, tight.minutesLeft)} minutes`
-      + (tight.resetsAt ? `, before it refills at ${tight.resetsAt}` : "") + ".",
-    "This is a forecast from a rate, not a countdown: a burst of work arrives faster than any line through past readings predicts, and a quiet spell never arrives at all.",
-    `Nothing about this session changes — your model and your work are untouched, and no one is switching anything under you.`,
-    'Move bounded implementation into independent helper requests when another provider has verified room; keep your approach and review responsibility.',
-    spare.length ? `Other accounts on this machine with room, if Tejas switches: ${spare.join(", ")}.` : "",
-    banked.length
-      ? `Banked resets on this provider: ${banked.map(entry => `${entry.account} (${entry.available})`).join(", ")}.`
-        + " One is spent automatically if work actually stops and no account has room, so there is nothing for you to do about it."
-      : "",
-    advice ? `About a reset on this account: ${advice.line}` : "",
-    'Do not stop or abandon admitted work because of this budget notice.',
-  ].filter(Boolean).join(" ");
 }

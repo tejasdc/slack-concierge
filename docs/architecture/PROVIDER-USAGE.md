@@ -542,21 +542,21 @@ them back, because they were built for a screen. Now:
   it refills, and what happens when it runs out (Claude turns move to an account with room by
   themselves; Codex waits unless he switches). When the window refills the thread says so and
   closes; pace warnings sent before the change were withdrawn on the next reading. Until
-  2026-10-07 it was a bare `provider_outage` event, which thnkr.ing never shows. Forecasts remain
-  for agents' own briefs only. The banked-reset expiry notice uses the same carrier.
+  2026-10-07 it was a bare `provider_outage` event, which thnkr.ing never shows. Forecasts
+  remain diagnostic and do not trigger budget notices. The banked-reset expiry notice uses
+  the same carrier.
 - **`router-actions.sh sessions usage`** answers the same question for any caller: the
   account in use, the closest wall with its basis, the accounts with room, every window's
   forecast. A read; it recommends nothing and changes nothing. The Inbox router uses it to
   choose where new work goes.
-- **Running sessions are told** (`usagePressureBrief`, `briefRunningSessions`). A turn that
-  starts while the account is low reads it in its own per-turn context for free. A turn
+- **Running sessions are told** (`briefRunningSessions`). A turn that
+  starts while its account has a fresh measured window at or above 90% reads it in its own per-turn context for free. A turn
   already under way is told inside that run, pinned to the exact live run with
   `delivery:'steer'` so it can never start a turn on an idle session — a notice about
-  spending must not itself spend — once per session per allowance period. It names the
-  numbers, names which *other* provider has room, says that nothing about the session is
-  being changed, and asks whether work with a fixed acceptance criterion could be handed
-  down. Tejas's rule that a running session keeps its own model binding is unchanged: this
-  informs, it never switches.
+  spending must not itself spend — once per session, account and allowance period. It names
+  the machine, account, window, measured percentage and observation time. A stale reading,
+  earlier refusal or forecast cannot trigger it. A separate dispatch check determines whether
+  Codex has room for an independent helper; the running session keeps its model binding.
 
 Account choice at the next dispatch does not change the login of a running process. The
 earlier credential-switching proposal in

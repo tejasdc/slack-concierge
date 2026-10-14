@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import { currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
-import { NOTICE_AT_PERCENT, usagePressureBrief } from './provider-usage-forecast';
+import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
@@ -57,30 +57,49 @@ export function newWorkCapacity(provider: AutomaticProvider, now = Date.now()): 
 }
 
 /** A running Claude agent's independent helper can use Codex while its own allowance is under pressure. */
-export function codexRoomForClaudeDelegation(now = Date.now()): { claudeUsed: number; codexUsed: number } | null {
+export function codexRoomForClaudeDelegation(now = Date.now(), accountLabel?: string): { claudeUsed: number; codexUsed: number } | null {
+  const usage = storedUsage('claude-code');
+  const selected = usage?.accounts.find(account => account.current)?.label;
+  // Automatic dispatch compares the selected launchable account. A run on another
+  // account must not be promised Codex delegation from that comparison.
+  if (accountLabel && selected !== accountLabel) return null;
+  if (!measuredBudgetPressure('claude-code', accountLabel, now)) return null;
   const claude = newWorkCapacity('claude-code', now);
   const codex = newWorkCapacity('codex', now);
   if (!claude || !codex || codex.used >= 100 || codex.used >= claude.used) return null;
-  if (claude.used < NOTICE_AT_PERCENT && !usagePressureBrief('claude-code')) return null;
   return { claudeUsed: claude.used, codexUsed: codex.used };
 }
 
-/** The same fresh account evidence used for delegation is named in each agent budget brief. */
-export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', now = Date.now()): string | null {
-  const forecast = usagePressureBrief(provider);
-  const own = newWorkCapacity(provider, now);
-  if (!forecast && (!own || own.used < NOTICE_AT_PERCENT)) return null;
-  const other = provider === 'claude-code' ? 'codex' : 'claude-code';
-  const elsewhere = newWorkCapacity(other, now);
+/** A threshold notice is an Accounts reading, never a dispatch estimate or cached refusal. */
+export function measuredBudgetPressure(provider: 'claude-code' | 'codex', accountLabel?: string, now = Date.now()) {
+  const usage = storedUsage(provider);
+  if (!usage || usage.problem) return null;
+  const account = accountLabel
+    ? usage.accounts.find(value => value.label === accountLabel)
+    : usage.accounts.find(value => value.current);
+  if (!account || account.problem) return null;
+  const observedAt = Date.parse(account.readAt ?? usage.observedAt);
+  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > FRESH_MS) return null;
+  const window = account.windows.filter(value => value.name !== 'Weekly · Fable only'
+    && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
+    .sort((left, right) => right.usedPercent - left.usedPercent)[0];
+  return window ? { account: account.label, window: window.name, usedPercent: window.usedPercent,
+    resetsAt: window.resetsAt, observedAt: new Date(observedAt).toISOString() } : null;
+}
+
+/** State the measured threshold separately from the operational choice for a new helper. */
+export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', now = Date.now(), accountLabel?: string): string | null {
+  const pressure = measuredBudgetPressure(provider, accountLabel, now);
+  if (!pressure) return null;
   const name = (key: 'claude-code' | 'codex') => providerDisplayName(key) ?? key;
-  const facts = `${name(provider)} new-session allowance: ${own ? `${own.used}% used` : 'unverified'}. `
-    + `${name(other)} new-session allowance: ${elsewhere ? `${elsewhere.used}% used` : 'unverified'}. `
-    + 'The owner checks again when a helper request is created.';
-  const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now) : null;
+  const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now, pressure.account) : null;
   const action = codex
     ? 'Delegate bounded implementation to an independent Codex session through sessions ask --project without --provider. The owner makes that choice automatically while this pressure and Codex room persist. Review its result before you finish; this running Claude session keeps its provider.'
     : 'Continue the accepted work. A helper request without a provider uses the owner\'s current account choice; no other provider has been established as the roomier delegation target.';
-  return [forecast ?? `Budget: this ${name(provider)} provider is at or above ${NOTICE_AT_PERCENT}% of its usable allowance.`, facts, action].join(' ');
+  const machine = process.platform === 'darwin' ? 'your Mac' : 'the server';
+  return [`Budget: Accounts on ${machine} measured ${name(provider)} account ${pressure.account}, ${pressure.window}: ${pressure.usedPercent}% used at ${pressure.observedAt}.`,
+    `This is the provider's usage reading. New helper dispatch checks account availability again when requested; a prior refusal can hold a request even when this reading shows room.`,
+    action].join(' ');
 }
 
 /** A stable request ID spreads starts in proportion to verified remaining allowance.

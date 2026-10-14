@@ -11,7 +11,7 @@ import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./p
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
-import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
+import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
@@ -528,9 +528,9 @@ export function publishExpiringResetNotices(_record?: RecordEvent): void {
  *  - It is pinned to the exact live run (`delivery:'steer'` with that run's id), so it can
  *    never start a turn on an idle session. If the run ends first, the notice fails and is
  *    not retried into a queue.
- *  - One brief for each delegation-availability state per session and allowance
- *    period. A change in available room can update the action without repeated
- *    notices for every usage reading.
+ *  - One brief for each delegation-availability state per session, account and
+ *    allowance period. A change in available room can update the action without
+ *    repeated notices for every usage reading.
  *  - It gives a delegation action only when the same account choice that starts helpers
  *    verifies Codex has the room. The session keeps its model and its work.
  */
@@ -539,25 +539,29 @@ export function briefRunningSessions(admit: (input: {
   requestId: string; text: string; delivery: "steer";
 }) => unknown): void {
   for (const provider of ["claude-code", "codex"] as const) {
-    let brief: string | null = null;
-    let tight;
-    let capacity;
-    try {
-      tight = tightestCurrentWindow(provider);
-      capacity = newWorkCapacity(provider);
-      brief = budgetBriefWithProviderRoom(provider);
-    } catch { continue; }
-    const resetsAt = tight?.resetsAt ?? (capacity?.windowResetAt ? new Date(capacity.windowResetAt).toISOString() : null);
-    if (!brief || !resetsAt) continue;
-    const episode = `${provider}:${tight?.window ?? 'most-spent'}:${allowancePeriod(resetsAt)}`;
     const running = db.query(`SELECT turn.id AS turn_id, turn.session_id FROM turns turn
       JOIN sessions session ON session.id = turn.session_id
       WHERE turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
         AND session.provider_id = ?`).all(provider) as { turn_id: number; session_id: number }[];
     for (const run of running) {
+      // Claude turns can outlive an account selection change. Use the account retained
+      // with this execution, and say nothing when older custody cannot identify it.
+      const execution = db.query(`SELECT processor_json FROM executions WHERE turn_id=?
+        AND state IN ('intended','live') ORDER BY created_at_ms DESC LIMIT 1`)
+        .get(run.turn_id) as { processor_json: string } | null;
+      let account: string | undefined;
+      try { account = (JSON.parse(execution?.processor_json ?? '{}') as { account?: { account?: string } }).account?.account; }
+      catch { continue; }
+      if (provider === 'claude-code' && !account) continue;
+      const pressure = measuredBudgetPressure(provider, account);
+      if (!pressure) continue;
+      const brief = budgetBriefWithProviderRoom(provider, Date.now(), account);
+      if (!brief) continue;
+      const period = pressure.resetsAt ? allowancePeriod(pressure.resetsAt) : `run-${run.turn_id}`;
+      const episode = `${provider}:${pressure.account}:${pressure.window}:${period}`;
       // A previous brief this allowance period lacked verified provider room and the
       // delegation action. The versioned identity delivers the changed contract once.
-      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation()
+      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation(Date.now(), pressure.account)
         ? 'codex-ready' : 'budget-only';
       const inputId = `budget-room-v1:${direction}:${episode}:${run.session_id}`;
       if (db.query("SELECT 1 FROM session_inputs WHERE id = ?").get(inputId)) continue;
@@ -569,8 +573,9 @@ export function briefRunningSessions(admit: (input: {
           sourceRunId: nativeRunId(run.turn_id), requestId: inputId, delivery: "steer",
           text: `${brief}\n\nThis is about the account, not a request; you do not need to reply.` });
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
-          turn_id: run.turn_id, window: tight?.window ?? 'most-spent', minutes_left: tight?.minutesLeft ?? null,
-          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation() });
+          turn_id: run.turn_id, account: pressure.account, window: pressure.window,
+          used_percent: pressure.usedPercent, observed_at: pressure.observedAt,
+          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation(Date.now(), pressure.account) });
       } catch (error) {
         // A run that ended between the query and the admission is the ordinary case here.
         log("info", "provider_usage_session_brief_skipped", { provider, session_id: run.session_id,
