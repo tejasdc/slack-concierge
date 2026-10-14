@@ -247,23 +247,25 @@ try {
   // Derive kernel identity ourselves; caller supplies only its PID.
   const identity = processIdentity(ownerPid);
   const claimed = database.transaction(() => {
-    // The gate write is the admission boundary. Inspect only after it wins the
-    // SQLite writer order so no later turn can slip into the draining set.
+    // The gate write is the admission boundary. The later inspection may be
+    // slow, so commit this writer transaction before starting it.
     database.query(`INSERT INTO deployment_drain
       (singleton, token, owner_pid, owner_boot_id, owner_start_ticks) VALUES (1, ?, ?, ?, ?)
       ON CONFLICT(singleton) DO NOTHING`).run(token, identity.pid, identity.bootId, identity.startTicks);
     const gate = database.query("SELECT token FROM deployment_drain WHERE singleton=1").get() as any;
-    if (gate?.token !== token) return { claimed: false, active: [], stale: [] };
-    return { claimed: true, ...inspect() };
+    return gate?.token === token;
   })();
+  // The gate excludes new admissions; process and job inspection needs no writer lock.
+  const result = claimed ? inspect() : { active: [], stale: [], continuing: [] };
   database.close();
-  if (!claimed.claimed) finish(1, {
-    status: "error", error: "another drain claim exists", ...claimed,
+  if (!claimed) finish(1, {
+    status: "error", error: "another drain claim exists", claimed: false, ...result,
   });
   finish(0, {
-    status: claimed.active.length ? "claimed_draining" : claimed.stale.length ? "claimed_stale" : "claimed_drained",
+    status: result.active.length ? "claimed_draining" : result.stale.length ? "claimed_stale" : "claimed_drained",
     token,
-    ...claimed,
+    claimed: true,
+    ...result,
   });
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });

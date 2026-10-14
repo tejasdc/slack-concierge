@@ -1,43 +1,10 @@
 import { getDeliveredTurnMessageTarget, getTurnCommitProvenance } from "./state";
 import type { DeploymentTurnReactionTarget } from "./deployment-state";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { deploymentReactionTokensForCommitRange } from "./deployment-reaction-tokens";
 
-function assertCommit(commit: string) {
-  if (!/^[0-9a-f]{40}$/i.test(commit)) throw new Error("Deployment reaction provenance requires full Git SHAs.");
-}
-
-async function git(repositoryRoot: string, arguments_: string[]) {
-  try {
-    const result = await promisify(execFile)("git", arguments_, { cwd: repositoryRoot,
-      env: { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 16 * 1024 * 1024 });
-    return result.stdout;
-  } catch (error: any) {
-    throw new Error(String(error?.stderr || error).trim() || `git ${arguments_.join(" ")} failed`);
-  }
-}
-
-export async function deploymentReactionTargetsForCommitRange(
-  repositoryRoot: string,
-  baseCommit: string,
-  candidateCommit: string,
-): Promise<DeploymentTurnReactionTarget[]> {
-  assertCommit(baseCommit);
-  assertCommit(candidateCommit);
-  const commits = (await git(repositoryRoot, ["rev-list", "--reverse", `${baseCommit}..${candidateCommit}`]))
-    .split("\n")
-    .map((commit) => commit.trim())
-    .filter(Boolean);
+export function resolveDeploymentReactionTargets(tokens: readonly string[]): DeploymentTurnReactionTarget[] {
   const targets = new Map<number, DeploymentTurnReactionTarget>();
-  for (const commit of commits) {
-    const trailers = await git(repositoryRoot, [
-      "show",
-      "-s",
-      "--format=%(trailers:key=Concierge-Provenance,valueonly)",
-      commit,
-    ]);
-    const tokens = trailers.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
-    for (const token of new Set(tokens.map((value) => value.toLowerCase()))) {
+  for (const token of tokens) {
       const provenance = getTurnCommitProvenance(token);
       if (!provenance || targets.has(provenance.turn_id)) continue;
       const delivered = getDeliveredTurnMessageTarget(provenance.turn_id);
@@ -51,7 +18,15 @@ export async function deploymentReactionTargetsForCommitRange(
           ? provenance.slack_user_msg_ts : delivered.slack_message_ts,
         slackMessageTs: delivered.slack_message_ts,
       });
-    }
   }
   return [...targets.values()];
+}
+
+export async function deploymentReactionTargetsForCommitRange(
+  repositoryRoot: string,
+  baseCommit: string,
+  candidateCommit: string,
+): Promise<DeploymentTurnReactionTarget[]> {
+  return resolveDeploymentReactionTargets(
+    await deploymentReactionTokensForCommitRange(repositoryRoot, baseCommit, candidateCommit));
 }

@@ -189,6 +189,25 @@ error, but recorded 11 owner lag events totalling 5,224 ms. Lazy-loading the led
 explicit offline or stopped-owner commands removes those SQLite opens. A later real update must
 verify the full run claim, preparation and activation interval.
 
+The next update also caught an import hidden in reaction provenance: that module loaded the main
+state module before `install-runtime` did any work, so this file-only command still acquired WAL
+writer/checkpoint locks for 82 ms. The controller now scans Git trailers in a storage-neutral
+module and asks the owner to resolve the resulting provenance IDs. Direct offline recovery still
+uses the existing combined lookup. The ledger entrance refuses any ordinary serving controller
+command that loads it, making the no-connection boundary executable rather than relying on
+module-import discipline.
+
+At 06:54 UTC, the next real update had 12,036 ms of owner loop lag and two five-second
+`database is locked` failures. A kernel lock trace identified the separate native continuation
+timer as the WAL writer for about 11.57 seconds, covering both waits. The drain claim held the
+same lock for about 1.46 seconds earlier in that update. The continuation timer now sends its
+enrollment and tick to the root-only owner socket; the owner alone reads and writes its ledger
+rows, and its Git and health probes yield asynchronously. The ledger entrance refuses a new
+direct connection from that helper. The drain claim commits its admission gate before scanning
+active turns, jobs, and sign-ins, so the scan cannot extend its writer transaction. The gate
+itself excludes new admissions after commit. A later real update must verify these changed
+paths under disk load.
+
 ## Failure handling
 
 The owner's connection switches to NORMAL only after the sync thread has opened its descriptor on
