@@ -1,0 +1,1 @@
+When a Codex reset is redeemed, only work that can use the currently signed-in account becomes eligible to retry, and the notice still reports the spent credit if the account changes.
