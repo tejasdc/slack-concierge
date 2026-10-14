@@ -3134,9 +3134,23 @@ export class SessionOwner {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
           if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
-          else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
+          else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId','reason']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!,reason:body.reason});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);
         }
+      }
+      else if(parts[0]==='handoffs'&&this.communication) {
+        object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
+        if(request.method==='POST'&&parts.length===1){
+          only(body,['clientActionId','sourceInputId','sourceRunId','predecessorAddress','provider','model','effort','reason','sessionName']);
+          result=await this.communication.handoff({source,verb:'propose',address:body.predecessorAddress,provider:body.provider,
+            model:body.model,effort:body.effort,reason:body.reason,session_name:body.sessionName,action_id:actionId(body)});
+        } else if(request.method==='POST'&&parts.length===3&&parts[2]==='accept'){
+          only(body,['clientActionId','sourceInputId','sourceRunId','digest']);
+          result=await this.communication.handoff({source,verb:'accept',handoff_id:parts[1]!,digest:body.digest,action_id:actionId(body)});
+        } else if(request.method==='POST'&&parts.length===3&&parts[2]==='withdraw'){
+          only(body,['clientActionId','sourceInputId','sourceRunId']);
+          result=await this.communication.handoff({source,verb:'withdraw',handoff_id:parts[1]!,action_id:actionId(body)});
+        } else throw new SessionOwnerError('Unknown handoff route.',404);
       }
       else throw new SessionOwnerError('Unknown session owner route.',404);
       if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return ownerJson({error:(result as any).operation.error},{status:409});
