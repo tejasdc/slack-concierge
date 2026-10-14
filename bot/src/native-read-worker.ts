@@ -151,6 +151,25 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const admissionId=request.headers.get('x-concierge-admission-id');
   const url=new URL(request.url);
   if(request.method==='GET'&&url.pathname==='/internal/ready')return Response.json({ok:true,pid:process.pid,logging:logSinkCounters(),requests});
+  if(request.method==='GET'&&url.pathname==='/internal/event-stream-page'){
+    const began=performance.now();
+    const after=Number(url.searchParams.get('after'));
+    const limit=Number(url.searchParams.get('limit'));
+    if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(limit)||limit<1||limit>200)
+      return failure(400,'EVENT_PAGE_INVALID','Invalid stream page boundary.');
+    let storage:StorageWork|null=null;
+    const page=await observeStorageOperation('/internal/event-stream-page',async()=>
+      composition.owner.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
+        {kind:url.searchParams.get('kind'),limit}),measured=>{storage=measured;});
+    const body=page.events.map(event=>`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`).join('');
+    const durationMs=Math.round(performance.now()-began);
+    if(durationMs>=250)log('warn','event_stream_page_slow',{
+      duration_ms:durationMs,events:page.events.length,bytes:Buffer.byteLength(body),...storage,
+    });
+    return new Response(body,{headers:{'content-type':'text/event-stream',
+      'x-event-next-cursor':page.nextCursor??'',
+      'x-event-has-more':page.hasMore?'1':'0'}});
+  }
   if(request.method!=='GET')return failure(405,'METHOD_NOT_ALLOWED','Only GET reads are served here.');
   const route=classifyNativeReadRoute(request.method,url.pathname);
   if(!route||route.domain!=='read-worker')return failure(route?503:404,route?'READ_OWNER_REQUIRED':'READER_CONTRACT_REQUIRED',

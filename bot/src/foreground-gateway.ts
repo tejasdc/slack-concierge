@@ -20,6 +20,10 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
   })();
   const route=async(request:Request):Promise<Response>=>{
     const url=new URL(request.url);
+    // Only the root-owned local socket reaches this entrance. The live stream stays
+    // with the owner, while its retained page projection runs in a read executor.
+    if(url.pathname==='/internal/event-stream-page')
+      return pool.request(request,'/internal/event-stream-page',randomUUID());
     // These are process control entrances, never authenticated product capabilities.
     if(url.pathname.startsWith('/internal/'))return Response.json({error:'Unknown request API route.'},{status:404});
     const id=randomUUID();

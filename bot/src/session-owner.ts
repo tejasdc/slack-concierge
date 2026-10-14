@@ -3046,10 +3046,18 @@ export class SessionOwner {
         try{
           for(;;){
             if(closed)return;changed=false;
-            const page=this.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),{kind:url.searchParams.get('kind'),limit:STREAM_PAGE_EVENTS});
-            if(page.events.length)controller.enqueue(new TextEncoder().encode(page.events.map(event=>`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`).join('')));
-            if(page.nextCursor!==null)after=Number(page.nextCursor);
-            if(!page.hasMore&&!changed)break;
+            const query=new URLSearchParams({after:String(after),limit:String(STREAM_PAGE_EVENTS)});
+            for(const name of ['sessionId','runId','kind'] as const){const value=url.searchParams.get(name);if(value!==null)query.set(name,value);}
+            const response=await fetch('http://localhost/internal/event-stream-page?'+query,{
+              unix:join(process.env.CONCIERGE_STATE_DIR!,'requests.sock'),signal:request.signal,
+            } as RequestInit);
+            if(!response.ok)throw new Error(`Event stream reader returned ${response.status}.`);
+            const nextCursor=response.headers.get('x-event-next-cursor');
+            const hasMore=response.headers.get('x-event-has-more')==='1';
+            const bytes=new Uint8Array(await response.arrayBuffer());
+            if(bytes.byteLength)controller.enqueue(bytes);
+            if(nextCursor)after=Number(nextCursor);
+            if(!hasMore&&!changed)break;
             if((controller.desiredSize??1)<=0)await new Promise<void>(resolve=>{waiting=resolve;});
             else await new Promise<void>(resolve=>setImmediate(resolve));
           }
