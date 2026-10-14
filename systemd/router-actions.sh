@@ -15,7 +15,7 @@
 #   router-actions.sh threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
 #   router-actions.sh threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
 #   router-actions.sh threads stats
-#   router-actions.sh sessions <search|context|ask|reply|get> <args>
+#   router-actions.sh sessions <search|context|ask|reply|get|handoff|obligations> <args>
 #   router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout <30s|5m|2h>]
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>

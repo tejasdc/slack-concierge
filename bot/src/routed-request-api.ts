@@ -12,6 +12,8 @@ import {log,logSinkCounters} from './log';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
 import {isTransientDatabaseError} from './database-retry';
+import {getAcceptedSessionInput} from './session-inputs';
+import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
   recordDeploymentTurnReactionDiscoveryFailure} from './deployment-state';
@@ -45,6 +47,17 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
       if (request.method === 'POST' && url.pathname.startsWith('/session-communication/') && sessions) {
         const operation = url.pathname.slice('/session-communication/'.length);
         const input = await request.json();
+        const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
+        const successor=sourceInput?supersededBy(sourceInput.session_id):null;
+        const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
+        const readOnly=operation==='search'||operation==='projects'||operation==='peers'||operation==='usage'
+          ||operation==='get'||operation==='context'||operation==='obligations'
+          ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
+          ||operation==='saved'&&input.verb==='list'||operation==='topics'&&['read','list','questions'].includes(input.verb);
+        if(successor&&operation!=='outcome'&&!readOnly)
+          return Response.json({error:`This session is superseded by ${successor}; use ${supersededAddress(sourceInput!.session_id)} for owner writes.`,successor,successorAddress:supersededAddress(sourceInput!.session_id),code:'SESSION_SUPERSEDED'},{status:409});
+        if(withdrawn&&operation!=='outcome'&&!readOnly)
+          return Response.json({error:'This proposed handoff was withdrawn; this successor cannot write.',code:'HANDOFF_WITHDRAWN'},{status:409});
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
@@ -55,6 +68,8 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'saved') return Response.json(sessions.saved(input));
         if (operation === 'watch') return Response.json(sessions.watch(input));
+        if (operation === 'handoff') return Response.json(await sessions.handoff(input));
+        if (operation === 'obligations') return Response.json(await sessions.obligations(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));
         if (operation === 'owed') return Response.json(sessions.owed(input));

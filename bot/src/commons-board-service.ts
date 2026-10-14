@@ -10,6 +10,7 @@
 import {readFileSync} from 'node:fs';
 import {resolveSessionAddress} from './session-owner';
 import {peerSessionView} from './session-topics';
+import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {log} from './log';
 
 export class BoardError extends Error {}
@@ -150,6 +151,9 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     if(input.thread)return lab('GET',`/records/${encodeURIComponent(input.thread)}`,actor);
     return lab('GET','',actor);
   }
+  const successor=supersededBy(actor.session);
+  if(successor)throw new BoardError(`This session continues in ${successor}. Use ${supersededAddress(actor.session)} to write to the Lab.`);
+  if(withdrawnSuccessor(actor.session))throw new BoardError('This proposed handoff was withdrawn; this successor cannot write to the Lab.');
   if(!input.action_id?.trim())throw new BoardError('Changing the board needs a stable --action-id.');
   if(input.reply_to&&input.verb!=='post')throw new BoardError('--reply-to is only for board post.');
   if(input.target&&input.verb!=='post')throw new BoardError('--target is only for board post.');

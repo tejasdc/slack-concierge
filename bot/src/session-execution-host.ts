@@ -674,7 +674,11 @@ export class SessionExecutionHost {
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
-    if(!session||!this.owner.view(session).capabilities.steer)return false;
+    // The one closing notice is admitted after the atomic transfer fenced this
+    // predecessor. It can enter its already-running provider queue, but grants no
+    // permission to enqueue another turn or write through the owner.
+    const closingHandoffNotice=input.origin==='service'&&input.scope.startsWith('handoff-notice:');
+    if(!session||!closingHandoffNotice&&!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
       // Stop owns this run only. New communication waits in its session's FIFO.

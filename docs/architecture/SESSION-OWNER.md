@@ -105,6 +105,44 @@ second naming store, backfill or transcript-title rewrite is involved.
 
 ## Requests and returns
 
+### Provider-change handoff
+
+A provider change creates a successor on the same Concierge instance; it never changes the
+predecessor's bound provider or replays work in progress. A source-bound `sessions handoff`
+proposes the successor in the predecessor's project folder and retains one inventory and
+its digest. The successor's first input is a handoff brief with that inventory, a pointer
+to `sessions context` for the predecessor's decisions, and references to worktree state.
+The predecessor still owns and can work on every obligation while the handoff is proposed.
+Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
+
+The inventory names open requests sent by and owed by the predecessor, queued inputs,
+active watches, open Lab roles where available, and referenced worktrees. Each item has
+a stable kind and reference. Sent requests retain whether their target has acknowledged
+or started work; those and ChatGPT requests must not be dispatched again. A missing Lab
+read is stated as an omission. Worktrees, provider transcripts, past answers and Lab
+entries stay where they were and keep their original authors.
+
+Only a live successor run can accept with the inventory digest. The owner recomputes the
+inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
+acknowledgement. Acceptance transfers the open request return and reply ownership,
+safe never-started queued inputs, and watches in one ledger transaction, recording each
+moved item. A queued input's original acceptance and history stay with the predecessor;
+the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
+and their targets do not change. An owed request's current
+recipient binding points to the successor's accepted run; its earlier delivery remains in
+the predecessor's history, and original input provenance does not change.
+The predecessor is then superseded: owner writes from its run and new requests to it
+are refused with the successor's address. Its live run receives a notice and can finish,
+but cannot write through the owner; its own outcome and reads remain allowed. Suspension
+prevents another turn. The session detail read exposes the canonical continuation chain,
+successor ID and handoff ID to Thinkering. `sessions obligations` reports the
+outstanding inventory, lineage and current holder on either side of the transfer.
+`sessions cancel --reason provider-change` refuses with the handoff command. See
+[the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
+The authenticated Thinkering owner API also accepts proposal, acknowledgement and withdrawal
+at `/sessions/v1/handoffs` and `/sessions/v1/handoffs/<id>/<accept|withdraw>`, using the
+same exact live source input, run identity and stable action identity as request actions.
+
 `session-communication.ts` retains the existing request/event ledger. Request acceptance atomically retains the immutable target, source, content, due time, prerequisites, mandatory return obligation and native target input before dispatch. A reply names exactly one request. Partial answers may precede its final; ending a turn with other outstanding questions returns an unconfirmed-answer disposition with retained output references.
 
 The communication and peer owners reconcile their existing durable rows with one in-flight
