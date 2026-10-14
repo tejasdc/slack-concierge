@@ -1,6 +1,7 @@
 /**
- * The durable watch: "wake this conversation once, when this file or directory changes, when this
- * command finishes, or at a deadline", with no model awake while it waits
+ * The durable watch: "wake this conversation when this file or directory changes, when this
+ * command finishes, or at a deadline", with no model awake while it waits. File watches can opt
+ * into owner-managed renewal so an interrupted wake cannot leave the condition unwatched
  * (design docs/plans/2026-10-07-agent-work-and-updates-without-waiting.md §4.4 and §7;
  * docs/architecture/WATCHES.md).
  *
@@ -70,10 +71,20 @@ CREATE TABLE IF NOT EXISTS watches (
   host_stop_at_ms     INTEGER,
   host_killed         INTEGER NOT NULL DEFAULT 0,
   host_pruned         INTEGER NOT NULL DEFAULT 0,
+  renew_ms            INTEGER,
+  series_id           TEXT,
   created_at_ms       INTEGER NOT NULL,
   UNIQUE (origin_input_id, action_id)
 );
 `);
+if (process.env.CONCIERGE_READ_WORKER !== "1") {
+  const columns = db.query("PRAGMA table_info(watches)").all() as { name: string }[];
+  if (!columns.some(column => column.name === "renew_ms")) db.exec("ALTER TABLE watches ADD COLUMN renew_ms INTEGER");
+  if (!columns.some(column => column.name === "series_id")) db.exec("ALTER TABLE watches ADD COLUMN series_id TEXT");
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_renewing_file_watch
+    ON watches(session_id, condition_json)
+    WHERE kind='file' AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`);
+}
 
 export type WatchRow = {
   watch_id: string; session_id: number; origin_input_id: string; origin_run_id: string; action_id: string; request_hash: string;
@@ -83,7 +94,7 @@ export type WatchRow = {
   delivery_state: "pending" | "accepted" | null; delivery_input_id: string | null; delivery_attempts: number; delivery_next_ms: number | null;
   host_execution_id: string | null; host_directory: string | null; host_unit: string | null; host_script: string | null;
   host_protocol: number | null; host_state: "intended" | "live" | "stopping" | "released" | "gone" | null; host_stop_at_ms: number | null;
-  host_killed: number; host_pruned: number; created_at_ms: number;
+  host_killed: number; host_pruned: number; renew_ms: number | null; series_id: string | null; created_at_ms: number;
 };
 type Gap = { fromMs: number; toMs: number };
 const gapsOf = (row: WatchRow): Gap[] => JSON.parse(row.gaps_json);
@@ -174,7 +185,7 @@ export function parseUntil(value: string, now: number): number {
   return deadline;
 }
 
-export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string }
+export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean }
   & ({ kind: "file"; path: string } | { kind: "command"; argv: string[]; cwd: string });
 
 export function watchView(row: WatchRow) {
@@ -184,6 +195,7 @@ export function watchView(row: WatchRow) {
     baseline: { mode: row.baseline_mode, ...(row.kind === "file" ? { description: describeBaseline(JSON.parse(row.baseline_json)) } : {}) },
     registeredAt: iso(row.created_at_ms), deadline: iso(row.deadline_ms),
     lastObservedAt: row.last_observed_ms ? iso(row.last_observed_ms) : null,
+    renewEveryMs: row.renew_ms, seriesId: row.series_id,
     gaps: gapsOf(row).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
     terminalEvent: row.terminal_event, endedAt: row.terminal_at_ms ? iso(row.terminal_at_ms) : null,
     delivery: row.delivery_state, deliveredAs: row.delivery_input_id,
@@ -194,13 +206,22 @@ export function watchView(row: WatchRow) {
 export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean } {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
-  const requestHash = sha256(JSON.stringify({ kind: input.kind, condition, until: input.until.trim() }));
+  if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
+  if (input.renew && !/^(?:(?:\d+)d)?(?:(?:\d+)h)?(?:(?:\d+)m)?(?:(?:\d+)s)?$/.test(input.until.trim()))
+    throw new Error("A renewing watch needs a duration, not an absolute deadline.");
+  const requestHash = sha256(JSON.stringify({ kind: input.kind, condition, until: input.until.trim(), renew: !!input.renew }));
   const prior = db.query("SELECT * FROM watches WHERE origin_input_id=? AND action_id=?").get(input.originInputId, input.actionId) as WatchRow | null;
   if (prior) {
     if (prior.request_hash !== requestHash || prior.session_id !== input.sessionId) throw new Error("Idempotency conflict: this action id already registered a different watch.");
     return { watch: watchView(prior), duplicate: true };
   }
   const deadline = parseUntil(input.until, now);
+  const renewMs = input.renew ? deadline - now : null;
+  if (renewMs !== null) {
+    const active = db.query(`SELECT * FROM watches WHERE session_id=? AND kind='file' AND condition_json=?
+      AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`).get(input.sessionId, JSON.stringify(condition)) as WatchRow | null;
+    if (active) return { watch: watchView(active), duplicate: true };
+  }
   let baseline: unknown, mode: string;
   if (input.kind === "file") {
     if (!input.path.startsWith("/")) throw new Error("A watched path must be absolute.");
@@ -219,10 +240,10 @@ export function registerWatch(input: WatchRegistration, now = Date.now()): { wat
   const watchId = randomBytes(6).toString("hex");
   // The baseline is part of the same row as the registration, so it exists before the caller hears yes.
   db.query(`INSERT INTO watches (watch_id, session_id, origin_input_id, origin_run_id, action_id, request_hash, kind, condition_json,
-      baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, created_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)`)
+      baseline_json, baseline_mode, deadline_ms, state, last_observed_ms, renew_ms, created_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)`)
     .run(watchId, input.sessionId, input.originInputId, input.originRunId, input.actionId, requestHash, input.kind, JSON.stringify(condition),
-      JSON.stringify(baseline), mode, deadline, now, now);
+      JSON.stringify(baseline), mode, deadline, now, renewMs, now);
   wakeWatchWorker();
   return { watch: watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow), duplicate: false };
 }
@@ -234,11 +255,16 @@ export function listWatches(sessionId: number) {
 
 /** Only the registering session may cancel; a watch already over is returned as it ended. */
 export function cancelWatch(sessionId: number, watchId: string, now = Date.now()) {
-  const row = db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow | null;
+  let row = db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow | null;
   if (!row || row.session_id !== sessionId) throw new Error("No such watch for this session.");
-  if (isOpen(row)) settle(watchId, "cancelled", { observedAt: null, now, detail: "You cancelled it." });
+  if (!isOpen(row) && (row.series_id || row.renew_ms !== null)) {
+    const successor = db.query(`SELECT * FROM watches WHERE session_id=? AND series_id=? AND state IN ('accepted','observing')`)
+      .get(sessionId, row.series_id ?? row.watch_id) as WatchRow | null;
+    if (successor) row = successor;
+  }
+  if (isOpen(row)) settle(row.watch_id, "cancelled", { observedAt: null, now, detail: "You cancelled it." });
   wakeWatchWorker();
-  return watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow);
+  return watchView(db.query("SELECT * FROM watches WHERE watch_id=?").get(row.watch_id) as WatchRow);
 }
 
 // ---- settling and the words ---------------------------------------------------------------------
@@ -282,7 +308,19 @@ You do not need to reply to this.`;
       WHERE watch_id=? AND state IN ('accepted','observing')`)
       .run(event, event, settlement.now, JSON.stringify({ detail: settlement.detail, observedAt: settlement.observedAt ? iso(settlement.observedAt) : null, ...(settlement.observed ? { observed: settlement.observed } : {}) }),
         text, JSON.stringify(gaps), settlement.observedAt ?? row.last_observed_ms, `watch:${watchId}:${event}`, watchId);
-    return result.changes === 1;
+    if (result.changes !== 1) return false;
+    if (event !== "cancelled" && row.renew_ms !== null) {
+      const nextId = randomBytes(6).toString("hex");
+      const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
+        ? (settlement.observed as { version: PathVersion }).version : JSON.parse(row.baseline_json) as PathVersion;
+      db.query(`INSERT INTO watches (watch_id,session_id,origin_input_id,origin_run_id,action_id,request_hash,kind,
+          condition_json,baseline_json,baseline_mode,deadline_ms,state,last_observed_ms,renew_ms,series_id,created_at_ms)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?,?,?)`)
+        .run(nextId,row.session_id,row.origin_input_id,row.origin_run_id,`renew:${row.watch_id}`,row.request_hash,'file',
+          row.condition_json,JSON.stringify(baseline),baseline.mode,settlement.now+row.renew_ms,settlement.now,
+          row.renew_ms,row.series_id??row.watch_id,settlement.now);
+    }
+    return true;
   })();
 }
 

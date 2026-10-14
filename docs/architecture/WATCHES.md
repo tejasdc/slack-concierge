@@ -11,7 +11,7 @@ finishes, or at a deadline" and then ends its turn. No model stays awake while i
 scheduler: "check every N minutes" stays a repeating saved schedule.
 
 ```
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <...> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -19,6 +19,17 @@ router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
 `--until` is at most 30 days away. Registration is idempotent by (source input, action id); the same
 id with a different condition is refused.
+
+`--renew` is for a standing file condition. It requires a duration. When the file changes or the
+deadline expires, Concierge records the terminal observation and the next watch in one ledger
+transaction, before delivering the wake. The next watch starts from the observed file version and
+has a fresh deadline. A cancelled watch never renews; cancelling an earlier watch in the series
+cancels its current successor. One active renewing watch per session and file is enforced by the
+ledger. Thus an interrupted agent turn cannot leave a standing condition unwatched, and no model
+runs between observations. The deadline still wakes the model for a missed-change check; choose
+the longest acceptable fallback interval because every expiry spends one turn. The thread reader
+uses six hours. This option does not claim that a change made and undone during an observation gap
+was seen.
 
 ## Parts
 

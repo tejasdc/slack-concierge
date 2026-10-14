@@ -868,7 +868,8 @@ previews with phase timing for slow calls and a compact exact archive proof; see
 - **An agent that must wait for a file, directory or command registers a watch and ends its turn**
   (`router-actions.sh sessions watch …`, `bot/src/watches.ts`): one polling worker per machine inside
   Concierge wakes the exact session once with a retained observation, records restarts and sleep as
-  gaps, and runs a watched command as an execution host that never holds an update. See
+  gaps, and runs a watched command as an execution host that never holds an update. A standing file
+  condition uses `--renew`, so settling one wake also registers its successor. See
   [watches](docs/architecture/WATCHES.md).
 - **The lab's board is its record in thnkr.ing** [decision: lab-knowledge-lives-in-the-thinkering-object-store]
   (`router-actions.sh sessions board …`, `bot/src/commons-board-service.ts`): threads, entries, findings, decisions, skills,
