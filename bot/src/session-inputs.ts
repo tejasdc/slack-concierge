@@ -436,17 +436,31 @@ export function attachSessionSteering(inputId:string,turnId:number) {
  * caller delivers it into the run ahead of the later one. Without this a message recorded into a
  * conversation sat queued behind the run while the next one he typed went straight in and was
  * answered (concierge:4081, 2026-10-08 23:42). A message he explicitly queued stays queued: that
- * was his choice of "after this work".
+ * was his choice of "after this work". The Inbox control conversation is different:
+ * every direct human message precedes later service/agent input, even if an older
+ * composer labelled it queue. Captures and saved work retain their separate ordering.
  */
 export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string):AcceptedSessionInput[] {
   return db.transaction(()=>{
     const later=getAcceptedSessionInput(laterInputId);
-    if(!later||later.origin!=='human'||JSON.parse(later.payload_json).delivery==='queue')return [];
+    if(!later)return [];
+    const inbox=!!sessionMetadata(getSessionById(sessionId)!).inbox;
+    if(!inbox&&(later.origin!=='human'||JSON.parse(later.payload_json).delivery==='queue'))return [];
     const rows=db.query(`SELECT input.id AS id,turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
-      WHERE input.session_id=? AND input.id<>? AND input.origin='human' AND input.kind='input' AND input.steering_id IS NULL
-        AND input.receipt_json IS NULL AND json_extract(input.payload_json,'$.delivery') IS NULL
+      WHERE input.session_id=? AND input.id<>? AND input.kind='input' AND input.steering_id IS NULL
+        AND ${inbox?`input.scope='surface:thinkering'
+          AND (input.origin='human' OR input.origin='agent'
+            AND input.source_input_id=json_extract(input.payload_json,'$.agentSource.inputId')
+            AND input.source_run_id=json_extract(input.payload_json,'$.agentSource.runId'))
+          AND json_extract(input.payload_json,'$.capture') IS NULL
+          AND json_extract(input.receipt_json,'$.state') IS NULL
+          AND json_extract(input.receipt_json,'$.forwardTarget') IS NULL`
+          :`input.origin='human' AND input.receipt_json IS NULL AND json_extract(input.payload_json,'$.delivery') IS NULL`}
         AND turn.status='queued' AND turn.accepted_input_id=input.id AND turn.saved_kind IS NULL
         AND turn.owner_instance_id IS NULL AND turn.provider_started_at IS NULL
+        AND turn.provider_admission_intended_at IS NULL AND turn.provider_turn_id IS NULL
+        AND turn.provider_input_acknowledged_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id)
         AND input.rowid<(SELECT rowid FROM session_inputs WHERE id=?)
       ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
     for(const row of rows) {

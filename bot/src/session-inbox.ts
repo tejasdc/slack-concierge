@@ -4,6 +4,7 @@ import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type Accepted
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot} from './inbox-request-root';
+import type {ProviderHistoryMessage} from './provider-history';
 
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue'|'outside-agent';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -66,7 +67,7 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
-const inboxRowsWhere=(closures:boolean)=>` WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
+const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
         ${closures?"OR event.kind='answer_closure'":''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
@@ -75,9 +76,16 @@ const inboxRowsWhere=(closures:boolean)=>` WHERE (event.kind='result' OR event.k
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
 export const inboxRows=`${inboxRowsFrom}${inboxRowsWhere(false)}`;
 const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
+const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(closures,true)}`;
 /** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
-export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post','request'].includes(row.kind)?row.event_id:row.input_id;
+export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null;payload_json?:string})=>row.kind==='message'&&row.payload_json
+  ?JSON.parse(row.payload_json).message?.id??row.event_id:['result','post','request'].includes(row.kind)?row.event_id:row.input_id;
 export function inboxMessage(row:any) {
+  if(row.kind==='message'){
+    const message=JSON.parse(row.payload_json).message as ProviderHistoryMessage;
+    return {...message,sourceSessionId:row.session_id,...(row.input_id?{inputId:row.input_id}:{}),
+      ...(message.createdAt?{}:{createdAt:row.created_at.replace(' ','T')+'Z',timestampSource:'received' as const})};
+  }
   const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
@@ -392,10 +400,10 @@ export function inboxMessageById(sessionId:number,messageId:string) {
   const row=inboxRowByMessageId(sessionId,messageId);
   return row?inboxMessage(row):null;
 }
-export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
+export function inboxHistory(session:SessionRow,cursor:string|null,limit:number,activity=false) {
   if(!sessionMetadata(session).inbox)return null;
   const before=inboxHistoryBoundary(cursor);
-  const rows=db.query(`${inboxRows} AND (? IS NULL OR event.sequence<?) ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
+  const rows=db.query(`${activity?inboxActivityRows(false):inboxRows} AND (? IS NULL OR event.sequence<?) ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
   const page=rows.slice(0,limit);
   return {messages:page.slice().reverse().map(inboxMessage),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
 }
@@ -405,9 +413,9 @@ export function inboxHistory(session:SessionRow,cursor:string|null,limit:number)
  * Returns null when more than `limit` arrived: a client that far behind gains nothing
  * over one latest-page read, which is the bounded primitive for that case.
  */
-export function inboxHistoryAfter(session:SessionRow,after:number,limit:number) {
+export function inboxHistoryAfter(session:SessionRow,after:number,limit:number,activity=false) {
   if(!sessionMetadata(session).inbox)return null;
-  const rows=db.query(`${inboxDeltaRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
+  const rows=db.query(`${activity?inboxActivityRows(true):inboxDeltaRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
   if(rows.length>limit)return null;
   const projected=rows.map(row=>{
     if(row.kind!=='answer_closure')return inboxMessage(row);
