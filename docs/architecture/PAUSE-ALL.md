@@ -53,3 +53,12 @@ outside request (`sessions ask --outside`), which is outside Concierge by design
 session still ends it, and its next turn waits for the pause like any other. If a
 provider has detached background work, its own lifecycle and the running session's
 record remain the source of truth; the pause status must not label that work stopped.
+
+## October 14, 2026: acceptance pauses on the live system
+
+The agents that cancelled at 12:27 PM ET on October 14 were not cut off by that day's Concierge
+restarts (every running run was taken back at 12:20 and 12:26 PM). They were stopped by Pause all
+generation 1, action `pause-acceptance-6337-20261014`: the agent building this control ran its
+acceptance check against production, which stopped seven running turns including its own. Later
+generations (`outside-…`) were the same check repeated from outside Concierge. Check this control
+on a separate instance, never on the live owner.
