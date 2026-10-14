@@ -48,7 +48,7 @@ export function notificationPromisePointed(inputId:string):boolean{
 }
 export function responseSettlesNotification(inputId:string):boolean{
   const row=promise(inputId);
-  return !!row&&row.state==='pending'&&!row.target_session&&row.expires_at_ms>Date.now();
+  return !!row&&row.state==='pending'&&row.expires_at_ms>Date.now()&&!notificationPromiseCovered(inputId);
 }
 export function notificationAnswerEligible(inputId:string):boolean{
   const row=promise(inputId);
