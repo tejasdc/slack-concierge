@@ -4,8 +4,11 @@ import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 export const ACCOUNT_READING_MAX_AGE_MS=6*60_000;
 
 /** Windows that constrain the ordinary Claude Opus start; Fable has a separate weekly cap. */
-export function includedAllowanceWindows(provider:AccountIdentityProvider,account:AccountUsage):AccountUsage['windows'] {
-  return provider==='claude-code'
+export function includedAllowanceWindows(provider:AccountIdentityProvider,account:AccountUsage,
+  model?:string|null):AccountUsage['windows'] {
+  // A null model is genuinely unknown: include the Fable cap so a launch cannot be
+  // authorized on an assumption. Undefined is the ordinary Automatic Opus view.
+  return provider==='claude-code'&&model!==null&&!/fable/i.test(model??'')
     ?account.windows.filter(window=>window.name!=='Weekly · Fable only')
     :account.windows;
 }
@@ -18,18 +21,19 @@ export function accountReadingAt(account:AccountUsage):number|null {
   return Number.isFinite(at)?at:null;
 }
 
-export function accountReadingValidUntil(provider:AccountIdentityProvider,account:AccountUsage):number|null {
+export function accountReadingValidUntil(provider:AccountIdentityProvider,account:AccountUsage,
+  model?:string|null):number|null {
   const source=accountReadingAt(account);
   if(source===null)return null;
-  const resets=includedAllowanceWindows(provider,account).map(window=>Date.parse(window.resetsAt??''))
+  const resets=includedAllowanceWindows(provider,account,model).map(window=>Date.parse(window.resetsAt??''))
     .filter(value=>Number.isFinite(value)&&value>source);
   return Math.min(source+ACCOUNT_READING_MAX_AGE_MS,...resets);
 }
 
 export function accountReadingFresh(provider:AccountIdentityProvider,usage:ProviderUsage,
-  account:AccountUsage,now=Date.now(),maxAgeMs=ACCOUNT_READING_MAX_AGE_MS):boolean {
+  account:AccountUsage,now=Date.now(),maxAgeMs=ACCOUNT_READING_MAX_AGE_MS,model?:string|null):boolean {
   const at=accountReadingAt(account);
-  const validUntil=accountReadingValidUntil(provider,account);
+  const validUntil=accountReadingValidUntil(provider,account,model);
   return !usage.problem&&!account.problem&&at!==null&&at<=now&&validUntil!==null
     &&now<Math.min(validUntil,at+maxAgeMs);
 }
@@ -39,8 +43,10 @@ export function markUncurrentAccountReadings(provider:AccountIdentityProvider,us
   now=Date.now()):ProviderUsage {
   return {...usage,accounts:usage.accounts.map(account=>{
     const at=accountReadingAt(account);
-    const validUntil=accountReadingValidUntil(provider,account);
-    const fresh=accountReadingFresh(provider,usage,account,now);
+    // Accounts displays every window, so its whole row expires if any displayed window
+    // resets. Dispatch instead supplies its actual model and evaluates only its windows.
+    const validUntil=accountReadingValidUntil(provider,account,null);
+    const fresh=accountReadingFresh(provider,usage,account,now,undefined,null);
     const status:NonNullable<AccountUsage['allowance']>['status']=account.problem||usage.problem
       ?'unreadable':at===null?'unknown':fresh?'current':'old';
     const allowance:NonNullable<AccountUsage['allowance']>={observedAt:at===null?null:new Date(at).toISOString(),

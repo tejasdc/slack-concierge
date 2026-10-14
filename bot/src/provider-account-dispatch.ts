@@ -161,9 +161,9 @@ export function proveClaudeHomesAhead(accounts:readonly string[]):void{
 function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
 /** Homes with credentials that this owner can use without switching a live login. */
-function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage):number|null {
+function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage,model?:string|null):number|null {
   if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
-  const windows=includedAllowanceWindows(provider,account);
+  const windows=includedAllowanceWindows(provider,account,model);
   return windows.length?Math.max(...windows.map(window=>window.usedPercent)):null;
 }
 
@@ -198,16 +198,16 @@ function launchableClaudeHome(account:string,selected:string|null,prepare:boolea
   return complete&&(account===selected||provenOrProve(account,complete))?complete:null;
 }
 
-export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:ProviderUsage,now=Date.now()):AccountRoom[] {
+export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:ProviderUsage,now=Date.now(),model?:string|null):AccountRoom[] {
   // Codex turns all use the shared daemon. Other homes are read for usage and kept for
   // switching, but a banked turn cannot launch against one without changing that daemon.
   if(provider==='codex'||provider==='antigravity'){
     const active=currentAccount(provider)?.label;
     const account=usage.accounts.find(item=>item.label===active);
     if(!account)return [];
-    const fresh=accountReadingFresh(provider,usage,account,now);
+    const fresh=accountReadingFresh(provider,usage,account,now,undefined,model);
     return [{account:account.label,home:null,isDefault:true,
-      tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
+      tightestUsedPercent:fresh?accountUsedPercent(provider,account,model):null,
       problem:!fresh?'Usage reading is stale.':account.problem}];
   }
   const ownHomes=provider==='claude-code'&&claudeRunsFromOwnHomes();
@@ -219,9 +219,9 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
     const profile=profiles.find(item=>item.label===account.label);
     const home=isDefault?null:profile?accountHome(provider,profile.id):null;
     const ready=home&&launchableClaudeHome(account.label,selected,false,home)===home;
-    const fresh=accountReadingFresh(provider,usage,account,now);
+    const fresh=accountReadingFresh(provider,usage,account,now,undefined,model);
     return {account:account.label,home:ready?home:null,isDefault,
-      tightestUsedPercent:fresh?accountUsedPercent(provider,account):null,
+      tightestUsedPercent:fresh?accountUsedPercent(provider,account,model):null,
       problem:!fresh?'Usage reading is stale.':account.problem};
   });
 }
@@ -241,8 +241,8 @@ export function claudeAccountWithRoomBesides(refused:string|null):boolean{
  * When every Claude account this machine can launch is spent, the earliest moment one frees up,
  * by the same rules dispatch uses; null when one can run now or no reset is known.
  */
-export function claudeEveryAccountClearsAt():number|null{
-  try { chooseClaudeDispatch(null); return null; }
+export function claudeEveryAccountClearsAt(model?:string|null):number|null{
+  try { chooseClaudeDispatch(null,0,undefined,model); return null; }
   catch(error) { return error instanceof ProviderDispatchError?error.clearsAtMs:null; }
 }
 
@@ -257,7 +257,7 @@ export function admitProvenClaudeWaitingTurn(turnId:number,account:string,select
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
-export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
@@ -294,7 +294,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     const trusted=ownHomes&&account.label===selected&&!!home;
     return {
       account:account.label,
-      tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account)??(trusted?0:null),
+      tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account,model)??(trusted?0:null),
       weeklyUsedPercent:account.windows.find(window=>window.name==='Weekly')?.usedPercent??null,
       weeklyResetsAtMs:(()=>{const at=account.windows.find(window=>window.name==='Weekly')?.resetsAt;const ms=at?Date.parse(at):NaN;return Number.isFinite(ms)?ms:null;})(),
       home,
@@ -313,7 +313,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
   if(choice.account===null){
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
-    const resets=accountAvailability('claude-code').filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
+    const resets=accountAvailability('claude-code',model).filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
       .flatMap(account=>account.freeAt!==null&&account.freeAt>Date.now()?[account.freeAt]:[]);
     throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
       terminalConfirmed:true,clearsAtMs:resets.length?Math.min(...resets):null});

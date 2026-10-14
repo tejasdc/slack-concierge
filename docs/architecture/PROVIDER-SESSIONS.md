@@ -338,7 +338,9 @@ time gives unknown room, not zero or full usage. New work, saved work, room noti
 forecasts and Accounts use that same freshness rule. Measured room does not override a
 provider's model refusal, a failed sign-in or the need for a proven Claude home. The
 Accounts room field concerns ordinary Automatic work: Claude Opus excludes its separate
-Fable-only weekly cap. A new
+Fable-only weekly cap. An actual Claude turn, side question, refusal retry or banked
+release uses its session model instead; Fable work includes that cap, and an unknown
+model includes it conservatively. A new
 Automatic request with no current candidate asks the existing usage reader to refresh,
 then refuses with unknown capacity; a later request can use the fresh observation.
 

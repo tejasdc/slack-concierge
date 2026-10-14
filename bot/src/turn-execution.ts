@@ -591,9 +591,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
+    const claudeLaunchModel=input.providerId==='claude-code'
+      ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
     const claudeChoice=input.providerId==='claude-code'
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
-        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId)
+        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     runningClaudeHome=claudeChoice?.home??null;
@@ -606,7 +608,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
       systemPrompt: preparedTurn.systemPrompt,
-      model: input.model || (input.providerId === "claude-code" ? getClaudePreferredModel(input.session.id, input.turnId) : undefined),
+      model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
@@ -1123,8 +1125,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // The account this attempt actually ran on, not the session's last recorded one, which is
         // written only once Claude reports the start and can name an earlier attempt's account.
         const spent=runningClaudeAccount??sessionMetadata(input.session).claudeAccount??null;
-        try {const next=chooseClaudeDispatch(spent);switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
-        catch { everyAccountClearsAtMs=claudeEveryAccountClearsAt(); }
+        try {const next=chooseClaudeDispatch(spent,0,undefined,
+          input.model||getClaudePreferredModel(input.session.id,input.turnId)||null);
+          switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
+        catch { everyAccountClearsAtMs=claudeEveryAccountClearsAt(
+          input.model||getClaudePreferredModel(input.session.id,input.turnId)||null); }
       }
       const refusalClearsAtMs=structuredFailure?.clearsAtMs??null;
       const heldUntilMs = replaySafe&&!switchClaudeAccount&&refusalClearsAtMs!==null
@@ -1351,7 +1356,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         ? providerRefusalContinuationReason(String(error),
           // Like a hold, a continuation waits for the first account to free up, not only the refusing one.
           input.providerId==='claude-code'&&structuredFailure.clearsAtMs!==null
-            ?Math.min(structuredFailure.clearsAtMs,claudeEveryAccountClearsAt()??structuredFailure.clearsAtMs):structuredFailure.clearsAtMs,
+            ?Math.min(structuredFailure.clearsAtMs,claudeEveryAccountClearsAt(
+              input.model||getClaudePreferredModel(input.session.id,input.turnId)||null)??structuredFailure.clearsAtMs):structuredFailure.clearsAtMs,
           Date.now(),dispatchAttempt):null;
       // Whether any other Claude account can take the work now, judged against the account this
       // attempt actually ran on (the selected account counts too).

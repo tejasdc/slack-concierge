@@ -281,15 +281,15 @@ export function accountsNearlySpent(provider: AccountIdentityProvider): UsageFor
  * which was chann.app's weekly reset alone; his personal account refilled at 11:20 PM.
  */
 export type AccountAvailability = Readonly<{ account: string; selected: boolean; hasRoom: boolean; freeAt: number | null }>;
-export function accountAvailability(provider: AccountIdentityProvider): AccountAvailability[] {
+export function accountAvailability(provider: AccountIdentityProvider,model?:string|null): AccountAvailability[] {
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
     const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
-    if (!accountReadingFresh(provider,usage,account))
+    if (!accountReadingFresh(provider,usage,account,Date.now(),undefined,model))
       return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
-    const relevant=includedAllowanceWindows(provider,account);
+    const relevant=includedAllowanceWindows(provider,account,model);
     if (account.problem || !relevant.length)
       return refusedUntil === null ? [] : [{ account: account.label, selected: account.current, hasRoom: false, freeAt: refusedUntil }];
     const spent = relevant.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
