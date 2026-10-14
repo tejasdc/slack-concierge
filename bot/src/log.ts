@@ -151,6 +151,12 @@ export function log(level: LogLevel, event: string, fields: Record<string, unkno
   writeLogLine(level, JSON.stringify(line));
 }
 
+/** Controller commands reserve stdout for their machine-readable result. */
+export function logToStderr(level: LogLevel, event: string, fields: Record<string, unknown> = {}) {
+  const line = { ts: new Date().toISOString(), level, event, ...fields };
+  (stderrSink ??= new BoundedLogSink(process.stderr)).write(level, JSON.stringify(line));
+}
+
 export function errorFields(err: unknown) {
   if (err instanceof Error) return { error: err.message, stack: err.stack };
   return { error: String(err) };
