@@ -52,14 +52,16 @@ Messageability is distinct from resumability: the existing live-dispatch
 registry proves an exact first-turn steering target before a native UUID has
 been persisted. Idle delivery requires the existing persisted provider binding.
 
-An accepted `session_communication_requests` row is both the immutable request
-and its mandatory return obligation. Its exact accepted source input determines
-sender identity. The row, payload hash, fixed prerequisite IDs and due time are
+An accepted `session_communication_requests` row retains the immutable request
+and its result destination. A named Inbox thread receives answers and terminal
+notices directly; only an explicit `--return-to-requester` adds a requester input.
+Requests without a named thread retain their requester return. The exact accepted
+source input determines sender identity. The row, payload hash, fixed prerequisite IDs and due time are
 committed before dispatch. Native acceptance also retains its exact target input
 in that transaction; the Slack adapter retains its routed effect identity before
 publication. Both preserve replies arriving during admission. Publication,
-provider acknowledgement, semantic settlement and return admission remain
-separate facts.
+provider acknowledgement, semantic settlement and delivery to the selected
+destination remain separate facts.
 
 Partial replies append correlated events. A final reply atomically records its
 answer and one final outbox event. A final answers only its named request, even
@@ -75,8 +77,9 @@ remain explicit outcomes. Exact existing request dependencies wait outside the
 native FIFO; unsuccessful prerequisites settle the continuation without
 admitting it. The execution-based `work/--after` contract remains independent.
 
-Native return events use accepted input and the existing session queue directly,
-without Slack publication. The legacy Slack adapter's events use routed
+Requester return events, when selected, use accepted input and the existing session
+queue directly, without Slack publication. Thread-only events post once in their
+named Inbox thread and do not enter the requester's queue. The legacy Slack adapter's events use routed
 publication and its input owner. Both can steer an
 active requester or queuing a new turn for an idle requester. They create no
 new return obligation. Deliberate Stop and archive retain the event instead of
