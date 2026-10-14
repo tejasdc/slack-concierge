@@ -60,6 +60,7 @@ import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {notificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
@@ -1600,7 +1601,26 @@ export class SessionOwner {
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
     return {captureId,inputId:input.id,sessionId:`concierge:${input.session_id}`,source:body.capture.source,text:body.text,
-      attachments:this.attachments(body.attachments).map(({base64,...file})=>file)};
+      attachments:this.attachmentMetadata(body.attachments)};
+  }
+  /** Captures have their own durable input rows. Conversation history is a poor index for
+   * them: a busy Inbox can place hundreds of agent/tool messages ahead of one capture. */
+  inboxCapturesPage(cursor:string|null,limit:number) {
+    const inbox=inboxSession();
+    if(!inbox)return {items:[],nextCursor:null};
+    try{return inboxCapturesPage(db,inbox.id,cursor,limit);}
+    catch(error){if(error instanceof Error&&error.message==='CAPTURE_CURSOR_INVALID')
+      throw new SessionOwnerError('Invalid capture cursor.',400,'CAPTURE_CURSOR_INVALID');throw error;}
+  }
+  private attachmentMetadata(ids:unknown) {
+    if(ids===undefined)return [];
+    if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)
+      throw new SessionOwnerError('Attachments must name unique retained custody IDs.');
+    if(!ids.length)return [];
+    const rows=db.query(`SELECT id,name,content_type AS contentType,sha256 FROM session_attachments
+      WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as {id:string;name:string;contentType:string;sha256:string}[];
+    const byId=new Map(rows.map(row=>[row.id,row]));
+    return ids.map(id=>{const row=byId.get(id);if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);return row;});
   }
   inboxCaptureAttachments(captureId:string) {
     const body=JSON.parse(retainedInboxCapture(captureId).payload_json);
@@ -3116,6 +3136,8 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='captures'&&parts.length===2)
+        result=this.inboxCapturesPage(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='queue-actions'&&parts.length===2)
         result=this.inboxQueueAction(body);
       // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
