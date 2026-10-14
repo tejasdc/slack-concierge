@@ -72,6 +72,14 @@ messages in arrival order, including messages old browsers marked Queue. It excl
 captures, saved work, dependencies and any prior provider admission. This prevents a
 service notice from passing a human message during a run-start race.
 
+Queue admission followed by steering retains both `accepted` events for the same input.
+Only the earliest accepted event places that input in Inbox message history; the later
+event records delivery, not another message. Prepared and live readers share the indexed
+`firstInboxAcceptanceSql` predicate. On October 14, promoting two older queued messages
+exposed the missing rule: the prepared message uniqueness constraint refused their second
+admission events and prevented receipt status from advancing. The reader correction resumes
+the existing checkpoint without deleting history, moving messages, or replaying delivery.
+
 An ordinary accepted executable message and its local queued turn commit together. A forwarded
 thread reply and its local agent request also commit together; the request attempts live
 delivery into a busy recipient and queues only when no live run can take it. A marked

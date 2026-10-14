@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRequestRoot} from './inbox-request-root';
+import {firstInboxAcceptanceSql} from './inbox-message-identity';
 
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
@@ -18,7 +19,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   JOIN sessions owner ON owner.id=event.session_id
   LEFT JOIN session_inputs input ON input.id=event.input_id
   LEFT JOIN turns turn ON turn.id=event.turn_id
-  WHERE 1=1`;
+  WHERE ${firstInboxAcceptanceSql}`;
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
   input_origin:string|null;
