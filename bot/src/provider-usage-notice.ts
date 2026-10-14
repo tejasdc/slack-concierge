@@ -422,7 +422,7 @@ function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account
   const now = Date.now();
   const fresh = new Set(usage.accounts.filter(value => accountReadingFresh(provider,usage,value,now,BUDGET_NOTICE_MAX_AGE_MS))
     .map(value => value.label));
-  return accountsWithRoomBesides(provider, account).filter(label => fresh.has(label));
+  return accountsWithRoomBesides(provider, account, null).filter(label => fresh.has(label));
 }
 
 function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {

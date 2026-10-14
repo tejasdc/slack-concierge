@@ -357,6 +357,13 @@ Cached Claude refusals are matched to the attempted model for dispatch; a Fable 
 does not turn an Opus account into measured 100% usage. A selected login whose usage is
 unreadable may still receive one provider attempt, and a manually proven waiting turn
 may spend its one-time proof; those permissions are separate from measured percentages.
+Ordinary dispatch ranks only source-timed readings still valid for its requested model;
+an old percentage, weekly reset or peer transfer time gives an alternate no rank. A
+Claude session with no model binding passes no model flag to Claude Code, whose configured
+default is not proven here, so its account choice checks every allowance window and all
+model-scoped cached refusals conservatively. Generic usage warnings make the same
+all-window claim. Claude Code's existing model fallback after account choice remains a
+separate model transition whose account admission needs further review.
 
 This replaces Claude-first-until-90%, which spent Claude's five-hour allowance before
 using Codex, and the earlier explicit-only Google rule. Sending every task to Google

@@ -1367,7 +1367,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // Whether any other Claude account can take the work now, judged against the account this
       // attempt actually ran on (the selected account counts too).
       const refusal=refused&&refused.refusal==='usage'&&input.providerId==='claude-code'
-        &&claudeAccountWithRoomBesides(runningClaudeAccount)?{...refused,elsewhere:true}:refused;
+        &&claudeAccountWithRoomBesides(runningClaudeAccount,runningClaudeModel)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
       const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;

@@ -230,9 +230,9 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
  * Whether a Claude account other than `refused` can take the work now, by the same rules dispatch
  * uses (selection, proof, usage, the refused account's recorded limit), so the two never disagree.
  */
-export function claudeAccountWithRoomBesides(refused:string|null):boolean{
+export function claudeAccountWithRoomBesides(refused:string|null,model?:string|null):boolean{
   try {
-    const next=chooseClaudeDispatch(refused);
+    const next=chooseClaudeDispatch(refused,0,undefined,model);
     return !!next&&next.account!==refused;
   } catch { return false; }
 }
@@ -272,8 +272,13 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   // account just signed in through Accounts) nothing can be compared, so the work runs where he chose.
   if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
     const home=selected?launchableClaudeHome(selected,selected,true):null;
-    if(home)return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
-    if(!usage)throw noOwnClaudeLogin();
+    if(home&&!claudeAccountCachedReset(selected!,model))return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
+    if(!usage){
+      const refusedUntil=selected?claudeAccountCachedReset(selected,model):null;
+      if(home&&refusedUntil)throw new ProviderDispatchError({message:'This Claude account has a recorded model refusal.',
+        failureClass:'parked_terminal',terminalConfirmed:true,clearsAtMs:refusedUntil});
+      throw noOwnClaudeLogin();
+    }
   }
   // An ordinary one-home installation follows its existing path, including its existing
   // usage refusal and retry handling. A stale or absent reading cannot justify a move.
@@ -288,17 +293,18 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   }
   const rooms=usage.accounts.map(account=>{
     const home=account.label===defaultAccount?null:homes.get(account.label)??null;
+    const fresh=accountReadingFresh('claude-code',usage,account,Date.now(),undefined,model);
     // The usage reader keeps its own copies of each login and reads with them; when it cannot,
     // that says nothing about the selected account's own login. Its work is tried there, and a
     // real limit comes back from Claude with its reset time as an ordinary usage hold.
     return {
       account:account.label,
-      tightestUsedPercent:accountUsedPercent('claude-code',account,model),
-      weeklyUsedPercent:account.windows.find(window=>window.name==='Weekly')?.usedPercent??null,
-      weeklyResetsAtMs:(()=>{const at=account.windows.find(window=>window.name==='Weekly')?.resetsAt;const ms=at?Date.parse(at):NaN;return Number.isFinite(ms)?ms:null;})(),
+      tightestUsedPercent:fresh?accountUsedPercent('claude-code',account,model):null,
+      weeklyUsedPercent:fresh?account.windows.find(window=>window.name==='Weekly')?.usedPercent??null:null,
+      weeklyResetsAtMs:fresh?(()=>{const at=account.windows.find(window=>window.name==='Weekly')?.resetsAt;const ms=at?Date.parse(at):NaN;return Number.isFinite(ms)?ms:null;})():null,
       home,
       isDefault:account.label===defaultAccount,
-      problem:account.problem,
+      problem:fresh?account.problem:'Usage reading is stale.',
     };
   });
   // The selected account or default login is the continuity expectation for new work. A fresh
@@ -307,13 +313,14 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const usual=selection?.label??defaultAccount;
   // Where he would expect this turn to run, which is the one thing a notice is measured against.
   const expected=selectedAccount??prefer??usual;
-  const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)):null;
+  const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)
+    &&!claudeAccountCachedReset(room.account,model)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
   // Selection grants an attempt when the usage reader cannot measure this login. It is
   // not a fabricated zero-percent reading, and a known cached refusal still blocks it.
   const selectedAttempt=selected?rooms.find(room=>room.account===selected&&room.home
     &&(room.problem||room.tightestUsedPercent===null)
-    &&room.tightestUsedPercent!==100):null;
+    &&!claudeAccountCachedReset(room.account,model)):null;
   if(selectedAttempt)return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});

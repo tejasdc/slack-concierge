@@ -327,8 +327,8 @@ export function earliestRoomAt(provider: AccountIdentityProvider): number | null
 }
 
 /** Accounts other than `account` with room now. */
-export function accountsWithRoomBesides(provider: AccountIdentityProvider, account: string): string[] {
-  return accountsWithRoom(provider).filter(label => label !== account);
+export function accountsWithRoomBesides(provider: AccountIdentityProvider, account: string,model?:string|null): string[] {
+  return accountsWithRoom(provider,model).filter(label => label !== account);
 }
 
 /**
@@ -368,7 +368,7 @@ export function usageSignal(provider: AccountIdentityProvider) {
   const staleGoogle = provider === "antigravity" && (!usage || !usage.accounts.some(account=>account.current
     &&accountReadingFresh(provider,usage,account)));
   const tightest = tightestCurrentWindow(provider);
-  const spare = accountsWithRoom(provider);
+  const spare = accountsWithRoom(provider,null);
   return {
     provider,
     observedAt: usage?.observedAt ?? null,
