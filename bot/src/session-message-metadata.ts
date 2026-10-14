@@ -33,8 +33,9 @@ export type SessionMessageMetadataProjection=(sessionId:number,message:ProviderH
  */
 export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]):SessionMessageMetadataProjection {
   if(!entries.length)return (_sessionId,message)=>message;
-  const requested=JSON.stringify([...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
-    {sessionId,id:message.id,turnId:message.turnId??null,role:message.role}])).values()]);
+  const requestedMessages=[...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
+    {sessionId,id:message.id,turnId:message.turnId??null,role:message.role}])).values()];
+  const requested=JSON.stringify(requestedMessages);
   const rows=db.query(`SELECT event.session_id,event.created_at,event.turn_id,event.payload_json
     FROM json_each(?) requested CROSS JOIN session_owner_events event
       ON event.session_id=json_extract(requested.value,'$.sessionId')
@@ -52,15 +53,29 @@ export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]
   const turnsById=new Map(turns.map(turn=>[turn.id,turn]));
   const turnsByProvider=new Map<string,any[]>();
   for(const turn of turns){const key=JSON.stringify([turn.session_id,turn.provider_turn_id]);const found=turnsByProvider.get(key)??[];found.push(turn);turnsByProvider.set(key,found);}
+  const markKeys=JSON.stringify([...new Map(requestedMessages.map(message=>[
+    JSON.stringify([message.sessionId,message.id]),{sessionId:message.sessionId,id:message.id}])).values()]);
+  const marks=(table:'session_message_reactions'|'session_saved_messages'|'session_followed_messages',columns:string)=>
+    db.query(`SELECT mark.session_id,mark.message_id,${columns} FROM json_each(?) requested CROSS JOIN ${table} mark
+      ON mark.session_id=json_extract(requested.value,'$.sessionId')
+      AND mark.message_id=json_extract(requested.value,'$.id') ${table==='session_message_reactions'?'ORDER BY mark.emoji':''}`).all(markKeys) as any[];
+  const reactionsByMessage=new Map<string,string[]>();
+  for(const row of marks('session_message_reactions','mark.emoji')){
+    const key=JSON.stringify([row.session_id,row.message_id]);const reactions=reactionsByMessage.get(key)??[];
+    reactions.push(row.emoji);reactionsByMessage.set(key,reactions);
+  }
+  const savedKeys=new Set(marks('session_saved_messages','mark.message_id').map(row=>JSON.stringify([row.session_id,row.message_id])));
+  const followedKeys=new Set(marks('session_followed_messages','mark.message_id').map(row=>JSON.stringify([row.session_id,row.message_id])));
   return (sessionId,message)=>{
     const events=eventsByMessage.get(messageKey(sessionId,message))??[];
     const turnIds=[...new Set(events.flatMap(event=>event.turn_id==null?[]:[event.turn_id]))];
     const candidates=turnIds.length===1?[turnsById.get(turnIds[0])].filter(turn=>turn?.session_id===sessionId)
       :turnIds.length===0&&message.turnId?turnsByProvider.get(JSON.stringify([sessionId,message.turnId]))??[]:[];
     const base=withMetadata(message,events,candidates);
-    const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,message.id) as {emoji:string}[]).map(row=>row.emoji);
-    const saved=!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,message.id);
-    const followed=!!db.query('SELECT 1 FROM session_followed_messages WHERE session_id=? AND message_id=?').get(sessionId,message.id);
+    const markKey=JSON.stringify([sessionId,message.id]);
+    const reactions=reactionsByMessage.get(markKey)??[];
+    const saved=savedKeys.has(markKey);
+    const followed=followedKeys.has(markKey);
     return {...base,marks:{reactions,saved,followed}};
   };
 }

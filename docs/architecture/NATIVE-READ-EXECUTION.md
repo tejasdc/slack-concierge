@@ -4,6 +4,16 @@ The public and peer listeners admit requests without opening the canonical ledge
 routes have one storage-free classification in `bot/src/native-read-routes.ts`. Finite product
 reads go to a pool of private read executors; command routes remain with the canonical owner;
 event streams and reads that require live coordinator state use their declared owner path.
+The owner keeps each event stream's live subscription and cursor. For each bounded replay
+page it asks the local gateway to run the retained event projection in a read executor,
+then forwards the executor's complete SSE frames. The gateway's private page entrance is
+available only on its root-owned Unix socket, not the peer listener. A slow historical
+projection therefore occupies one read slot, leaving the second available for interactive
+reads; the owner can still admit commands. A reader failure closes the stream so the
+consumer reconnects from its last received cursor. The page keeps the existing 200-event
+boundary and has no response byte cap, since a retained message can exceed the ordinary
+JSON event read's 2 MiB cap. Slow page logs report duration, event count, bytes and storage
+work without recording content.
 An unknown GET has no execution owner and is refused. The former Inbox topics and questions
 paths normalize to their prepared presentation paths before execution.
 
