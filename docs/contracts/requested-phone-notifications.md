@@ -2,10 +2,11 @@
 
 The owner classifies an Inbox input's retained human words at admission as `result`,
 `scheduled`, or `null`. “Send a notification”, “notify me”, “ping me”, “alert me”,
-"let me know when", an account or sign-in dependency, and close variants select `result`; “remind me” selects
-`scheduled`. Negated requests and machine diagnostics in a bug report do not make a
-phone request. An ordinary request for an explanation (“let me know how”) remains
-quiet. The mark belongs to the exact asking input, including a later reply in the
+"let me know when", an account or sign-in dependency, and close variants select
+`result`; “remind me” selects `scheduled`. Negated requests and machine diagnostics
+in a bug report do not make a phone request. An ordinary request for an
+explanation (“let me know how”) remains quiet, as does a saved quotation filed
+as a note. The mark belongs to the exact asking input, including a later reply in the
 same thread, and cannot be added by an agent's text. New receipts retain even a
 `null` classification, so later phrase-rule changes cannot reinterpret them;
 older receipts without a stored mark keep their original classifier.

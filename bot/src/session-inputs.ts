@@ -230,7 +230,8 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   const value=JSON.parse(rawPayload);
   if(value&&typeof value==='object')delete value.notificationRequest;
   const words=value?.firstInput?.text??value?.text;
-  const ownWords=!(value?.capture?.importOnly&&value.capture.source?.metadata?.quoted?.kind!=='human');
+  const ownWords=!(value?.capture?.importOnly&&
+    (value.capture.source?.metadata?.quoted?.kind!=='human'||value.capture.source?.metadata?.intent!=='action'));
   const classifiable=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
   const mark=classifiable&&ownWords
     ?notificationRequest(typeof words==='string'?words:''):null;
