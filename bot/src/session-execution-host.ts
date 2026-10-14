@@ -87,6 +87,7 @@ import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshClaudeAccount,setCodexAccountInUse,codexProfileSource,moveCodexAccountIntoUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
+import {accountReadingFresh,markUncurrentAccountReadings} from './account-allowance-observation';
 import {antigravityAuthView} from './provider-auth-read';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
@@ -230,7 +231,7 @@ export class SessionExecutionHost {
     // account whose usage reading was refused, so the row offers "Sign in again".
     // Each account row carries what a reset would do for it right now (provider-reset-facts.ts).
     const stored=providerAccountUsage(provider);
-    const usage=stored?withResetAdvice(provider,stored):null;step('usage_ms');
+    const usage=stored?markUncurrentAccountReadings(provider,withResetAdvice(provider,stored)):null;step('usage_ms');
     const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
     const brokenInUse=provider==='codex'&&this.codexSignIn==='signed-out';
     // The Codex login in use lives in the agents' own home, not in a kept account's folder, so it
@@ -272,10 +273,12 @@ export class SessionExecutionHost {
     const cached=claudeAccountCachedReset(chosen);
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
+    if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
     const full=reading?.windows.filter(window=>window.usedPercent>=100&&window.resetsAt)??[];
     if(!full.length)return '';
     const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
-    const other=usage?.accounts.find(item=>item.label!==chosen&&!item.problem&&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
+    const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
+      &&item.windows.length>0&&item.windows.every(window=>window.usedPercent<100));
     const when=noticeTime(db,until);
     return other
       ?`${chosen} is at its limit until ${when}, so new Claude work runs on ${other.label} until then.`
@@ -560,8 +563,10 @@ export class SessionExecutionHost {
     }
     if(!full)markClaudeHomeVerified(home);
     selectClaudeAccount(profile.id,profile.label);
-    const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
-    const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
+    const observed=providerAccountUsage(key);
+    const reading=observed?.accounts.find(item=>item.label===profile.label);
+    const hasRoom=!!observed&&!!reading&&accountReadingFresh(key,observed,reading)
+      &&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
     if(hasRoom)releaseUsageHeldWork(key);
     // The account just proved it answers, so work held for a sign-in may go to it now.
     if(releaseAuthHeldWork(key))log('info','provider_auth_hold_released',{provider:key,released_by:'owner_switch'});
@@ -1193,9 +1198,9 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
   const usage=storedUsage('codex');
   if(!inUse||!usage)return null;
   const current=usage.accounts.find(account=>account.label===inUse);
-  if(!current||current.problem||!current.windows.some(window=>window.usedPercent>=100))return null;
+  if(!current||!accountReadingFresh('codex',usage,current)||!current.windows.some(window=>window.usedPercent>=100))return null;
   const used=(account:{windows:readonly {usedPercent:number}[]})=>Math.max(...account.windows.map(window=>window.usedPercent));
-  const room=usage.accounts.filter(account=>account.label!==inUse&&!account.problem&&!account.signedOut&&account.windows.length>0
+  const room=usage.accounts.filter(account=>account.label!==inUse&&accountReadingFresh('codex',usage,account)&&!account.signedOut&&account.windows.length>0
     &&account.windows.every(window=>window.usedPercent<100)).sort((a,b)=>used(a)-used(b));
   const profiles=listProfiles('codex');
   for(const account of room){

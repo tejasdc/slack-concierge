@@ -86,6 +86,7 @@ import {appendTodoFile} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
+import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 
@@ -95,7 +96,12 @@ export class SessionOwnerError extends Error {
 function automaticProvider(canStart: (provider: AutomaticProvider) => boolean, choiceKey:string,
   delegatedFromClaude = false, smallTask = false): AutomaticProvider {
   try { return chooseProviderForNewWork(canStart, choiceKey, Date.now(), delegatedFromClaude, smallTask); }
-  catch (error) { throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN'); }
+  catch (error) {
+    // The choice is synchronous because it runs in the session creation transaction.
+    // Ask the existing reader for a new observation, then report unknown for this request.
+    void scheduleProviderAccountUsageRefresh().catch(()=>{});
+    throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN');
+  }
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;

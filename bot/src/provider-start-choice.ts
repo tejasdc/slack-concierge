@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
-import { ACCOUNT_READING_MAX_AGE_MS, BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
+import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
+import { accountReadingFresh } from './account-allowance-observation';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
@@ -17,8 +18,7 @@ function candidatesForNewWork(now: number): Candidate[] {
     const model=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider]).model;
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
-    const observedAt = Date.parse(usage?.observedAt ?? '');
-    if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - ACCOUNT_READING_MAX_AGE_MS) continue;
+    if (!usage || usage.problem) continue;
     const rooms = savedWorkAccountRooms(provider, usage, now);
     const storedClaude = provider === 'claude-code'
       ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
@@ -29,7 +29,7 @@ function candidatesForNewWork(now: number): Candidate[] {
       const canWaitForReset = !!cachedReset && !!storedClaude?.has(room.account);
       if (room.problem || room.tightestUsedPercent === null || (!room.home && !room.isDefault && !canWaitForReset)) continue;
       const account = usage.accounts.find(value => value.label === room.account);
-      if (!account) continue;
+      if (!account || !accountReadingFresh(provider,usage,account,now)) continue;
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
       const relevant = account.windows.filter(window => window.name !== 'Weekly · Fable only');
       if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
@@ -76,9 +76,8 @@ export function measuredBudgetPressure(provider: 'claude-code' | 'codex', accoun
   const account = accountLabel
     ? usage.accounts.find(value => value.label === accountLabel)
     : usage.accounts.find(value => value.current);
-  if (!account || account.problem) return null;
-  const observedAt = Date.parse(account.readAt ?? '');
-  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > BUDGET_NOTICE_MAX_AGE_MS) return null;
+  if (!account || !accountReadingFresh(provider,usage,account,now,BUDGET_NOTICE_MAX_AGE_MS)) return null;
+  const observedAt = Date.parse(account.readAt!);
   const window = account.windows.filter(value => value.name !== 'Weekly · Fable only'
     && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
     .sort((left, right) => right.usedPercent - left.usedPercent)[0];

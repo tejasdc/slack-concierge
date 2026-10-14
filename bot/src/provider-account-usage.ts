@@ -7,6 +7,7 @@ import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgen
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import {accountReadingFresh} from './account-allowance-observation';
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -77,6 +78,10 @@ export type AccountUsage = Readonly<{
    * climb. Absent where the tool does not report it.
    */
   readAt?: string | null;
+  /** Accounts view: source observation and measured window room, with unknown distinct from
+   * spent. Room does not prove model admission, sign-in, or authorization to spend credits. */
+  allowance?: Readonly<{ observedAt: string | null; evaluatedAt: string; validUntil: string | null;
+    status: 'current' | 'old' | 'unknown' | 'unreadable'; hasRoom: boolean | null }>;
   /**
    * What a reset would do for this account right now, written for the row and for agents;
    * attached at read time by `withResetAdvice`, never stored, because it says how long is left.
@@ -472,7 +477,12 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
       for (const view of views) {
         if (view?.provider !== provider) continue;
         for (const account of view?.usage?.accounts ?? [])
-          if (account?.label && !account.viaPeer && account.windows?.length) found.push({ ...account, viaPeer: true });
+          if (account?.label && !account.viaPeer && account.windows?.length) {
+            // A source host's rendered eligibility is point-in-time UI data. The receiving
+            // host recomputes it from readAt when its own Accounts page is read.
+            const {allowance:_renderedAllowance,...source}=account;
+            found.push({...source,viaPeer:true});
+          }
       }
     } catch { /* an unreachable peer simply contributes nothing */ }
   }
@@ -510,14 +520,14 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
       const current=usage.accounts.find(account=>account.current);
-      const activeHasRoom=!!current && !current.problem && current.windows.length>0
+      const activeHasRoom=!!current && accountReadingFresh(provider,usage,current) && current.windows.length>0
         && current.windows.every(window=>window.usedPercent<100);
       // A refusal is cleared only by a run that succeeds on that account, and none is tried while it
       // stands. A reading that shows the account with room and lower usage than when it was refused
       // proves a reset in between, so the refusal is forgotten here (the Mac held all work on 2026-10-10).
       if(provider==='claude-code')for(const account of usage.accounts){
         const refusedAt=claudeAccountRefusedSince(account.label);
-        if(refusedAt===null||account.problem||!account.windows.length||account.windows.some(window=>window.usedPercent>=100))continue;
+        if(refusedAt===null||!accountReadingFresh(provider,usage,account)||!account.windows.length||account.windows.some(window=>window.usedPercent>=100))continue;
         if(!usageFellSince(provider,account.label,refusedAt))continue;
         log("info","provider_usage_refusal_overruled_by_reset",{provider,forgotten:forgetClaudeAccountRefusals(account.label)});
       }
@@ -553,7 +563,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
     if (account) {
       const { releaseAuthHold } = await import("./provider-activation");
       releaseAuthHold(provider, "interval");
-      if (account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
+      if (accountReadingFresh(provider,usage,account) && account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
         releaseUsageContinuationHolds(provider);
         releaseUsageHeldWork(provider, "usable_account_observed");
       } else {
@@ -586,7 +596,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
 const accountInUse = new Map<ProviderKey, string>();
 function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): void {
   const current = usage.accounts.find(account => account.current);
-  if (!current?.label || !current.windows.length) return;
+  if (!current?.label || !accountReadingFresh(provider,usage,current) || !current.windows.length) return;
   const previous = accountInUse.get(provider);
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;

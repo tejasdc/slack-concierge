@@ -327,6 +327,18 @@ consume the last of a five-hour allowance. If all verified candidates are spent,
 owner binds to the earliest verified reset under the existing hold protocol. Unknown
 or stale room never becomes a guessed start.
 
+An allowance observation belongs to the exact account and carries the time its reader
+obtained the numbers from the provider. The time a host stored the batch or received a
+peer copy never refreshes an account's observation. Accounts exposes that source time,
+whether the observation is current, old, unreadable or missing, and measured room only
+for a current observation. It supplies the expiration time so an open page can stop
+claiming current room when the source reading ages. Old percentages remain historical evidence; missing source
+time gives unknown room, not zero or full usage. New work, saved work, room notices,
+forecasts and Accounts use that same freshness rule. Measured room does not override a
+provider's model refusal, a failed sign-in or the need for a proven Claude home. A new
+Automatic request with no current candidate asks the existing usage reader to refresh,
+then refuses with unknown capacity; a later request can use the fresh observation.
+
 This replaces Claude-first-until-90%, which spent Claude's five-hour allowance before
 using Codex, and the earlier explicit-only Google rule. Sending every task to Google
 would ignore its limited matched-task evidence and missing live steering; the small-task

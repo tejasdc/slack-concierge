@@ -11,6 +11,7 @@ import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./p
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
+import {accountReadingFresh} from './account-allowance-observation';
 import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
@@ -410,11 +411,8 @@ function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account
   const usage = storedUsage(provider);
   if (!usage || usage.problem) return [];
   const now = Date.now();
-  const fresh = new Set(usage.accounts.filter(value => {
-    const readAt = Date.parse(value.readAt ?? '');
-    return !value.problem && Number.isFinite(readAt) && readAt <= now
-      && now - readAt <= BUDGET_NOTICE_MAX_AGE_MS;
-  }).map(value => value.label));
+  const fresh = new Set(usage.accounts.filter(value => accountReadingFresh(provider,usage,value,now,BUDGET_NOTICE_MAX_AGE_MS))
+    .map(value => value.label));
   return accountsWithRoomBesides(provider, account).filter(label => fresh.has(label));
 }
 
