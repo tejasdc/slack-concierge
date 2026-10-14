@@ -1,0 +1,1 @@
+Answers and stop notices for an Inbox thread now appear there without starting another turn in the Inbox router, unless its request explicitly asks for a return.
