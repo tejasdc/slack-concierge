@@ -26,7 +26,7 @@ export function notificationRequest(text:string):'result'|'scheduled'|null {
     if(/\b(?:trying to|was|were|did not|didn't|will|would|already|asked (?:me|you|them) to)\s*$/i.test(before))continue;
     if(/(?:^|[.!?]\s*|\b(?:please|can you|could you|would you|i want|i need|so|by the way)\s+)$/i.test(before))return 'result';
   }
-  const bare=/\b(?:please|can you|could you|would you) notify\b|^\s*notify[.!?\s]*$/im.exec(words);
+  const bare=/\b(?:please|just|then|can you|could you|would you) notify\b|^\s*notify[.!?\s]*$/im.exec(words);
   return bare&&!negated(words,bare.index)?'result':null;
 }
 
