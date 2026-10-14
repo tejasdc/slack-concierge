@@ -1,0 +1,1 @@
+Captures now come from a direct, bounded list, and recording frames stay unloaded until you choose a picture.
