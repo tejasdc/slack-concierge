@@ -11,6 +11,7 @@ import {
   recordDeploymentReleasePrepared,
   registerDeploymentTurnReactionTargets,
 } from "../src/deployment-state";
+import {ownerServedReleaseCommand} from "../src/state-database";
 import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { handleControlRecovery } from "../src/deployment-control-recovery";
@@ -29,6 +30,22 @@ function required(name: string) {
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
   process.exit(code);
+}
+
+async function ownerReleaseMutation(operation: string, input: Record<string, unknown>): Promise<any> {
+  const stateDir=process.env.CONCIERGE_STATE_DIR;
+  if(!stateDir)throw new Error('CONCIERGE_STATE_DIR is required for release state.');
+  const response=await fetch('http://localhost/internal/deployment-release',{
+    unix:join(stateDir,'request-owner.sock'),method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({operation,...input}),
+  } as RequestInit);
+  const result=await response.json();
+  if(!response.ok)throw new Error(`Serving owner refused ${operation}: ${JSON.stringify(result)}`);
+  return result;
+}
+
+function releaseMutation<T>(operation:string,input:Record<string,unknown>,direct:()=>T):Promise<T>{
+  return ownerServedReleaseCommand ? ownerReleaseMutation(operation,input) : Promise.resolve(direct());
 }
 
 try {
@@ -53,7 +70,8 @@ try {
       applicationCommit,
       (option("--control-commit") || applicationCommit).toLowerCase(),
     );
-    recordDeploymentReleasePrepared(runId, prepared.artifactPath, prepared.manifest);
+    await releaseMutation('prepared',{runId,artifactPath:prepared.artifactPath,manifest:prepared.manifest},
+      () => recordDeploymentReleasePrepared(runId,prepared.artifactPath,prepared.manifest));
     finish(0, { status: "prepared", artifact_path: prepared.artifactPath, ...prepared.manifest });
   }
   if (command === "activate") {
@@ -68,7 +86,8 @@ try {
     const report = () => console.error(JSON.stringify({ event: "deployment_activate_steps", run_id: runId, steps_ms: steps }));
     const release = timed("verify", () => manager.verify(artifact));
     const lastKnownGood = timed("read_last_known_good", () => getLastKnownGoodRelease());
-    const intent = timed("record_intent", () => recordDeploymentReleaseActivationIntent(runId, release.artifact_digest, process.argv.includes("--allow-supersede")));
+    const intent = await timedAsync("record_intent", () => releaseMutation('activation-intent',{runId,artifactDigest:release.artifact_digest,allowSupersede:process.argv.includes("--allow-supersede")},
+      () => recordDeploymentReleaseActivationIntent(runId,release.artifact_digest,process.argv.includes("--allow-supersede"))));
     if ("supersededCommit" in intent) {
       report();
       finish(0, { status: "superseded", desired_commit: intent.supersededCommit });
@@ -76,15 +95,18 @@ try {
     if (lastKnownGood) {
       try {
         const targets = await timedAsync("scan_reaction_targets", () => deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
-        timed("register_reaction_targets", () => registerDeploymentTurnReactionTargets(runId, targets, "deploying"));
+        await timedAsync("register_reaction_targets", () => releaseMutation('reaction-targets',{runId,targets},
+          () => registerDeploymentTurnReactionTargets(runId,targets,"deploying")));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        recordDeploymentTurnReactionDiscoveryFailure(runId, message);
+        await releaseMutation('reaction-discovery-failed',{runId,message},
+          () => recordDeploymentTurnReactionDiscoveryFailure(runId,message));
         console.error(JSON.stringify({ event: "deployment_turn_reaction_discovery_failed", run_id: runId, error: message }));
       }
     }
     const manifest = timed("activate_files", () => manager.activate(artifact));
-    timed("record_activated", () => recordDeploymentReleaseActivated(runId, manifest.artifact_digest));
+    await timedAsync("record_activated", () => releaseMutation('activated',{runId,artifactDigest:manifest.artifact_digest},
+      () => recordDeploymentReleaseActivated(runId,manifest.artifact_digest)));
     notifyDeploymentWorker();
     report();
     finish(0, { status: "activated", ...manifest });

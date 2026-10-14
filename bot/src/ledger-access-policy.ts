@@ -19,7 +19,14 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
     'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control'],
     'deploy-state': ['show', 'desired', 'repair-show'],
   };
-  const readonly = readWorker || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
+  // The installed release controller sends its pre-stop mutations to the serving owner.
+  // Its own connection only reads provenance, so it cannot hold the WAL writer during a build.
+  const ownerServedReleaseCommand = live && process.platform === 'linux'
+    && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
+    && name === 'release-manager'
+    && ['prepare', 'activate'].includes(process.argv[2] ?? '');
+  const readonly = readWorker || ownerServedReleaseCommand
+    || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',
     'native-pipeline-continuation', 'clear-stale-account-notices', 'repair-inbox-needs']);
   const schema = !readonly && (!live && !command.has(name) || name === 'index' || name === 'migrate-deployment-repair');
@@ -53,5 +60,5 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
         throw new Error('Live schema setup requires the supervised owner startup or a fully stopped coordinator.');
     }
   }
-  return { live, schema, readonly };
+  return { live, schema, readonly, ownerServedReleaseCommand };
 }

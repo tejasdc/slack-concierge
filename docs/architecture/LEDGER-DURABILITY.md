@@ -56,6 +56,12 @@ Linux ledger writer. This removes a known path for a short-lived writer to check
 loaded disk; it does not establish the cause of the `SQLITE_BUSY` write.
 The incident's exact lock holder remains unobserved. A future update must be checked with
 the owner's loop-lag and slow-sync records before attributing any residual stalls.
+Deployment ledger transactions taking at least 250 ms emit `deployment_ledger_transaction_slow`
+with the process and separate durations for acquiring SQLite's writer, running the transaction
+body, and finishing its commit. Acquisition time includes the `BEGIN IMMEDIATE` call, so a long
+controller command that waited behind the owner is not misreported as a long writer hold. The
+incident investigation must also sample the live WAL write lock to identify its holder while
+a stall is in progress; neither duration alone names a competing process.
 
 SQLite must own opening and closing its database and shared-memory lock files in this process.
 The former raw `readFileSync(state.db-shm)` in the checkpoint thread closed a descriptor on
@@ -146,6 +152,26 @@ stack); the durability boundary now resolves the link before starting its thread
 
 The rare log-rewind header sync after a complete checkpoint also remains, placed after
 quiet-disk checkpoints.
+
+## Release controller while the owner serves
+
+The release controller builds the artifact outside the owner, but release state belongs to the
+owner until it stops. A root-only request on `request-owner.sock` records preparation, activation
+intent, reaction targets and activation through the owner's ledger connection. The request reply
+passes the existing durability barrier. The controller's connection is read-only for `prepare` and
+`activate`, including its provenance reads, so a candidate build cannot hold the WAL writer lock
+on behalf of the controller. The one-time legacy repair cutover and stopped-owner recovery
+explicitly retain direct writes; they have separate drain rules. A failed owner request fails an
+ordinary update without falling back to a live direct writer.
+
+The 2026-10-14 03:16 UTC update showed why this boundary is needed: the preparing controller held
+WAL locks 120 and 121 from 03:16:11.821 to 03:16:16.041 while the old owner was serving. Its
+5,016 ms write failed with `database is locked` and its loop lag reached 5,603 ms. The same
+window had more than 50% host I/O pressure and owner ext4 writeback waits, which prolonged
+storage work. The controller had printed `prepared` only after the lock ended. The lock trace
+identifies the process and interval; it does not isolate which SQLite operation inside that
+process held those locks. Controller transaction phase timings and `/proc/locks` distinguish
+future acquisition, work and commit delays.
 
 ## Failure handling
 

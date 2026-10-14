@@ -222,12 +222,16 @@ authorization or a change to the default rapid-iteration policy.
   and command answers, provider input and peer requests await `ledgerDurable()` until their rows are on disk;
   see [ledger durability](docs/architecture/LEDGER-DURABILITY.md). The ledger itself lives on its own
   loop-mounted filesystem (remote-box), moved there once by the update while the coordinator is stopped.
+  While the owner serves, release preparation and activation send their ledger mutations through its root-only
+  request socket; their controller connection is read-only. Legacy cutover and stopped-owner recovery
+  retain direct writes under their separate drain rules.
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Short-lived ledger writers also leave automatic checkpointing to the owner's checkpoint thread;
   the shared writer boundary enforces that setting on Linux.
   Loop-lag records also attribute the ledger connection's synchronous background storage and transaction finish time;
   request timings alone omit time before dispatch. The same storage document owns the diagnostic boundary.
+  Slow deployment ledger transactions separate writer acquisition, transaction work and commit time there.
   Update status and wait notices read their waiting start from the run row rather than scanning event history;
   the same durability document owns the 2026-10-13 disk-contention evidence and acceptance check.
   Slow Inbox topic mutations break input retention into bounded, content-free storage phases there.
