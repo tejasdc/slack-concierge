@@ -21,6 +21,8 @@ refuses divergent server/Mac peer wiring. See [session location and parity](docs
 Explicit phone requests create one durable Inbox-thread promise from the exact human
 input; the router must dispatch, answer, or point it at an existing session, and
 Concierge fires the requested-result push once. Mac runs replay through peer events;
+the bounded historical repair runs at startup, and the router may point an earlier
+pending human message in its current Inbox topic;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 
 The coordinated responsiveness release follows the dependency checkpoints in

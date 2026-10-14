@@ -3,10 +3,15 @@ import type {AcceptedSessionInput} from './session-inputs';
 import type {PeerClient} from './session-peers';
 import type {SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
+import {inboxThreadRoot} from './session-inbox';
 
 // A result request is a durable obligation of the exact human input. The owner commits its
 // terminal state with the Inbox event that describes it; the notifier consumes that event.
 const PROMISE_LIFETIME_MS=14*24*60*60*1000;
+// The first notify-when release reached the server at 16:02 ET on October 14.
+// This fixed window is deliberately never advanced by later restarts.
+const FIRST_PROMISE_DEPLOY_AT='2026-10-14 20:02:48';
+const BACKFILL_START_AT='2026-10-13 20:02:48';
 type PromiseRow={input_id:string;inbox_session_id:number;thread_root_id:string|null;target_session:string|null;
   pointed_at_ms:number|null;created_at_ms:number;baseline_turn_id:number|null;target_run_id:string|null;conditions:string;summary:string;
   state:'pending'|'fired'|'expired';expires_at_ms:number;last_peer_observed_at_ms:number|null;fired_event_id:string|null;
@@ -39,6 +44,55 @@ export function retainNotificationPromise(input:{id:string;sessionId:number;kind
 export function showNotificationPromise(inputId:string){
   const row=promise(inputId);
   if(row)post(row,'made','Phone notification requested for this message; it will follow the answer in this thread.');
+}
+
+/** One bounded historical repair. The promise key and made event make every restart idempotent. */
+export function backfillNotificationPromises(){
+  const candidates=db.query(`SELECT input.id,input.session_id,input.kind,input.created_at,input.payload_json
+    FROM session_inputs input JOIN sessions session ON session.id=input.session_id
+    WHERE input.created_at>=? AND input.created_at<? AND input.origin='human'
+      AND input.kind IN ('input','create','inbox-capture')
+      AND json_extract(input.payload_json,'$.notificationRequest')='result'
+      AND json_extract(session.native_metadata_json,'$.inbox')=1
+      AND NOT EXISTS(SELECT 1 FROM inbox_notification_promises promise WHERE promise.input_id=input.id)
+    ORDER BY input.created_at,input.id`).all(BACKFILL_START_AT,FIRST_PROMISE_DEPLOY_AT) as
+    {id:string;session_id:number;kind:string;created_at:string;payload_json:string}[];
+  let added=0;
+  for(const input of candidates){
+    const words=JSON.parse(input.payload_json);
+    if(words?.capture?.importOnly&&words.capture.source?.metadata?.quoted?.kind!=='human')continue;
+    const root=inboxThreadRoot(input.session_id,input.id);
+    if(!root)continue;
+    // Before promises existed, a requested result could already have been emitted from
+    // this thread. It must not acquire another obligation on restart.
+    const responses=db.query(`SELECT input_id,payload_json FROM session_owner_events
+      WHERE session_id=? AND kind='needs_you' AND created_at>=?
+        AND json_extract(payload_json,'$.outcome')='response'`).all(input.session_id,input.created_at) as
+      {input_id:string|null;payload_json:string}[];
+    const alreadyAnswered=responses.some(response=>{
+      const payload=JSON.parse(response.payload_json);
+      const answerInput=typeof payload.notificationInputId==='string'?payload.notificationInputId:
+        typeof payload.inputId==='string'?payload.inputId:response.input_id;
+      if(!answerInput)return false;
+      const receipt=db.query('SELECT origin,payload_json FROM session_inputs WHERE id=?').get(answerInput) as
+        {origin:string;payload_json:string}|null;
+      if(receipt?.origin!=='human'||JSON.parse(receipt.payload_json)?.notificationRequest!=='result')return false;
+      return inboxThreadRoot(input.session_id,answerInput)===root;
+    });
+    if(alreadyAnswered)continue;
+    const acceptedAt=Date.parse(input.created_at.replace(' ','T')+'Z');
+    if(!Number.isFinite(acceptedAt))continue;
+    db.transaction(()=>{
+      const inserted=db.query(`INSERT OR IGNORE INTO inbox_notification_promises
+        (input_id,inbox_session_id,conditions,summary,expires_at_ms,created_at_ms,updated_at_ms)
+        VALUES(?,?,'answer',?,?,?,?)`)
+        .run(input.id,input.session_id,String(words?.firstInput?.text??words?.text??'').trim().slice(0,240),
+          acceptedAt+PROMISE_LIFETIME_MS,acceptedAt,Date.now());
+      if(inserted.changes){showNotificationPromise(input.id);added++;}
+    })();
+  }
+  if(added)log('info','notify_when_historical_backfill',{added,windowStart:BACKFILL_START_AT,windowEnd:FIRST_PROMISE_DEPLOY_AT});
+  return added;
 }
 
 export function requestedNotificationInput(inputId:string):boolean{return !!promise(inputId);}
@@ -159,6 +213,7 @@ export function reconcileLocalNotificationPromises(owner:SessionOwner,now=Date.n
 
 /** Shared by both the native and adapter compositions; the owner remains the only writer. */
 export function startLocalNotificationPromiseWatch(owner:SessionOwner,stopped:()=>boolean){
+  backfillNotificationPromises();
   const reconcile=()=>{
     if(stopped())return;
     try {reconcileLocalNotificationPromises(owner);} catch(error) {log('error','notify_when_reconciliation_failed',errorFields(error));}

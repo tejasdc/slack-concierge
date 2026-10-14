@@ -16,6 +16,14 @@ input. Its default condition is the next agent answer filed into that thread for
 the same input. Admission writes a visible service entry after the human message.
 The filed answer's existing requested-result event pushes once; the promise settles
 in that same ledger transaction, with a visible fulfilled entry and no second push.
+A fixed startup backfill covers result-marked human Inbox messages accepted in the
+24 hours before the first deployment at 16:02 ET on October 14, 2026. It uses the
+original acceptance time for the 14-day expiry, writes the same visible promise
+entry, and never repeats an existing row. It skips a thread that has already
+emitted a requested-result response since that message was accepted. The
+historical phone-send record was checked separately before this repair: the
+eligible messages had no requested-result push. The fixed window does not slide
+forward with later restarts.
 An Inbox router turn cannot close as `done`, `failed`, or `needs_you` with an
 unarranged result promise: it must dispatch work from the input, answer with
 `response`, or point the promise at an existing session. A router `response`
@@ -30,8 +38,11 @@ while the promise waits.
 The router points it with `router-actions.sh sessions notify-when --thread
 <human-message-id> --session concierge:N|mac:N [--on done,needs-you,hold]
 --summary "<his request>"` plus its exact source and stable action ID. The thread
-must be the one the live Inbox turn is handling; only a marked human input can
-be pointed. The default conditions are `done,needs-you,hold`. A local target
+may name the current or an earlier message written by Tejas with a pending
+promise in the Inbox topic the live turn is handling. The owner checks topic
+membership again after a peer read, requires a quotation from that exact
+message, and refuses silent retargeting. The default conditions are
+`done,needs-you,hold`. A local target
 binds to its current run or the next run after the command. A Mac target uses
 the same rule against the Mac owner's retained event stream and exact input
 receipt, rather than a possibly coalesced catalogue card. A failed or canceled
