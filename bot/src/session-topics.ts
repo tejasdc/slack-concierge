@@ -2130,7 +2130,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     applyTopicChange('topic_question',payload);
     // The thread's one notification slot: the Inbox session, the thread's root as its input, shaped like a new question's.
     recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
-      payload:{outcome:decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
+      payload:{outcome:requestedResult?'response':decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
         inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId,
         ...(requestedResult?{requestedNotification:true}:{}),...(notificationInputId?{notificationInputId}:{})}});
   })();
