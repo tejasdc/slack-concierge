@@ -271,12 +271,18 @@ all." A press while a pass is already running joins that pass instead of startin
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude auth login`, then
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> cswap add`. Never `/logout`; that can
   revoke the account being left.
-  `cswap list` answers from claude-swap's own usage cache and will serve a reading minutes
-  old without going to claude.ai, so tightening our interval alone changed nothing for
-  Claude — measured on the box, `list` reported 18% while the account was really at 25%.
-  Each pass therefore asks for `cswap status --json` first, which fetches the active account
-  and writes that cache, and reads the list after it. The active account is the one being
-  spent, so it is the one whose number has to be right; the rest are idle and barely move.
+  `cswap list --json` checks every managed account due under claude-swap's shared
+  per-account poll plan, then returns its account-specific source fetch time. An older
+  value can remain on screen after a failed or delayed fetch; Concierge retains that
+  original time and treats the value as historical once its decision limit passes.
+  The tool can space idle or exhausted accounts up to ten minutes apart to respect
+  the usage endpoint's request budget, so a six-minute decision may temporarily
+  lack fresh evidence for one of them; another scan cannot turn that into fresh data.
+  `cswap status --json` checks only the terminal-active account and is not used here:
+  a Concierge turn may run on another saved home without changing terminal selection.
+  When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
+  server readings with their source times; local sign-in and selection need local evidence.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
