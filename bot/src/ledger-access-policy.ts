@@ -30,7 +30,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const ownerServedDeploymentCommand = live && process.platform === 'linux'
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'deploy-state'
-    && ['claim', 'phase', 'show', 'desired'].includes(process.argv[2] ?? '');
+    && ['claim', 'phase', 'show', 'desired', 'succeed', 'fail', 'preserved-checkout'].includes(process.argv[2] ?? '');
   const forbidControllerLedgerOpen = live && process.platform === 'linux'
     && (ownerServedReleaseCommand || ownerServedDeploymentCommand
       || name === 'native-pipeline-continuation'
