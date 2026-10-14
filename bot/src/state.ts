@@ -1,4 +1,5 @@
 import { initializeSessionOwnerSchema } from "./session-schema";
+import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
 import { db, initializeLedgerSchema } from "./state-database";
@@ -5168,6 +5169,8 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
+    AND ${threadOnlyReturnInputSql('input')})
   AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
     AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=session.id))

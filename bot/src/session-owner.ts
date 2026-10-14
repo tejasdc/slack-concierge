@@ -1,3 +1,4 @@
+import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
 import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
@@ -1147,6 +1148,7 @@ export class SessionOwner {
     return preparedReceiptChanges(session.id,token,requestedLimit??PRESENTATION_PAGE);
   }
   dispatch(input:AcceptedSessionInput) {
+    if(db.query(`SELECT 1 FROM session_inputs input WHERE input.id=? AND ${threadOnlyReturnInputSql('input')}`).get(input.id))return input;
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id)!;
     // A live delivery this coordinator chose, which the provider provably never

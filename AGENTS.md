@@ -33,8 +33,11 @@ The Inbox waiting list, Move next, and Work with current run controls use the ca
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
 
 Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
-answer in that thread, with a two-minute reminder and three-minute overdue escalation;
+answer in that thread, with a two-minute reminder and three-minute overdue thread notice;
 see [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
+Requests naming an Inbox thread deliver answers and terminal notices to that thread without
+waking the requester, unless the ask explicitly chooses a requester return; see
+[requests and returns](docs/architecture/SESSION-OWNER.md#requests-and-returns).
 After a prompt-answer partial, a bodyless final closes that exact request and attaches its
 closing facts beneath the existing answer; a final body is new visible text. The same contract
 holds for Mac peers. See [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).

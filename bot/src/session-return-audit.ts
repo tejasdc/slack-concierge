@@ -2,6 +2,7 @@ import { db } from './state';
 import { log } from './log';
 import { recordTurnOutcome } from './session-turn-outcome';
 import { REMINDERS_SINCE_MS } from './request-liveness';
+import {threadOnlyReturnInputSql} from './inbox-request-root';
 
 /**
  * Every settled request owes its requester one return input. Delivery normally follows within
@@ -40,7 +41,8 @@ const UNHANDLED = (events: string, requests: string, extra: string, cursor = fal
       JOIN session_inputs input ON input.id=e.accepted_input_id
       JOIN turns turn ON turn.id=input.turn_id
     WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1)
-      AND turn.status IN ('error','parked') AND turn.input_context_received_by_turn_id IS NULL ${extra}`;
+      AND turn.status IN ('error','parked') AND turn.input_context_received_by_turn_id IS NULL
+      AND NOT (${threadOnlyReturnInputSql('input')}) ${extra}`;
 const reported = new Set<string>();
 const reportedUnhandled = new Set<string>();
 const loggedUnhandled = new Set<string>();

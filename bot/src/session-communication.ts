@@ -3,10 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand } from './session-topics';
@@ -991,6 +991,7 @@ export class SessionCommunicationCoordinator {
         summary?:string;
         /** How the answer comes back: 'summary' wakes the asker with the answer's one-line summary only; the body is read with sessions get. */
         answer_view?:'summary'|'full';
+        return_to_requester?:boolean;
         peer?:string;
         /** What only the peer machine can do for this work; required to create a session there. */
         machine_need?:string;
@@ -1042,6 +1043,8 @@ export class SessionCommunicationCoordinator {
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
         const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        if(input.return_to_requester!==undefined&&input.return_to_requester!==true)
+            throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
         if(input.saved) {
             if(!input.provider||input.address||input.peer||!title||input.after?.length)
@@ -1073,7 +1076,7 @@ export class SessionCommunicationCoordinator {
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot});
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
@@ -1091,6 +1094,7 @@ export class SessionCommunicationCoordinator {
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
+            ...(input.return_to_requester?{returnToRequester:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -1251,8 +1255,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(!request.source_input_id)return null;
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
         if(forwarded&&typeof forwarded.inboxInputId==='string')return {root:request.thread_root_input_id??request.source_input_id,forwarded};
-        // An answer that already became a return before this road existed keeps its return.
-        const agentReply=!event.accepted_input_id&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
+        // Pending old returns use the same post identity when custody moves to the thread.
+        const agentReply=((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
         const inbox=getSessionById(request.source_session_id);
         const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
         if(!agentReply||!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
@@ -1274,7 +1278,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
             inboxInputId:forwarded?.inboxInputId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
             text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
+            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
             .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
@@ -1572,6 +1576,10 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             const session=getSessionById(request.source_session_id)!;
             updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
         }
+        // The thread uses the owner's event order, never the router's later execution order.
+        const event=db.query('SELECT * FROM session_communication_events WHERE event_id=?').get(id) as EventRow;
+        if(this.postThreadEvent(request,event,JSON.parse(event.payload_json))&&!returnsToRequester(request))
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(id);
         return id;
     }
     private settle(request: RequestRow, outcome: string, text: string, output: unknown = null, disposition: WorkDisposition | null = null, attachments: string[] = []) {
@@ -1806,21 +1814,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
-        if(event.kind==='overdue'&&(declared.promptAnswerOverdue?request.prompt_answered_at_ms!==null:!!request.outcome)&&!event.accepted_input_id){
+        if(event.kind==='overdue'&&(declared.promptAnswerOverdue?request.prompt_answered_at_ms!==null:!!request.outcome)){
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,"Answered before this notice was delivered.");
+            withdrawUnstartedServiceInput(`question-overdue:${request.request_id}`,"Answered before this notice was delivered.");
             db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
             return;
         }
-        if(declared.promptAnswerOverdue&&request.source_input_id&&getAcceptedSessionInput(request.source_input_id)?.origin==='human'){
-            const question=String(JSON.parse(request.payload_json).text??'');
-            this.dependencies.owner!.admit({sessionId:request.source_session_id,inputId:`question-overdue:${request.request_id}`,
-                origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`A question Tejas asked in Inbox thread ${request.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent was reminded. Request ${request.request_id}: ${question}\nCheck the request's current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread; do not wait for the agent's work to finish.`});
-        }
-        // Posting belongs to the named thread. The requester also keeps its own final return.
-        const thread=this.threadAnswer(request,event,declared);
-        const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
-        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
-        const alreadyPostedInThread=!!thread||!!stoppedPost;
+        const returnToRequester=returnsToRequester(request);
+        // A named thread is the result destination. A requester turn is a separately chosen effect.
+        const alreadyPostedInThread=this.postThreadEvent(request,event,declared);
         // A progress note wakes nobody: it stays on the request, in the asker's record and in any
         // stalled notice, and the asker learns the outcome from the final. Each wake re-read the
         // asker's whole conversation; one lab session re-read ~860k tokens per note, four times for
@@ -1836,6 +1838,13 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if (event.kind === 'final')
             for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
                 db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(notice.accepted_input_id);
+        if(!returnToRequester){
+            if(!alreadyPostedInThread)throw new Error("The named thread has not received this reply.");
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,"Delivered directly to its Inbox thread.");
+            withdrawUnstartedServiceInput(`question-overdue:${request.request_id}`,"The overdue notice belongs to its Inbox thread.");
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -1890,6 +1899,12 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
     }
+    private postThreadEvent(request:RequestRow,event:EventRow,declared:any):boolean {
+        const thread=this.threadAnswer(request,event,declared);
+        const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
+        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
+        return !!thread||!!stoppedPost;
+    }
     private explicitAnswerGroup(event:EventRow,requesterSessionId:number):{carriedBy:string|null;joining:EventRow[]} {
         if(event.kind!=='final')return {carriedBy:null,joining:[]};
         const group=JSON.parse(event.payload_json).answerGroup;
@@ -1898,8 +1913,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
               AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
             .all(requesterSessionId,event.event_id,group) as EventRow[];
-        const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
+        const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id))).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id)))};
     }
     /** An event carried by another event's return takes that return's delivery state. */
     private followReturn(eventId: string, inputId: string) {
@@ -1948,7 +1963,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                         db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
                             .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
                     } else {
-                        this.event(current,'overdue',{text:`No answer to this ${asker==='Tejas'?'question':'marked test question'} arrived within three minutes. The agent has been reminded${asker==='Tejas'?'; the Inbox router has been told':''}. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
+                        this.event(current,'overdue',{text:`No answer to this ${asker==='Tejas'?'question':'marked test question'} arrived within three minutes. The agent has been reminded. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
                         db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
                     }
                 })();
