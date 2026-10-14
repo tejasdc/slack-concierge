@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
+import { ACCOUNT_READING_MAX_AGE_MS, BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
@@ -77,8 +77,8 @@ export function measuredBudgetPressure(provider: 'claude-code' | 'codex', accoun
     ? usage.accounts.find(value => value.label === accountLabel)
     : usage.accounts.find(value => value.current);
   if (!account || account.problem) return null;
-  const observedAt = Date.parse(account.readAt ?? usage.observedAt);
-  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > ACCOUNT_READING_MAX_AGE_MS) return null;
+  const observedAt = Date.parse(account.readAt ?? '');
+  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > BUDGET_NOTICE_MAX_AGE_MS) return null;
   const window = account.windows.filter(value => value.name !== 'Weekly · Fable only'
     && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
     .sort((left, right) => right.usedPercent - left.usedPercent)[0];

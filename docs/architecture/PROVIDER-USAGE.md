@@ -538,9 +538,11 @@ them back, because they were built for a screen. Now:
   it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually, 90% of
   above" [decision: usage-notice-only-at-90-percent]. It is a provider-free Inbox notice
   (`publishProviderFreeNotice`, kind `provider_usage_warning`): its own thread, a reading item and
-  the push thnkr.ing sends for every reading item. Each account's own read time must be within
-  the shared six-minute freshness limit; a newer provider-wide scan cannot refresh an old
-  account's number. The combined Claude/Codex warning likewise uses fresh measured windows,
+  the push thnkr.ing sends for every reading item. Each account must carry its own provider
+  observation time within the one-minute warning limit (Claude's source fetch time or
+  CodexBar's usage update time); a newer provider-wide scan cannot refresh an old account's
+  number or stand in for a missing or invalid account timestamp. The separate
+  six-minute dispatch limit does not authorize a warning. The combined Claude/Codex warning likewise uses fresh measured windows,
   never dispatch capacity raised to 100% by an earlier refusal. It names both accounts,
   windows, percentages and observation times. Alternative accounts are described as having
   room only when their readings are fresh. When the window refills the thread says so and
