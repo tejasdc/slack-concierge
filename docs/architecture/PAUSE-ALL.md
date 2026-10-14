@@ -23,10 +23,16 @@ on startup it reads the cloud state before adopting or claiming work. If that re
 unavailable, it holds claims until the cloud sends a confirmed state. The cloud status
 reports a peer as pending until it acknowledges the current generation. A peer response
 includes its bounded paused-work snapshot, so thnkr.ing can show both machines.
+While paused, the existing reconciliation refreshes that snapshot after acknowledgement,
+so a confirmed stop replaces the initial pending stop in the sheet.
 
 `POST /sessions/v1/pause-all/resume` with only an action ID clears the gate on both
 machines. With `sessionIds`, it keeps the global gate and admits only those sessions.
-Queued work in an admitted session uses its normal queue order. For each stopped run,
+Queued work in an admitted session uses its normal queue order. A new Pause all action
+clears those selected exceptions and holds every eligible session again. Retrying the
+same action keeps its original meaning. Named database bindings keep the action identity,
+pause flag and generation separate when recording each control.
+For each stopped run,
 Concierge adds one service continuation that tells the agent to inspect retained work
 and current files before continuing, rather than replaying an input whose side effects
 may have occurred. A stable action ID makes a retry the same control. Existing session
