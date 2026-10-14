@@ -28,7 +28,7 @@ import {ledgerDurable} from './ledger-durability-barrier';
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
  * machine, reached over the tailnet with one shared bearer token. A peer request is the
  * existing `sessions ask` with the target session living in the peer's ledger, so the
- * origin keeps the request and its return obligation while the peer keeps the target's
+ * origin keeps the request and its selected result destination while the peer keeps the target's
  * execution. Neither side ever writes the other's database.
  */
 /** `paths` are the peer's home prefixes: an archived transcript under one of them belongs to that peer. */
