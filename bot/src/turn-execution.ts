@@ -120,7 +120,7 @@ import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-re
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
-import { releaseUsageHeldWork } from "./provider-usage";
+import { releaseUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
@@ -698,6 +698,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     input.closeSteering();
     recordProviderStarted();
+    // Pickup can precede a model refusal. A successful provider result proves this exact
+    // held input left its allowance wait.
+    if(input.providerId==='claude-code'||input.providerId==='codex'||input.providerId==='antigravity')
+      resolveUsageHoldNoticesForSettledTurn(input.providerId,input.turnId);
     markClaudeHomeVerified(runningClaudeHome);
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);

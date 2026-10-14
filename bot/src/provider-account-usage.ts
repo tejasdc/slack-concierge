@@ -517,11 +517,14 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);
-      releaseIfAccountChanged(provider, usage);
+      // Claude's reader can temporarily activate another login in the terminal's folder.
+      // Only this machine's agent selection is an account change for queued work.
+      const agentUsage=withAgentsAccountCurrent(provider,usage);
+      releaseIfAccountChanged(provider, agentUsage);
       if (provider === "claude-code") proveClaudeHomesAhead(usage.accounts.map(account => account.label));
       // A sign-in the provider refused is renewed through the Mac's browser, once per episode.
       for (const account of usage.accounts) if (account.signedOut) needSignInRenewal(provider, account.label, "its usage could not be read because the sign-in stopped working");
-      const current=usage.accounts.find(account=>account.current);
+      const current=agentUsage.accounts.find(account=>account.current);
       const activeWindows=current?includedAllowanceWindows(provider,current):[];
       const activeHasRoom=!!current && accountReadingFresh(provider,usage,current) && activeWindows.length>0
         && activeWindows.every(window=>window.usedPercent<100);

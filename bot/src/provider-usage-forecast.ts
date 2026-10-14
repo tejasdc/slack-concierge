@@ -2,7 +2,7 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import {accountReadingAt,accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
+import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,withLocalCurrentAccount} from './account-allowance-observation';
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -97,8 +97,7 @@ export function storedUsage(provider: AccountIdentityProvider): ProviderUsage | 
 export function withAgentsAccountCurrent(provider: AccountIdentityProvider, usage: ProviderUsage): ProviderUsage {
   if (provider !== "claude-code" || !claudeRunsFromOwnHomes()) return usage;
   const chosen = selectedClaudeHome()?.label ?? null;
-  if (!chosen) return usage;
-  return { ...usage, accounts: usage.accounts.map(account => ({ ...account, current: account.label === chosen })) };
+  return withLocalCurrentAccount(usage,chosen);
 }
 
 /**

@@ -180,7 +180,6 @@ export function clearProviderUsage(provider: UsageProvider) {
     return { generation: state.generation, released: releaseScheduledProviderRetries(provider) };
   }).immediate();
   log("info", "provider_usage_cleared", { provider, generation: cleared.generation, released: cleared.released });
-  if (cleared.released > 0) announceUsageHoldEnded(provider, "usage_cleared", cleared.released);
   return { provider, generation: cleared.generation, cleared: true, resumed_work: cleared.released > 0 };
 }
 
@@ -192,8 +191,7 @@ export function clearProviderUsage(provider: UsageProvider) {
 export function releaseUsageHeldWork(provider: UsageProvider, releasedBy = "account_switch"): number {
   const released = releaseScheduledProviderRetries(provider);
   if (released > 0) {
-    log("info", "provider_usage_hold_released", { provider, released });
-    announceUsageHoldEnded(provider, releasedBy, released);
+    log("info", "provider_usage_hold_released", { provider, released, released_by: releasedBy });
   }
   return released;
 }
@@ -222,31 +220,28 @@ export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, 
       if(row)moved.push(row.id);}
     return moved;
   }).immediate();
-  if(turnIds.length){log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});announceUsageHoldEnded(attempt.provider,'manual_check',turnIds.length,new Set(turnIds));}
+  if(turnIds.length)log('info','provider_usage_hold_released',{provider:attempt.provider,released:turnIds.length,scope:attempt.scope});
   return {released:turnIds.length,turnIds};
 }
 
 /**
- * Held work is moving again, so every notice that said it was waiting on this provider's
- * allowance gets a resolution event, which Thinkering turns into taking that notice back from
- * his phone. Nothing said so before: on 2026-10-07 the switch to his other account released six
- * held inputs at 5:59 PM, and two "Claude has no usage left" notices stayed on his Lock Screen
- * past 8 PM. The sign-in hold already announces its end the same way (provider-activation.ts).
+ * Resolve a waiting notice only when its own provider turn settles successfully. Releasing a
+ * queued retry or seeing an initial pickup says nothing about model admission or recovery of
+ * the account named in the old notice.
  */
-function announceUsageHoldEnded(provider: UsageProvider, releasedBy: string, released: number, turnIds?: ReadonlySet<number>) {
+export function resolveUsageHoldNoticesForSettledTurn(provider: UsageProvider, turnId: number): void {
   try {
     const notices = db.query(`SELECT event_id, session_id, input_id, turn_id FROM session_owner_events e
-      WHERE kind='provider_outage' AND created_at > datetime('now','-2 days')
-        AND (event_id LIKE ? OR event_id LIKE ? OR event_id LIKE ?)
+      WHERE kind='provider_outage' AND turn_id=? AND (event_id LIKE ? OR event_id LIKE ?)
         AND NOT EXISTS (SELECT 1 FROM session_owner_events r WHERE r.event_id = e.event_id || ':resolved')`)
-      .all(`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`, `provider-usage-forecast:${provider}:%`) as
+      .all(turnId,`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`) as
       { event_id: string; session_id: number; input_id: string | null; turn_id: number | null }[];
-    for (const notice of notices.filter(notice=>!turnIds||notice.turn_id!==null&&turnIds.has(notice.turn_id)))
+    for (const notice of notices)
       recordSessionEvent({ eventId: `${notice.event_id}:resolved`, sessionId: notice.session_id, inputId: notice.input_id,
         turnId: notice.turn_id, kind: "provider_outage_resolved",
-        payload: { provider, usage: { released_by: releasedBy, released_inputs: released } } });
+        payload: { provider, usage: { released_by: 'provider_succeeded', settled_turn_id: turnId } } });
   } catch (error) {
-    log("error", "provider_usage_hold_resolution_failed", { provider, released_by: releasedBy,
+    log("error", "provider_usage_hold_resolution_failed", { provider, turn_id: turnId,
       error: error instanceof Error ? error.message : String(error) });
   }
 }

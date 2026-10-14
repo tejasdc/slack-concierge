@@ -3,6 +3,11 @@ import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 
 export const ACCOUNT_READING_MAX_AGE_MS=6*60_000;
 
+/** A copied or tool-active login cannot select the account this machine runs agents on. */
+export function withLocalCurrentAccount(usage:ProviderUsage,selected:string|null):ProviderUsage {
+  return {...usage,accounts:usage.accounts.map(account=>({...account,current:account.label===selected}))};
+}
+
 /** Windows that constrain the ordinary Claude Opus start; Fable has a separate weekly cap. */
 export function includedAllowanceWindows(provider:AccountIdentityProvider,account:AccountUsage,
   model?:string|null):AccountUsage['windows'] {
