@@ -941,7 +941,7 @@ export class SessionExecutionHost {
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
       baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='codex'||session.provider_id==='claude-code'
-        ?budgetBriefWithProviderRoom(session.provider_id):null,
+        ?budgetBriefWithProviderRoom(session.provider_id, Date.now(), boundAccount?.account):null,
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
           isWritingSession(session)?WRITING_SESSION_STANDING:null,
           saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null}):undefined,

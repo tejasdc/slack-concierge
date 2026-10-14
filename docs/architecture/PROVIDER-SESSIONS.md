@@ -384,15 +384,21 @@ an update still uses the current installed request helper for a *new* outbound a
 run hooks and recovery helpers remain pinned to their original release.
 
 For an independent helper requested by a Claude session, Automatic also sees the source
-session. When a fresh launchable Claude account is under budget pressure (the existing
-90% warning or its one-hour usage brief) and the signed-in Codex account has more room,
+session. When a fresh provider reading puts the selected Claude account at or above 90%
+in a named window and the signed-in Codex account has more launchable room,
 the owner starts that helper on Codex. The decision is repeated at request creation, so
 a previously started Claude run gets the current choice without a router message. A
 provider named by the agent remains explicit; the source session and its admitted work
 stay on Claude. Provider-native child tools still use their parent's provider.
 
-The existing usage watch tells each running session about its own budget and current
-launchable room on both providers. Under Claude pressure, the same room decision adds
+The usage watch tells a running session about a fresh, provider-measured window only at
+or above 90%. The brief names the machine, account, window, measured percentage and
+observation time from the Accounts view. For Claude it uses the account retained with
+that run, so a later selection change cannot relabel an older run. An unreadable or stale
+reading, earlier provider refusal, or rate forecast cannot create a threshold brief.
+Dispatch still treats a prior refusal as an operational hold and rechecks account room
+when a helper is requested; its effective capacity is not displayed as a measured usage
+percentage. Under Claude pressure, the same room decision adds
 an instruction to delegate bounded implementation through a new session request, while
 the Claude agent keeps the approach and reviews the result. A change from no Codex
 delegation room to verified room creates one new brief in that allowance episode. New

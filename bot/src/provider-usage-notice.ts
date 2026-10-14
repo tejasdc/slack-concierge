@@ -1,17 +1,17 @@
 import { providerDisplayName } from "./aliases";
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
-import { currentAccount } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, currentAccount } from "./provider-accounts";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
-  tightestCurrentWindow, type UsageForecast } from "./provider-usage-forecast";
+  storedUsage, tightestCurrentWindow, type UsageForecast } from "./provider-usage-forecast";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
-import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, newWorkCapacity, newWorkHeadroom } from './provider-start-choice';
+import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
@@ -340,10 +340,10 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
   };
   const claudeCapacity = capacity('claude-code');
   const codexCapacity = capacity('codex');
-  const bothNear = !!claudeCapacity && !!codexCapacity
-    && claudeCapacity.used >= NOTICE_AT_PERCENT && codexCapacity.used >= NOTICE_AT_PERCENT
-    && (claudeCapacity.used < 100 || codexCapacity.used < 100)
-    && !!claudeCapacity.windowResetAt && !!codexCapacity.windowResetAt;
+  const claudePressure = claudeCapacity && measuredBudgetPressure('claude-code', claudeCapacity.account);
+  const codexPressure = codexCapacity && measuredBudgetPressure('codex', codexCapacity.account);
+  const bothNear = !!claudePressure?.resetsAt && !!codexPressure?.resetsAt
+    && (claudePressure.usedPercent < 100 || codexPressure.usedPercent < 100);
   for (const provider of ["claude-code", "codex"] as const) {
     let nearlySpent: UsageForecast[];
     try { nearlySpent = accountsNearlySpent(provider); } catch { continue; }
@@ -354,7 +354,7 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
       const key = `usage-at-${NOTICE_AT_PERCENT}:${provider}:${reading.account}:${reading.window}:${allowancePeriod(reading.resetsAt)}`;
       if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`service-notice:${key}`)) continue;
       try {
-        const spare = accountsWithRoomBesides(provider, reading.account);
+        const spare = freshAccountsWithRoomBesides(provider, reading.account);
         const recorded = publishProviderFreeNotice(db, {
           key, kind: "provider_usage_warning",
           text: usageWarningText(provider, reading, spare),
@@ -374,9 +374,9 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
     }
   }
   try {
-    const claude = claudeCapacity;
-    const codex = codexCapacity;
-    if (bothNear && claude && codex && claude.windowResetAt && codex.windowResetAt) {
+    const claude = claudePressure;
+    const codex = codexPressure;
+    if (bothNear && claude?.resetsAt && codex?.resetsAt) {
       // Account eligibility can change before either provider refills. That must not turn
       // one period of shared pressure into a second warning with a different reset key.
       const open = db.query(`SELECT 1 FROM session_inputs input
@@ -386,12 +386,14 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
           AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)
         LIMIT 1`).get(SERVICE_NOTICE_SCOPE,new Date().toISOString());
       if (!open) {
-        const key = `both-providers-at-${NOTICE_AT_PERCENT}:${allowancePeriod(new Date(claude.windowResetAt).toISOString())}:${allowancePeriod(new Date(codex.windowResetAt).toISOString())}`;
+        const key = `both-providers-at-${NOTICE_AT_PERCENT}:${claude.account}:${allowancePeriod(claude.resetsAt)}:${codex.account}:${allowancePeriod(codex.resetsAt)}`;
         published ||= publishProviderFreeNotice(db, {key,kind:'provider_usage_warning',
-          text:'Both Claude and Codex are at or above 90% on the accounts that can start new work. Automatic new work uses whichever still has room. If both run out, new requests wait for the first usable allowance reset; work already running keeps its provider.',
+          text:`Accounts on ${machineName()} measured Claude account ${claude.account} at ${claude.usedPercent}% of ${claude.window} (${claude.observedAt}) and Codex account ${codex.account} at ${codex.usedPercent}% of ${codex.window} (${codex.observedAt}). Both are at or above 90%. Automatic dispatch checks availability when new work is requested; earlier provider refusals can still hold a request.`,
           payload:{providers:['claude-code','codex'],thresholdPercent:NOTICE_AT_PERCENT,
-            claudeUsedPercent:claude.used,codexUsedPercent:codex.used,
-            resetsAt:new Date(Math.min(claude.windowResetAt,codex.windowResetAt)).toISOString()}});
+            claudeAccount:claude.account,claudeWindow:claude.window,claudeObservedAt:claude.observedAt,
+            codexAccount:codex.account,codexWindow:codex.window,codexObservedAt:codex.observedAt,
+            claudeUsedPercent:claude.usedPercent,codexUsedPercent:codex.usedPercent,
+            resetsAt:new Date(Math.min(Date.parse(claude.resetsAt),Date.parse(codex.resetsAt))).toISOString()}});
       }
     }
   } catch (error) { log('error','combined_provider_usage_notice_failed',
@@ -404,26 +406,31 @@ export function publishUsageForecastNotices(_record?: RecordEvent): void {
 /** Claude turns pick, each time, an account that still has room; Codex moves its one login once the account in use is spent. */
 const movesAutomatically = (provider: UsageProvider) => provider === "codex" || claudeRunsFromOwnHomes();
 
+function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account: string): string[] {
+  const usage = storedUsage(provider);
+  if (!usage || usage.problem) return [];
+  const now = Date.now();
+  const fresh = new Set(usage.accounts.filter(value => {
+    const readAt = Date.parse(value.readAt ?? usage.observedAt);
+    return !value.problem && Number.isFinite(readAt) && readAt <= now
+      && now - readAt <= ACCOUNT_READING_MAX_AGE_MS;
+  }).map(value => value.label));
+  return accountsWithRoomBesides(provider, account).filter(label => fresh.has(label));
+}
+
 function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
   const name = providerDisplayName(provider) ?? provider;
   const refill = noticeTime(db, Date.parse(reading.resetsAt!));
   const head = `${name} account ${reading.account} has used ${Math.round(reading.usedPercent)}% of its `
     + `${windowLabel(reading.window)}. It refills at ${refill}.`;
   const next = spare.length
-    ? movesAutomatically(provider)
-      ? ` When it runs out, new ${name} work moves to ${spare.join(" or ")} by itself; nothing to do.`
-      : ` When it runs out, ${name} work stops until it refills unless you switch to ${spare.join(" or ")} on the Accounts page.`
-    : ` No other ${name} account has room, so when it runs out ${name} work waits until it refills.`;
+    ? ` A fresh reading shows ${spare.join(" or ")} below its limit. Concierge checks launch availability when new work is requested.`
+    : ` No other ${name} account has confirmed room from a fresh reading; availability is checked when new work is requested.`;
   const other = provider === 'codex' ? 'claude-code' : 'codex';
-  const otherUsed = newWorkHeadroom(other);
-  const thisUsed = newWorkHeadroom(provider);
-  const bothNear = thisUsed !== null && thisUsed >= NOTICE_AT_PERCENT
-    && otherUsed !== null && otherUsed >= NOTICE_AT_PERCENT;
-  const automaticElsewhere = otherUsed !== null && otherUsed < 100
+  const otherCapacity = newWorkCapacity(other);
+  const automaticElsewhere = otherCapacity && otherCapacity.used < 100
     ? ` Automatic new work can start on ${providerDisplayName(other) ?? other} while it has room.` : '';
-  return head + next + automaticElsewhere + (bothNear
-    ? ' Both Claude and Codex are at or above 90% on the accounts that can take new work. If both reach their limits, new work waits for an allowance reset; work already running keeps its provider.'
-    : '');
+  return head + next + automaticElsewhere;
 }
 
 /**
@@ -528,9 +535,9 @@ export function publishExpiringResetNotices(_record?: RecordEvent): void {
  *  - It is pinned to the exact live run (`delivery:'steer'` with that run's id), so it can
  *    never start a turn on an idle session. If the run ends first, the notice fails and is
  *    not retried into a queue.
- *  - One brief for each delegation-availability state per session and allowance
- *    period. A change in available room can update the action without repeated
- *    notices for every usage reading.
+ *  - One brief for each delegation-availability state per session, account and
+ *    allowance period. A change in available room can update the action without
+ *    repeated notices for every usage reading.
  *  - It gives a delegation action only when the same account choice that starts helpers
  *    verifies Codex has the room. The session keeps its model and its work.
  */
@@ -539,25 +546,29 @@ export function briefRunningSessions(admit: (input: {
   requestId: string; text: string; delivery: "steer";
 }) => unknown): void {
   for (const provider of ["claude-code", "codex"] as const) {
-    let brief: string | null = null;
-    let tight;
-    let capacity;
-    try {
-      tight = tightestCurrentWindow(provider);
-      capacity = newWorkCapacity(provider);
-      brief = budgetBriefWithProviderRoom(provider);
-    } catch { continue; }
-    const resetsAt = tight?.resetsAt ?? (capacity?.windowResetAt ? new Date(capacity.windowResetAt).toISOString() : null);
-    if (!brief || !resetsAt) continue;
-    const episode = `${provider}:${tight?.window ?? 'most-spent'}:${allowancePeriod(resetsAt)}`;
     const running = db.query(`SELECT turn.id AS turn_id, turn.session_id FROM turns turn
       JOIN sessions session ON session.id = turn.session_id
       WHERE turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
         AND session.provider_id = ?`).all(provider) as { turn_id: number; session_id: number }[];
     for (const run of running) {
+      // Claude turns can outlive an account selection change. Use the account retained
+      // with this execution, and say nothing when older custody cannot identify it.
+      const execution = db.query(`SELECT processor_json FROM executions WHERE turn_id=?
+        AND state IN ('intended','live') ORDER BY created_at_ms DESC LIMIT 1`)
+        .get(run.turn_id) as { processor_json: string } | null;
+      let account: string | undefined;
+      try { account = (JSON.parse(execution?.processor_json ?? '{}') as { account?: { account?: string } }).account?.account; }
+      catch { continue; }
+      if (provider === 'claude-code' && !account) continue;
+      const pressure = measuredBudgetPressure(provider, account);
+      if (!pressure) continue;
+      const brief = budgetBriefWithProviderRoom(provider, Date.now(), account);
+      if (!brief) continue;
+      const period = pressure.resetsAt ? allowancePeriod(pressure.resetsAt) : `run-${run.turn_id}`;
+      const episode = `${provider}:${pressure.account}:${pressure.window}:${period}`;
       // A previous brief this allowance period lacked verified provider room and the
       // delegation action. The versioned identity delivers the changed contract once.
-      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation()
+      const direction = provider === 'claude-code' && codexRoomForClaudeDelegation(Date.now(), pressure.account)
         ? 'codex-ready' : 'budget-only';
       const inputId = `budget-room-v1:${direction}:${episode}:${run.session_id}`;
       if (db.query("SELECT 1 FROM session_inputs WHERE id = ?").get(inputId)) continue;
@@ -569,8 +580,9 @@ export function briefRunningSessions(admit: (input: {
           sourceRunId: nativeRunId(run.turn_id), requestId: inputId, delivery: "steer",
           text: `${brief}\n\nThis is about the account, not a request; you do not need to reply.` });
         log("info", "provider_usage_session_briefed", { provider, session_id: run.session_id,
-          turn_id: run.turn_id, window: tight?.window ?? 'most-spent', minutes_left: tight?.minutesLeft ?? null,
-          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation() });
+          turn_id: run.turn_id, account: pressure.account, window: pressure.window,
+          used_percent: pressure.usedPercent, observed_at: pressure.observedAt,
+          codex_delegation_ready: provider === 'claude-code' && !!codexRoomForClaudeDelegation(Date.now(), pressure.account) });
       } catch (error) {
         // A run that ended between the query and the admission is the ordinary case here.
         log("info", "provider_usage_session_brief_skipped", { provider, session_id: run.session_id,
