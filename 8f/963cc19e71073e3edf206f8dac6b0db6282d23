@@ -1,0 +1,1 @@
+Notifications watching a Mac conversation now check that conversation's retained events directly, so a large history does not delay the answer.
