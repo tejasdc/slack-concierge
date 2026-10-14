@@ -1,0 +1,1 @@
+Updates now keep their controller commands off the live database while Concierge is serving, preventing those commands from holding its writer lock.
