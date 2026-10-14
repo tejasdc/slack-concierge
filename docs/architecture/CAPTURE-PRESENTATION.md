@@ -2,7 +2,8 @@
 
 The Inbox retains each capture as one input row with its source, text and attachment
 custody IDs. The capture space asks the native owner for a page of twenty such inputs
-in descending input order. The cursor is the last row position. This read neither
+in descending input order. The cursor is the last row position. The query projects
+only a text preview, source and attachment count from each retained input; it neither
 opens provider conversation history nor attachment bytes. Each list item carries a
 4 KiB text preview; the exact capture read remains the source for full text and
 attachment metadata.
