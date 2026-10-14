@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
-import {chooseProviderForNewWork,newWorkCapacity} from './provider-start-choice';
+import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity} from './provider-start-choice';
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
@@ -431,6 +431,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   };
 
   let runningClaudeAccount:string|null=null;
+  let runningClaudeModel:string|null=null;
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
@@ -593,12 +594,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
     const claudeLaunchModel=input.providerId==='claude-code'
       ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
+    runningClaudeModel=claudeLaunchModel;
     const claudeChoice=input.providerId==='claude-code'
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
         :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     runningClaudeHome=claudeChoice?.home??null;
+    const actualClaudeBrief=input.presentation==='native'&&runningClaudeAccount
+      ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
     // An adopted run's account was recorded when it started.
     let accountRecorded=!!input.adopted;
     const result = await input.provider.run({
@@ -607,7 +611,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
-      systemPrompt: preparedTurn.systemPrompt,
+      systemPrompt: [preparedTurn.systemPrompt,actualClaudeBrief].filter(Boolean).join('\n\n')||undefined,
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
@@ -1261,7 +1265,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         const hold = { provider: input.providerId,
           model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs,
           account:input.boundAccount?.account??null };
-        noticeUsageHold(hold, recordSessionEvent);
+        noticeUsageHold({...hold,model:input.providerId==='claude-code'?runningClaudeModel:hold.model,
+          account:input.providerId==='claude-code'?runningClaudeAccount:hold.account}, recordSessionEvent);
         // Work has actually stopped, so a banked reset is spent if the rule in
         // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on
         // 2026-09-23: "You don't have to wait for me to reset the usage."
@@ -1373,7 +1378,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         throw new Error("Failed turn could not atomically release its session lock.");
       }
       if(refusal && continuationTurnId!==null && !(refusal.kind==='provider_refused'&&refusal.elsewhere))noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',
-        model:input.model??null,turnId:continuationTurnId,reason:refusal,
+        model:input.providerId==='claude-code'?runningClaudeModel:input.model??null,
+        turnId:continuationTurnId,reason:refusal,
         account:input.providerId==='claude-code'?runningClaudeAccount:null},recordSessionEvent);
     }
     log("info", deliveryStarted ? "turn_delivery_relinquished" : "session_turn_lock_released", {

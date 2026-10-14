@@ -285,7 +285,7 @@ export function accountAvailability(provider: AccountIdentityProvider,model?:str
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
-    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label) : null;
+    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model) : null;
     if (!accountReadingFresh(provider,usage,account,Date.now(),undefined,model))
       return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
@@ -335,8 +335,8 @@ export function accountsWithRoomBesides(provider: AccountIdentityProvider, accou
  * Every account with room now, the one agents are selected to use included. It used to leave the
  * selected account out, so with only that one free it read as "no account has room" (2026-10-09).
  */
-export function accountsWithRoom(provider: AccountIdentityProvider): string[] {
-  return accountAvailability(provider).filter(room => room.hasRoom).map(room => room.account);
+export function accountsWithRoom(provider: AccountIdentityProvider,model?:string|null): string[] {
+  return accountAvailability(provider,model).filter(room => room.hasRoom).map(room => room.account);
 }
 
 /**

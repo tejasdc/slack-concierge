@@ -344,6 +344,20 @@ model includes it conservatively. A new
 Automatic request with no current candidate asks the existing usage reader to refresh,
 then refuses with unknown capacity; a later request can use the fresh observation.
 
+When a local cached account observation is old, a peer observation for the same label may
+replace its percentages only if its provider source time is stronger. The receiving host
+keeps its own current-account flag: a peer's selected login is not this machine's login.
+This peer join is label-only, with its source machine and match method retained; the
+provider has not supplied a credential-subject proof that the two labels identify the
+same subscription. Briefs for a running Claude turn use its chosen execution account,
+while a usage-hold notice uses the failed attempt's account and scopes its episode and
+held count there. A brief prepared before account choice makes no Claude allowance
+claim; the chosen account's brief is appended immediately before its provider call.
+Cached Claude refusals are matched to the attempted model for dispatch; a Fable refusal
+does not turn an Opus account into measured 100% usage. A selected login whose usage is
+unreadable may still receive one provider attempt, and a manually proven waiting turn
+may spend its one-time proof; those permissions are separate from measured percentages.
+
 This replaces Claude-first-until-90%, which spent Claude's five-hour allowance before
 using Codex, and the earlier explicit-only Google rule. Sending every task to Google
 would ignore its limited matched-task evidence and missing live steering; the small-task

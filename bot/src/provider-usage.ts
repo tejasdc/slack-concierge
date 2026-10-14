@@ -68,10 +68,12 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
 }
 
 /** A refusal from this account's attempted Claude model survives a process restart. */
-export function claudeAccountCachedReset(account:string):number|null {
+export function claudeAccountCachedReset(account:string,model?:string|null):number|null {
   const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
   const state=read('claude-code');
-  const resets=Object.entries(state.limits).filter(([scope,limit])=>scope.startsWith(prefix)&&limit.resetAt!==null&&limit.resetAt>Date.now())
+  const exact=model?`${prefix}${canonicalClaudeUsageModel(model.trim())}`:null;
+  const resets=Object.entries(state.limits).filter(([scope,limit])=>(exact?scope===exact:scope.startsWith(prefix))
+    &&limit.resetAt!==null&&limit.resetAt>Date.now())
     .map(([,limit])=>limit.resetAt!);
   return resets.length?Math.max(...resets):null;
 }

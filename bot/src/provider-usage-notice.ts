@@ -1,4 +1,5 @@
 import { providerDisplayName } from "./aliases";
+import {createHash} from 'node:crypto';
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
@@ -86,32 +87,40 @@ type RecordEvent = (event: {
 }) => void;
 
 /** How many accepted inputs are waiting on this same reset instant, this one included. */
-function heldInputCount(clearsAtMs: number): number {
-  const row = db.query(`SELECT count(*) AS held FROM turns
-    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_next_attempt_ms=?`)
-    .get(clearsAtMs) as { held: number };
+function heldInputCount(clearsAtMs: number,provider:UsageProvider,account:string|null): number {
+  if(provider==='claude-code'&&!account)return 1;
+  const row = provider==='claude-code'
+    ?db.query(`SELECT count(*) AS held FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+        AND turn.dispatch_next_attempt_ms=? AND session.provider_id=?
+        AND EXISTS (SELECT 1 FROM executions execution WHERE execution.turn_id=turn.id
+          AND execution.created_at_ms=(SELECT max(latest.created_at_ms) FROM executions latest WHERE latest.turn_id=turn.id)
+          AND json_extract(execution.processor_json,'$.account.account')=?)`).get(clearsAtMs,provider,account) as {held:number}
+    :db.query(`SELECT count(*) AS held FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+        AND turn.dispatch_next_attempt_ms=? AND session.provider_id=?`).get(clearsAtMs,provider) as {held:number};
   return Math.max(1, row.held);
 }
 
 export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): void {
-  const eventId = `provider-usage-hold:${input.provider}:${input.clearsAtMs}`;
+  const account=input.provider==='claude-code'?input.account??null:currentAccount(input.provider)?.label??null;
+  const accountId=account?createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,16):'unknown';
+  const eventId = `provider-usage-hold:${input.provider}:${accountId}:${input.model??'unknown'}:${input.clearsAtMs}`;
   if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) return;
   const turn = db.query("SELECT session_id, accepted_input_id FROM turns WHERE id=?")
     .get(input.turnId) as { session_id: number; accepted_input_id: string | null } | null;
   if (!turn?.accepted_input_id || !getSessionById(turn.session_id)) return;
   const inputId = turn.accepted_input_id;
   try {
-    // The account agents run on, never the terminal's login in the main folder.
-    const account = (input.provider === "claude-code" && claudeRunsFromOwnHomes() ? selectedClaudeHome()?.label : null)
-      ?? currentAccount(input.provider)?.label ?? null;
-    const alternatives = accountsWithRoom(input.provider);
+    // Claude's failed attempt names its execution account. Selection is not evidence of it.
+    const alternatives = accountsWithRoom(input.provider,input.model);
     // Each account's own state, so nothing reading this notice has to infer one account's
     // reset from another's: which is out, and until when.
-    const accounts = accountAvailability(input.provider).map(room => ({ account: room.account, hasRoom: room.hasRoom,
+    const accounts = accountAvailability(input.provider,input.model).map(room => ({ account: room.account, hasRoom: room.hasRoom,
       freeAt: room.freeAt === null ? null : new Date(room.freeAt).toISOString() }));
     const inbox=input.provider==='claude-code'?inboxSession():null;
     const inboxClaudeExhausted=!!inbox&&inbox.provider_id==='claude-code'&&alternatives.length===0;
-    const held = heldInputCount(input.clearsAtMs);
+    const held = heldInputCount(input.clearsAtMs,input.provider,account);
     record({
       eventId, sessionId: turn.session_id, inputId, turnId: input.turnId,
       kind: "provider_outage",

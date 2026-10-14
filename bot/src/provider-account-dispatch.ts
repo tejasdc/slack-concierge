@@ -162,7 +162,7 @@ function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink
 
 /** Homes with credentials that this owner can use without switching a live login. */
 function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage,model?:string|null):number|null {
-  if(provider==='claude-code'&&claudeAccountCachedReset(account.label))return 100;
+  if(provider==='claude-code'&&claudeAccountCachedReset(account.label,model))return 100;
   const windows=includedAllowanceWindows(provider,account,model);
   return windows.length?Math.max(...windows.map(window=>window.usedPercent)):null;
 }
@@ -291,15 +291,14 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     // The usage reader keeps its own copies of each login and reads with them; when it cannot,
     // that says nothing about the selected account's own login. Its work is tried there, and a
     // real limit comes back from Claude with its reset time as an ordinary usage hold.
-    const trusted=ownHomes&&account.label===selected&&!!home;
     return {
       account:account.label,
-      tightestUsedPercent:account.label===provenAccount?0:accountUsedPercent('claude-code',account,model)??(trusted?0:null),
+      tightestUsedPercent:accountUsedPercent('claude-code',account,model),
       weeklyUsedPercent:account.windows.find(window=>window.name==='Weekly')?.usedPercent??null,
       weeklyResetsAtMs:(()=>{const at=account.windows.find(window=>window.name==='Weekly')?.resetsAt;const ms=at?Date.parse(at):NaN;return Number.isFinite(ms)?ms:null;})(),
       home,
       isDefault:account.label===defaultAccount,
-      problem:trusted||account.label===provenAccount?null:account.problem,
+      problem:account.problem,
     };
   });
   // The selected account or default login is the continuity expectation for new work. A fresh
@@ -310,6 +309,13 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const expected=selectedAccount??prefer??usual;
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
+  // Selection grants an attempt when the usage reader cannot measure this login. It is
+  // not a fabricated zero-percent reading, and a known cached refusal still blocks it.
+  const selectedAttempt=selected?rooms.find(room=>room.account===selected&&room.home
+    &&(room.problem||room.tightestUsedPercent===null)
+    &&room.tightestUsedPercent!==100):null;
+  if(selectedAttempt)return {account:selectedAttempt.account,home:selectedAttempt.home,
+    because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
   if(choice.account===null){
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.

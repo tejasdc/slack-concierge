@@ -19,11 +19,11 @@ function candidatesForNewWork(now: number): Candidate[] {
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
     if (!usage || usage.problem) continue;
-    const rooms = savedWorkAccountRooms(provider, usage, now);
+    const rooms = savedWorkAccountRooms(provider, usage, now, model);
     const storedClaude = provider === 'claude-code'
       ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
     for (const room of rooms) {
-      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account) : null;
+      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account,model) : null;
       // A real usage refusal can make an account fail a fresh launch proof until its reset.
       // It is still a valid *wait* target when its stored login and reset are known.
       const canWaitForReset = !!cachedReset && !!storedClaude?.has(room.account);

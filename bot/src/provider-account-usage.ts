@@ -7,7 +7,7 @@ import { earliestRoomAt, recordUsageReading, usageFellSince, usageReadingIsUrgen
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountRefusedSince, forgetClaudeAccountRefusals, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
-import {accountReadingFresh,includedAllowanceWindows} from './account-allowance-observation';
+import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows} from './account-allowance-observation';
 import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -71,6 +71,9 @@ export type AccountUsage = Readonly<{
   resetCredits?: ResetCredits | null;
   /** Read by the other machine for this same account, because this one cannot read it. */
   viaPeer?: boolean;
+  /** Peer provenance; account identity was matched by label, not by a credential subject. */
+  sourcePeer?: string;
+  peerMatch?: 'label-only';
   /**
    * When the reading tool last got these numbers from the provider, where it says so.
    * A forecast is a rate, so it has to know whether it is being handed a fresh number or
@@ -481,7 +484,7 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
             // A source host's rendered eligibility is point-in-time UI data. The receiving
             // host recomputes it from readAt when its own Accounts page is read.
             const {allowance:_renderedAllowance,...source}=account;
-            found.push({...source,viaPeer:true});
+            found.push({...source,current:false,viaPeer:true,sourcePeer:peer.name,peerMatch:'label-only'});
           }
       }
     } catch { /* an unreachable peer simply contributes nothing */ }
@@ -489,25 +492,24 @@ async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
   return found;
 }
 
-/** A reading this machine took itself and can stand behind. */
-const hasOwnReading = (account: AccountUsage) => !!account.windows.length;
-
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
       let usage = await read();
-      // Only gaps are filled, and a local reading always wins: this adds accounts this
-      // machine cannot read at all, and replaces ones it read nothing for.
-      if (usage.accounts.some(account => !hasOwnReading(account)) || !usage.accounts.length || usage.problem) {
-        const borrowed = await peerAccounts(provider);
-        if (borrowed.length) {
-          const merged = usage.accounts.filter(hasOwnReading);
-          const labels = new Set(merged.map(account => account.label));
-          for (const account of borrowed) if (!labels.has(account.label)) { merged.push(account); labels.add(account.label); }
-          // Every account now carries numbers, so the host-level "tool missing" note would
-          // only contradict what is on the screen beside it.
-          usage = { ...usage, accounts: merged, problem: merged.length ? null : usage.problem };
+      // The provider's source time chooses between two observations for the same label.
+      // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
+      // The join is label-only and retained as such, never described as credential proof.
+      const borrowed=usage.problem||!usage.accounts.length
+        ||usage.accounts.some(account=>!accountReadingFresh(provider,usage,account))
+        ?await peerAccounts(provider):[];
+      if (borrowed.length) {
+        const merged = new Map(usage.accounts.map(account=>[account.label,account]));
+        for (const account of borrowed) {
+          const local=merged.get(account.label);
+          merged.set(account.label,local?chooseAccountObservation(provider,usage,local,account):account);
         }
+        usage={...usage,accounts:[...merged.values()],problem:[...merged.values()].some(account=>account.windows.length)
+          ?null:usage.problem};
       }
       db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
