@@ -1,0 +1,1 @@
+Concierge updates now record preparation and activation through the serving owner, so the controller cannot hold its ledger writer while you are working.
