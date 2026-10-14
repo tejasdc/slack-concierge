@@ -15,6 +15,6 @@ matters for screen recordings because one capture can have many frames.
 
 The partial capture index keeps accepted-input order inside each session without
 sorting unrelated conversation traffic. The presentation reader contract limits one
-page to twenty items, twenty-one input rows and 256 KiB of response data. Its growth check exercises the indexed page over
+page to twenty items, twenty-one input rows plus one Inbox session row, and 256 KiB of response data. Its growth check exercises the indexed page over
 ten thousand retained inputs. The browser can page older captures, while an exact
 capture identity remains independently addressable.

@@ -91,8 +91,10 @@ async function inboxCapturesGrowth(){
  for(const count of [100,10_000]){
   const database=observedDatabase(new Database(':memory:'));
   try{
-   database.exec(`CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
+   database.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY);
+     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
      CREATE INDEX session_inputs_capture_page ON session_inputs(session_id) WHERE id GLOB 'capture:*';`);
+   database.query('INSERT INTO sessions(id) VALUES(1)').run();
    const insert=database.query('INSERT INTO session_inputs(id,session_id,kind,payload_json,created_at) VALUES(?,?,?,?,?)');
    for(let index=1;index<=count;index++)insert.run(`capture:${index}`,1,'input',
      JSON.stringify({text:`Capture ${index}`,capture:{source:{kind:'thinkering',recordedAt:'2026-10-14T12:00:00Z'}}}),
@@ -104,7 +106,10 @@ async function inboxCapturesGrowth(){
    const contract=PRESENTATION_READERS.inboxCaptures;
    let work:StorageWork|undefined;
    const first=observeStorageOperation('inboxCaptures',()=>withStorageReadBudget({maxCalls:128,maxRows:contract.maxStorageRows,
-     maxResultBytes:contract.maxResponseBytes*2},()=>inboxCapturesPage(database,1,null,20)),value=>{work=value;});
+     maxResultBytes:contract.maxResponseBytes*2},()=>{
+       const inbox=database.query('SELECT id FROM sessions WHERE id=1').get() as {id:number};
+       return inboxCapturesPage(database,inbox.id,null,20);
+     }),value=>{work=value;});
    assert.ok(work&&work.db_calls>0);
    assert.equal(first.items.length,20);assert.ok(first.nextCursor);
    const second=inboxCapturesPage(database,1,first.nextCursor,20);
