@@ -1,0 +1,1 @@
+An agent still finishing a tool when you resume will get its work back after its delayed Stop completes.
