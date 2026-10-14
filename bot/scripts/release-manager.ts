@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/deployment-release";
 import { ledgerAccess } from "../src/ledger-access-policy";
-import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
+import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 
 function option(name: string) {
@@ -111,7 +111,10 @@ try {
     }
     if (lastKnownGood) {
       try {
-        const targets = await timedAsync("scan_reaction_targets", () => deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
+        const tokens = await timedAsync("scan_reaction_targets", () => deploymentReactionTokensForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit));
+        const targets = await timedAsync("resolve_reaction_targets", async () => ownerServedReleaseCommand
+          ? await ownerReleaseMutation('resolve-reaction-tokens',{runId,tokens})
+          : (await import('../src/deployment-reaction-provenance')).resolveDeploymentReactionTargets(tokens));
         await timedAsync("register_reaction_targets", () => releaseMutation('reaction-targets',{runId,targets},
           () => registerDeploymentTurnReactionTargets(runId,targets,"deploying")));
       } catch (error) {

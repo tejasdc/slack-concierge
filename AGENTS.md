@@ -225,7 +225,10 @@ authorization or a change to the default rapid-iteration policy.
   While the owner serves, the controller's run claim, phase records, release preparation,
   activation and promotion send ledger mutations through its root-only request socket;
   run and release reads use that socket too. These commands do not open a ledger connection:
-  even short-lived read-only SQLite opens held WAL writer locks under I/O load.
+  even short-lived read-only SQLite opens held WAL writer locks under I/O load. The ledger
+  entrance refuses a serving controller command that accidentally imports it.
+  The native continuation timer also goes through that socket. Drain claim commits the gate
+  before inspecting active work, so process scans cannot hold the SQLite writer lock.
   Legacy cutover and stopped-owner recovery
   retain direct writes under their separate drain rules.
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes

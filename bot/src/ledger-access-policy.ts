@@ -31,6 +31,10 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'deploy-state'
     && ['claim', 'phase', 'show', 'desired'].includes(process.argv[2] ?? '');
+  const forbidControllerLedgerOpen = live && process.platform === 'linux'
+    && (ownerServedReleaseCommand || ownerServedDeploymentCommand
+      || name === 'native-pipeline-continuation'
+      || (name === 'release-manager' && ['install-runtime', 'current', 'set-control'].includes(process.argv[2] ?? '')));
   const readonly = readWorker || ownerServedReleaseCommand || ownerServedDeploymentCommand
     || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',
@@ -66,5 +70,6 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
         throw new Error('Live schema setup requires the supervised owner startup or a fully stopped coordinator.');
     }
   }
-  return { live, schema, readonly, ownerServedReleaseCommand, ownerServedDeploymentCommand };
+  return { live, schema, readonly, ownerServedReleaseCommand, ownerServedDeploymentCommand,
+    forbidControllerLedgerOpen };
 }

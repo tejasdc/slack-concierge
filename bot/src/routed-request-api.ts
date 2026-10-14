@@ -18,6 +18,8 @@ import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
   recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase,getDeploymentRun,
   getLastKnownGoodRelease,promoteDeploymentRelease} from './deployment-state';
+import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
+import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -119,9 +121,23 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
       if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
         return Response.json(getLastKnownGoodRelease());
+      if(request.method==='POST'&&url.pathname==='/internal/native-pipeline-continuation'&&owner){
+        const input=await request.json() as any;
+        if(typeof input?.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.id))
+          throw new Error('An exact continuation ID is required.');
+        if(input.operation==='enroll')return Response.json(enrollNativePipelineContinuation(input.id,input.payload));
+        if(input.operation==='tick')return Response.json(await tickNativePipelineContinuation(input.id));
+        throw new Error('Unknown continuation operation.');
+      }
       if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
         const input=await request.json() as any;
         if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(input.operation==='resolve-reaction-tokens'){
+          if(!Array.isArray(input.tokens)||!input.tokens.every((token:unknown)=>
+            typeof token==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token)))
+            throw new Error('Invalid reaction provenance.');
+          return Response.json(resolveDeploymentReactionTargets(input.tokens));
+        }
         if(input.operation==='prepared')return Response.json(recordDeploymentReleasePrepared(input.runId,input.artifactPath,input.manifest));
         if(input.operation==='activation-intent')return Response.json(recordDeploymentReleaseActivationIntent(input.runId,input.artifactDigest,input.allowSupersede===true));
         if(input.operation==='reaction-targets')return Response.json(registerDeploymentTurnReactionTargets(input.runId,input.targets,'deploying'));

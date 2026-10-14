@@ -56,6 +56,9 @@ if (ledgerEntry?.isSymbolicLink() && !existsSync(`${canonicalDir}/state.db`)) {
   throw new Error(`The ledger link ${canonicalDir}/state.db points at a missing file; its filesystem is not mounted. Refusing to create an empty ledger.`);
 }
 const access = ledgerAccess(canonicalDir, Bun.main, readWorker);
+if (access.forbidControllerLedgerOpen) {
+  throw new Error('Serving release commands cannot open the live ledger; use the owner socket.');
+}
 export const initializeLedgerSchema = access.schema;
 export const ownerServedReleaseCommand = access.ownerServedReleaseCommand;
 export const ownerServedDeploymentCommand = access.ownerServedDeploymentCommand;
