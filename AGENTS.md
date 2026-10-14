@@ -219,6 +219,9 @@ authorization or a change to the default rapid-iteration policy.
   and command answers, provider input and peer requests await `ledgerDurable()` until their rows are on disk;
   see [ledger durability](docs/architecture/LEDGER-DURABILITY.md). The ledger itself lives on its own
   loop-mounted filesystem (remote-box), moved there once by the update while the coordinator is stopped.
+  While the owner serves, release preparation and activation send their ledger mutations through its root-only
+  request socket; their controller connection is read-only. Legacy cutover and stopped-owner recovery
+  retain direct writes under their separate drain rules.
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Short-lived ledger writers also leave automatic checkpointing to the owner's checkpoint thread;

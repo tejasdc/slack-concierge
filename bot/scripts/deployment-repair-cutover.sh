@@ -169,14 +169,14 @@ main() {
 
   CONCIERGE_REPO="$REPO" CONCIERGE_DEPLOYMENT_SOURCE_ROOT="$SOURCE_ROOT" \
     CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
-  prepared=$(CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+  prepared=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" prepare \
     --run-id "$DEPLOY_RUN_ID" --commit "$EXPECTED_LKG_COMMIT" --control-commit "$CONTROL_COMMIT")
   artifact_path=$(printf '%s\n' "$prepared" | jq -er '.artifact_path')
   artifact_digest=$(printf '%s\n' "$prepared" | jq -er '.artifact_digest')
   CANDIDATE_ARTIFACT_PATH="$artifact_path"
   CANDIDATE_ARTIFACT_DIGEST="$artifact_digest"
-  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+  CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$artifact_path"
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \

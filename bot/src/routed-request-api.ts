@@ -12,6 +12,9 @@ import {log,logSinkCounters} from './log';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
 import {isTransientDatabaseError} from './database-retry';
+import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
+  recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
+  recordDeploymentTurnReactionDiscoveryFailure} from './deployment-state';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -98,6 +101,22 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
+        const input=await request.json() as any;
+        if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(input.operation==='prepared')return Response.json(recordDeploymentReleasePrepared(input.runId,input.artifactPath,input.manifest));
+        if(input.operation==='activation-intent')return Response.json(recordDeploymentReleaseActivationIntent(input.runId,input.artifactDigest,input.allowSupersede===true));
+        if(input.operation==='reaction-targets')return Response.json(registerDeploymentTurnReactionTargets(input.runId,input.targets,'deploying'));
+        if(input.operation==='reaction-discovery-failed'){
+          recordDeploymentTurnReactionDiscoveryFailure(input.runId,input.message);
+          return Response.json({ok:true});
+        }
+        if(input.operation==='activated'){
+          recordDeploymentReleaseActivated(input.runId,input.artifactDigest);
+          return Response.json({ok:true});
+        }
+        throw new Error('Unknown deployment release operation.');
+      }
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
         const input=await request.json() as any;
         if(!/^[a-z][a-z0-9-]{2,40}$/.test(input?.name))throw new Error('Invalid outside agent name.');

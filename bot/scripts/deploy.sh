@@ -1229,7 +1229,7 @@ recover_control() {
   install_deployment_runtime
   CURRENT_DEPLOY_STAGE=control-recovery-activate
   CONTROL_RECOVERY_ACTIVATED=1
-  "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
+  CONCIERGE_RELEASE_OFFLINE=1 "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
   record_deployment_phase restarting
   systemctl stop "$SERVICE"
   CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
