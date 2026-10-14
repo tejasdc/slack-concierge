@@ -33,7 +33,12 @@ router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flag
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--partial [--answers-question] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
-router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
+router-actions.sh sessions cancel <request-id> <source-flags> --action-id A [--reason <reason>]
+router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--model <model>] [--effort <level>] [--session-name <title>] --reason "<why>" <source-flags> --action-id A
+router-actions.sh sessions handoff accept <handoff-id> --digest <sha256> <source-flags> --action-id A
+router-actions.sh sessions handoff withdraw <handoff-id> <source-flags> --action-id A
+router-actions.sh sessions obligations [<address>] <source-flags>
+Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
@@ -126,7 +131,9 @@ export type SessionCommunicationRequest =
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
-  | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
+  | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
+  | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
+  | { operation: "obligations"; body: { source: Source; address?: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
@@ -327,6 +334,47 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if (first === 'handoff' || first === 'obligations') {
+    const verb = first === 'handoff' && (args[0] === 'accept' || args[0] === 'withdraw')
+      ? args.shift() as 'accept'|'withdraw' : 'propose';
+    const identity = args[0] && !args[0]!.startsWith('--') ? args.shift() : undefined;
+    if (first === 'handoff' && !identity) invalid(`handoff ${verb} requires ${verb === 'propose' ? 'the predecessor address' : 'the handoff ID'}.`);
+    const flags = new Map<string, string>();
+    const allowed = first === 'obligations' ? [] : verb === 'propose'
+      ? ['--action-id','--provider','--model','--effort','--reason','--session-name']
+      : verb === 'accept' ? ['--action-id','--digest'] : ['--action-id'];
+    while (args.length) {
+      const flag = args.shift()!;
+      if (![...allowed,'--source-input','--source-run','--source-channel','--source-ts'].includes(flag))
+        invalid(`Unexpected ${first} option ${flag}.`);
+      const value = args.shift();
+      if (!value?.trim() || value.startsWith('--') || flags.has(flag)) invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag, value);
+    }
+    const source = sourceFrom(flags);
+    if (first === 'obligations') return {operation:'obligations',body:{source,...(identity?{address:identity}:{})}};
+    const actionId = flags.get('--action-id');
+    if (!actionId) invalid(`handoff ${verb} requires a stable --action-id.`);
+    if (verb === 'propose') {
+      const provider = flags.get('--provider'), reason = flags.get('--reason');
+      if (!provider || !parseProviderSelector(provider)) invalid('handoff requires --provider with a coding provider alias; ChatGPT cannot acknowledge a handoff.');
+      if (!reason) invalid('handoff requires --reason explaining the provider change.');
+      const effort = flags.get('--effort');
+      if (effort && provider !== 'chatgpt' && !normalizeReasoningEffort(effort)) invalid('Invalid reasoning effort.');
+      if (effort && provider === 'chatgpt' && !chatgptThinkingLevel(effort)) invalid(`ChatGPT --effort is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`);
+      const sessionName = flags.get('--session-name');
+      if (sessionName && sessionName.length > 120) invalid('--session-name must contain 1–120 characters.');
+      return {operation:'handoff',body:{source,verb,address:identity!,provider,reason,action_id:actionId,
+        ...(flags.has('--model')?{model:flags.get('--model')}:{}),...(effort?{effort}:{}),
+        ...(sessionName?{session_name:sessionName}:{})}};
+    }
+    if (verb === 'accept') {
+      const digest = flags.get('--digest');
+      if (!digest || !/^[0-9a-f]{64}$/.test(digest)) invalid('handoff accept requires --digest with the exact 64-character inventory sha256.');
+      return {operation:'handoff',body:{source,verb,handoff_id:identity!,digest,action_id:actionId}};
+    }
+    return {operation:'handoff',body:{source,verb,handoff_id:identity!,action_id:actionId}};
+  }
   if(first==='saved') {
     const sub=args.shift();
     if(sub!=='list'&&sub!=='start'&&sub!=='cancel')invalid('saved takes list, start or cancel.');
@@ -476,6 +524,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "thread" || operation === "cancel"))
+      || (flag === '--reason' && operation === 'cancel')
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -560,7 +609,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if (!actionId) invalid(`${operation} requires an explicit stable --action-id.`);
   if(operation==='cancel') {
     if(separator>=0)invalid('cancel does not accept text or a -- separator.');
-    return {operation,body:{source,action_id:actionId,request_id:identity!}};
+    return {operation,body:{source,action_id:actionId,request_id:identity!,...(flags.has('--reason')?{reason:flags.get('--reason')!}:{})}};
   }
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');

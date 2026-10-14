@@ -197,6 +197,41 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+### Provider-change handoff
+
+When Tejas asks that ongoing work continue on another provider or model, hand off the
+existing session instead of withdrawing its requests or creating replacement work. Use
+the exact predecessor address returned by `sessions search` or `sessions context`.
+The successor stays on the same machine and in the same project folder. Choose a coding
+provider alias; ChatGPT cannot be a successor because it cannot acknowledge the handoff.
+
+```bash
+router-actions.sh sessions obligations '<predecessor-address>' <source-flags>
+router-actions.sh sessions handoff '<predecessor-address>' --provider cc-fable \
+  --reason 'Tejas requested Fable for this work' <source-flags> --action-id A
+# Read the returned handoff ID and inventory digest. The successor, from its own live run:
+router-actions.sh sessions context '<predecessor-address>' <successor-source-flags>
+router-actions.sh sessions obligations <successor-source-flags>
+router-actions.sh sessions handoff accept '<handoff-id>' --digest '<inventory-sha256>' \
+  <successor-source-flags> --action-id B
+```
+
+The proposal starts a successor with a handoff brief. Until it accepts, the predecessor
+keeps its obligations and can keep working; `sessions handoff withdraw <handoff-id>
+<source-flags> --action-id A` ends an unaccepted proposal. The successor must read the
+predecessor's context, inspect the exact inventory and acknowledge its digest. If
+acceptance returns a changed inventory, inspect the returned items and accept its new
+digest. On acceptance the owner moves open return and reply obligations, watches and
+safe never-started queued inputs together. Existing child requests keep their IDs and
+continue in place; worktrees are referenced and untouched. `sessions obligations
+[<address>]` shows the outstanding items, lineage and current holder on either side.
+The superseded session can read and close its current turn, but further owner writes are
+refused with the successor's address. `sessions cancel <request-id> --reason
+provider-change` is refused with the exact handoff command instead. Ordinary
+`sessions cancel` may include another `--reason`; only `provider-change` changes its behavior.
+The [session owner](../architecture/SESSION-OWNER.md#provider-change-handoff) owns the
+transfer and fencing contract.
+
 **Watching without waiting.** `sessions watch file <absolute-path> --until <ISO time|90s|30m|2h|1d>`,
 `sessions watch command --cwd <dir> --until … -- <argv…>`, `sessions watch list` and
 `sessions watch cancel <watch-id>` (each with the run's `--source-input/--source-run` and, except

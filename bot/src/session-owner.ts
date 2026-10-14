@@ -62,6 +62,7 @@ import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
+import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
@@ -718,7 +719,7 @@ export class SessionOwner {
    */
   canSend(session:SessionRow) {
     const meta=sessionMetadata(session);
-    return this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended;
+    return this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
   }
   /**
    * The view's execution state alone. A peer delivery's status asks only whether its recipient is
@@ -751,6 +752,7 @@ export class SessionOwner {
       timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
+      handoff:handoffView(session.id),
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:presence.model,reasoningEffort:presence.reasoningEffort,
       account:session.provider_id==='claude-code'?meta.claudeAccount??null:null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
@@ -1663,6 +1665,15 @@ export class SessionOwner {
     const attachments=input.attachments?.length?this.attachments(input.attachments).map(file=>file.id):[];
     const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.delivery?{delivery:input.delivery}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
     return this.dispatch(saved.input);
+  }
+  notifySupersededSession(predecessor:string,successor:string,handoffId:string) {
+    const sessionId=parseSessionId(predecessor);
+    const active=db.query("SELECT id,accepted_input_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL LIMIT 1").get(sessionId) as {id:number;accepted_input_id:string|null}|null;
+    if(!active?.accepted_input_id)return;
+    const notice=retainSessionInput({id:`handoff-notice:${handoffId}`,sessionId,scope:`handoff-notice:${handoffId}`,actionId:'notice',
+      kind:'input',origin:'service',payload:{text:`${successor} now continues this work at ${supersededAddress(sessionId)}. Your session is superseded: owner writes are refused. Stop making changes and let your current run end. Read sessions obligations to see what moved.`,delivery:'steer'},
+      sourceInputId:active.accepted_input_id,sourceRunId:nativeRunId(active.id)}).input;
+    this.runtime.steer(notice);
   }
   readAdmission(inputId:string) {const input=getAcceptedSessionInput(inputId);return input?{input,...readInputExecution(input)}:null;}
   action(id:string,body:unknown) {
@@ -2842,6 +2853,17 @@ export class SessionOwner {
     try {
       const parts=url.pathname.slice('/sessions/v1'.length).split('/').filter(Boolean).map(decodeURIComponent);
       const body=request.method==='POST'?await request.json():null;
+      // The read-only predecessor remains in history, but Thinkering must not open
+      // another operation on it after its obligations have moved to the successor.
+      if(request.method==='POST'&&parts[0]==='sessions'&&parts.length>=3){
+        const successor=supersededBy(this.session(parts[1]!).id);
+        if(successor)throw new SessionOwnerError(`This session continues in ${successor}. Send the action to ${supersededAddress(this.session(parts[1]!).id)}.`,409,'SESSION_SUPERSEDED');
+      }
+      if(request.method==='POST'&&parts[0]==='operations'&&parts[2]==='cancel'){
+        const target=this.input(parts[1]!);
+        const successor=supersededBy(target.session_id);
+        if(successor)throw new SessionOwnerError(`This session continues in ${successor}. Send the action to ${supersededAddress(target.session_id)}.`,409,'SESSION_SUPERSEDED');
+      }
       const prior=typeof body?.clientActionId==='string'?db.query(`SELECT 1 FROM session_inputs WHERE action_id=?
         AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
       let result:unknown;

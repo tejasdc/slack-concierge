@@ -4,7 +4,7 @@ import {newWorkCapacity} from './provider-start-choice';
 import {sessionAddress} from './session-address';
 import {log} from './log';
 
-type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
+export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
   provider_turn_id:string|null;provider_input_acknowledged_at:string|null;saved_kind:string|null};
 
@@ -18,7 +18,7 @@ function waitingTurns(sessionId:number):WaitingTurn[] {
     ORDER BY queue_priority DESC,id LIMIT 52`).all(sessionId) as WaitingTurn[];
 }
 
-function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
+export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   if(turn.status!=='queued'||turn.saved_kind!==null||input.turn_id!==turn.id||input.session_id!==turn.session_id
     ||!['input','create'].includes(input.kind)||input.steering_id!==null
     ||turn.provider_input_acknowledged_at!==null)return false;

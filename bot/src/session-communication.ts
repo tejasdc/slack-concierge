@@ -19,6 +19,7 @@ import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
+import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff} from './session-handoff';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
@@ -252,7 +253,11 @@ export class SessionCommunicationCoordinator {
         if (decoded?.[0] === 2) {
             const session = resolveSessionAddress(value);
             const result = {session:session.id,channel:null,root:null,native:true};
-            if (callable && !this.messageable(result)) throw new Error('The exact session is not currently messageable.');
+            if (callable && !this.messageable(result)) {
+                const next=supersededAddress(session.id);
+                if(next)throw new Error(`This session is superseded. Send the request to ${next}.`);
+                throw new Error('The exact session is not currently messageable.');
+            }
             return result;
         }
         if (!Array.isArray(decoded) || decoded.length !== 4 || decoded[0] !== 1 || !Number.isSafeInteger(decoded[1]) || decoded[1] < 1 || typeof decoded[2] !== 'string' || slackTimestampUs(decoded[3]) === null)
@@ -790,9 +795,14 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.peers?.hasDelivery(requestId)) return this.dependencies.peers.inspectDelivery(requestId);
         return null;
     }
-    cancel(input:{source:CommunicationSource;request_id:string;action_id:string}) {
+    cancel(input:{source:CommunicationSource;request_id:string;action_id:string;reason?:string}) {
         const actor=this.actor(input.source);
         action(input.action_id);
+        if(input.reason==='provider-change'){
+            const target=(db.query('SELECT target_session_id FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {target_session_id:number}|null)?.target_session_id;
+            const address=target?sessionAddress(getSessionById(target)!):this.dependencies.peers?.inspect(input.request_id)?.target_address??'<predecessor-address>';
+            throw new Error(`Provider changes keep this request intact. Run sessions handoff '${address}' --provider <alias> --reason "<why>" --source-input <this input> --source-run <this run> --action-id <A> instead.`);
+        }
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.owns(input.request_id))
             return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id);
         const row=this.row(input.request_id);
@@ -875,6 +885,36 @@ export class SessionCommunicationCoordinator {
             admit:admission=>this.dependencies.owner.admit(admission),
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
         });
+    }
+    async obligations(input:{source:CommunicationSource;address?:string}) {
+        const actor=this.actor(input.source);
+        if(!actor.inputId)throw new Error('Obligations require an exact native source input and run.');
+        const target=input.address?this.address(input.address).session:actor.session;
+        return handoffObligations(actor.session,target,{inputId:actor.inputId,runId:nativeRunId(actor.turn)});
+    }
+    async handoff(input:{source:CommunicationSource;verb:'propose'|'accept'|'withdraw';address?:string;provider?:string;model?:string;effort?:string;
+      reason?:string;session_name?:string;action_id?:string;handoff_id?:string;digest?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);
+        if(!actor.inputId)throw new Error('Handoff requires an exact native source input and run.');
+        if(input.verb==='propose'){
+            if(!input.address||!input.provider||!input.reason||!input.action_id)throw new Error('Handoff needs predecessor address, provider, reason and stable action ID.');
+            action(input.action_id);
+            const proposed=await proposeHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
+                predecessorId:this.address(input.address).session,provider:input.provider,model:input.model,effort:input.effort,
+                reason:input.reason,sessionName:input.session_name,actionId:input.action_id});
+            this.wake();return proposed;
+        }
+        if(!input.handoff_id)throw new Error('Name the exact handoff ID.');
+        if(input.verb==='accept'){
+            if(!input.digest)throw new Error('Acknowledge the exact inventory digest.');
+            const accepted=await acceptHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
+                handoffId:input.handoff_id,digest:input.digest});
+            if(accepted.accepted&&!('duplicate' in accepted)){this.dependencies.owner.notifySupersededSession(accepted.predecessor,accepted.successor,input.handoff_id);this.wake();}
+            return accepted;
+        }
+        if(input.verb==='withdraw')return withdrawHandoff({actorSession:actor.session,handoffId:input.handoff_id});
+        throw new Error('Choose handoff propose, accept or withdraw.');
     }
     /**
      * Wake this session once, when a file or directory changes, when a command finishes, or at a

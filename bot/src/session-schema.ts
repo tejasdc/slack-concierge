@@ -128,6 +128,36 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS provider_recovery_inputs_successor ON provider_recovery_inputs(successor_session_id,successor_turn_id);
+        CREATE TABLE IF NOT EXISTS session_handoffs (
+          id TEXT PRIMARY KEY,
+          predecessor_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+          state TEXT NOT NULL CHECK(state IN ('proposed','accepted','withdrawn')),
+          action_id TEXT NOT NULL,
+          caller_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          reason TEXT NOT NULL,
+          requesting_input_id TEXT NOT NULL,
+          requesting_run_id TEXT NOT NULL,
+          originating_human_json TEXT,
+          inventory_json TEXT NOT NULL,
+          inventory_digest TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          accepted_at TEXT,
+          withdrawn_at TEXT,
+          UNIQUE(requesting_input_id,action_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS session_handoffs_one_proposed
+          ON session_handoffs(predecessor_session_id) WHERE state='proposed';
+        CREATE INDEX IF NOT EXISTS session_handoffs_predecessor
+          ON session_handoffs(predecessor_session_id,created_at);
+        CREATE TABLE IF NOT EXISTS session_handoff_items (
+          handoff_id TEXT NOT NULL REFERENCES session_handoffs(id),
+          kind TEXT NOT NULL,
+          ref TEXT NOT NULL,
+          from_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          to_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          PRIMARY KEY(handoff_id,kind,ref)
+        );
         CREATE UNIQUE INDEX IF NOT EXISTS turns_accepted_input ON turns(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS turns_native_run ON turns(native_run_id) WHERE native_run_id IS NOT NULL;
         -- Prepared session cards ask only for a session's latest turn and bounded current

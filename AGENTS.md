@@ -7,6 +7,9 @@ are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.
+Provider or model changes for running work use an acknowledged same-machine handoff;
+open obligations move only on acceptance. See [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff)
+and [router commands](docs/runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 Session location is hidden behind the shared owner and peer composition; the candidate check
 refuses divergent server/Mac peer wiring. See [session location and parity](docs/architecture/SESSION-LOCATION-PARITY.md).
 Explicit requests for phone delivery are carried on the retained human input receipt;
