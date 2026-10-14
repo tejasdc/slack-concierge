@@ -1,0 +1,1 @@
+Updates now record their run claim and progress through the serving Concierge, avoiding a competing database writer while your agents keep working.
