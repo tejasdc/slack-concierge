@@ -694,15 +694,19 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `postForwardedThreadAnswer`. The first build offered server sessions only and he rejected it the
   same evening ("Mac needs to have the same parity as we have"); a feature that addresses, lists or
   delivers to sessions and leaves the Mac out is not finished. **An agent's answer to work the
-  router sent for a thread goes into that thread, not to the router** (Tejas, 2026-10-07: "I do not
-  see a reason why you need to receive a response at all") [decision: agent-answers-go-to-the-thread]: each partial and final reply is posted
+  router sent for a thread goes into that thread directly** [decision: agent-answers-go-to-the-thread]
+  (Tejas, 2026-10-07: "I do not see a reason why you need to receive a response at all"):
+  each partial and final reply is posted
   there as the agent's words through the same poster (`postAgentAnswer` in session-topics.ts, called
   by both deliver paths), and a final files his item with its notification (a question for
   `needs_decision`, a reading item otherwise) and closes the linked thread request when it answered
-  done; no `return:` reaches the router, which reads the posts in its `<topic>` block
-  (`agentAnswers`). A placed dispatch root owns that request's Conversation and answers even
-  when the router named another thread; see the native Inbox contract. Hand-backs, stalls, the owner's settlements and information answers still return
-  to the router; see the session-owner contract. A service notice (no provider turn
+  done. The October 14 rule covers **every request naming a thread**, including
+  informational asks: the owner posts progress and final answers directly in the named thread,
+  then gives the requester its own final return marked as already posted. Progress is quiet;
+  informational finals close quietly unless his asking input explicitly requested a result. The
+  router must not relay the final again. A placed dispatch root owns that request's Conversation
+  and answers even when the router named another thread; see the native Inbox contract.
+  A service notice (no provider turn
   behind it) is the exception: the owner files it into a thread titled by its own first
   sentence the moment it exists (`fileServiceNotices`), because no router turn will ever
   see it and a notification must always open a thread (2026-09-25, the Codex App Server

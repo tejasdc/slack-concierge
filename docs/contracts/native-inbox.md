@@ -420,15 +420,16 @@ read, so the Inbox card, the Threads rows and the Questions tab agree. Migration
 question covered became a `marker` question under its thread (expired at once in a closed
 thread, `read` when he had marked it seen), and the Inbox's `needs` kept only the unfiled ones.
 
-A topic's `work` is `result_waiting` when a worker's final answer (the accepted `return:` input
-whose event is `final`; never the router's own turn reply to it, which carries the same input id)
-is newer than the router's newest post on that root: the router owes a
-relay, shown to him rather than logged. The prompt's `<topic>` block names it as
-`unrelayedResult`, and lists `unfiledAttention` with the filing instruction.
-Since 2026-10-07 an agent's own replies to a work request the Inbox sent for a placed thread are
-posted there by the owner and never become `return:` inputs, so only hand-backs, stalls, the
-owner's settlements and information answers can still leave a result waiting; the `<topic>` block
-lists the owner's posts as `agentAnswers` (see the session-owner contract).
+A topic's `work` is `result_waiting` only when a worker's final return has no direct answer post
+or later router post on that root. The prompt's `<topic>` block names it as `unrelayedResult`.
+Since 2026-10-14 every request naming an Inbox thread posts each fresh reply there directly,
+whether the request is work or informational. Work finals keep their existing attention filing;
+informational finals close their linked request quietly unless the asking human input explicitly
+requested a result. Progress posts stay quiet. The owner also returns the final to the requester with an explicit
+already-posted marker; that copy enters the requester's run and remains in the request record,
+but its accepted input is omitted from the Inbox Conversation and its `result_waiting` calculation.
+The `<topic>` block lists the direct posts as `agentAnswers`. This keeps the router informed
+without requiring it to relay or creating a second visible answer.
 
 Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned

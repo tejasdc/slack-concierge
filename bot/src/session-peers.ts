@@ -745,31 +745,30 @@ export class SessionPeers {
         origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
         text:`A question Tejas asked in Inbox thread ${row.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent on ${row.peer} was reminded if awake. Request ${row.request_id}: ${question}\nCheck current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread.`});
     }
-    // An answer for a thread from a Mac agent goes into that thread as the agent's words, never as a
-    // return that would start a router turn: his thread reply's answer, or the agent's own reply to a
-    // request the Inbox sent for a thread. The same road a server agent's answer takes
-    // [decision: mac-sessions-have-parity]; stalls, hand-backs, information the
-    // router asked for itself and the owner's settlements still return.
+    // A named thread receives the peer's own reply, and its requester retains the final return.
     const forwarded=JSON.parse(row.payload_json).forwardedReply;
     const inbox=getSessionById(row.source_session_id);
     const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
-    const routed=!forwarded&&!event.accepted_input_id&&JSON.parse(row.payload_json).requestedEffect==='work'&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack&&!!answerRoot
+    const routed=!forwarded&&!event.accepted_input_id&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue')&&!!answerRoot
       &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
-    if((forwarded&&typeof forwarded.inboxInputId==='string')||routed){
+    const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
+    const directPost=threadReply&&declared.output?.stoppedBy!=='tejas';
+    if(directPost){
       const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
       const root=answerRoot??row.source_input_id;
       postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
         inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),
-        attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
+        attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
+        stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
         answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
         answerGroup:declared.answerGroup??null,
-        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null});
-      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
-      return;
+        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,
+        informational:JSON.parse(row.payload_json).requestedEffect==='informational'});
     }
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
+    let stoppedPost=false;
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
       const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
@@ -781,9 +780,8 @@ export class SessionPeers {
           attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
           .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
-        db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
         log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
-        return;
+        stoppedPost=true;
       }
     }
     const source=getSessionById(row.source_session_id);
@@ -807,10 +805,12 @@ export class SessionPeers {
       text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
           const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
         labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
-        body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,deliveryNote:payload.output?.delivery_note??null,
+        body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
+        deliveryNote:directPost||stoppedPost?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
         files:Array.isArray(payload.attachments)?payload.attachments.length:0,followUp:null}),
       // The peer's files are already in this instance's custody; the return carries them.
-      ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
+      ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
+      ...(directPost||stoppedPost?{alreadyPostedInThread:true}:{})});
     for(const joined of group.joining)db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
     const observed=readInputExecution(accepted);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;

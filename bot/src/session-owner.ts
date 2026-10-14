@@ -361,7 +361,7 @@ function boundedLimit(value:string|null,max:number) {
  * notice needs that guarantee — a notice that spends a turn on an idle session is the very
  * cost it exists to warn about.
  */
-export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;attachments?:string[];delivery?:'steer'};
+export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;attachments?:string[];delivery?:'steer';alreadyPostedInThread?:boolean};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
 export type SessionOwnerRuntime = {
   wake():void;
@@ -1663,7 +1663,7 @@ export class SessionOwner {
     // A returned answer can carry the files it answered with. They are retained custody the
     // owner verifies here; the execution host writes them beside the turn like any attachment.
     const attachments=input.attachments?.length?this.attachments(input.attachments).map(file=>file.id):[];
-    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.delivery?{delivery:input.delivery}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
+    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.delivery?{delivery:input.delivery}:{}),...(input.alreadyPostedInThread?{alreadyPostedInThread:true}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
     return this.dispatch(saved.input);
   }
   notifySupersededSession(predecessor:string,successor:string,handoffId:string) {
