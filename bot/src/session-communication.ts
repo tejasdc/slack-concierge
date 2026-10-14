@@ -1530,8 +1530,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                     payload: { text: reportBackNotice(requestLabel(request.payload_json).replace(/^your /, 'the '), replyCommand(request.request_id, effect ?? 'informational')) } });
                 return true;
             })();
-            if (!marked) return;
-            owner.dispatch(getAcceptedSessionInput(inputId)!);
+            const reminder = getAcceptedSessionInput(inputId);
+            if (!reminder || (!marked && reminder.turn_id)) return;
+            owner.dispatch(reminder);
             log('info', 'session_request_report_back', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}` });
             return;
         }

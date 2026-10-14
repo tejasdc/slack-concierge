@@ -110,6 +110,9 @@ export function strandedStep(owner: SessionOwner, input: { requestId: string; wo
     if (!session || !owner.canSend(session))
         return { step: 'stall', reason: 'the worker session is paused, archived or no longer available' };
     if (input.remindedVia === null && input.createdAtMs >= REPORT_BACK_SINCE_MS) return { step: 'report-back' };
+    // A reminder counts only once it reached the worker's queue: one retained by a run that died
+    // before dispatching it is dispatched again, never taken for delivered.
+    if (input.remindedVia === 'owner' && !getAcceptedSessionInput(`report-back:${input.requestId}`)?.turn_id) return { step: 'report-back' };
     return { step: 'stall', reason: input.remindedVia === 'hook'
         ? 'it was sent back with the reply command when it tried to end its turn, and ended again without a final reply'
         : input.remindedVia === 'owner'
