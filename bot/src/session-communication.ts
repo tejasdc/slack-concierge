@@ -688,12 +688,12 @@ export class SessionCommunicationCoordinator {
         if(!sessionMetadata(session).inbox||!actor.inputId)throw new Error('Only the live Inbox agent can set a phone notification for its human request.');
         const root=inboxThreadRoot(actor.session,input.thread);
         const ownRoot=inboxThreadRoot(actor.session,actor.inputId);
-        if(!root||root!==ownRoot)throw new Error('--thread must be a message in the human request this turn is handling.');
+        const sameTopic=!!root&&!!ownRoot&&(root===ownRoot||!!topicOfRoot(root)&&topicOfRoot(root)===topicOfRoot(ownRoot));
+        if(!sameTopic)throw new Error('--thread must be a human message in the Inbox topic this turn is handling.');
         const asking=getAcceptedSessionInput(input.thread);
-        const sameTurnAsk=asking?.origin==='human'&&requestedNotificationInput(asking.id)
-          &&(asking.turn_id===actor.turn||!!db.query('SELECT 1 FROM turn_steering_messages WHERE turn_id=? AND accepted_input_id=?').get(actor.turn,asking.id));
-        const inputId=sameTurnAsk?asking.id:actor.inputId;
-        if(!requestedNotificationInput(inputId))throw new Error('The exact asking input did not request a result notification.');
+        if(asking?.session_id!==actor.session||asking.origin!=='human'||!requestedNotificationInput(asking.id))
+          throw new Error('--thread must name his exact message with a pending result notification.');
+        const inputId=asking.id;
         const peer=/^([a-z][a-z0-9-]{0,31}):([1-9]\d*)$/.exec(input.session);
         const peerClient=peer&&peer[1]!=='concierge'?this.dependencies.peers?.client(peer[1]):null;
         if(peer&&peer[1]!=='concierge'&&!peerClient)throw new Error('This owner has no connection to the named peer.');
@@ -704,6 +704,10 @@ export class SessionCommunicationCoordinator {
           :null;
         // The network read is outside the mutation. The live run is rechecked before writing.
         this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
+        const currentRoot=inboxThreadRoot(actor.session,input.thread);
+        const currentOwnRoot=inboxThreadRoot(actor.session,actor.inputId);
+        if(!currentRoot||!currentOwnRoot||currentRoot!==currentOwnRoot&&(!topicOfRoot(currentRoot)||topicOfRoot(currentRoot)!==topicOfRoot(currentOwnRoot)))
+          throw new Error('--thread moved out of the Inbox topic this turn is handling.');
         const arranged=pointNotificationPromise({inputId,root,target:input.session,conditions:(input.on??'done,needs-you,hold').split(',').map(value=>value.trim()),summary:input.summary,peerView});
         if(!input.session.startsWith('concierge:'))this.dependencies.peers?.wake();
         return arranged;
