@@ -16,7 +16,7 @@ import {getAcceptedSessionInput} from './session-inputs';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
-  recordDeploymentTurnReactionDiscoveryFailure} from './deployment-state';
+  recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase} from './deployment-state';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -131,6 +131,22 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
           return Response.json({ok:true});
         }
         throw new Error('Unknown deployment release operation.');
+      }
+      if(request.method==='POST'&&url.pathname==='/internal/deployment-run'&&owner){
+        const input=await request.json() as any;
+        if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(input.operation==='claim'){
+          if(!Number.isSafeInteger(input.pid)||input.pid<=1||typeof input.bootId!=='string'||typeof input.startTicks!=='string')
+            throw new Error('Invalid deployment runner identity.');
+          return Response.json(claimDeploymentRun({runId:input.runId,pid:input.pid,bootId:input.bootId,startTicks:input.startTicks}));
+        }
+        if(input.operation==='phase'){
+          if(!['updating','restarting','verifying','releasing'].includes(input.phase)
+            ||!input.detail||typeof input.detail!=='object'||Array.isArray(input.detail))
+            throw new Error('Invalid deployment phase.');
+          return Response.json(recordDeploymentRunPhase(input.runId,input.phase,input.detail));
+        }
+        throw new Error('Unknown deployment run operation.');
       }
       if(request.method==='POST'&&url.pathname==='/external/capture'&&owner) {
         const input=await request.json() as any;

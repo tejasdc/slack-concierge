@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   beginDeploymentRepair,
   claimDeploymentRun,
@@ -17,6 +18,19 @@ import {
 } from "../src/deployment-state";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
+import { ownerServedDeploymentCommand } from "../src/state-database";
+
+async function ownerDeploymentMutation(operation: "claim" | "phase", input: Record<string, unknown>): Promise<any> {
+  const stateDir = process.env.CONCIERGE_STATE_DIR;
+  if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required for deployment state.");
+  const response = await fetch("http://localhost/internal/deployment-run", {
+    unix: join(stateDir, "request-owner.sock"), method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ operation, ...input }),
+  } as RequestInit);
+  const result = await response.json();
+  if (!response.ok) throw new Error(`Serving owner refused ${operation}: ${JSON.stringify(result)}`);
+  return result;
+}
 
 function finish(code: number, payload: Record<string, unknown>): never {
   console.log(JSON.stringify(payload));
@@ -88,12 +102,15 @@ try {
     const identity = processIdentity(ownerPid);
     let run: ReturnType<typeof claimDeploymentRun>;
     try {
-      run = claimDeploymentRun({
+      const claim = {
         runId,
         pid: identity.pid,
         bootId: identity.bootId,
         startTicks: identity.startTicks,
-      });
+      };
+      run = ownerServedDeploymentCommand
+        ? await ownerDeploymentMutation("claim", claim)
+        : claimDeploymentRun(claim);
     } catch (error) {
       const terminalRun = getDeploymentRun(runId);
       if (terminalRun && ["succeeded", "failed", "ambiguous"].includes(terminalRun.status)) {
@@ -136,11 +153,11 @@ try {
     if (!["updating", "restarting", "verifying", "releasing"].includes(phase)) {
       throw new Error(`Unsupported deployment phase ${phase}.`);
     }
-    const run = recordDeploymentRunPhase(
-      runId,
-      phase as "updating" | "restarting" | "verifying" | "releasing",
-      jsonOption("--detail"),
-    );
+    const detail = jsonOption("--detail");
+    const run = ownerServedDeploymentCommand
+      ? await ownerDeploymentMutation("phase", { runId, phase, detail })
+      : recordDeploymentRunPhase(runId,
+        phase as "updating" | "restarting" | "verifying" | "releasing", detail);
     finish(0, { status: run.status, run_id: run.id });
   }
 
