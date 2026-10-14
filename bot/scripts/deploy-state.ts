@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { readFileSync, realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { ledgerAccess } from "../src/ledger-access-policy";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
@@ -30,16 +31,30 @@ const {
   requestOperatorDeployment,
 } = state;
 
-async function ownerDeploymentMutation(operation: "claim" | "phase" | "show" | "desired", input: Record<string, unknown>): Promise<any> {
+async function ownerDeploymentMutation(operation: "claim" | "phase" | "show" | "desired" | "succeed" | "fail" | "preserved-checkout", input: Record<string, unknown>): Promise<any> {
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) throw new Error("CONCIERGE_STATE_DIR is required for deployment state.");
-  const response = await fetch("http://localhost/internal/deployment-run", {
-    unix: join(stateDir, "request-owner.sock"), method: "POST",
-    headers: { "content-type": "application/json" }, body: JSON.stringify({ operation, ...input }),
-  } as RequestInit);
+  let response: Response;
+  try {
+    response = await fetch("http://localhost/internal/deployment-run", {
+      unix: join(stateDir, "request-owner.sock"), method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ operation, ...input }),
+    } as RequestInit);
+  } catch (cause) {
+    throw Object.assign(new Error(`Serving owner is unreachable for ${operation}.`, {cause}),
+      {ownerTransportUnavailable:true});
+  }
   const result = await response.json();
   if (!response.ok) throw new Error(`Serving owner refused ${operation}: ${JSON.stringify(result)}`);
   return result;
+}
+
+function coordinatorFullyStopped(): boolean {
+  const result = spawnSync('systemctl', ['show', process.env.CONCIERGE_SERVICE || 'concierge-bot.service',
+    '-p', 'MainPID', '-p', 'ControlPID', '-p', 'ActiveState'], {encoding:'utf8'});
+  const fields = Object.fromEntries(result.stdout.trim().split('\n').map(line => line.split('=')));
+  return result.status === 0 && fields.MainPID === '0' && fields.ControlPID === '0'
+    && ['inactive','failed'].includes(fields.ActiveState);
 }
 
 function finish(code: number, payload: Record<string, unknown>): never {
@@ -183,23 +198,29 @@ try {
   }
 
   if (command === "preserved-checkout") {
-    const run = recordPreservedCheckout({
+    const input = {
       runId: requiredOption("--run-id"), branch: requiredOption("--branch"),
       worktree: requiredOption("--worktree"), commit: requiredOption("--commit"),
       files: readFileSync(requiredOption("--files-path"), "utf8"),
-    });
+    };
+    const run = ownerServedDeploymentCommand
+      ? await ownerDeploymentMutation("preserved-checkout", input)
+      : recordPreservedCheckout(input);
     notifyDeploymentWorker();
     finish(0, { status: "preserved", run_id: run.id });
   }
 
   if (command === "succeed") {
-    const run = completeDeploymentRun({
+    const input = {
       runId: requiredOption("--run-id"),
       repo: requiredOption("--repo"),
       deployedCommit: requiredOption("--deployed-commit"),
       serviceInvocationId: requiredOption("--service-invocation-id"),
       evidence: jsonOption("--evidence"),
-    });
+    };
+    const run = ownerServedDeploymentCommand
+      ? await ownerDeploymentMutation("succeed", input)
+      : completeDeploymentRun(input);
     notifyDeploymentWorker();
     finish(0, { status: run.status, run_id: run.id, deployed_commit: run.deployed_commit });
   }
@@ -212,15 +233,23 @@ try {
       failure_line: integerOption("--failure-line"),
       exit_status: integerOption("--exit-status"),
     };
-    const run = failDeploymentRun(
-      requiredOption("--run-id"),
-      requiredOption("--error"),
-      outcome,
-      {
-        diagnostics,
-        noticeReason: option("--notice-reason") || undefined,
-      },
-    );
+    const runId = requiredOption("--run-id");
+    const error = requiredOption("--error");
+    const options = {
+      diagnostics,
+      noticeReason: option("--notice-reason") || undefined,
+    };
+    let run;
+    if (!ownerServedDeploymentCommand) run = failDeploymentRun(runId,error,outcome,options);
+    else try { run = await ownerDeploymentMutation("fail", {runId,error,outcome,options}); }
+    catch (failure) {
+      if (!(failure as {ownerTransportUnavailable?:boolean}).ownerTransportUnavailable
+        || !coordinatorFullyStopped()) throw failure;
+      // Failure recovery may run after the service has stopped. The fully stopped
+      // boundary is the only time this controller may become the ledger writer.
+      process.env.CONCIERGE_RELEASE_OFFLINE = '1';
+      run = (await import('../src/deployment-state')).failDeploymentRun(runId,error,outcome,options);
+    }
     if (run) notifyDeploymentWorker();
     finish(run ? 0 : 1, run
       ? { status: run.status, run_id: run.id }

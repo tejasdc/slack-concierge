@@ -208,6 +208,15 @@ active turns, jobs, and sign-ins, so the scan cannot extend its writer transacti
 itself excludes new admissions after commit. A later real update must verify these changed
 paths under disk load.
 
+The 16:17–16:20 UTC installation of that boundary exposed the final ordinary controller
+write after restart: `deploy-state succeed` held the WAL writer for 1,117 ms and again for
+627 ms while the new owner was serving. Completion, failure and preserved-checkout records
+now go through the owner socket too. Completion formerly ran synchronous Git ancestry checks
+inside its SQLite transaction. The owner now performs those checks asynchronously before the
+transaction. A new request appearing during those checks is proven before completion; a newer desired
+commit is left intact for the controller's next wake. This keeps the controller off the live
+writer and Git subprocess waits out of the owner's event loop and writer transaction.
+
 ## Failure handling
 
 The owner's connection switches to NORMAL only after the sync thread has opened its descriptor on

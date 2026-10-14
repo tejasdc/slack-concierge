@@ -17,7 +17,8 @@ import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-hando
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
   recordDeploymentTurnReactionDiscoveryFailure,claimDeploymentRun,recordDeploymentRunPhase,getDeploymentRun,
-  getLastKnownGoodRelease,promoteDeploymentRelease} from './deployment-state';
+  getLastKnownGoodRelease,promoteDeploymentRelease,completeDeploymentRunOnOwner,
+  failDeploymentRun,recordPreservedCheckout} from './deployment-state';
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 
@@ -178,6 +179,27 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
             ||!input.detail||typeof input.detail!=='object'||Array.isArray(input.detail))
             throw new Error('Invalid deployment phase.');
           return Response.json(recordDeploymentRunPhase(input.runId,input.phase,input.detail));
+        }
+        if(input.operation==='succeed'){
+          if(typeof input.repo!=='string'||!input.repo.startsWith('/')
+            ||!/^([0-9a-f]{40})$/.test(input.deployedCommit??'')
+            ||typeof input.serviceInvocationId!=='string'||!input.serviceInvocationId
+            ||!input.evidence||typeof input.evidence!=='object'||Array.isArray(input.evidence))
+            throw new Error('Invalid deployment completion evidence.');
+          return Response.json(await completeDeploymentRunOnOwner(input));
+        }
+        if(input.operation==='fail'){
+          if(typeof input.error!=='string'||!input.error
+            ||!['failed','ambiguous'].includes(input.outcome)
+            ||!input.options||typeof input.options!=='object'||Array.isArray(input.options))
+            throw new Error('Invalid deployment failure evidence.');
+          return Response.json(failDeploymentRun(input.runId,input.error,input.outcome,input.options));
+        }
+        if(input.operation==='preserved-checkout'){
+          if(typeof input.branch!=='string'||typeof input.worktree!=='string'
+            ||typeof input.commit!=='string'||typeof input.files!=='string')
+            throw new Error('Invalid preserved checkout evidence.');
+          return Response.json(recordPreservedCheckout(input));
         }
         throw new Error('Unknown deployment run operation.');
       }

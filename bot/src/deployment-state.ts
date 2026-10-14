@@ -1993,6 +1993,8 @@ function gitCommitIsAncestor(repo: string, ancestor: string, descendant: string)
   }).exitCode === 0;
 }
 
+class DeploymentRequestSetChanged extends Error {}
+
 export function completeDeploymentRun(input: {
   runId: string;
   repo: string;
@@ -2000,6 +2002,7 @@ export function completeDeploymentRun(input: {
   serviceInvocationId: string;
   evidence: Record<string, unknown>;
   isAncestor?: (repo: string, ancestor: string, descendant: string) => boolean;
+  expectedRequestIds?: ReadonlySet<string>;
 }): DeploymentRunRow {
   assertCommit(input.deployedCommit);
   const isAncestor = input.isAncestor || gitCommitIsAncestor;
@@ -2011,6 +2014,9 @@ export function completeDeploymentRun(input: {
       throw new Error(`Deployment run ${input.runId} cannot succeed from ${run.status}.`);
     }
     const requests = listDeploymentRequests(input.runId);
+    if (input.expectedRequestIds && (requests.length !== input.expectedRequestIds.size
+      || requests.some(request => !input.expectedRequestIds!.has(request.id))))
+      throw new DeploymentRequestSetChanged('Deployment requests changed during completion.');
     for (const request of requests) {
       const included = isAncestor(input.repo, request.expected_commit, input.deployedCommit);
       db.query(`UPDATE deployment_requests
@@ -2080,6 +2086,51 @@ export function completeDeploymentRun(input: {
     retireSupersededDeploymentRepairsInTransaction(isProcessIdentityAlive);
     return completedRun;
   })();
+}
+
+/**
+ * The serving owner must never run Git while holding SQLite's writer. Resolve the
+ * exact ancestry questions asynchronously, then use the normal atomic completion
+ * with a proof map. A changed request set is read and proven again; a newer desired commit is
+ * preserved for the next reconciliation rather than guessed.
+ */
+export async function completeDeploymentRunOnOwner(input: {
+  runId: string;
+  repo: string;
+  deployedCommit: string;
+  serviceInvocationId: string;
+  evidence: Record<string, unknown>;
+}): Promise<DeploymentRunRow> {
+  assertCommit(input.deployedCommit);
+  const ancestry = new Map<string, boolean>();
+  for (;;) {
+    const run = getDeploymentRun(input.runId);
+    if (!run) throw new Error(`Unknown deployment run ${input.runId}.`);
+    if (run.status === 'succeeded') return run;
+    if (run.status !== 'releasing') throw new Error(`Deployment run ${input.runId} cannot succeed from ${run.status}.`);
+    const requests = listDeploymentRequests(input.runId);
+    const commits = new Set(requests.map(request => request.expected_commit));
+    const desired = getDeploymentDesiredState(run.target);
+    if (desired) commits.add(desired.desired_commit);
+    for (const commit of commits) {
+      if (ancestry.has(commit)) continue;
+      const git = Bun.spawn(['git', '-C', input.repo, 'merge-base', '--is-ancestor', commit, input.deployedCommit],
+        {stdout:'ignore',stderr:'ignore'});
+      ancestry.set(commit, (await git.exited) === 0);
+    }
+    try {
+      return completeDeploymentRun({...input, expectedRequestIds:new Set(requests.map(request => request.id)),
+        isAncestor:(repo, ancestor, descendant) => {
+          if (repo !== input.repo || descendant !== input.deployedCommit)
+            throw new Error('Deployment ancestry input changed during completion.');
+          // A newer desired commit can arrive while Git runs. Leave that newer target
+          // untouched; the controller will reconcile it on its next normal wake.
+          return ancestry.get(ancestor) ?? false;
+        }});
+    } catch (error) {
+      if (!(error instanceof DeploymentRequestSetChanged)) throw error;
+    }
+  }
 }
 
 export function failDeploymentRun(

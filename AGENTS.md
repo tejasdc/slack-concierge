@@ -231,15 +231,11 @@ authorization or a change to the default rapid-iteration policy.
   and command answers, provider input and peer requests await `ledgerDurable()` until their rows are on disk;
   see [ledger durability](docs/architecture/LEDGER-DURABILITY.md). The ledger itself lives on its own
   loop-mounted filesystem (remote-box), moved there once by the update while the coordinator is stopped.
-  While the owner serves, the controller's run claim, phase records, release preparation,
-  activation and promotion send ledger mutations through its root-only request socket;
-  run and release reads use that socket too. These commands do not open a ledger connection:
-  even short-lived read-only SQLite opens held WAL writer locks under I/O load. The ledger
-  entrance refuses a serving controller command that accidentally imports it.
-  The native continuation timer also goes through that socket. Drain claim commits the gate
-  before inspecting active work, so process scans cannot hold the SQLite writer lock.
-  Legacy cutover and stopped-owner recovery
-  retain direct writes under their separate drain rules.
+  While the owner serves, the release controller's ordinary update path and native continuation timer send
+  ledger work through its root-only request socket. Their own live ledger opens are
+  refused because even short-lived connections held WAL locks under load. Drain claim
+  commits its admission gate before inspecting active work. Legacy cutover and
+  fully stopped-owner recovery retain direct writes; see [ledger durability](docs/architecture/LEDGER-DURABILITY.md).
   Checkpoint progress uses SQLite's own NOOP inspection; raw database or SHM file opens/closes
   inside the owner process can release its POSIX locks. The same durability document owns this boundary.
   Short-lived ledger writers also leave automatic checkpointing to the owner's checkpoint thread;
