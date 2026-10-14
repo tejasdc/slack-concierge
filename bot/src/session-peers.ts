@@ -9,13 +9,13 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
-import {enqueueSessionInput,getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {enqueueSessionInput,getAcceptedSessionInput, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply} from './session-inbox';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
@@ -420,7 +420,7 @@ export class SessionPeers {
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
-    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;
+    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -428,7 +428,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
-      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),
+      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
@@ -523,6 +523,10 @@ export class SessionPeers {
     recordSessionEvent({eventId,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',payload:{requestId:row.request_id,kind,...payload as object}});
     const session=getSessionById(row.source_session_id)!;
     updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
+    // Commit the thread post beside the reply, before any requester can run.
+    const event=db.query('SELECT * FROM session_peer_events WHERE event_id=?').get(eventId) as PeerEventRow;
+    if(this.postThreadEvent(row,event,JSON.parse(event.payload_json))&&!returnsToRequester(row))
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(eventId);
     return eventId;
   }
   private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null) {
@@ -735,54 +739,22 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
-    if(event.kind==='overdue'&&(declared.promptAnswerOverdue?row.prompt_answered_at_ms!==null:!!row.outcome)&&!event.accepted_input_id){
+    if(event.kind==='overdue'&&(declared.promptAnswerOverdue?row.prompt_answered_at_ms!==null:!!row.outcome)){
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,"Answered before this notice was delivered.");
+            withdrawUnstartedServiceInput(`question-overdue:${row.request_id}`,"Answered before this notice was delivered.");
       db.query("UPDATE session_peer_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
       return;
     }
-    if(declared.promptAnswerOverdue&&getAcceptedSessionInput(row.source_input_id)?.origin==='human'){
-      const question=String(JSON.parse(row.payload_json).text??'');
-      this.dependencies.owner.admit({sessionId:row.source_session_id,inputId:`question-overdue:${row.request_id}`,
-        origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-        text:`A question Tejas asked in Inbox thread ${row.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent on ${row.peer} was reminded if awake. Request ${row.request_id}: ${question}\nCheck current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread.`});
-    }
-    // A named thread receives the peer's own reply, and its requester retains the final return.
-    const forwarded=JSON.parse(row.payload_json).forwardedReply;
-    const inbox=getSessionById(row.source_session_id);
-    const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
-    const routed=!forwarded&&!event.accepted_input_id&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue')&&!!answerRoot
-      &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
-    const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
-    const directPost=threadReply&&declared.output?.stoppedBy!=='tejas';
-    if(directPost){
-      const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-      const root=answerRoot??row.source_input_id;
-      postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
-        inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
-        respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),
-        attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
-        stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
-        answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
-        answerGroup:declared.answerGroup??null,
-        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,
-        informational:JSON.parse(row.payload_json).requestedEffect==='informational'});
-    }
+    const returnToRequester=returnsToRequester(row);
+    const directPost=this.postThreadEvent(row,event,declared);
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
-    let stoppedPost=false;
-    if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
-      const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
-      if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
-        const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-        const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
-        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
-          respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
-          text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
-        if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-          .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
-        log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
-        stoppedPost=true;
-      }
+    if(!returnToRequester){
+            if(!directPost)throw new Error("The named thread has not received this reply.");
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,"Delivered directly to its Inbox thread.");
+            withdrawUnstartedServiceInput(`question-overdue:${row.request_id}`,"The overdue notice belongs to its Inbox thread.");
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+      return;
     }
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.canSend(source)){
@@ -806,11 +778,11 @@ export class SessionPeers {
           const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
         labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
         body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
-        deliveryNote:directPost||stoppedPost?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
+        deliveryNote:directPost?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
         files:Array.isArray(payload.attachments)?payload.attachments.length:0,followUp:null}),
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
-      ...(directPost||stoppedPost?{alreadyPostedInThread:true}:{})});
+      ...(directPost?{alreadyPostedInThread:true}:{})});
     for(const joined of group.joining)db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
     const observed=readInputExecution(accepted);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
@@ -820,6 +792,46 @@ export class SessionPeers {
     db.query('UPDATE session_peer_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:error,accepted.id);
     db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:error,event.event_id);
   }
+  private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
+    // A named thread receives the peer's own reply; requester delivery needs its own choice.
+    const forwarded=JSON.parse(row.payload_json).forwardedReply;
+    const inbox=getSessionById(row.source_session_id);
+    const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    const routed=!forwarded&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue')&&!!answerRoot
+      &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
+    const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
+    const directPost=threadReply&&declared.output?.stoppedBy!=='tejas';
+    if(directPost){
+      const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+      const root=answerRoot??row.source_input_id;
+      postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
+        inboxInputId:routed?root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
+        respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),
+        attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
+        stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
+        answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
+        answerGroup:declared.answerGroup??null,
+        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,
+        informational:JSON.parse(row.payload_json).requestedEffect==='informational'});
+    }
+    let stoppedPost=false;
+    if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
+      const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
+      if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
+        const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+        const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
+        postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
+          respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
+          text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
+          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
+        if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
+        log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
+        stoppedPost=true;
+      }
+    }
+    return !!directPost||stoppedPost;
+  }
   private explicitAnswerGroup(event:PeerEventRow,requesterSessionId:number):{carriedBy:string|null;joining:PeerEventRow[]} {
     if(event.kind!=='final')return {carriedBy:null,joining:[]};
     const group=JSON.parse(event.payload_json).answerGroup;
@@ -828,8 +840,8 @@ export class SessionPeers {
       WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
         AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
       .all(requesterSessionId,event.event_id,group) as PeerEventRow[];
-    const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
+    const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id))).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id)))};
   }
   private followReturn(eventId:string,inputId:string) {
     const input=getAcceptedSessionInput(inputId);
@@ -888,7 +900,7 @@ export class SessionPeers {
             db.query('UPDATE session_peer_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
               .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
           } else {
-            this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake${human?'; the Inbox router has been told':''}. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
+            this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
             db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
           }
         })();

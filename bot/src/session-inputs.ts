@@ -457,6 +457,26 @@ export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string
     return rows.map(row=>getAcceptedSessionInput(row.id)!);
   })();
 }
+/** Withdraw a redundant service copy only while no provider can have received it. */
+export function withdrawUnstartedServiceInput(inputId:string,reason:string):boolean {
+  return db.transaction(()=>{
+    const input=getAcceptedSessionInput(inputId);
+    if(!input||input.origin!=='service'||input.steering_id!==null)return false;
+    const receipt=JSON.parse(input.receipt_json??'{}');
+    if(receipt.state)return false;
+    if(input.turn_id!==null){
+      const turn=db.query(`SELECT * FROM turns WHERE id=? AND status='queued' AND owner_instance_id IS NULL
+        AND provider_admission_intended_at IS NULL AND provider_started_at IS NULL
+        AND provider_turn_id IS NULL AND provider_input_acknowledged_at IS NULL`).get(input.turn_id);
+      if(!turn)return false;
+      finishTurn(input.turn_id,'cancelled',reason);
+      settleTurnDependencies(input.turn_id);
+    }
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run(JSON.stringify({...receipt,state:'canceled',reason}),inputId);
+    return true;
+  })();
+}
 /**
  * A live input the provider provably never received is not failed work. The
  * coordinator chose that live delivery, so its refusal returns the input to the

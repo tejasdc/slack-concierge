@@ -15,7 +15,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { db,globalPauseState } from "./state";
+import { db,globalPauseState,getSessionById } from "./state";
+import {sessionMetadata} from './session-inputs';
+import {inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import { log, errorFields } from "./log";
 import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
@@ -507,6 +509,16 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
   const due = db.query("SELECT * FROM watches WHERE delivery_state='pending' AND (delivery_next_ms IS NULL OR delivery_next_ms<=?) ORDER BY terminal_at_ms LIMIT 20").all(now) as WatchRow[];
   for (const row of due) {
     try {
+      const session=getSessionById(row.session_id);
+      const root=session&&sessionMetadata(session).inbox?inboxThreadRoot(row.session_id,row.origin_input_id):null;
+      if(row.terminal_event!=='fired'&&root&&db.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(root)){
+        postForwardedThreadAnswer({inboxSessionId:row.session_id,eventId:row.delivery_input_id!,requestId:`watch:${row.watch_id}`,
+          root,inboxInputId:root,respondingSessionId:`concierge:${row.session_id}`,text:row.message_text!,attachments:[],
+          stalled:true,final:true,workDisposition:null});
+        update(row.watch_id,"delivery_state='accepted', delivery_next_ms=NULL");
+        log('info','watch_posted_to_thread',{watch_id:row.watch_id,event:row.terminal_event,thread:root});
+        continue;
+      }
       // Admission is idempotent on this input id and the words are fixed in the row, so a retry
       // after a lost answer reaches the same input. A paused or archived session holds it.
       deps.admit({ sessionId: row.session_id, inputId: row.delivery_input_id!, origin: "service", sourceInputId: row.origin_input_id,

@@ -31,6 +31,20 @@ request evidence remain in the catalogue and visible Inbox history.
 
 ## Answering a thread
 
+When the Inbox asks another session to work on a named thread, the owner posts that session's
+answers, final result, failure and cancellation into the thread under the answer's exact event
+identity. The request's status remains readable with `sessions get`; the Inbox router does not
+receive a second runnable copy. An ask that truly needs its result to continue routing says
+`--return-to-requester`. The owner also keeps overdue reminders in the thread without a
+separate router turn. A stopped run at Tejas's request stays a quiet service note; other terminal
+failures create a reading item in that thread. New reply and notice posts commit beside the
+request event in owner receipt order; they do not wait for a router turn. A delayed peer reply
+is ordered when the owner receives it, rather than pretending it arrived while the peer was offline.
+Pending copies from the former protocol are refused by both live dispatch and queue admission,
+then withdrawn only if no provider admission or steering could have occurred. Already consumed
+conversation history remains intact. Explicit grouped replies carry only the requests that opted
+into a return; separate requests with similar words are never collapsed.
+
 Tejas asked that answering a thread be an action the Inbox agent takes, not something
 the app scrapes from whatever the agent said while it worked. His reply into a thread is
 a human input carrying `replyToMessage`, which wakes the agent; the agent answers with

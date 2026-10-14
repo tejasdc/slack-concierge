@@ -65,10 +65,11 @@ refusing it is the fact; a string in a bundle is a proxy for it.
 - The baseline is saved in the registration row before the registration is acknowledged.
 - A deadline and a change that race settle as one terminal event in one transaction; the event and
   its words are written before delivery.
-- Delivery is one service input with the stable id `watch:<watch-id>:<event>` to the exact
-  registering session, through the owner's ordinary admission, so a paused or archived session holds
-  it and no model run is forced. A refused admission is retried under the `watch-delivery` policy
-  and restarts its budget at the next Concierge start.
+- A fired watch returns one service input with the stable id `watch:<watch-id>:<event>` to its
+  registering session so the agent can act on the condition. An expired, failed or cancelled watch
+  registered from a placed Inbox thread posts one service line in that thread under the same stable
+  identity, without a router turn. Other terminal watches still return to their registering session.
+  A refused delivery is retried under the `watch-delivery` policy and restarts its budget at the next Concierge start.
 
 ## Versions
 

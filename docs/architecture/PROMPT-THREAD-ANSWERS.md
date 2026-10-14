@@ -48,11 +48,12 @@ reply would reject `--answers-question` before the owner could record the answer
 
 At two minutes without that signal, the recipient receives one service reminder through the same
 live-input channel. At three minutes, the origin records one overdue event, posts a service notice
-in the thread, and delivers one exact request notice to the Inbox router. The router checks current
-replies before acting, since a late answer may race its notice. A late answer is still posted to the
+in the thread, without waking the Inbox router. Only an ask explicitly carrying `--return-to-requester`
+also sends its requester a return. A late notice that has not been consumed is withdrawn once
+the answer arrives. A late answer is still posted to the
 same thread. The existing fifteen-minute work-stall policy remains separate and resumes after a
 prompt answer. An unavailable agent or sleeping peer cannot promise a semantic answer by a wall
-clock; three minutes is the upper bound before the visible overdue state and router escalation.
+clock; three minutes is the upper bound before the visible overdue state in the thread.
 
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs
