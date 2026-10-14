@@ -30,6 +30,14 @@ logger counters, but does not answer on behalf of a frozen canonical owner; the 
 own unanswered-ping deadline still controls recovery. Stuck work is watched inside Concierge, not through this
 socket; see the shared wire contract.
 
+## Thread request returns
+
+`sessions ask --thread <message-id>` delivers replies and notices directly to that thread.
+Add `--return-to-requester` only when the requesting agent needs its own final or failure
+input to continue. The choice is retained with the request and works for local and peer
+recipients. Requests without a thread retain their ordinary agent-to-agent return.
+`sessions get` still exposes every retained reply, outcome and attachment.
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when
