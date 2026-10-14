@@ -1069,12 +1069,20 @@ export async function runClaudeCodeTurn(input: {
       for (const block of event.message.content) {
         if (block?.type !== "tool_use") continue;
         const toolName = String(block.name || "tool");
+        input.onProgress?.({type:'tool_started',toolName,
+          ...(typeof block.id==='string'?{itemId:block.id}:{})});
         const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
           : toolName === "WebFetch" ? webActivityDetails({ url: block.input?.url }) : undefined;
         input.onProgress?.({ type: "tool_use", toolName,
           ...(typeof block.id === "string" ? { itemId: block.id } : {}),
           ...(details ? { details } : {}),
         });
+      }
+    }
+    if(event.type==='user'&&Array.isArray(event.message?.content)){
+      for(const block of event.message.content){
+        if(block?.type==='tool_result')input.onProgress?.({type:'tool_finished',
+          ...(typeof block.tool_use_id==='string'?{itemId:block.tool_use_id}:{})});
       }
     }
     if (event.type === "control_response") {

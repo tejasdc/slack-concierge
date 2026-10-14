@@ -1,4 +1,4 @@
-import {db,claimNextQueuedTurn,executionChanged,getSessionById,type QueuedTurnClaimRow} from './state';
+import {db,claimNextQueuedTurn,executionChanged,getSessionById,globalPauseHoldsSession,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
 import {usageForecasts} from './provider-usage-forecast';
@@ -219,7 +219,7 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
 /** Existing attention state is durable; each saved item is alerted at most once. */
 export function settleMissedScheduledWork(now=Date.now()):number {
   let settled=0;
-  for(const row of savedRows().filter(row=>row.saved_kind==='scheduled'&&row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now)) {
+  for(const row of savedRows().filter(row=>row.saved_kind==='scheduled'&&row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now&&!globalPauseHoldsSession(row.session_id))) {
     const changed=db.transaction(()=>{
       const result=db.query(`UPDATE turns SET status='error',agent_text='Scheduled work missed its expiry.',ended_at=CURRENT_TIMESTAMP
         WHERE id=? AND status='queued'`).run(row.id);
@@ -242,6 +242,7 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
   const rows=db.query(`SELECT * FROM turns WHERE saved_kind IS NOT NULL AND
     (status='queued' OR (status='error' AND saved_kind='scheduled' AND saved_expires_at_ms<=?)) ORDER BY id`).all(now) as SavedTurn[];
   for(const row of rows) {
+    if(globalPauseHoldsSession(row.session_id))continue;
     const missed=row.saved_kind==='scheduled'&&row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now;
     const late=row.saved_kind==='scheduled'&&row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms+lateMs<=now;
     const expired=row.saved_kind==='banked'&&row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now;

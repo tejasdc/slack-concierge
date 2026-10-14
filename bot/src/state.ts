@@ -31,6 +31,60 @@ if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usag
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
 )`);
+// A human control has one durable gate, independent of any agent's execution or the
+// coordinator process. Both native and adapter claim paths consult this row.
+if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS global_pause (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+  generation INTEGER NOT NULL DEFAULT 0,
+  action_id TEXT,
+  changed_at_ms INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO global_pause(singleton) VALUES(1);
+CREATE TABLE IF NOT EXISTS global_pause_targets (
+  generation INTEGER NOT NULL,
+  turn_id INTEGER NOT NULL,
+  session_id INTEGER NOT NULL,
+  run_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  requested_at_ms INTEGER NOT NULL,
+  stop_error TEXT,
+  resumed_action_id TEXT,
+  PRIMARY KEY(generation,turn_id)
+);
+CREATE TABLE IF NOT EXISTS global_pause_actions (
+  action_id TEXT PRIMARY KEY,
+  paused INTEGER NOT NULL CHECK(paused IN (0,1)),
+  generation INTEGER NOT NULL,
+  session_ids_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS global_pause_peer_state (
+  peer TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  acknowledged_generation INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  snapshot_json TEXT,
+  updated_at_ms INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS global_pause_exceptions (
+  generation INTEGER NOT NULL,
+  machine TEXT NOT NULL,
+  session_id INTEGER NOT NULL,
+  PRIMARY KEY(generation,machine,session_id)
+)`);
+
+const localPauseMachine=process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud';
+
+export function globalPauseState():{paused:boolean;generation:number;actionId:string|null;changedAtMs:number} {
+  const row=db.query('SELECT paused,generation,action_id,changed_at_ms FROM global_pause WHERE singleton=1').get() as
+    {paused:number;generation:number;action_id:string|null;changed_at_ms:number};
+  return {paused:row.paused===1,generation:row.generation,actionId:row.action_id,changedAtMs:row.changed_at_ms};
+}
+export function globalPauseHoldsSession(sessionId:number):boolean {
+  const pause=globalPauseState();
+  return pause.paused&&!db.query('SELECT 1 FROM global_pause_exceptions WHERE generation=? AND machine=? AND session_id=?')
+    .get(pause.generation,localPauseMachine,sessionId);
+}
 
 const executionChangeListeners = new Set<() => void>();
 const turnFactListeners = new Set<(turnId:number,kind:string)=>void>();
@@ -4959,7 +5013,10 @@ export function acquireSessionTurn(
       requireComparisonTurnAttachment(metadata.comparisonRequestId, id);
     }
 
-    if (metadata.deferProvider || hasUnsettledTurnDependencies(id) || db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
+    const pauseHolds=db.query(`SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
+      AND COALESCE((SELECT json_extract(native_metadata_json,'$.inboxRole') FROM sessions WHERE id=?),'')<>'project-router'
+      AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine=? AND allowed.session_id=?)`).get(sessionId,localPauseMachine,sessionId);
+    if (metadata.deferProvider || hasUnsettledTurnDependencies(id) || pauseHolds || db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
       requestTurnWaitingReaction(id, true);
       if ((metadata.projectionMode || "legacy") === "legacy") {
         db.query(`
@@ -4978,6 +5035,9 @@ export function acquireSessionTurn(
       UPDATE sessions
       SET status='running', last_turn_at=CURRENT_TIMESTAMP
       WHERE id=? AND status <> 'archived'
+        AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
+          AND COALESCE(json_extract(sessions.native_metadata_json,'$.inboxRole'),'')<>'project-router'
+          AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=sessions.id))
         AND NOT EXISTS (
           SELECT 1 FROM turns live
           WHERE live.session_id=sessions.id AND live.id<>?
@@ -5108,6 +5168,9 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
+    AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=session.id))
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
     AND json_extract(coalesce(input.receipt_json,'{}'),'$.state')='canceled')
   AND NOT EXISTS (SELECT 1 FROM session_communication_requests request

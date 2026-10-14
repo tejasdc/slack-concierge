@@ -41,6 +41,7 @@ router-actions.sh sessions obligations [<address>] <source-flags>
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
 router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
@@ -136,6 +137,7 @@ export type SessionCommunicationRequest =
   | { operation: "obligations"; body: { source: Source; address?: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
+  | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
 
 class SessionUsageError extends Error {}
@@ -334,6 +336,25 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='pause'){
+    const verb=args.shift();
+    if(verb!=='status'&&verb!=='all'&&verb!=='resume')invalid('pause takes status, all or resume.');
+    const flags=new Map<string,string>(),sessionIds:string[]=[];
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--session'].includes(flag)
+        ||!value?.trim())invalid('Invalid pause option.');
+      if(flag==='--session')sessionIds.push(value);
+      else {if(flags.has(flag))invalid(`Repeated ${flag}.`);flags.set(flag,value);}
+    }
+    if(verb==='status'&&(flags.has('--action-id')||sessionIds.length))invalid('Pause status is read only.');
+    if(verb==='all'&&sessionIds.length)invalid('Pause all cannot select sessions.');
+    if(verb!=='status'&&!flags.has('--action-id'))invalid('Pause and resume need --action-id.');
+    if(sessionIds.length>200||sessionIds.some(id=>!(/^[a-z][a-z0-9-]*:[1-9][0-9]*$/.test(id))))invalid('Choose up to 200 exact session IDs.');
+    return {operation:'pause',body:{source:sourceFrom(flags),verb,
+      ...(flags.has('--action-id')?{action_id:flags.get('--action-id')}:{}),
+      ...(sessionIds.length?{session_ids:sessionIds}:{})}};
+  }
   if (first === 'handoff' || first === 'obligations') {
     const verb = first === 'handoff' && (args[0] === 'accept' || args[0] === 'withdraw')
       ? args.shift() as 'accept'|'withdraw' : 'propose';

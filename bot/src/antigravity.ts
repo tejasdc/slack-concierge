@@ -115,6 +115,7 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   let pickupGrace: ReturnType<typeof setTimeout> | null = null;
   let steeringRegistered = false;
   const toolsUsed = new Set<string>();
+  const activeSteps = new Set<string>();
   const startedAt = Date.now();
 
   const acknowledge = () => {
@@ -205,12 +206,17 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
         input.onProgress?.({ type: "commentary", text: step.text_delta });
       } else if (step.step_type && !["agent_response", "user_input"].includes(step.step_type)) {
         const toolName = step.tool_name || step.step_type;
+        const itemId=Number.isSafeInteger(step.step_index)?`step:${step.step_index}`:toolName;
+        if(!activeSteps.has(itemId)){activeSteps.add(itemId);input.onProgress?.({type:'tool_started',toolName,itemId});}
         if (step.step_type === "tool") {
           toolsUsed.add(toolName);
           const problem = `${step.tool_info?.error?.type ?? ""} ${step.tool_info?.error?.message ?? ""}`;
           if (/permission|approv|denied|forbidden/i.test(problem)) permissionDenied = true;
         }
-        if (step.state === "DONE") input.onProgress?.({ type: "tool_use", toolName });
+        if (step.state === "DONE") {
+          input.onProgress?.({ type: "tool_use", toolName });
+          activeSteps.delete(itemId);input.onProgress?.({type:'tool_finished',toolName,itemId});
+        }
       }
       return;
     }
