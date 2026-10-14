@@ -42,7 +42,7 @@ Provider changes use handoff between sessions on the same machine. Choose a codi
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -135,7 +135,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
@@ -446,7 +446,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const target=sub==='file'||sub==='cancel'?options.shift():undefined;
     if((sub==='file'||sub==='cancel')&&(!target||target.startsWith('--')))invalid(sub==='file'?'watch file needs the absolute path to watch.':'watch cancel needs the watch id.');
     const flags=new Map<string,string>();
-    while(options.length){const flag=options.shift()!,value=options.shift();
+    let renew=false;
+    while(options.length){const flag=options.shift()!;
+      if(flag==='--renew') {if(renew)invalid('Repeated --renew.');renew=true;continue;}
+      const value=options.shift();
       if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
       flags.set(flag,value);
     }
@@ -458,9 +461,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       if(!argv.length)invalid('watch command needs the command after --.');
     } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
     if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
+    if(renew&&sub!=='file')invalid('--renew is only for a file watch.');
     // A bare command name becomes the path the agent's own shell would run.
     const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
-    return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),
+    return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),...(renew?{renew:true}:{}),
       ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
       ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{})}};
   }
