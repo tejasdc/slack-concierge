@@ -33,3 +33,9 @@ export function notificationRequest(text:string):'result'|'scheduled'|null {
 function negated(words:string,index:number){
   return /\b(?:do not|don't|dont|never|stop|no need to)\s+(?:\w+\s+){0,2}$/i.test(words.slice(Math.max(0,index-40),index));
 }
+
+/** Historical rows without an admission mark retain the classifier that admitted them. */
+export function legacyNotificationRequest(text:string):'result'|'scheduled'|null {
+  if(/\bremind me\b/i.test(text))return 'scheduled';
+  return /\b(?:notify me|send me (?:a |an )?notification|let me know|tell me when|tell me once|give me (?:a |an )?(?:update|notification) when)\b/i.test(text)?'result':null;
+}

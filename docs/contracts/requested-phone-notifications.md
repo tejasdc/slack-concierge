@@ -6,7 +6,9 @@ The owner classifies an Inbox input's retained human words at admission as `resu
 `scheduled`. Negated requests and machine diagnostics in a bug report do not make a
 phone request. An ordinary request for an explanation (“let me know how”) remains
 quiet. The mark belongs to the exact asking input, including a later reply in the
-same thread, and cannot be added by an agent's text.
+same thread, and cannot be added by an agent's text. New receipts retain even a
+`null` classification, so later phrase-rule changes cannot reinterpret them;
+older receipts without a stored mark keep their original classifier.
 
 For every `result` Inbox input, admission creates one durable promise keyed by that
 input. Its default condition is the next agent answer filed into that thread for

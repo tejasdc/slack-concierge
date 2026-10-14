@@ -2,7 +2,7 @@ import {withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
 import {answerLine,fragmentReason} from './answer-line';
-import {notificationRequest} from './session-notification-request';
+import {legacyNotificationRequest} from './session-notification-request';
 import {notificationAnswerEligible,notificationPromiseTerminal,settleNotificationByAnswer} from './notify-when';
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
@@ -2077,7 +2077,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
   const askingInput=dispatched?getAcceptedSessionInput(dispatched.source_input_id):null;
   const notificationInputId=askingInput&&humanAuthored(askingInput)?askingInput.id:null;
   const words=askingInput?JSON.parse(askingInput.payload_json):null;
-  const requestedResult=notificationInputId&&(words.notificationRequest??notificationRequest(String(words.text??words.firstInput?.text??'')))==='result'
+  const requestedResult=notificationInputId&&(Object.hasOwn(words,'notificationRequest')?words.notificationRequest:
+    legacyNotificationRequest(String(words.text??words.firstInput?.text??'')))==='result'
     &&notificationAnswerEligible(notificationInputId);
   db.transaction(()=>{
     // Done work closes the thread request it was sent for, exactly when the router could have closed it.

@@ -231,9 +231,10 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   if(value&&typeof value==='object')delete value.notificationRequest;
   const words=value?.firstInput?.text??value?.text;
   const ownWords=!(value?.capture?.importOnly&&value.capture.source?.metadata?.quoted?.kind!=='human');
-  const mark=input.origin==='human'&&ownWords&&['input','create','inbox-capture'].includes(input.kind)
+  const classifiable=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
+  const mark=classifiable&&ownWords
     ?notificationRequest(typeof words==='string'?words:''):null;
-  const payload=timed('serializeMs',()=>stablePayload(mark&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
+  const payload=timed('serializeMs',()=>stablePayload(classifiable&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
   const old=timed('existingMs',()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId)) as AcceptedSessionInput|null;
   if (old) {
     if (old.session_id!==input.sessionId || ![rawPayload,payload].includes(stablePayload(JSON.parse(old.payload_json))) || old.origin!==input.origin || old.kind!==input.kind
