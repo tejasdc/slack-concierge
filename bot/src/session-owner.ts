@@ -34,7 +34,7 @@ import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,globalPauseState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,globalPauseState,globalPauseHoldsSession,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -589,7 +589,6 @@ export class SessionOwner {
     const chosen=[...new Set(sessionIds)].sort();
     if(chosen.length>200||chosen.some(id=>!(/^(concierge|[a-z][a-z0-9-]*):[1-9][0-9]*$/.test(id))))
       throw new SessionOwnerError('Choose up to 200 exact session IDs.',400,'PAUSE_SELECTION_INVALID');
-    const previousGeneration=globalPauseState().generation;
     const next=db.transaction(()=>{
       const current=globalPauseState();
       if(generation!==undefined&&generation<current.generation)return current;
@@ -626,7 +625,7 @@ export class SessionOwner {
           SELECT ?,turn.id,turn.session_id,turn.native_run_id,
             COALESCE(json_extract(session.native_metadata_json,'$.title'),'Untitled conversation'),?
           FROM turns turn JOIN sessions session ON session.id=turn.session_id
-          WHERE turn.status='running' AND turn.native_run_id IS NOT NULL
+          WHERE turn.status='running' AND turn.native_run_id IS NOT NULL AND turn.stop_requested_at IS NULL
             AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router'
             AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
               AND allowed.machine=? AND allowed.session_id=session.id)`).run(nextGeneration,now,nextGeneration,this.selfMachine);
@@ -652,19 +651,18 @@ export class SessionOwner {
     })();
     executionChanged();this.runtime.wake();if(!paused||peerContinue.length)wakeWatchWorker();
     if(paused)this.requestPausedStops();
-    if(!paused||peerContinue.length)this.resumePausedSessions(previousGeneration,
-      peerContinue.length?peerContinue.map(id=>`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${id}`):chosen,clientActionId);
+    this.resumePausedSessions(clientActionId);
     return this.globalPauseStatus();
   }
-  private resumePausedSessions(generation:number,chosen:readonly string[],action:string){
+  private resumePausedSessions(action:string){
     const targets=db.query(`SELECT target.session_id,target.turn_id,target.run_id,turn.accepted_input_id
       FROM global_pause_targets target JOIN turns turn ON turn.id=target.turn_id
-      JOIN sessions session ON session.id=target.session_id WHERE target.generation=? AND target.resumed_action_id IS NULL
+      WHERE target.resumed_action_id IS NULL
         AND turn.status IN ('cancelled','interrupted','error')
-      ORDER BY target.turn_id`).all(generation) as Array<{session_id:number;turn_id:number;run_id:string;accepted_input_id:string|null}>;
-    const prefix=this.selfMachine==='cloud'?'concierge':this.selfMachine;
+      GROUP BY target.turn_id ORDER BY target.turn_id`).all() as Array<{session_id:number;turn_id:number;run_id:string;accepted_input_id:string|null}>;
+    let admitted=false;
     for(const target of targets){
-      if(chosen.length&&!chosen.includes(`${prefix}:${target.session_id}`))continue;
+      if(globalPauseHoldsSession(target.session_id))continue;
       const inputId=`pause-resume:${target.turn_id}`;
       const original=target.accepted_input_id?getAcceptedSessionInput(target.accepted_input_id):null;
       const payload=original?JSON.parse(original.payload_json):{};
@@ -675,12 +673,13 @@ export class SessionOwner {
         sourceInputId:target.accepted_input_id??inputId,sourceRunId:target.run_id,requestId:inputId,
         text:`The pause has been lifted for this conversation. Check the retained work and current files before continuing from the point where Stop interrupted you. Do not repeat a side effect already completed. Continue the unfinished request and report what you verified.\n\nOriginal accepted request:\n${originalText}`,
         ...(attachments.length?{attachments}:{})});
-        db.query('UPDATE global_pause_targets SET resumed_action_id=? WHERE turn_id=? AND generation IN (?,?) AND resumed_action_id IS NULL')
-          .run(action,target.turn_id,generation,globalPauseState().generation);
+        db.query('UPDATE global_pause_targets SET resumed_action_id=? WHERE turn_id=? AND resumed_action_id IS NULL')
+          .run(action,target.turn_id);
+        admitted=true;
       }
       catch(error){log('warn','global_pause_resume_admission_failed',{turn_id:target.turn_id,error:String(error)});}
     }
-    this.runtime.wake();
+    if(admitted)this.runtime.wake();
   }
   private requestPausedStops(){
     const state=globalPauseState();if(!state.paused)return;
@@ -723,6 +722,7 @@ export class SessionOwner {
   }
   syncGlobalPausePeers():Promise<void>{
     this.requestPausedStops();
+    this.resumePausedSessions(globalPauseState().actionId??'pause-recovery');
     if(this.selfMachine!=='cloud')return this.refreshGlobalPauseFromOwner();
     if(!this.peers||!this.peers.names().length)return Promise.resolve();
     if(this.pauseSync)return this.pauseSync;

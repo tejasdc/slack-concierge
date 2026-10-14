@@ -32,6 +32,9 @@ and current files before continuing, rather than replaying an input whose side e
 may have occurred. A stable action ID makes a retry the same control. Existing session
 level suspension still applies, and a stopped session with an unresolved provider
 outcome still requires inspection.
+If a long tool finishes only after Resume was pressed, the pending Stop may settle late.
+The owner's regular reconciliation admits that run's checked continuation then, while
+the same stable input identity prevents a second continuation after a retry or restart.
 
 The product entrance is the shared thnkr.ing header's Pause all agents control. It
 posts through the authenticated Thinkering command entrance to the cloud owner. The
