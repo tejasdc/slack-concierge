@@ -1517,15 +1517,16 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         const next = strandedStep(owner, { requestId: request.request_id, workerSessionId: request.target_session_id,
             createdAtMs: request.created_at_ms, remindedAtMs: request.reminded_at_ms, remindedVia: request.reminded_via, stalledAtMs: request.stalled_at_ms });
         if (next.step === 'report-back') {
-            // Recorded before the notice is admitted: a retry finds it reminded and never asks twice.
-            const marked = db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='owner' WHERE request_id=? AND reminded_via IS NULL AND outcome IS NULL")
-                .run(this.now(), request.request_id).changes === 1;
-            if (!marked) return;
+            // Admitted before it is recorded: the input's stable ID makes a repeat after a crash the
+            // same input (never a second one), and a request is marked reminded only once the
+            // reminder is durably in the worker's queue, so a restart in between cannot use it up.
             const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(turnId) as { native_run_id: string | null } | null;
             owner.admit({ sessionId: request.target_session_id, inputId: `report-back:${request.request_id}`, origin: 'service',
                 sourceInputId: request.target_input_id!, sourceRunId: turn?.native_run_id ?? nativeRunId(turnId), requestId: request.request_id,
                 text: reportBackNotice(requestLabel(request.payload_json).replace(/^your /, 'the '), replyCommand(request.request_id, effect ?? 'informational')) });
-            log('info', 'session_request_report_back', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}` });
+            if (db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='owner' WHERE request_id=? AND reminded_via IS NULL AND outcome IS NULL")
+                .run(this.now(), request.request_id).changes === 1)
+                log('info', 'session_request_report_back', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}` });
             return;
         }
         if (next.step !== 'stall')
