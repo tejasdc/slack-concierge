@@ -1,0 +1,1 @@
+A Claude model's allowance refusal now stays in force until its stated reset, a successful attempt on that model, or your explicit clear; another model's usage cannot release it.
