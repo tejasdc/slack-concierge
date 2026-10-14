@@ -232,7 +232,7 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   add("5-hour", usage.primary, pace.primary);
   add("Weekly", usage.secondary, pace.secondary);
   return { label, plan: plan ?? (usage.loginMethod ? (CODEX_PLAN[usage.loginMethod] ?? usage.loginMethod) : null),
-    current: agents, windows, problem: null, readAt: new Date().toISOString(),
+    current: agents, windows, problem: null, readAt: iso(usage.updatedAt),
     resetCredits: resetCredits(usage.codexResetCredits) };
 }
 
