@@ -47,12 +47,12 @@ parser. A running agent can retain an older bundled parser across a deployment; 
 reply would reject `--answers-question` before the owner could record the answer.
 
 At two minutes without that signal, the recipient receives one service reminder through the same
-live-input channel. At three minutes, the origin records one overdue event, posts a service notice
-in the thread, and delivers one exact request notice to the Inbox router. The router checks current
-replies before acting, since a late answer may race its notice. A late answer is still posted to the
-same thread. The existing fifteen-minute work-stall policy remains separate and resumes after a
-prompt answer. An unavailable agent or sleeping peer cannot promise a semantic answer by a wall
-clock; three minutes is the upper bound before the visible overdue state and router escalation.
+live-input channel. At three minutes, the origin records one overdue event and posts a service
+notice in the thread. The Inbox router receives that notice only if its original ask explicitly
+requested a return. A late answer is still posted to the same thread. The existing fifteen-minute
+work-stall policy remains separate and resumes after a prompt answer. An unavailable agent or
+sleeping peer cannot promise a semantic answer by a wall clock; three minutes is the upper bound
+before the visible overdue state.
 
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs

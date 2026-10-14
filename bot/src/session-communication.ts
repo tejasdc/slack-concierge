@@ -951,7 +951,7 @@ export class SessionCommunicationCoordinator {
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
     }
-    watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;path?:string;argv?:string[];cwd?:string;watch_id?:string}) {
+    watch(input:{source:CommunicationSource;verb:'file'|'command'|'list'|'cancel';action_id?:string;until?:string;renew?:boolean;path?:string;argv?:string[];cwd?:string;watch_id?:string;thread?:string;return_to_requester?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
@@ -963,13 +963,15 @@ export class SessionCommunicationCoordinator {
             if(!input.watch_id)throw new Error('Name the watch to cancel.');
             return {watch:cancelWatch(actor.session,input.watch_id)};
         }
+        if(input.return_to_requester!==undefined&&input.return_to_requester!==true)throw new Error('Requester returns must be explicitly enabled.');
+        const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
         if(typeof input.until!=='string'||!input.until.trim())throw new Error('--until is required.');
         if(input.verb==='file'){
             if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
-            return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew});
+            return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew,threadRoot,returnToRequester:input.return_to_requester});
         }
         if(!Array.isArray(input.argv)||typeof input.cwd!=='string')throw new Error('A command watch needs --cwd and the command after --.');
-        return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd});
+        return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd,threadRoot,returnToRequester:input.return_to_requester});
     }
     async ask(input: {
         source: CommunicationSource;
@@ -991,6 +993,7 @@ export class SessionCommunicationCoordinator {
         summary?:string;
         /** How the answer comes back: 'summary' wakes the asker with the answer's one-line summary only; the body is read with sessions get. */
         answer_view?:'summary'|'full';
+        return_to_requester?:boolean;
         peer?:string;
         /** What only the peer machine can do for this work; required to create a session there. */
         machine_need?:string;
@@ -1042,6 +1045,8 @@ export class SessionCommunicationCoordinator {
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
         const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        if(input.return_to_requester!==undefined&&input.return_to_requester!==true)
+            throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
         if(input.saved) {
             if(!input.provider||input.address||input.peer||!title||input.after?.length)
@@ -1073,7 +1078,7 @@ export class SessionCommunicationCoordinator {
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot});
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
@@ -1091,6 +1096,7 @@ export class SessionCommunicationCoordinator {
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
+            ...(input.return_to_requester?{returnToRequester:true}:{}),
             ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
@@ -1274,7 +1280,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
             inboxInputId:forwarded?.inboxInputId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
             text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
+            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
             .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
@@ -1619,10 +1625,27 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
      * wait for a choice already made, with nothing left that could release it.
      */
     private heldPrerequisite(request: RequestRow, dependencies = ((JSON.parse(request.payload_json).after ?? []) as string[]).map(id => this.row(id))) {
-        return dependencies.find(dependency => HOLDING_OUTCOMES.includes(dependency.outcome ?? '')
-            && !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
+        const ask=db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`request:${request.request_id}`) as {sequence:number}|null;
+        return dependencies.find(dependency => {
+            if(!HOLDING_OUTCOMES.includes(dependency.outcome ?? ''))return false;
+            const resultEventId=JSON.parse(dependency.result_json??'{}').event_id;
+            const threadPost=resultEventId?db.query("SELECT sequence FROM session_owner_events WHERE event_id=?").get(`post:forward:${resultEventId}`) as {sequence:number}|null:null;
+            const declared=resultEventId?db.query("SELECT payload_json FROM session_communication_events WHERE event_id=?").get(resultEventId) as {payload_json:string}|null:null;
+            const answerGroup=declared?JSON.parse(declared.payload_json).answerGroup:null;
+            const groupedPost=!threadPost&&typeof answerGroup==='string'&&dependency.thread_root_input_id
+                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+                    AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
+                    .get(dependency.source_session_id,dependency.thread_root_input_id,answerGroup) as {sequence:number}|null:null;
+            const closure=threadPost||groupedPost?null:db.query(`SELECT closure.sequence FROM session_owner_events closure
+                JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId')
+                WHERE closure.kind='answer_closure' AND json_extract(post.payload_json,'$.requestId')=?
+                ORDER BY closure.sequence DESC LIMIT 1`).get(dependency.request_id) as {sequence:number}|null;
+            const postSequence=(threadPost??groupedPost??closure)?.sequence;
+            if(ask&&postSequence!==undefined&&postSequence<=ask.sequence)return false;
+            return !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
                 WHERE outcome.id=? AND outcome.session_id=ask.session_id AND outcome.rowid<=ask.rowid`)
-                .get(request.source_input_id, `return:${JSON.parse(dependency.result_json ?? '{}').event_id}`)) ?? null;
+                .get(request.source_input_id, `return:${resultEventId}`);
+        })??null;
     }
     private async dispatch(request: RequestRow) {
         if (request.outcome || this.stopped)
@@ -1810,13 +1833,14 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
             return;
         }
-        if(declared.promptAnswerOverdue&&request.source_input_id&&getAcceptedSessionInput(request.source_input_id)?.origin==='human'){
+        const returnToRequester=JSON.parse(request.payload_json).returnToRequester===true;
+        if(declared.promptAnswerOverdue&&(!request.thread_root_input_id||returnToRequester)&&request.source_input_id&&getAcceptedSessionInput(request.source_input_id)?.origin==='human'){
             const question=String(JSON.parse(request.payload_json).text??'');
             this.dependencies.owner!.admit({sessionId:request.source_session_id,inputId:`question-overdue:${request.request_id}`,
                 origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:`A question Tejas asked in Inbox thread ${request.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent was reminded. Request ${request.request_id}: ${question}\nCheck the request's current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread; do not wait for the agent's work to finish.`});
         }
-        // Posting belongs to the named thread. The requester also keeps its own final return.
+        // A named thread is the result destination. A requester turn is a separately chosen effect.
         const thread=this.threadAnswer(request,event,declared);
         const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
         if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
@@ -1836,6 +1860,10 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if (event.kind === 'final')
             for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
                 db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(notice.accepted_input_id);
+        if(alreadyPostedInThread&&!returnToRequester){
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -1894,12 +1922,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(event.kind!=='final')return {carriedBy:null,joining:[]};
         const group=JSON.parse(event.payload_json).answerGroup;
         if(typeof group!=='string'||!group)return {carriedBy:null,joining:[]};
-        const candidates=db.query(`SELECT event.* FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
+        const source=this.row(event.request_id);
+        const candidates=db.query(`SELECT event.*,request.thread_root_input_id,request.payload_json AS request_payload_json FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
             WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
               AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
-            .all(requesterSessionId,event.event_id,group) as EventRow[];
-        const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
+            .all(requesterSessionId,event.event_id,group) as (EventRow&{thread_root_input_id:string|null;request_payload_json:string})[];
+        const returns=(row:{thread_root_input_id:string|null;request_payload_json:string})=>!row.thread_root_input_id||JSON.parse(row.request_payload_json).returnToRequester===true;
+        const compatible=candidates.filter(candidate=>candidate.thread_root_input_id===source.thread_root_input_id&&returns(candidate)===returns({thread_root_input_id:source.thread_root_input_id,request_payload_json:source.payload_json}));
+        const carrier=compatible.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:compatible.filter(candidate=>!candidate.accepted_input_id)};
     }
     /** An event carried by another event's return takes that return's delivery state. */
     private followReturn(eventId: string, inputId: string) {

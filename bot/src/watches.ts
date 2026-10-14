@@ -15,7 +15,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { db,globalPauseState } from "./state";
+import { db,globalPauseState,getSessionById } from "./state";
+import {sessionMetadata} from './session-inputs';
+import {inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import { log, errorFields } from "./log";
 import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
@@ -183,7 +185,7 @@ export function parseUntil(value: string, now: number): number {
   return deadline;
 }
 
-export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean }
+export type WatchRegistration = { sessionId: number; originInputId: string; originRunId: string; actionId: string; until: string; renew?: boolean;threadRoot?:string|null;returnToRequester?:boolean }
   & ({ kind: "file"; path: string } | { kind: "command"; argv: string[]; cwd: string });
 
 export function watchView(row: WatchRow) {
@@ -203,7 +205,8 @@ export function watchView(row: WatchRow) {
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
 export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean } {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
-  const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
+  const condition = { ...(input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd }),
+    ...(input.threadRoot?{threadRoot:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}) };
   if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
   if (input.renew && !/^(?:(?:\d+)d)?(?:(?:\d+)h)?(?:(?:\d+)m)?(?:(?:\d+)s)?$/.test(input.until.trim()))
     throw new Error("A renewing watch needs a duration, not an absolute deadline.");
@@ -507,6 +510,19 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
   const due = db.query("SELECT * FROM watches WHERE delivery_state='pending' AND (delivery_next_ms IS NULL OR delivery_next_ms<=?) ORDER BY terminal_at_ms LIMIT 20").all(now) as WatchRow[];
   for (const row of due) {
     try {
+      const session=getSessionById(row.session_id);
+      const condition=JSON.parse(row.condition_json);
+      const root=session&&sessionMetadata(session).inbox?(condition.threadRoot??inboxThreadRoot(row.session_id,row.origin_input_id)):null;
+      if(root&&db.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(root)){
+        postForwardedThreadAnswer({inboxSessionId:row.session_id,eventId:row.delivery_input_id!,requestId:`watch:${row.watch_id}`,
+          root,inboxInputId:root,respondingSessionId:`concierge:${row.session_id}`,text:row.message_text!,attachments:[],
+          stalled:true,final:true,workDisposition:null});
+        if(condition.returnToRequester!==true){
+          update(row.watch_id,"delivery_state='accepted', delivery_next_ms=NULL");
+          log('info','watch_posted_to_thread',{watch_id:row.watch_id,event:row.terminal_event,thread:root});
+          continue;
+        }
+      }
       // Admission is idempotent on this input id and the words are fixed in the row, so a retry
       // after a lost answer reaches the same input. A paused or archived session holds it.
       deps.admit({ sessionId: row.session_id, inputId: row.delivery_input_id!, origin: "service", sourceInputId: row.origin_input_id,

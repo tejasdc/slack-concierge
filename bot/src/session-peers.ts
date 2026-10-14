@@ -420,7 +420,7 @@ export class SessionPeers {
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
-    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;
+    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -428,7 +428,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
-      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),
+      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
@@ -739,13 +739,14 @@ export class SessionPeers {
       db.query("UPDATE session_peer_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
       return;
     }
-    if(declared.promptAnswerOverdue&&getAcceptedSessionInput(row.source_input_id)?.origin==='human'){
+    const returnToRequester=JSON.parse(row.payload_json).returnToRequester===true;
+    if(declared.promptAnswerOverdue&&(!row.thread_root_input_id||returnToRequester)&&getAcceptedSessionInput(row.source_input_id)?.origin==='human'){
       const question=String(JSON.parse(row.payload_json).text??'');
       this.dependencies.owner.admit({sessionId:row.source_session_id,inputId:`question-overdue:${row.request_id}`,
         origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
         text:`A question Tejas asked in Inbox thread ${row.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent on ${row.peer} was reminded if awake. Request ${row.request_id}: ${question}\nCheck current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread.`});
     }
-    // A named thread receives the peer's own reply, and its requester retains the final return.
+    // A named thread receives the peer's own reply; requester delivery needs its own choice.
     const forwarded=JSON.parse(row.payload_json).forwardedReply;
     const inbox=getSessionById(row.source_session_id);
     const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
@@ -777,12 +778,16 @@ export class SessionPeers {
         postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
           respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
           text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
+          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
           .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
         stoppedPost=true;
       }
+    }
+    if((directPost||stoppedPost)&&!returnToRequester){
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+      return;
     }
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.canSend(source)){
@@ -824,12 +829,15 @@ export class SessionPeers {
     if(event.kind!=='final')return {carriedBy:null,joining:[]};
     const group=JSON.parse(event.payload_json).answerGroup;
     if(typeof group!=='string'||!group)return {carriedBy:null,joining:[]};
-    const candidates=db.query(`SELECT event.* FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
+    const source=this.row(event.request_id);
+    const candidates=db.query(`SELECT event.*,request.thread_root_input_id,request.payload_json AS request_payload_json FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
       WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
         AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
-      .all(requesterSessionId,event.event_id,group) as PeerEventRow[];
-    const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
+      .all(requesterSessionId,event.event_id,group) as (PeerEventRow&{thread_root_input_id:string|null;request_payload_json:string})[];
+    const returns=(row:{thread_root_input_id:string|null;request_payload_json:string})=>!row.thread_root_input_id||JSON.parse(row.request_payload_json).returnToRequester===true;
+    const compatible=candidates.filter(candidate=>candidate.thread_root_input_id===source.thread_root_input_id&&returns(candidate)===returns({thread_root_input_id:source.thread_root_input_id,request_payload_json:source.payload_json}));
+    const carrier=compatible.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:compatible.filter(candidate=>!candidate.accepted_input_id)};
   }
   private followReturn(eventId:string,inputId:string) {
     const input=getAcceptedSessionInput(inputId);

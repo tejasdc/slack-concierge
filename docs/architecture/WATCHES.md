@@ -11,8 +11,8 @@ finishes, or at a deadline" and then ends its turn. No model stays awake while i
 scheduler: "check every N minutes" stays a repeating saved schedule.
 
 ```
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
-router-actions.sh sessions watch command --cwd <dir> --until <...> <source-flags> --action-id A -- <argv...>
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A [--thread <message-id>] [--return-to-requester]
+router-actions.sh sessions watch command --cwd <dir> --until <...> <source-flags> --action-id A [--thread <message-id>] [--return-to-requester] -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 ```
@@ -65,10 +65,11 @@ refusing it is the fact; a string in a bundle is a proxy for it.
 - The baseline is saved in the registration row before the registration is acknowledged.
 - A deadline and a change that race settle as one terminal event in one transaction; the event and
   its words are written before delivery.
-- Delivery is one service input with the stable id `watch:<watch-id>:<event>` to the exact
-  registering session, through the owner's ordinary admission, so a paused or archived session holds
-  it and no model run is forced. A refused admission is retried under the `watch-delivery` policy
-  and restarts its budget at the next Concierge start.
+- A watch registered from a placed Inbox thread posts its one terminal event there under the stable
+  id `watch:<watch-id>:<event>`, without a router turn. An Inbox watch must name its thread at
+  registration. `--return-to-requester` explicitly adds the callback when the registering agent
+  needs to act on a firing. Other watches return to their registering session.
+  A refused delivery is retried under the `watch-delivery` policy and restarts its budget at the next Concierge start.
 
 ## Versions
 

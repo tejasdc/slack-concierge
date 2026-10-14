@@ -15,7 +15,7 @@ router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
-router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] -- <text>
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro | --gpt <https://chatgpt.com/g/g-…>] [--his-chat] [--session-name <title>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask --peer <instance> --machine-need "<what only that machine can do>" --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
@@ -42,8 +42,8 @@ Provider changes use handoff between sessions on the same machine. Choose a codi
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
-router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A [--thread <message-id>] [--return-to-requester]
+router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A [--thread <message-id>] [--return-to-requester] -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
@@ -61,7 +61,7 @@ router-actions.sh sessions board cards --design <design handle> --inbox-session 
 router-actions.sh sessions board status   # says where the board lives now
 A design (--product design, --text-file with ## sections separated by blank lines, --from the open thread whose sessions answer him; --inbox-session/--inbox-message name the Inbox thread the work belongs to, where one line about the publication is filed) is reviewed section by section in thnkr.ing's Lab. Answer his section post with board post --reply-to <his entry> --target <the section address> --intent answer; place words he said in an Inbox thread at a section with --speaker tejas --his-input <that input id> --intent ask|comment (you stay the author of record); add --inbox-session/--inbox-message so a later answer to that placed post is also filed into his Inbox thread. board verdict records his per-version verdict on a design (approve is refused while a section is contested or has an unanswered ask; the refusal lists them). board cards files the author's section cards (claim, consequence, recommendation, alternative, question) under their sections and one line each into the Inbox thread. board read --address lab:<design> prints the review: each section's state (missing|open|asked|answered|accepted|contested), his entries and the replies, and owed, the sections still waiting on an agent. The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. It is stored in thnkr.ing's lab journal, so board commands run from a session on the server.
 
-A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
+A watch settles once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). A watch from a named Inbox thread posts its result there without waking the router, unless --return-to-requester was chosen; a watch outside the Inbox returns a service input to its registering session. The result says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). Local to this machine; the same --action-id registers nothing twice.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -104,7 +104,7 @@ For a bounded small task that fits one focused agent session, --small-task keeps
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
 Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. Ask Tejas only for what no agent can do or what a permanent decision reserves for him: needs_you (and a reply's --work-disposition needs_decision) requires --only-he-can sign-in|secret|device|ambiguous|approval (ambiguous: readings of his words that lead to different things that cannot be undone), --his-words copied exactly from his message that started the work, and --why-not-answered; permission and design choices without a cited permanent approval rule are refused, because he said "just do as I say and fix or build things if it's not possible. Ask for forgiveness not permission". For approval, add --decision-id and --approval-action; the owner verifies the permanent record and its scope. Do the work, build what is missing, and tell him afterwards. A reply with --work-disposition completed requires --all-done (everything he asked for was done; when part was not, do it, have it built, or reply failed saying what) and --checked, what you exercised on the real system (his surfaces through your own entrance, test-capture) and what you saw, or --not-checked with why no live check was possible; both are shown with your answer. Do not write unit tests to fill it. A completed reply he need not read (a send that went exactly as he asked) adds --quiet-because "<why he need not read it>": it is still posted in his thread as your words with "Not sent to you: <reason>" under it, and it closes the thread's request, but it is not filed for him to read and raises no notification. A failed or needs_decision reply is never quiet. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
-An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, and its Timeline lists the dispatch, whatever input started the turn that sent it. Every fresh answer to a request naming a thread, whether work or informational, is posted into that thread by the owner as the answering agent's words when it arrives. Progress stays quiet. A work final keeps its existing attention filing; an informational final quietly closes its linked request unless the asking human input explicitly requested a result. The final also returns to you as your copy, explicitly saying it has already been posted; do not relay it. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
+An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, and its Timeline lists the dispatch, whatever input started the turn that sent it. Every fresh answer or terminal notice for that request posts directly into the thread, without waking the Inbox router. Progress stays quiet. A work final keeps its thread attention filing; an informational final quietly closes its linked request unless the asking human input explicitly requested a result. When you need the answer to act, ask with --return-to-requester; that choice adds a return to your run. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Answer a request or a thread with files: repeated --file <path> sends your own bytes, and repeated --attachment <custody-id> forwards an already retained file (a worker's returned image) without downloading it. ask, reply and post all take both. A reply or post carrying at least one file may omit its text. A final reply may omit its body only when that exact request already has a partial --answers-question reply; its closing facts appear under the existing answer. Other replies and posts need text or a file. The owner retains every file before it acknowledges the reply, and a retry with the same action ID and different bytes conflicts rather than sending a second copy.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
@@ -123,7 +123,7 @@ export type SessionCommunicationRequest =
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -135,7 +135,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string; thread?:string;return_to_requester?:boolean } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
@@ -447,10 +447,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if((sub==='file'||sub==='cancel')&&(!target||target.startsWith('--')))invalid(sub==='file'?'watch file needs the absolute path to watch.':'watch cancel needs the watch id.');
     const flags=new Map<string,string>();
     let renew=false;
+    let returnToRequester=false;
     while(options.length){const flag=options.shift()!;
       if(flag==='--renew') {if(renew)invalid('Repeated --renew.');renew=true;continue;}
+      if(flag==='--return-to-requester'){
+        if(returnToRequester||sub==='list'||sub==='cancel')invalid(`Invalid watch option ${flag}.`);
+        returnToRequester=true;continue;
+      }
       const value=options.shift();
-      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd','--thread'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
@@ -462,9 +467,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
     if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
     if(renew&&sub!=='file')invalid('--renew is only for a file watch.');
+    if(sub!=='file'&&sub!=='command'&&flags.has('--thread'))invalid(`watch ${sub} takes no --thread.`);
     // A bare command name becomes the path the agent's own shell would run.
     const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
     return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),...(renew?{renew:true}:{}),
+      ...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),
       ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
       ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{})}};
   }
@@ -495,6 +502,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   let resurrect = false;
   let hisChat = false;
   let smallTask = false;
+  let returnToRequester = false;
   let keepWorking = false;
   let bySession = false;
   while (options.length) {
@@ -536,6 +544,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if (flag === "--small-task" && operation === "ask") {
       if (smallTask) invalid("Repeated --small-task option.");
       smallTask = true;
+      continue;
+    }
+    if (flag === "--return-to-requester" && operation === "ask") {
+      if (returnToRequester) invalid("Repeated --return-to-requester option.");
+      returnToRequester = true;
       continue;
     }
     if (flag === "--resurrect" && operation === "ask") {
@@ -752,7 +765,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
