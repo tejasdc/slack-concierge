@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {readFile,stat} from 'node:fs/promises';
+import {readFile,readdir,stat} from 'node:fs/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {homedir} from 'node:os';
@@ -78,6 +78,22 @@ function ledgerItems(sessionId:number):Item[] {
   return items;
 }
 
+/**
+ * Codex writes each conversation to sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<thread id>.jsonl under
+ * its home. The file is found by that exact thread-id suffix, newest day first. The first version
+ * shelled out to `rg`, which the service has no binary for, so every Codex handoff missed its
+ * worktrees (acceptance test, 2026-10-14).
+ */
+async function codexRollout(thread:string):Promise<string|null> {
+  const root=join(process.env.CODEX_HOME??join(homedir(),'.codex'),'sessions'),suffix=`-${thread}.jsonl`;
+  const names=async(path:string)=>(await readdir(path).catch(()=>[] as string[])).sort().reverse();
+  for(const year of await names(root))for(const month of await names(join(root,year)))for(const day of await names(join(root,year,month))){
+    const found=(await names(join(root,year,month,day))).find(name=>name.startsWith('rollout-')&&name.endsWith(suffix));
+    if(found)return join(root,year,month,day,found);
+  }
+  return null;
+}
+
 async function worktrees(sessionId:number):Promise<{items:Item[];omissions:string[]}> {
   const session=getSessionById(sessionId)!;const meta=sessionMetadata(session);
   const roots=[meta.cwd,...(meta.additionalDirs??[])].filter((value):value is string=>typeof value==='string'&&!!value);
@@ -87,7 +103,7 @@ async function worktrees(sessionId:number):Promise<{items:Item[];omissions:strin
     try{
       const path=session.provider_id==='claude-code'
         ?await locateClaudeTranscript(claudeConfigDir(),session.agent_session_uuid)
-        :session.provider_id==='codex'?(await run('rg',['--files','-g',`*${session.agent_session_uuid}*.jsonl`,join(homedir(),'.codex','sessions')],{timeout:5000})).stdout.trim().split('\n')[0]??null:null;
+        :session.provider_id==='codex'?await codexRollout(session.agent_session_uuid):null;
       if(path){const size=(await stat(path)).size;if(size<=64*1024*1024)transcript=await readFile(path,'utf8');
         else omissions.push('Provider transcript exceeds the bounded worktree inventory read; inspect it in sessions context.');}
       else omissions.push('Provider transcript was unavailable for worktree discovery; inspect the predecessor conversation.');
