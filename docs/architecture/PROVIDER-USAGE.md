@@ -608,8 +608,13 @@ generates one for its request. The response has four explicit outcomes: `reset` 
 `noCredit` did not. A transport failure or unrecognized response is unknown, never
 success or proof that nothing was spent. The current response names no individual
 windows; the grant's `reset_type` remains its declared scope. After confirmed redemption,
-Concierge reads limits again through the same account home. Only a fresh read saying
-ordinary included work is allowed releases held work and announces a usable reset.
+Concierge reads limits again through the same account home. Both readings must carry the
+same nonempty account ID as that home's sign-in; a missing or changed ID never proves
+that the named account recovered. Only a matching fresh read saying ordinary included
+work is allowed releases held work and announces a usable reset. A read-only probe of
+the installed server on 2026-10-14 confirmed that its limits response supplies an
+account ID matching the local sign-in and a boolean `ordinaryUsageAllowed`; no credit
+was consumed by that probe.
 If redemption is confirmed but the read fails or still denies ordinary work, the credit
 is reported redeemed and the work stays held. The Accounts button retains its two-press
 confirmation.

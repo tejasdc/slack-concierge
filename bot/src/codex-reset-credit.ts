@@ -37,14 +37,16 @@ export type ResetCreditOutcome = Readonly<{
 }>;
 
 /** Every Codex home on this machine, with the account each one holds. */
-function homesByAccount(): Map<string, string> {
-  const homes = new Map<string, string>();
+function homesByAccount(): Map<string, { home: string; accountId: string | null }> {
+  const homes = new Map<string, { home: string; accountId: string | null }>();
   const add = (home: string) => {
     try {
       const auth = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"));
       const payload = String(auth?.tokens?.id_token ?? "").split(".")[1] ?? "";
       const email = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))?.email;
-      if (typeof email === "string" && email && !homes.has(email)) homes.set(email, home);
+      const accountId = auth?.tokens?.account_id;
+      if (typeof email === "string" && email && !homes.has(email))
+        homes.set(email, { home, accountId: typeof accountId === "string" && accountId ? accountId : null });
     } catch { /* a home without a readable identity cannot be addressed by account */ }
   };
   add(AGENT_CODEX_HOME);
@@ -98,8 +100,10 @@ async function callAppServer(home: string, method: string, params: unknown): Pro
 }
 
 export async function useCodexResetCredit(account: string, idempotencyKey = randomUUID()): Promise<ResetCreditOutcome> {
-  const home = homesByAccount().get(account);
-  if (!home) return { status: "failed", detail: `This machine is not signed in to ${account}.` };
+  const binding = homesByAccount().get(account);
+  if (!binding) return { status: "failed", detail: `This machine is not signed in to ${account}.` };
+  const { home, accountId } = binding;
+  if (!accountId) return { status: "failed", detail: "This sign-in has no verified account identity. No reset was attempted." };
   let limits: any;
   try {
     limits = await callAppServer(home, "account/rateLimits/read", {});
@@ -107,6 +111,8 @@ export async function useCodexResetCredit(account: string, idempotencyKey = rand
     log("error", "codex_reset_credit_read_failed", { error: error instanceof Error ? error.message : String(error) });
     return { status: "failed", detail: "The account's reset credits could not be read. No reset was attempted." };
   }
+  if (limits?.accountId !== accountId)
+    return { status: "failed", detail: "The account reading does not match this sign-in. No reset was attempted." };
   const credits = limits?.rateLimitResetCredits?.credits;
   if (!Array.isArray(credits))
     return { status: "failed", detail: "The account's reset-credit details are unavailable. No reset was attempted." };
@@ -138,7 +144,7 @@ export async function useCodexResetCredit(account: string, idempotencyKey = rand
     log("error", "codex_reset_credit_postread_failed", { error: error instanceof Error ? error.message : String(error) });
     return { status: "redeemed", detail: "The reset credit was redeemed, but current allowance could not be checked. Work remains held.", resetType };
   }
-  const sameAccount = limits?.accountId === after?.accountId;
+  const sameAccount = after?.accountId === accountId;
   const hasRoom = sameAccount && after?.ordinaryUsageAllowed === true;
   log("warn", "codex_reset_credit_used", {
     account_known: true, outcome,

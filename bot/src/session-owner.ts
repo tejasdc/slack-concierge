@@ -924,7 +924,9 @@ export class SessionOwner {
    * is not the one this machine is signed into.
    */
   useResetCredit(provider:string,account:string,machine?:unknown){
-    return this.authAction(machine,'reset-credit/use',{provider,account},30_000,()=>this.localAuth().useResetCredit(provider,account));
+    // Read, consume and confirm are three bounded App Server calls. A peer timeout must
+    // outlive all three or the surface loses the result after the credit may be spent.
+    return this.authAction(machine,'reset-credit/use',{provider,account},90_000,()=>this.localAuth().useResetCredit(provider,account));
   }
   retryHeldUsage(machine?:unknown){
     return this.authAction(machine,'usage/retry',{},120_000,()=>this.localAuth().retryHeldUsage());
