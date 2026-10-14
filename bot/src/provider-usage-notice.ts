@@ -18,6 +18,7 @@ import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy
 import type { UsageProvider } from "./provider-usage";
 import type {TurnContinuationReason} from './session-inputs';
 import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 
 /** A day, in the milliseconds the expiry arithmetic below counts in. */
 const DAY_MS = 24 * 60 * 60_000;
@@ -231,13 +232,14 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
  *  - Within this instance, the decision is recorded under an event id keyed to the exact
  *    hold episode *before* the attempt, so a second observer of the same episode is refused
  *    by SQLite rather than by timing.
- *  - Across machines, the provider is the lock. Both instances can see the same exhausted
- *    account, and `consume` answers `alreadyRedeemed`, which is treated as "someone already
- *    did it" and not as a failure. Nothing here tries to be clever about which machine goes
- *    first, because the only authority on whether a grant is still there is OpenAI.
+ *  - The exact hold episode is also the provider idempotency key. A repeated attempt with
+ *    that key can report `alreadyRedeemed`, meaning that attempt completed successfully.
+ *    Two machines may race with distinct hold episodes; OpenAI decides whether the named
+ *    credit remains available. Only a confirmed reset followed by a fresh account read
+ *    that permits ordinary work releases a hold.
  */
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
-  spend: (account: string) => Promise<{ status: string; detail: string }>,
+  spend: (account: string, idempotencyKey: string) => Promise<{ status: string; detail: string }>,
   afterUse: () => Promise<number>): Promise<void> {
   const provider = input.provider;
   const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn WHERE turn.id=?`).get(input.turnId) as {saved_kind:string|null}|null;
@@ -287,9 +289,14 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
     record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
       payload: { provider, account: decision.account, because: decision.because } });
   } catch { return; }
-  const outcome = await spend(decision.account);
-  if (outcome.status === "failed") {
-    log("warn", "provider_reset_auto_failed", { provider, account_known: true });
+  const digest = createHash("sha256").update(episode).digest("hex");
+  // Stable across restarts and short enough for the provider's recommended UUID shape.
+  const idempotencyKey = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+  const outcome = await spend(decision.account, idempotencyKey);
+  if (outcome.status !== "used") {
+    log("warn", "provider_reset_auto_not_confirmed", {
+      provider, account_known: true, outcome: outcome.status,
+    });
     return;
   }
   // Awaited so the remaining count below is read after the account was re-read, not before.

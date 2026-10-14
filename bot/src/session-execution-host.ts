@@ -337,7 +337,8 @@ export class SessionExecutionHost {
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
     const outcome=await useCodexResetCredit(account);
     if(outcome.status==='used'&&currentAccount('codex')?.label===account){clearProviderUsage('codex');this.options.wake();}
-    if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
+    if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none')
+      await scheduleProviderAccountUsageRefresh().catch(()=>{});
     return outcome;
   }
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
