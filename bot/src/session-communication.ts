@@ -19,7 +19,7 @@ import {boundSearchResponse} from './search-response-boundary';
 import {savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff} from './session-handoff';
+import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
@@ -202,6 +202,16 @@ export class SessionCommunicationCoordinator {
         const metadata = sessionMetadata(session);
         return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only'
             && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session));
+    }
+    /**
+     * A session whose work was handed to a successor keeps its reads and its closing outcome, but
+     * every owner write from it is refused with the successor's address (provider-change handoff).
+     */
+    private fenced(actor: Actor): Actor {
+        const next = supersededAddress(actor.session);
+        if (next) throw new Error(`This session's work was handed off; its obligations and authority moved to ${next}. Reads and your closing sessions outcome still work.`);
+        if (withdrawnSuccessor(actor.session)) throw new Error('This session was proposed as a successor and the handoff was withdrawn; it holds no obligations.');
+        return actor;
     }
     private actor(source: CommunicationSource): Actor {
         if (source?.input_id || source?.run_id) {
@@ -548,7 +558,7 @@ export class SessionCommunicationCoordinator {
     /** Moves a session (this one or another on this machine) to a project or a folder inside one; see SessionOwner.moveSession. */
     move(input:{source:CommunicationSource;action_id:string;address:string;project:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source);
+        const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         if(!actor.inputId)throw new Error('Moving a session needs a native source input.');
@@ -565,7 +575,7 @@ export class SessionCommunicationCoordinator {
     }
     title(input:{source:CommunicationSource;action_id:string;title:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source),title=normalizeSessionTitle(input.title);
+        const actor=this.fenced(this.actor(input.source)),title=normalizeSessionTitle(input.title);
         action(input.action_id);
         if(!title)throw new Error('A session title is required.');
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
@@ -594,7 +604,7 @@ export class SessionCommunicationCoordinator {
      */
     thread(input:{source:CommunicationSource;action_id:string;input_id:string;thread?:string;detach?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source);action(input.action_id);
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const detach=input.detach===true;
         if(detach===(typeof input.thread==='string'&&!!input.thread.trim()))throw new Error('Give either --thread <message id> or --detach.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
@@ -632,7 +642,7 @@ export class SessionCommunicationCoordinator {
      */
     post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;keep_working?:boolean;attachments?:string[];files?:AttachedFile[]}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source);action(input.action_id);
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
         // A post carrying files is a message even without words: the mockups are the answer.
         const text=message(typeof input.text==='string'?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
@@ -747,7 +757,7 @@ export class SessionCommunicationCoordinator {
     }
     async note(input:{source:CommunicationSource;action_id:string;captureId:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
-        const actor=this.actor(input.source);action(input.action_id);
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
@@ -796,7 +806,7 @@ export class SessionCommunicationCoordinator {
         return null;
     }
     cancel(input:{source:CommunicationSource;request_id:string;action_id:string;reason?:string}) {
-        const actor=this.actor(input.source);
+        const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(input.reason==='provider-change'){
             const target=(db.query('SELECT target_session_id FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {target_session_id:number}|null)?.target_session_id;
@@ -898,6 +908,7 @@ export class SessionCommunicationCoordinator {
         const actor=this.actor(input.source);
         if(!actor.inputId)throw new Error('Handoff requires an exact native source input and run.');
         if(input.verb==='propose'){
+            this.fenced(actor);
             if(!input.address||!input.provider||!input.reason||!input.action_id)throw new Error('Handoff needs predecessor address, provider, reason and stable action ID.');
             action(input.action_id);
             const proposed=await proposeHandoff({actorSession:actor.session,inputId:actor.inputId,runId:nativeRunId(actor.turn),
@@ -927,7 +938,7 @@ export class SessionCommunicationCoordinator {
         if(!input.source?.input_id)throw new Error('Open a link from an admitted native run: use --source-input and --source-run.');
         const links=this.dependencies.owner?.peerLinks;
         if(!links)throw new Error('Opening links on another machine is not available on this instance.');
-        const actor=this.actor(input.source);
+        const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
@@ -937,6 +948,7 @@ export class SessionCommunicationCoordinator {
         if(!input.source?.input_id)throw new Error('A watch is registered from an admitted native run: use --source-input and --source-run.');
         const actor=this.actor(input.source),origin={originInputId:actor.inputId!,originRunId:nativeRunId(actor.turn)};
         if(input.verb==='list')return {watches:listWatches(actor.session)};
+        this.fenced(actor);
         if(!input.action_id)throw new Error('A watch command needs a stable --action-id.');
         action(input.action_id);
         if(input.verb==='cancel'){
@@ -983,7 +995,7 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
-        const sender = this.authority(this.actor(input.source));
+        const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
         text(input.text);
@@ -1349,7 +1361,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             // A retry after the run ended returns the committed reply, as for a local request.
             if (input.source.input_id && db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(JSON.stringify(['input', input.source.input_id, input.action_id])))
                 return this.dependencies.peers.inspectDelivery(input.request_id);
-            const actor = this.actor(input.source);
+            const actor = this.fenced(this.actor(input.source));
             action(input.action_id);
             message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));
             if (typeof input.final !== 'boolean')
@@ -1391,7 +1403,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 return this.receipt(this.row(input.request_id));
             }
         }
-        const actor = this.actor(input.source);
+        const actor = this.fenced(this.actor(input.source));
         action(input.action_id);
         message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));
         if (typeof input.final !== 'boolean')
