@@ -232,7 +232,7 @@ provider-change` is refused with the exact handoff command instead. Ordinary
 The [session owner](../architecture/SESSION-OWNER.md#provider-change-handoff) owns the
 transfer and fencing contract.
 
-**Watching without waiting.** `sessions watch file <absolute-path> --until <ISO time|90s|30m|2h|1d>`,
+**Watching without waiting.** `sessions watch file <absolute-path> --until <ISO time|90s|30m|2h|1d> [--renew]`,
 `sessions watch command --cwd <dir> --until … -- <argv…>`, `sessions watch list` and
 `sessions watch cancel <watch-id>` (each with the run's `--source-input/--source-run` and, except
 `list`, a stable `--action-id`) wake this conversation once, when the file or directory changes
