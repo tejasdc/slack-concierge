@@ -159,13 +159,13 @@ export function clearProviderUsage(provider: UsageProvider) {
 }
 
 /** A verified Codex reset invalidates only the account that redeemed it. */
-export function clearCodexAccountUsage(accountId: string, verifiedAtMs: number): boolean {
+export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtMs: number): boolean {
   if (!accountId) throw new Error("A verified Codex account ID is required to clear its refusal.");
-  if (!Number.isSafeInteger(verifiedAtMs) || verifiedAtMs > Date.now())
-    throw new Error("A confirming Codex read time is required to clear its refusal.");
+  if (!Number.isSafeInteger(verifiedReadStartedAtMs) || verifiedReadStartedAtMs > Date.now())
+    throw new Error("A confirming Codex read start time is required to clear its refusal.");
   const cleared = db.transaction(() => {
     const state = read("codex");
-    if ((state.limits[accountId]?.observedAt ?? -1) >= verifiedAtMs) return false;
+    if ((state.limits[accountId]?.observedAt ?? -1) >= verifiedReadStartedAtMs) return false;
     // Keep a scope tombstone with newer revision, so an old A failure cannot restore
     // A's limit. B's concurrent failure remains recordable under B's own scope.
     state.limits[accountId] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };

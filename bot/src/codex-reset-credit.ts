@@ -40,8 +40,8 @@ export type ResetCreditOutcome = Readonly<{
   resetType?: string | null;
   /** Provider identity verified on both limits reads after a usable redemption. */
   accountId?: string;
-  /** Local completion time of the confirming limits read, for refusal ordering. */
-  verifiedAtMs?: number;
+  /** Conservative lower bound: local time before the confirming limits read starts. */
+  verifiedReadStartedAtMs?: number;
   /** Fresh post-redemption credit count; never inferred from the older Accounts snapshot. */
   remainingCredits?: number | null;
   nextExpiresAt?: string | null;
@@ -264,8 +264,10 @@ export async function useCodexResetCredit(account: string, idempotencyKey = rand
   // The installed App Server response names no reset windows. A fresh source read must
   // prove that this same account now permits ordinary included work before releasing holds.
   let after: any;
-  let verifiedAtMs: number;
-  try { after = await callAppServer(home, "account/rateLimits/read", {}); verifiedAtMs = Date.now(); }
+  // A refusal can arrive while this HTTP read is in flight. Starting the clock before
+  // even launching the child makes any such refusal newer than the read's evidence.
+  const verifiedReadStartedAtMs = Date.now();
+  try { after = await callAppServer(home, "account/rateLimits/read", {}); }
   catch (error) {
     log("error", "codex_reset_credit_postread_failed", { error: error instanceof Error ? error.message : String(error) });
     return { status: "redeemed", detail: "The reset credit was redeemed, but current allowance could not be checked. Work remains held.", resetType };
@@ -285,6 +287,6 @@ export async function useCodexResetCredit(account: string, idempotencyKey = rand
   });
   return hasRoom
     ? { status: "used", detail: "The reset credit was redeemed and this account now permits ordinary included work.",
-        resetType, accountId, verifiedAtMs, remainingCredits, nextExpiresAt }
+        resetType, accountId, verifiedReadStartedAtMs, remainingCredits, nextExpiresAt }
     : { status: "redeemed", detail: "The reset credit was redeemed, but this account has not confirmed room for ordinary work. Work remains held.", resetType };
 }

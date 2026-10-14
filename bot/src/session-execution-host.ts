@@ -336,9 +336,9 @@ export class SessionExecutionHost {
   private async useProviderResetCredit(provider:string,account:string){
     if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
     let outcome=await useCodexResetCredit(account);
-    if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedAtMs){
+    if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
       try {
-        const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedAtMs);
+        const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared&&currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
         else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but current launch availability is unconfirmed. Work remains held.'};
       } catch(error) {

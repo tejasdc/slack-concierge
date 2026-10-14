@@ -648,7 +648,8 @@ same nonempty account ID as that home's sign-in; a missing or changed ID never p
 that the named account recovered. Only a matching fresh read saying ordinary included
 work is allowed invalidates that account's old refusal, preserving a per-account ordering
 marker so an earlier in-flight failure cannot restore it while another account's refusal
-can still be recorded. A refusal recorded after the confirming limits read is never cleared
+can still be recorded. A refusal recorded after the confirming limits read begins, including
+while its HTTP request is in flight, is never cleared
 by that read. Only ordinary held work on the active Codex login becomes
 eligible to retry. If the selected login changed meanwhile, redemption is still reported,
 with zero work made eligible. Eligibility is not provider admission or completed work. A read-only probe of

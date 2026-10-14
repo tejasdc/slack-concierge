@@ -240,7 +240,7 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
  */
 export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
   spend: (account: string, idempotencyKey: string, beforeConsume: () => void) => Promise<{ status: string; detail: string;
-    accountId?: string; verifiedAtMs?: number; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
+    accountId?: string; verifiedReadStartedAtMs?: number; remainingCredits?: number | null; nextExpiresAt?: string | null }>,
   afterUse: (accountId: string) => Promise<number>): Promise<void> {
   const provider = input.provider;
   const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn JOIN sessions session ON session.id=turn.session_id
@@ -292,14 +292,14 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
     record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
       payload: { provider, account: decision.account, because: decision.because } });
   });
-  if (outcome.status !== "used" || !outcome.accountId || !outcome.verifiedAtMs) {
+  if (outcome.status !== "used" || !outcome.accountId || !outcome.verifiedReadStartedAtMs) {
     log("warn", "provider_reset_auto_not_confirmed", {
       provider, account_known: true, outcome: outcome.status,
     });
     return;
   }
   let cleared = false;
-  try { cleared = clearCodexAccountUsage(outcome.accountId, outcome.verifiedAtMs); }
+  try { cleared = clearCodexAccountUsage(outcome.accountId, outcome.verifiedReadStartedAtMs); }
   catch (error) { log("error", "provider_reset_auto_cache_clear_failed", {
     provider, error: error instanceof Error ? error.message : String(error) }); }
   let released = 0;
