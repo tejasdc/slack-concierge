@@ -35,6 +35,9 @@ after a newer release succeeds; see [repair ownership](docs/architecture/DEPLOYM
 
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
+Direct messages to the Inbox router join its running turn, ahead of later service inputs;
+capture ordering and ordinary sessions' explicit Queue remain intact. See
+[Inbox direct delivery](docs/contracts/native-inbox.md#direct-messages-to-the-inbox-router).
 The shared end-of-turn hook refuses Inbox completion while received human inputs remain
 unfiled, including earlier turns. Filing or an explicitly closed noise thread resolves it;
 see [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping).

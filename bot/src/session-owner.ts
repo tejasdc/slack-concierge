@@ -218,7 +218,7 @@ const savedExcerpt=(content:string)=>{const text=content.replace(/\s+/g,' ').tri
 const SAVED_MESSAGE_SEARCH_PAGES=25;
 /** Opaque to clients. `s` is the ledger head read before the page; `a`, `h` and `n` are the
  * newest message, a fingerprint of the ids and their count for the window the client holds. */
-type HistoryPosition={v:1;k:HistoryPath;s:number;g:number;a:string|null;h:string|null;n:number};
+type HistoryPosition={v:1;k:HistoryPath;s:number;g:number;a:string|null;h:string|null;n:number;t?:'activity'};
 const ledgerHead=()=>(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence;
 const newestInputRow=(sessionId:number)=>(db.query('SELECT COALESCE(MAX(rowid),0) AS rowid FROM session_inputs WHERE session_id=?').get(sessionId) as {rowid:number}).rowid;
 /** Opaque to clients: the session, the newest input then, and the inputs still able to change. */
@@ -327,11 +327,12 @@ function decodePosition(value:string):HistoryPosition|null {
     return position?.v===1&&['inbox','provider','none'].includes(position.k)&&[position.s,position.g,position.n].every(Number.isSafeInteger)
       &&position.s>=0&&position.g>=1&&position.n>=0&&position.n<=HISTORY_CHANGE_LIMIT
       &&(position.a===null||typeof position.a==='string'&&position.a.length<=512)
-      &&(position.h===null||typeof position.h==='string'&&/^[a-f0-9]{32}$/.test(position.h))?position:null;
+      &&(position.h===null||typeof position.h==='string'&&/^[a-f0-9]{32}$/.test(position.h))
+      &&(position.t===undefined||position.t==='activity')?position:null;
   } catch {return null;}
 }
-function pagePosition(path:HistoryPath,head:number,generation:number,messages:readonly {id:string}[]):HistoryPosition {
-  if(path!=='provider')return {v:1,k:path,s:head,g:generation,a:null,h:null,n:0};
+function pagePosition(path:HistoryPath,head:number,generation:number,messages:readonly {id:string}[],activity=false):HistoryPosition {
+  if(path!=='provider')return {v:1,k:path,s:head,g:generation,a:null,h:null,n:0,...(path==='inbox'&&activity?{t:'activity' as const}:{})};
   const window=messages.slice(-HISTORY_WINDOW).map(message=>message.id);
   return {v:1,k:path,s:head,g:generation,a:window.at(-1)??null,h:windowHash(window),n:window.length};
 }
@@ -1161,7 +1162,8 @@ export class SessionOwner {
     if(input.turn_id!==null){this.runtime.wake();return input;}
     if(!this.canSend(session)) return input;
     const payload=JSON.parse(input.payload_json);
-    if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer')enqueueSessionInput(input.id);
+    const liveInboxMessage=input.receipt_json&&JSON.parse(input.receipt_json).admissionIntent==='live';
+    if(!liveInboxMessage&&(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer'))enqueueSessionInput(input.id);
     else if(!this.runtime.steer(input)) {
       // His message whose piece of work ended between admission and delivery is the session's next
       // message, never a failure; only a non-human exact-run delivery fails here.
@@ -1824,6 +1826,10 @@ export class SessionOwner {
     // Marked agent test inputs exercise the same thread forwarding path while retaining their
     // agent authorship. Ordinary service/agent inputs enter through admit, not this human surface.
     const forward=input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
+    // The Inbox is his control conversation. A queued composer choice (including an old
+    // browser's default) must not put him behind service notices in its running turn.
+    // Captures still use their ordered intake; addressed replies keep their target.
+    const liveInboxMessage=!!sessionMetadata(session).inbox&&!forward;
     const retained=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
@@ -1838,6 +1844,10 @@ export class SessionOwner {
         recordForwardedThreadReply(session,saved.input,forward);
         // Local request creation has no external effect; acceptance and its next step commit together.
         if(!forward.peer)this.communication.forwardReply({inbox:session,inputId:saved.input.id,target:forward,text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
+      } else if(liveInboxMessage&&!saved.duplicate&&!canceled) {
+        // Retain the dispatch intent before touching the provider so a restart in this gap
+        // can resume only an input with no previous turn, steering or request custody.
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),saved.input.id);
       } else if(!forward&&!saved.duplicate&&!canceled&&input.delivery!=='steer'&&this.canSend(session)) {
         // The accepted input and its queued turn are one transaction.
         enqueueSessionInput(saved.input.id);
@@ -1854,7 +1864,7 @@ export class SessionOwner {
       return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
     }
     const current=getAcceptedSessionInput(retained.input.id)!;
-    if(current.receipt_json&&JSON.parse(current.receipt_json).admissionIntent==='queue')this.communication?.wake();
+    if(current.receipt_json&&JSON.parse(current.receipt_json).admissionIntent)this.communication?.wake();
     return {operation:this.receipt(this.dispatch(current))};
   }
   /** Complete a retained admission without changing its input or request identity. */
@@ -1863,9 +1873,9 @@ export class SessionOwner {
       ||input.steering_id!==null||input.request_id!==null)return;
     const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
     const marked=JSON.parse(input.payload_json).agentSource;
-    const agentForward=input.origin==='agent'&&!!receipt?.forwardTarget&&typeof input.source_input_id==='string'
+    const markedAgent=input.origin==='agent'&&(!!receipt?.forwardTarget||receipt?.admissionIntent==='live')&&typeof input.source_input_id==='string'
       &&typeof input.source_run_id==='string'&&marked?.inputId===input.source_input_id&&marked?.runId===input.source_run_id;
-    if(!(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null)&&!agentForward)return;
+    if(!(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null)&&!markedAgent)return;
     // A detached binding can retain evidence of a prior, possibly ambiguous provider send.
     // Only an explicit intent written by this admission path is eligible for recovery.
     if(db.query('SELECT 1 FROM turns WHERE accepted_input_id=? LIMIT 1').get(input.id)
@@ -1873,7 +1883,7 @@ export class SessionOwner {
       ||db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? LIMIT 1').get(input.id)
       ||db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? LIMIT 1').get(input.id))return;
     if(receipt?.state&&receipt.state!=='waiting')return;
-    if(receipt?.admissionIntent!=='queue'&&!receipt?.forwardTarget) {
+    if(!['queue','live'].includes(receipt?.admissionIntent)&&!receipt?.forwardTarget) {
       // Older split-commit records have no proof that an external effect never began.
       // An exact duplicate exposes that uncertainty; it never starts another run.
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...receipt,state:'uncertain',
@@ -1891,7 +1901,7 @@ export class SessionOwner {
         text:String(payload.text??''),...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments}:{})});
       return;
     }
-    if(receipt?.admissionIntent==='queue'&&this.canSend(getSessionById(input.session_id)!))this.dispatch(input);
+    if(['queue','live'].includes(receipt?.admissionIntent)&&this.canSend(getSessionById(input.session_id)!))this.dispatch(input);
   }
   /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
   private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}|null {
@@ -2212,9 +2222,9 @@ export class SessionOwner {
   }
   /** Every page states the ledger position it reflects, read before the page itself so
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
-  async history(id:string,cursor:string|null,limit:number) {
+  async history(id:string,cursor:string|null,limit:number,activity=false) {
     const session=this.session(id);
-    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)){
+    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)&&!(activity&&sessionMetadata(session).inbox)){
       try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
       catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
         return {messages:[],nextCursor:null,coverage:{complete:false,code:'history_indexing',retryAfterMs:1000,
@@ -2231,8 +2241,8 @@ export class SessionOwner {
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
     }
     const head=ledgerHead();
-    const page=await this.readHistory(id,cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit))) as ProviderHistoryPage,metadata=sessionMetadata(session);
-    const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages));
+    const page=await this.readHistory(id,cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),activity) as ProviderHistoryPage,metadata=sessionMetadata(session);
+    const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages,activity));
     if((page as any)[ledgerHistory])return {...page,asOf,messages:page.messages.map(previewHistoryMessage)};
     if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>previewHistoryMessage({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
     const projected=projectSessionHistory(parseSessionId(id),page);
@@ -2243,9 +2253,9 @@ export class SessionOwner {
    * or `{reset:true}` whenever the owner cannot say so truthfully. A reset costs one
    * latest-page read; a wrong delta would leave a client silently showing stale history.
    */
-  async historyDelta(id:string,after:string) {
+  async historyDelta(id:string,after:string,activity=false) {
     const delegated=this.session(id);
-    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)){
+    if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)&&!(activity&&sessionMetadata(delegated).inbox)){
       try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
       catch(error){if(error instanceof Error&&['HISTORY_PAGE_STILL_PREPARING','STALE_HISTORY_CURSOR'].includes(error.message))return {reset:true};
         const status=typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503;
@@ -2254,12 +2264,13 @@ export class SessionOwner {
     }
     const reset={reset:true as const};
     const position=decodePosition(after),session=this.session(id);
-    if(!position||position.k==='none'||position.n>HISTORY_WINDOW||position.g!==(session.binding_generation??1))return reset;
+    if(!position||position.k==='none'||position.n>HISTORY_WINDOW||position.g!==(session.binding_generation??1)
+      ||position.k==='inbox'&&(position.t==='activity')!==activity)return reset;
     const head=ledgerHead();
     if(position.s>head||position.k==='inbox'&&(position.n!==0||position.a!==null)||
       position.k==='provider'&&!(position.a===null&&position.n===0||position.a!==null&&position.n>0&&position.h!==null))return reset;
     if(position.k==='inbox') {
-      const messages=inboxHistoryAfter(session,position.s,HISTORY_WINDOW);
+      const messages=inboxHistoryAfter(session,position.s,HISTORY_WINDOW,activity);
       return messages?{messages:messages.map(message=>previewHistoryMessage(this.projectInboxMessage(message))),asOf:encodePosition({...position,s:head})}:reset;
     }
     if(!['codex','claude-code'].includes(session.provider_id)||!this.runtime.history)return reset;
@@ -2321,7 +2332,7 @@ export class SessionOwner {
     // A user message may be displayed from its immutable accepted input, rather than
     // provider scaffolding; the detail must use those same words and exact attribution.
     if(!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
-    else if(metadata.inbox)message=this.projectInboxMessage(message as any);
+    else if(metadata.inbox)message=this.projectInboxMessage({...message,sourceSessionId:session.id} as any);
     return historyContent(message);
     };
     return await (part===null?this.historyDetails.body(key,digest,load):this.historyDetails.part(key,digest,part,load));}
@@ -2334,9 +2345,9 @@ export class SessionOwner {
   private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
     return inboxAttribution(db)(message);
   }
-  private async readHistory(id:string,cursor:string|null,limit:number) {
+  private async readHistory(id:string,cursor:string|null,limit:number,activity=false) {
     const session=this.session(id);
-    const inbox=inboxHistory(session,cursor,limit);if(inbox)return {...inbox,[ledgerHistory]:true,[historyPath]:'inbox',messages:inbox.messages.map(message=>this.projectInboxMessage(message))};
+    const inbox=inboxHistory(session,cursor,limit,activity);if(inbox)return {...inbox,[ledgerHistory]:true,[historyPath]:'inbox',messages:inbox.messages.map(message=>this.projectInboxMessage(message))};
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
     if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);
@@ -3281,9 +3292,10 @@ export class SessionOwner {
         throw new SessionOwnerError('Read the exact session view or a prepared receipt page.',410,'PAGED_READER_REQUIRED');
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');
+        const activity=url.searchParams.get('activity')==='true';
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
-        result=after!==null?await this.historyDelta(parts[1]!,after)
-          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)));
+        result=after!==null?await this.historyDelta(parts[1]!,after,activity)
+          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity);
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6){
         const part=url.searchParams.has('part')?Number(url.searchParams.get('part')):null;

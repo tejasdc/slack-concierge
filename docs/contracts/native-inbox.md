@@ -53,7 +53,26 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
-An accepted executable message and its local queued turn commit together. A forwarded
+### Direct messages to the Inbox router
+
+A human-surface message addressed to the Inbox router joins its running turn through the
+same provider controller used for agent requests and service notices. The owner applies
+this rule even when an older composer supplies `delivery:"queue"`. The Inbox composer
+does not offer Queue: it is the control conversation for ongoing work. Thread replies
+addressed to a worker still go to that worker. Captures still use ordered intake, with
+Move next and Work with current run; explicit Queue in ordinary sessions still means
+finish the current turn before starting this separate instruction. Saved work keeps its
+chosen time. Those guarantees are why queue delivery remains available.
+
+Admission retains `admissionIntent:"live"` atomically with the exact message before trying
+the provider. No active accepting run means this same input enters the normal queue. A
+provably unsent refusal recovers that input; acknowledged or ambiguous sends never replay.
+Every later live input to the Inbox first brings in earlier, unreceived direct human
+messages in arrival order, including messages old browsers marked Queue. It excludes
+captures, saved work, dependencies and any prior provider admission. This prevents a
+service notice from passing a human message during a run-start race.
+
+An ordinary accepted executable message and its local queued turn commit together. A forwarded
 thread reply and its local agent request also commit together; the request attempts live
 delivery into a busy recipient and queues only when no live run can take it. A marked
 agent test reply uses the same entrance with agent authorship. Forwarding to another
@@ -66,8 +85,8 @@ same input on retry or reconciliation and creates at most one queued turn.
 The private `accepted-input-admission-fixture.ts` exercises rollback for local forwarding,
 retained peer intent and exact-input recovery after turn insertion refusal,
 same-action duplicate and changed-payload refusal. Recovery acts only on explicit
-queue or forwarding intents with no turn, steering or request custody. A marked
-agent test reply may retain source-run custody: its peer forwarding intent advances
+queue, live-delivery or forwarding intents with no turn, steering or request custody. A marked
+agent test reply may retain source-run custody: its live-delivery or peer forwarding intent advances
 only when those source fields exactly match its retained agent source. Other agent
 inputs cannot enter this recovery path. Ordinary human input has no source-run custody;
 an exact duplicate of an older unbound message without that proof gets an explicit
@@ -199,6 +218,15 @@ terminal results consume page capacity; live provider message/tool observations 
 not displace durable dialogue. The existing numeric event-sequence cursor remains the
 stable page boundary across this ordering correction; continuation uses a strict older
 predicate so it cannot repeat the boundary or loop.
+
+The full Inbox session transcript requests `activity=true` on the same bounded history
+page and delta routes. That view includes retained provider tool steps, including command
+launches and results, in their event order with exact message IDs and agent attribution.
+Its cursor is bound to the activity view, so a compact-history cursor requires a fresh
+head page instead of silently skipping earlier tools. The default history remains compact
+for ordinary Inbox thread reading; the activity view does not copy the whole run into
+each thread. A background command appears through its retained launch and result tool
+messages, while the existing background-wait state reports that it is still running.
 
 The Inbox agent interprets explicit verbs and ordinary clear requests. Ambiguity
 asks Tejas; ideas or quoted proposals do not authorize implementation. Work routes
