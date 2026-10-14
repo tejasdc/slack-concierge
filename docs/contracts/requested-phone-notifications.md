@@ -18,7 +18,11 @@ The filed answer's existing requested-result event pushes once; the promise sett
 in that same ledger transaction, with a visible fulfilled entry and no second push.
 An Inbox router turn cannot close as `done`, `failed`, or `needs_you` with an
 unarranged result promise: it must dispatch work from the input, answer with
-`response`, or point the promise at an existing session.
+`response`, or point the promise at an existing session. Once pointed, an
+immediate `response` for that same input would push early and then push again
+when the session ends; the owner refuses an explicit one and treats an already
+finished turn's inferred response as `done`. The router can post a status in
+the thread and close `done` while the promise waits.
 
 The router points it with `router-actions.sh sessions notify-when --thread
 <human-message-id> --session concierge:N|mac:N [--on done,needs-you,hold]

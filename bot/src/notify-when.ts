@@ -1,5 +1,8 @@
 import {db,executionChanged,getSessionById} from './state';
+import type {AcceptedSessionInput} from './session-inputs';
 import type {PeerClient} from './session-peers';
+import type {SessionOwner} from './session-owner';
+import {log,errorFields} from './log';
 
 // A result request is a durable obligation of the exact human input. The owner commits its
 // terminal state with the Inbox event that describes it; the notifier consumes that event.
@@ -39,6 +42,7 @@ export function showNotificationPromise(inputId:string){
 }
 
 export function requestedNotificationInput(inputId:string):boolean{return !!promise(inputId);}
+export function notificationPromisePointed(inputId:string):boolean{return !!promise(inputId)?.target_session;}
 export function responseSettlesNotification(inputId:string):boolean{
   const row=promise(inputId);
   return !!row&&row.state==='pending'&&!row.target_session&&row.expires_at_ms>Date.now();
@@ -124,27 +128,42 @@ export function settleNotificationByAnswer(inputId:string,sourceEventId:string){
   if(row?.state==='pending')finish(row,'fired','Phone notification fulfilled by the answer in this thread.',sourceEventId);
 }
 
-export function reconcileLocalNotificationPromises(now=Date.now()){
+export function reconcileLocalNotificationPromises(owner:SessionOwner,now=Date.now()){
   const rows=db.query(`SELECT * FROM inbox_notification_promises WHERE state='pending'
     AND (target_session LIKE 'concierge:%' OR expires_at_ms<=?) ORDER BY expires_at_ms`).all(now) as PromiseRow[];
   for(const row of rows){
     if(row.expires_at_ms<=now){finish(row,'expired','Phone notification expired before the requested result was observed.');continue;}
     if(!row.target_session?.startsWith('concierge:'))continue;
     const sessionId=Number(row.target_session.slice('concierge:'.length));
-    const turn=db.query(`SELECT id,status,dispatch_failure_class,dispatch_hold,native_run_id FROM turns
-      WHERE session_id=? AND id>=? ORDER BY id LIMIT 1`).get(sessionId,row.baseline_turn_id??0) as
-      {id:number;status:string;dispatch_failure_class:string|null;dispatch_hold:string|null;native_run_id:string|null}|null;
-    if(!turn||turn.id===(row.baseline_turn_id??0)&&row.target_run_id===null)continue;
+    const firstId=(row.baseline_turn_id??0)+(row.target_run_id?0:1);
+    const turn=db.query(`SELECT id,status,accepted_input_id FROM turns
+      WHERE session_id=? AND id>=? ORDER BY id LIMIT 1`).get(sessionId,firstId) as
+      {id:number;status:string;accepted_input_id:string|null}|null;
+    if(!turn)continue;
     const conditions=row.conditions.split(',');
     const label=row.summary.replace(/[.?!]+$/,'');
-    if(conditions.includes('hold')&&turn.status==='queued'&&/auth|sign|usage|account|budget/i.test(`${turn.dispatch_failure_class??''} ${turn.dispatch_hold??''}`))
-      finish(row,'fired',`${label} is waiting on an account, sign-in, or usage limit.`);
+    const retained=turn.accepted_input_id?db.query('SELECT * FROM session_inputs WHERE id=?').get(turn.accepted_input_id) as AcceptedSessionInput|null:null;
+    const detail=conditions.includes('hold')&&turn.status==='queued'&&retained?owner.receipt(retained).statusDetail:null;
+    if(detail&&['PROVIDER_AUTH_HELD','PROVIDER_USAGE_HELD'].includes(detail.code))
+      finish(row,'fired',`${label} is waiting: ${detail.message}`);
     else if(conditions.includes('needs-you')&&db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' AND json_extract(payload_json,'$.outcome')='needs_you' LIMIT 1").get(turn.id))
       finish(row,'fired',`${label} needs your answer.`);
     else if(conditions.includes('done')&&['done','error','cancelled'].includes(turn.status))
       finish(row,'fired',turn.status==='done'?`${label} finished.`:`${label} ended without finishing (${turn.status}).`);
   }
   return rows.length;
+}
+
+/** Shared by both the native and adapter compositions; the owner remains the only writer. */
+export function startLocalNotificationPromiseWatch(owner:SessionOwner,stopped:()=>boolean){
+  const reconcile=()=>{
+    if(stopped())return;
+    try {reconcileLocalNotificationPromises(owner);} catch(error) {log('error','notify_when_reconciliation_failed',errorFields(error));}
+  };
+  reconcile();
+  const timer=setInterval(reconcile,5_000);
+  timer.unref?.();
+  return ()=>clearInterval(timer);
 }
 
 export function hasPeerNotificationPromises(peer:string){

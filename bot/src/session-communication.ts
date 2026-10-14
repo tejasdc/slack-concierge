@@ -734,9 +734,10 @@ export class SessionCommunicationCoordinator {
             throw new Error(`This turn answers another agent's message in a thread, and its closing text never shows there. Post the answer first: sessions post --thread ${owed} --action-id <A> -- <the answer for Tejas>. Then declare the outcome.`);
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
-            const marked=db.query(`SELECT id FROM session_inputs WHERE origin='human'
+            const inbox=sessionMetadata(getSessionById(actor.session)!).inbox;
+            const marked=inbox?db.query(`SELECT id FROM session_inputs WHERE origin='human'
               AND json_extract(payload_json,'$.notificationRequest')='result'
-              AND (turn_id=? OR id IN (SELECT accepted_input_id FROM turn_steering_messages WHERE turn_id=?))`).all(actor.turn,actor.turn) as {id:string}[];
+              AND (turn_id=? OR id IN (SELECT accepted_input_id FROM turn_steering_messages WHERE turn_id=?))`).all(actor.turn,actor.turn) as {id:string}[]:[];
             for(const asked of marked)if(!(input.outcome==='response'&&asked.id===actor.inputId)&&!notificationPromiseCovered(asked.id))
                 throw new Error(`This turn has an unarranged requested phone notification for ${asked.id}. Dispatch its work, answer with response, or point it at the existing session: sessions notify-when --thread ${asked.id} --session concierge:N|mac:N --summary "<what he asked>" --action-id <A>.`);
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,

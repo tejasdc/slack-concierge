@@ -3,7 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
-import {responseSettlesNotification,settleNotificationByAnswer} from './notify-when';
+import {notificationPromisePointed,responseSettlesNotification,settleNotificationByAnswer} from './notify-when';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -81,6 +81,11 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // that showed him a heading and a link to his own message (Tejas, 2026-09-24: "I literally
   // cannot read this"), so it is refused when declared, and a finished turn's is recorded done.
   let outcome=input.outcome;
+  if(outcome==='response'&&notificationPromisePointed(input.inputId)){
+    if(input.refuseUnreadable)throw new Error('This input already has a future phone notification. Post any current status into its thread and declare done; its pointed session will send the requested push.');
+    log('info','pointed_notification_response_deferred',{session_id:input.sessionId,input_id:input.inputId,event_id:input.eventId});
+    outcome='done';
+  }
   if(outcome==='response'&&meta.inbox&&!readsForTurn(input.sessionId,input.turnId,new Set([inputId])).length) {
     if(input.refuseUnreadable)throw new Error('response needs something to read: post the answer into this thread first (sessions post), then declare it.');
     log('warn','turn_response_without_reads',{session_id:input.sessionId,turn_id:input.turnId,input_id:inputId,event_id:input.eventId});
