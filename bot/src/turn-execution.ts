@@ -639,6 +639,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
+        if(event.type==='tool_started')input.cancellationController?.toolStarted(event.itemId??event.toolName??'tool');
+        if(event.type==='tool_finished')input.cancellationController?.toolFinished(event.itemId??event.toolName??'tool');
         if(event.type==='started'&&runningClaudeAccount&&!accountRecorded){
           accountRecorded=true;
           try {
@@ -669,7 +671,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       onSteeringReady: (sender) => input.steeringController.registerSender(sender, attachmentRoot!),
       onCancellationReady: (cancel) => {
         input.cancellationController?.register(cancel);
-        if (turnStopWasRequested(input.turnId)) void input.cancellationController?.request();
+        if (turnStopWasRequested(input.turnId)) {
+          const paused=db.query(`SELECT 1 FROM global_pause_targets target JOIN global_pause pause ON pause.generation=target.generation
+            WHERE pause.singleton=1 AND pause.paused=1 AND target.turn_id=?`).get(input.turnId);
+          if(paused)void input.cancellationController?.requestAtSafePoint();
+          else void input.cancellationController?.request();
+        }
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),

@@ -35,6 +35,8 @@ export interface ActiveSteeringTarget {
 export class TurnCancellationController {
   private cancel: (() => Promise<void>) | null = null;
   private requested = false;
+  private waitForTools = false;
+  private readonly activeTools = new Map<string,number>();
   private dispatched = false;
   private completion: Promise<void> | null = null;
   private resolveCompletion: (() => void) | null = null;
@@ -48,6 +50,7 @@ export class TurnCancellationController {
 
   request() {
     this.requested = true;
+    this.waitForTools = false;
     if (!this.completion) {
       this.completion = new Promise<void>((resolve, reject) => {
         this.resolveCompletion = resolve;
@@ -58,6 +61,30 @@ export class TurnCancellationController {
     return this.completion;
   }
 
+  requestAtSafePoint() {
+    this.requested = true;
+    this.waitForTools = true;
+    if (!this.completion) {
+      this.completion = new Promise<void>((resolve, reject) => {
+        this.resolveCompletion = resolve;
+        this.rejectCompletion = reject;
+      });
+    }
+    this.dispatch();
+    return this.completion;
+  }
+
+  toolStarted(itemId: string) {
+    this.activeTools.set(itemId,(this.activeTools.get(itemId)??0)+1);
+  }
+
+  toolFinished(itemId: string) {
+    const active=this.activeTools.get(itemId)??0;
+    if(active<=1)this.activeTools.delete(itemId);
+    else this.activeTools.set(itemId,active-1);
+    this.dispatch();
+  }
+
   close(reason = new Error("The turn ended before provider cancellation was available.")) {
     if (!this.requested || this.dispatched) return;
     this.rejectCompletion?.(reason);
@@ -66,7 +93,7 @@ export class TurnCancellationController {
   }
 
   private dispatch() {
-    if (!this.cancel || this.dispatched) return;
+    if (!this.requested || !this.cancel || this.dispatched || this.waitForTools && this.activeTools.size>0) return;
     this.dispatched = true;
     const cancel = this.cancel;
     this.cancel = null;
@@ -170,6 +197,12 @@ export class ActiveTurnDispatchRegistry {
     const target = this.sessions.get(sessionId);
     if (!target || target.turnId !== turnId) return { matched: false };
     return { matched: true, completion: target.cancellation.request() };
+  }
+
+  requestSafeSessionCancellation(sessionId:number,turnId:number):{matched:false}|{matched:true;completion:Promise<void>} {
+    const target=this.sessions.get(sessionId);
+    if(!target||target.turnId!==turnId)return {matched:false};
+    return {matched:true,completion:target.cancellation.requestAtSafePoint()};
   }
 
   requestCancellation(

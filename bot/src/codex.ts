@@ -39,6 +39,7 @@ export type ProgressEvent =
   | { type: "compaction" }
   | { type: "steering"; clientMessageId: string }
   | { type: "tool_use"; toolName?: string; itemId?: string; details?: string }
+  | { type: "tool_started" | "tool_finished"; toolName?: string; itemId?: string }
   | { type: "done"; text?: string };
 
 export type ProgressCb = (event: ProgressEvent) => void;
@@ -664,6 +665,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
+    onProgress?.({type:phase==='started'?'tool_started':'tool_finished',toolName,...(itemId?{itemId}:{})});
     if (itemId) {
       if (progressedToolItemIds.has(itemId)) return;
       progressedToolItemIds.add(itemId);
@@ -1162,6 +1164,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
+    onProgress?.({type:phase==='started'?'tool_started':'tool_finished',toolName,...(itemId?{itemId}:{})});
     if (itemId) {
       if (progressedToolItemIds.has(itemId)) return;
       progressedToolItemIds.add(itemId);

@@ -14,7 +14,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { db } from "./state";
+import { db,globalPauseState } from "./state";
 import { log, errorFields } from "./log";
 import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
@@ -499,7 +499,11 @@ function pruneRecords(now: number) {
 
 /** One poll. `now` is a parameter so a pause can be simulated exactly. */
 export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
-  const open = db.query("SELECT * FROM watches WHERE state IN ('accepted','observing') ORDER BY created_at_ms").all() as WatchRow[];
+  const pause=globalPauseState();
+  const open = db.query(`SELECT * FROM watches WHERE state IN ('accepted','observing')
+    AND (?=0 OR EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
+      AND allowed.machine=? AND allowed.session_id=watches.session_id)) ORDER BY created_at_ms`)
+    .all(pause.paused?1:0,pause.generation,process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud') as WatchRow[];
   for (const row of open) {
     try {
       if (row.kind === "file") await observeFile(row, now);

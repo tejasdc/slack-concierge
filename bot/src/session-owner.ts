@@ -31,9 +31,10 @@ import {providerDisplayName,CHATGPT_THINKING_LEVELS,chatgptSessionModel,parsePro
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
+import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,globalPauseState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -367,6 +368,7 @@ export type SessionOwnerRuntime = {
   wake():void;
   steer(input:AcceptedSessionInput):boolean;
   stop(sessionId:number,turnId:number):Promise<boolean>;
+  safeStop?(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   peerForPath?(path:string):string|null;
   requestReceipt?(requestId:string):{outcome:string|null;result:any;execution?:{acknowledged_at:string|null}|null;events:Array<{event_id:string;kind:string;status:string;error:string|null}>}|null;
@@ -544,6 +546,237 @@ export class SessionOwner {
   }
   private get peers(){return this.communication?.peersOrNull()??null;}
   private get selfMachine(){return this.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';}
+  private pauseSync:Promise<void>|null=null;
+  globalPauseStatus(){
+    const state=globalPauseState();
+    const running=db.query(`SELECT target.session_id,target.run_id,target.title,target.turn_id,target.stop_error,turn.status,
+      turn.stop_requested_at,session.provider_id FROM global_pause_targets target LEFT JOIN turns turn ON turn.id=target.turn_id
+      JOIN sessions session ON session.id=target.session_id
+      WHERE target.generation=? ORDER BY target.turn_id DESC LIMIT 200`).all(state.generation) as Array<{
+        session_id:number;run_id:string;title:string;turn_id:number;status:string|null;stop_requested_at:string|null;stop_error:string|null;provider_id:string}>;
+    const waiting=(db.query(`SELECT count(*) AS count FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=? AND allowed.machine=?
+        AND allowed.session_id=session.id)`).get(state.generation,this.selfMachine) as {count:number}).count;
+    const waitingSessions=db.query(`SELECT session.id,COALESCE(json_extract(session.native_metadata_json,'$.title'),'Untitled conversation') AS title,
+      count(*) AS count FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=? AND allowed.machine=?
+        AND allowed.session_id=session.id)
+      GROUP BY session.id ORDER BY max(turn.id) DESC LIMIT 100`).all(state.generation,this.selfMachine) as Array<{id:number;title:string;count:number}>;
+    const peerRows=db.query('SELECT peer,generation,acknowledged_generation,last_error,snapshot_json,updated_at_ms FROM global_pause_peer_state').all() as Array<{
+      peer:string;generation:number;acknowledged_generation:number;last_error:string|null;snapshot_json:string|null;updated_at_ms:number}>;
+    const peers=(this.selfMachine==='cloud'?this.peers?.names()??[]:[]).map(name=>{
+      const row=peerRows.find(value=>value.peer===name);
+      return {name,reachable:row?row.last_error===null:null,paused:state.paused&&row?.acknowledged_generation===state.generation,
+        pending:state.generation>0&&(!row||row.acknowledged_generation!==state.generation),error:row?.last_error??null,
+        snapshot:row?.snapshot_json?JSON.parse(row.snapshot_json):null};
+    });
+    const allowed=db.query('SELECT machine,session_id FROM global_pause_exceptions WHERE generation=? ORDER BY machine,session_id')
+      .all(state.generation) as Array<{machine:string;session_id:number}>;
+    const action=db.query('SELECT session_ids_json FROM global_pause_actions WHERE generation=?')
+      .get(state.generation) as {session_ids_json:string}|null;
+    return {paused:state.paused,generation:state.generation,changedAt:state.changedAtMs?new Date(state.changedAtMs).toISOString():null,
+      running:running.map(row=>({sessionId:`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${row.session_id}`,runId:row.run_id,title:row.title,
+        stopState:row.status==='running'?(row.provider_id==='chatgpt'?'cannot_interrupt':row.stop_error?'unconfirmed':'stop_requested'):row.status==='cancelled'?'stopped':row.status??'unknown',
+        error:row.stop_error})),
+      waitingCount:waiting,waitingSessions:waitingSessions.map(row=>({sessionId:`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${row.id}`,title:row.title,count:row.count})),
+      allowed:allowed.map(row=>`${row.machine==='cloud'?'concierge':row.machine}:${row.session_id}`),
+      continued:JSON.parse(action?.session_ids_json??'[]') as string[],peers};
+  }
+  private applyGlobalPause(paused:boolean,clientActionId:string,generation?:number,sessionIds:readonly string[]=[],peerAllowed:readonly number[]=[],peerContinue:readonly number[]=[]){
+    if(typeof clientActionId!=='string'||!clientActionId||clientActionId.length>200)throw new SessionOwnerError('Stable clientActionId required.');
+    const chosen=[...new Set(sessionIds)].sort();
+    if(chosen.length>200||chosen.some(id=>!(/^(concierge|[a-z][a-z0-9-]*):[1-9][0-9]*$/.test(id))))
+      throw new SessionOwnerError('Choose up to 200 exact session IDs.',400,'PAUSE_SELECTION_INVALID');
+    const previousGeneration=globalPauseState().generation;
+    const next=db.transaction(()=>{
+      const current=globalPauseState();
+      if(generation!==undefined&&generation<current.generation)return current;
+      const prior=db.query('SELECT paused,session_ids_json FROM global_pause_actions WHERE action_id=?').get(clientActionId) as {paused:number;session_ids_json:string}|null;
+      if(prior){
+        if(prior.paused!==(paused?1:0)||prior.session_ids_json!==JSON.stringify(chosen))throw new SessionOwnerError('Pause action identity has another meaning.',409,'IDEMPOTENCY_CONFLICT');
+        return current;
+      }
+      if(chosen.length&&(!current.paused||paused))throw new SessionOwnerError('Selected resume needs an active pause.',409,'PAUSE_NOT_ACTIVE');
+      if(chosen.length)for(const id of chosen){
+        const [prefix,number]=id.split(':');
+        if(prefix==='concierge'&&!db.query('SELECT 1 FROM sessions WHERE id=?').get(Number(number)))
+          throw new SessionOwnerError(`Session ${id} is unknown.`,404,'PAUSE_SESSION_UNKNOWN');
+        if(prefix!=='concierge'&&prefix!==this.selfMachine&&!(this.peers?.names()??[]).includes(prefix!))
+          throw new SessionOwnerError(`Machine ${prefix} is unknown.`,404,'PAUSE_SESSION_UNKNOWN');
+      }
+      const nextGeneration=generation??current.generation+1;
+      if(generation!==undefined&&generation===current.generation&&paused!==current.paused)
+        throw new SessionOwnerError('Pause generation conflicts with this machine.',409,'PAUSE_CONFLICT');
+      const now=Date.now();
+      const remainsPaused=paused||chosen.length>0;
+      db.query('UPDATE global_pause SET paused=?,generation=?,action_id=?,changed_at_ms=? WHERE singleton=1')
+        .run(remainsPaused?1:0,nextGeneration,clientActionId,now);
+      db.query('INSERT INTO global_pause_actions(action_id,paused,generation,session_ids_json) VALUES(?,?,?,?)')
+        .run(paused?1:0,nextGeneration,clientActionId,JSON.stringify(chosen));
+      if(paused){
+        if(current.paused)db.query(`INSERT OR IGNORE INTO global_pause_targets(generation,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id)
+          SELECT ?,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id FROM global_pause_targets WHERE generation=?`).run(nextGeneration,current.generation);
+        if(current.paused)db.query(`INSERT OR IGNORE INTO global_pause_exceptions(generation,machine,session_id)
+          SELECT ?,machine,session_id FROM global_pause_exceptions WHERE generation=?`).run(nextGeneration,current.generation);
+        if(generation!==undefined)for(const sessionId of peerAllowed)db.query('INSERT OR IGNORE INTO global_pause_exceptions(generation,machine,session_id) VALUES(?,?,?)')
+          .run(nextGeneration,this.selfMachine,sessionId);
+        db.query(`INSERT OR IGNORE INTO global_pause_targets(generation,turn_id,session_id,run_id,title,requested_at_ms)
+          SELECT ?,turn.id,turn.session_id,turn.native_run_id,
+            COALESCE(json_extract(session.native_metadata_json,'$.title'),'Untitled conversation'),?
+          FROM turns turn JOIN sessions session ON session.id=turn.session_id
+          WHERE turn.status='running' AND turn.native_run_id IS NOT NULL
+            AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router'
+            AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
+              AND allowed.machine=? AND allowed.session_id=session.id)`).run(nextGeneration,now,nextGeneration,this.selfMachine);
+        db.query(`UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),
+          stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns))
+          WHERE status='running' AND native_run_id IS NOT NULL
+            AND session_id IN (SELECT id FROM sessions WHERE provider_id<>'chatgpt'
+              AND COALESCE(json_extract(native_metadata_json,'$.inboxRole'),'')<>'project-router')
+            AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
+              AND allowed.machine=? AND allowed.session_id=turns.session_id)`).run(nextGeneration,this.selfMachine);
+      } else if(chosen.length){
+        db.query(`INSERT INTO global_pause_targets(generation,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id)
+          SELECT ?,turn_id,session_id,run_id,title,requested_at_ms,stop_error,resumed_action_id FROM global_pause_targets WHERE generation=?`).run(nextGeneration,current.generation);
+        db.query(`INSERT INTO global_pause_exceptions(generation,machine,session_id)
+          SELECT ?,machine,session_id FROM global_pause_exceptions WHERE generation=?`).run(nextGeneration,current.generation);
+        for(const id of chosen){
+          const [prefix,number]=id.split(':');const machine=prefix==='concierge'?'cloud':prefix!;
+          db.query('INSERT OR IGNORE INTO global_pause_exceptions(generation,machine,session_id) VALUES(?,?,?)')
+            .run(nextGeneration,machine,Number(number));
+        }
+      }
+      return globalPauseState();
+    })();
+    executionChanged();this.runtime.wake();if(!paused||peerContinue.length)wakeWatchWorker();
+    if(paused)this.requestPausedStops();
+    if(!paused||peerContinue.length)this.resumePausedSessions(previousGeneration,
+      peerContinue.length?peerContinue.map(id=>`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${id}`):chosen,clientActionId);
+    return this.globalPauseStatus();
+  }
+  private resumePausedSessions(generation:number,chosen:readonly string[],action:string){
+    const targets=db.query(`SELECT target.session_id,target.turn_id,target.run_id,turn.accepted_input_id
+      FROM global_pause_targets target JOIN turns turn ON turn.id=target.turn_id
+      JOIN sessions session ON session.id=target.session_id WHERE target.generation=? AND target.resumed_action_id IS NULL
+        AND turn.status IN ('cancelled','interrupted','error')
+      ORDER BY target.turn_id`).all(generation) as Array<{session_id:number;turn_id:number;run_id:string;accepted_input_id:string|null}>;
+    const prefix=this.selfMachine==='cloud'?'concierge':this.selfMachine;
+    for(const target of targets){
+      if(chosen.length&&!chosen.includes(`${prefix}:${target.session_id}`))continue;
+      const inputId=`pause-resume:${target.turn_id}`;
+      const original=target.accepted_input_id?getAcceptedSessionInput(target.accepted_input_id):null;
+      const payload=original?JSON.parse(original.payload_json):{};
+      const originalInput=payload.firstInput??payload;
+      const originalText=typeof originalInput.text==='string'?originalInput.text:'';
+      const attachments=Array.isArray(originalInput.attachments)?originalInput.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
+      try{this.admit({sessionId:target.session_id,inputId,origin:'service',
+        sourceInputId:target.accepted_input_id??inputId,sourceRunId:target.run_id,requestId:inputId,
+        text:`The pause has been lifted for this conversation. Check the retained work and current files before continuing from the point where Stop interrupted you. Do not repeat a side effect already completed. Continue the unfinished request and report what you verified.\n\nOriginal accepted request:\n${originalText}`,
+        ...(attachments.length?{attachments}:{})});
+        db.query('UPDATE global_pause_targets SET resumed_action_id=? WHERE turn_id=? AND generation IN (?,?) AND resumed_action_id IS NULL')
+          .run(action,target.turn_id,generation,globalPauseState().generation);
+      }
+      catch(error){log('warn','global_pause_resume_admission_failed',{turn_id:target.turn_id,error:String(error)});}
+    }
+    this.runtime.wake();
+  }
+  private requestPausedStops(){
+    const state=globalPauseState();if(!state.paused)return;
+    const targets=db.query(`SELECT target.session_id,target.turn_id FROM global_pause_targets target
+      JOIN turns turn ON turn.id=target.turn_id JOIN sessions session ON session.id=target.session_id
+      WHERE target.generation=? AND turn.status='running' AND session.provider_id<>'chatgpt'
+        AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
+          AND allowed.machine=? AND allowed.session_id=target.session_id)`).all(state.generation,state.generation,this.selfMachine) as Array<{session_id:number;turn_id:number}>;
+    for(const target of targets)void (this.runtime.safeStop?.(target.session_id,target.turn_id)??Promise.resolve(false)).then(confirmed=>{
+      db.query('UPDATE global_pause_targets SET stop_error=? WHERE generation=? AND turn_id=?')
+        .run(confirmed?null:'Execution host did not confirm this Stop.',state.generation,target.turn_id);
+    }).catch(error=>{
+      db.query('UPDATE global_pause_targets SET stop_error=? WHERE generation=? AND turn_id=?')
+        .run(String(error).slice(0,300),state.generation,target.turn_id);
+      log('warn','global_pause_stop_unconfirmed',{turn_id:target.turn_id,error:String(error)});
+    });
+  }
+  async globalPauseControl(paused:boolean,body:unknown){
+    const input=object(body);only(input,['clientActionId','sessionIds']);
+    const sessionIds=input.sessionIds===undefined?[]:input.sessionIds;
+    if(!Array.isArray(sessionIds)||sessionIds.some(id=>typeof id!=='string'))
+      throw new SessionOwnerError('sessionIds must be exact session addresses.',400,'PAUSE_SELECTION_INVALID');
+    if(paused&&sessionIds.length)throw new SessionOwnerError('A new pause cannot select sessions.',400,'PAUSE_SELECTION_INVALID');
+    if(this.selfMachine!=='cloud'){
+      if(!this.peers)throw new SessionOwnerError('The global pause owner is unreachable.',503,'PAUSE_OWNER_UNREACHABLE');
+      return this.peers.client('cloud').request('POST',paused?'/sessions/v1/pause-all':'/sessions/v1/pause-all/resume',input,8_000);
+    }
+    const status=this.applyGlobalPause(paused,actionId(input),undefined,sessionIds);
+    void this.syncGlobalPausePeers();
+    return status;
+  }
+  globalPausePeer(body:unknown){
+    const input=object(body);only(input,['paused','generation','allowedSessionIds','continueSessionIds']);
+    if(this.selfMachine==='cloud'||typeof input.paused!=='boolean'||!Number.isSafeInteger(input.generation)||input.generation<1)
+      throw new SessionOwnerError('An exact global pause generation from the server is required.',400,'PAUSE_PEER_INVALID');
+    const ids=(value:unknown)=>Array.isArray(value)&&value.length<=200&&value.every(id=>Number.isSafeInteger(id)&&id>0)?value as number[]:null;
+    const allowed=ids(input.allowedSessionIds??[]),continued=ids(input.continueSessionIds??[]);
+    if(!allowed||!continued)throw new SessionOwnerError('Peer pause selection is invalid.',400,'PAUSE_PEER_INVALID');
+    return this.applyGlobalPause(input.paused,`cloud:${input.generation}`,input.generation,[],allowed,continued);
+  }
+  syncGlobalPausePeers():Promise<void>{
+    this.requestPausedStops();
+    if(this.selfMachine!=='cloud')return this.refreshGlobalPauseFromOwner();
+    if(!this.peers||!this.peers.names().length)return Promise.resolve();
+    if(this.pauseSync)return this.pauseSync;
+    this.pauseSync=(async()=>{
+      const state=globalPauseState();
+      if(state.generation===0)return;
+      await Promise.all(this.peers!.names().map(async name=>{
+        const row=db.query('SELECT acknowledged_generation FROM global_pause_peer_state WHERE peer=?').get(name) as {acknowledged_generation:number}|null;
+        if(row?.acknowledged_generation===state.generation)return;
+        try {
+          const allowed=db.query('SELECT session_id FROM global_pause_exceptions WHERE generation=? AND machine=?')
+            .all(state.generation,name) as Array<{session_id:number}>;
+          const action=db.query('SELECT session_ids_json FROM global_pause_actions WHERE generation=?')
+            .get(state.generation) as {session_ids_json:string}|null;
+          const continued=(JSON.parse(action?.session_ids_json??'[]') as string[])
+            .filter(id=>id.startsWith(`${name}:`)).map(id=>Number(id.slice(name.length+1)));
+          const snapshot=await this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
+            {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false);
+          db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,snapshot_json,updated_at_ms)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
+            acknowledged_generation=excluded.acknowledged_generation,last_error=NULL,snapshot_json=excluded.snapshot_json,updated_at_ms=excluded.updated_at_ms`)
+            .run(name,state.generation,state.generation,null,JSON.stringify(snapshot),Date.now());
+        } catch(error){
+          db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,updated_at_ms)
+            VALUES(?,?,0,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
+            last_error=excluded.last_error,updated_at_ms=excluded.updated_at_ms`)
+            .run(name,state.generation,String(error).slice(0,300),Date.now());
+        }
+      }));
+    })().finally(()=>{this.pauseSync=null;});
+    return this.pauseSync;
+  }
+  async refreshGlobalPauseFromOwner(failClosed=false){
+    if(this.selfMachine==='cloud'||!this.peers)return;
+    try{
+      const status=await this.peers.client('cloud').request('GET','/sessions/v1/pause-all',undefined,5_000,false) as {
+        paused:boolean;generation:number;allowed:string[];continued?:string[]};
+      const localState=globalPauseState();
+      if(status.generation<localState.generation)return;
+      if(status.generation===localState.generation){
+        if(status.paused!==localState.paused){
+          db.query('UPDATE global_pause SET paused=? WHERE singleton=1').run(status.paused?1:0);
+          executionChanged();this.runtime.wake();if(!status.paused)wakeWatchWorker();
+        }
+        return;
+      }
+      const local=(values:readonly string[])=>values.filter(id=>id.startsWith(`${this.selfMachine}:`))
+        .map(id=>Number(id.slice(this.selfMachine.length+1))).filter(Number.isSafeInteger);
+      this.applyGlobalPause(status.paused,`cloud:${status.generation}`,status.generation,[],local(status.allowed??[]),local(status.continued??[]));
+    }catch(error){
+      if(failClosed){db.query('UPDATE global_pause SET paused=1 WHERE singleton=1').run();executionChanged();}
+      log('warn','global_pause_owner_unreachable',{error:String(error)});
+    }
+  }
   /**
    * Which Inbox thread a change was made for. thnkr.ing names the change (its commit, subject and
    * time); this instance finds the session that made it from its own turns and transcripts, and
@@ -2872,6 +3105,10 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      else if(request.method==='GET'&&parts[0]==='pause-all'&&parts.length===1)result=this.globalPauseStatus();
+      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=await this.globalPauseControl(true,body);
+      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=await this.globalPauseControl(false,body);
+      else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='peer'&&parts.length===2)result=this.globalPausePeer(body);
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);

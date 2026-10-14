@@ -876,6 +876,14 @@ export class SessionCommunicationCoordinator {
         action(input.action_id);
         return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',{clientActionId:input.action_id});
     }
+    async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
+        this.actor(input.source);
+        if(input.verb==='status')return this.dependencies.owner.globalPauseStatus();
+        if(!input.action_id)throw new Error('Pause or resume needs a stable action ID.');
+        action(input.action_id);
+        return this.dependencies.owner.globalPauseControl(input.verb==='all',
+            {clientActionId:input.action_id,...(input.session_ids?{sessionIds:input.session_ids}:{})});
+    }
     /**
      * The Commons board (docs/plans/2026-10-08-commons-board.md): a shared place where sessions discuss
      * in the open. Its source of truth is plain files; the author is this live run's session, and a
