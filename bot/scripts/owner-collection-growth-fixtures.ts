@@ -3,6 +3,7 @@ import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {savedMessagePage,savedWorkPage} from '../src/owner-collection-pages';
 import {inboxQueuePage} from '../src/inbox-queue';
+import {inboxCapturesPage} from '../src/inbox-captures-page';
 import {observedDatabase,observeStorageOperation,withStorageReadBudget,type StorageWork} from '../src/storage-observation';
 import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
 
@@ -86,6 +87,32 @@ async function inboxQueueGrowth(){
   }finally{db.close();}
  }
 }
+async function inboxCapturesGrowth(){
+ for(const count of [100,10_000]){
+  const database=observedDatabase(new Database(':memory:'));
+  try{
+   database.exec(`CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
+     CREATE INDEX session_inputs_capture_page ON session_inputs(session_id) WHERE id GLOB 'capture:*';`);
+   const insert=database.query('INSERT INTO session_inputs(id,session_id,kind,payload_json,created_at) VALUES(?,?,?,?,?)');
+   for(let index=1;index<=count;index++)insert.run(`capture:${index}`,1,'input',
+     JSON.stringify({text:`Capture ${index}`,capture:{source:{kind:'thinkering',recordedAt:'2026-10-14T12:00:00Z'}}}),
+     '2026-10-14T12:00:00Z');
+   const plan=database.query(`EXPLAIN QUERY PLAN SELECT rowid AS position,id,payload_json,created_at FROM session_inputs
+     WHERE session_id=1 AND id GLOB 'capture:*' AND json_extract(payload_json,'$.capture') IS NOT NULL ORDER BY rowid DESC LIMIT 21`).all() as {detail:string}[];
+   assert.ok(plan.some(row=>row.detail.includes('session_inputs_capture_page')),JSON.stringify(plan));
+   assert.ok(plan.every(row=>!row.detail.includes('TEMP B-TREE')),JSON.stringify(plan));
+   const contract=PRESENTATION_READERS.inboxCaptures;
+   let work:StorageWork|undefined;
+   const first=observeStorageOperation('inboxCaptures',()=>withStorageReadBudget({maxCalls:128,maxRows:contract.maxStorageRows,
+     maxResultBytes:contract.maxResponseBytes*2},()=>inboxCapturesPage(database,1,null,20)),value=>{work=value;});
+   assert.ok(work&&work.db_calls>0);
+   assert.equal(first.items.length,20);assert.ok(first.nextCursor);
+   const second=inboxCapturesPage(database,1,first.nextCursor,20);
+   assert.equal(second.items.length,20);
+   assert.ok(second.items.every(row=>!first.items.some(prior=>prior.id===row.id)));
+  }finally{database.close();}
+ }
+}
 export const READ_GROWTH_FIXTURES={'saved-messages-growth':savedMessagesGrowth,'saved-work-growth':savedWorkGrowth,
- 'inbox-queue-growth':inboxQueueGrowth};
+ 'inbox-queue-growth':inboxQueueGrowth,'inbox-captures-growth':inboxCapturesGrowth};
 if(import.meta.main)for(const [name,check] of Object.entries(READ_GROWTH_FIXTURES)){await check();console.log(`${name}: passed`);}
