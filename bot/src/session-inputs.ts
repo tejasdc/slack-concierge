@@ -4,6 +4,7 @@ import {resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
+import {retainNotificationPromise,showNotificationPromise} from './notify-when';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 
 export type AcceptedSessionInput = {
@@ -190,6 +191,7 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
   db.transaction(()=>{
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
+    if((input.kind==='accepted'||input.kind==='inbox_capture')&&input.inputId)showNotificationPromise(input.inputId);
   })();
   executionChanged();
 }
@@ -226,8 +228,10 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
   const rawPayload=timed('serializeMs',()=>stablePayload(input.payload));
   const value=JSON.parse(rawPayload);
+  if(value&&typeof value==='object')delete value.notificationRequest;
   const words=value?.firstInput?.text??value?.text;
-  const mark=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
+  const ownWords=!(value?.capture?.importOnly&&value.capture.source?.metadata?.quoted?.kind!=='human');
+  const mark=input.origin==='human'&&ownWords&&['input','create','inbox-capture'].includes(input.kind)
     ?notificationRequest(typeof words==='string'?words:''):null;
   const payload=timed('serializeMs',()=>stablePayload(mark&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
   const old=timed('existingMs',()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(input.scope,input.actionId)) as AcceptedSessionInput|null;
@@ -243,6 +247,7 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
   timed('insertMs',()=>db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null));
+  retainNotificationPromise({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
   if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
     .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
   return {input:timed('readbackMs',()=>getAcceptedSessionInput(id))!,duplicate:false};

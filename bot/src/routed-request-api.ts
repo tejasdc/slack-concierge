@@ -84,6 +84,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'move') return Response.json(sessions.move(input));
         if (operation === 'post') return Response.json(sessions.post(input));
         if (operation === 'outcome') return Response.json(sessions.outcome(input));
+        if (operation === 'notify-when') return Response.json(await sessions.notifyWhen(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
         if (operation === 'topics') return Response.json(sessions.topics(input));
         if (operation === 'context') return Response.json(await sessions.context(input));

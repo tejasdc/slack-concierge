@@ -239,6 +239,34 @@ export function initializeSessionOwnerSchema(db: Database) {
           payload_json TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        -- One requested result per exact human input. The Inbox owner is the only writer;
+        -- terminal state and its visible event commit together, so a restart cannot ring twice.
+        CREATE TABLE IF NOT EXISTS inbox_notification_promises (
+          input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          inbox_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          thread_root_id TEXT,
+          target_session TEXT,
+          pointed_at_ms INTEGER,
+          baseline_turn_id INTEGER,
+          target_run_id TEXT,
+          peer_cursor TEXT NOT NULL DEFAULT '0',
+          peer_candidate_run_id TEXT,
+          peer_candidate_state TEXT,
+          peer_candidate_input_id TEXT,
+          peer_registration_crossed INTEGER NOT NULL DEFAULT 0,
+          peer_selected_input_id TEXT,
+          peer_gap_since_ms INTEGER,
+          conditions TEXT NOT NULL DEFAULT 'answer',
+          summary TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','fired','expired')),
+          expires_at_ms INTEGER NOT NULL,
+          last_peer_observed_at_ms INTEGER,
+          fired_event_id TEXT,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS inbox_notification_promises_pending ON inbox_notification_promises(state,expires_at_ms);
+        CREATE INDEX IF NOT EXISTS inbox_notification_promises_target ON inbox_notification_promises(target_session,state);
         CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
         -- Resolving which thread an Inbox message belongs to looks events up by their input; without
         -- this the first Threads list after a restart scanned the whole ledger per message (85 s, 2026-09-22).

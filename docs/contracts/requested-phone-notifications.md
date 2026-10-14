@@ -1,20 +1,52 @@
 # Requested phone delivery
 
-The owner stores `notificationRequest` with a retained human request and exposes it on the receipt as `result`,
-`scheduled`, or `null`. This is derived at admission from the exact human words, never an agent outcome or
-quoted agent text. “Let me know”, “tell me when”, and “notify me” select `result`; “remind me”
-selects `scheduled`. The thnkr.ing notifier reads this property at response time and pushes only
-explicit `result` requests to the iPhone. Routine results remain quiet.
+The owner classifies an Inbox input's retained human words at admission as `result`,
+`scheduled`, or `null`. “Send a notification”, “notify me”, “ping me”, “alert me”,
+"let me know when", an account or sign-in dependency, and close variants select `result`; “remind me” selects
+`scheduled`. Negated requests and machine diagnostics in a bug report do not make a
+phone request. An ordinary request for an explanation (“let me know how”) remains
+quiet. The mark belongs to the exact asking input, including a later reply in the
+same thread, and cannot be added by an agent's text.
 
-For `scheduled`, the agent uses Concierge's durable scheduled wake for the requested date and
-time. At the wake, the finding is sent through thnkr.ing's root-only requested-notification
-capability with one stable key and the Inbox thread's exact app path. The wake owner checks the
-returned Apple delivery result. A scheduled request is never inferred from a normal completion
-reply, which may happen before its reminder time.
+For every `result` Inbox input, admission creates one durable promise keyed by that
+input. Its default condition is the next agent answer filed into that thread for
+the same input. Admission writes a visible service entry after the human message.
+The filed answer's existing requested-result event pushes once; the promise settles
+in that same ledger transaction, with a visible fulfilled entry and no second push.
+An Inbox router turn cannot close as `done`, `failed`, or `needs_you` with an
+unarranged result promise: it must dispatch work from the input, answer with
+`response`, or point the promise at an existing session.
 
-The phrase classifier is intentionally narrow. Ambiguous language remains quiet until the
-requesting agent can represent the desired phone delivery explicitly. The source input's exact
-receipt is the contract between Concierge and thnkr.ing.
-When a delegated answer is filed into an Inbox thread, its event carries the exact asking input
-separately from the thread root. A quiet completion cannot suppress a result notification he
-explicitly requested.
+The router points it with `router-actions.sh sessions notify-when --thread
+<human-message-id> --session concierge:N|mac:N [--on done,needs-you,hold]
+--summary "<his request>"` plus its exact source and stable action ID. The thread
+must be the one the live Inbox turn is handling; only a marked human input can
+be pointed. The default conditions are `done,needs-you,hold`. A local target
+binds to its current run or the next run after the command. A Mac target uses
+the same rule against the Mac owner's retained event stream and exact input
+receipt, rather than a possibly coalesced catalogue card. A failed or canceled
+run also satisfies `done`, and says that it ended without finishing.
+
+The server owner keeps one promise state: `pending`, `fired`, or `expired`.
+`pending` survives owner restarts. It expires after 14 days, long enough for ordinary
+multi-day work while bounding stale promises, with an entry in
+the thread; no push is claimed for expiry. The first matching condition atomically
+records `fired`, posts one short service entry in the asking thread, and emits
+one `needs_you` response event with the asking input as `notificationInputId`.
+thnkr.ing's existing attention notifier reads that receipt and sends the push
+to registered devices. Concierge does not call a second push path.
+
+For a Mac target the server stores a cursor through the Mac's durable run and
+outcome events. It reads exact input receipts for account, sign-in, and usage
+holds. A sleeping or unreachable Mac leaves the promise pending and adds one
+visible observation-gap entry; when it returns, replay resumes from the saved
+cursor and the thread records reconnection. A hold that starts and clears wholly
+while the Mac is unreachable is unavailable from current receipts: the gap is
+visible, and Concierge does not claim it observed that hold. The current/next
+run selection for an offline Mac compares the Mac's retained event times with
+the attachment time; clock disagreement at that boundary is a remaining risk.
+
+For `scheduled`, agents continue to use Concierge's durable scheduled wake and
+thnkr.ing's root-only requested-notification capability with one stable key.
+That time path is separate from result promises, because a normal answer may
+arrive before the requested reminder time.

@@ -3,6 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
+import {responseSettlesNotification,settleNotificationByAnswer} from './notify-when';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -74,6 +75,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   if(!session)throw new Error('Unknown session.');
   const meta=sessionMetadata(session),at=new Date().toISOString();
   const inputId=outcomeInputFor(input.sessionId,input.inputId);
+  const notificationInputId=responseSettlesNotification(input.inputId)?input.inputId:null;
   // In the Inbox a `response` is a promise that there is something to read in this thread: the
   // turn's post there, or its closing text. A response with nothing behind it became an item
   // that showed him a heading and a link to his own message (Tejas, 2026-09-24: "I literally
@@ -110,7 +112,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,question,inputId,generation}));
+      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,question,inputId,generation,...(notificationInputId?{notificationInputId}:{})}));
+    if(outcome==='response'&&notificationInputId)settleNotificationByAnswer(notificationInputId,`needs_you:${input.eventId}`);
   }
   updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at,...(quiet?{quiet}:{})}});
   executionChanged();
