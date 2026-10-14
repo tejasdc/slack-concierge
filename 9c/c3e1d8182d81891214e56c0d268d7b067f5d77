@@ -1,0 +1,1 @@
+During updates, Concierge now records whether a slow ledger change was waiting for another writer or holding the ledger itself, so we can locate the freeze.
