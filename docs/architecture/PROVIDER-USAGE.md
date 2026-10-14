@@ -599,10 +599,20 @@ spending, so when the weekly state cannot be established the answer is no. The f
 window is frequently absent from the Codex reading altogether, which is why only the weekly
 one is required.
 
-What a grant clears is still recorded, because it still cannot be chosen: the grant carries
-its own `reset_type`, the consume call validates only that a credit id is present, and the
-response reports `windows_reset` afterwards. `codex-reset-credit.ts` keeps both on every
-spend. His own Accounts button is unchanged.
+The installed Codex App Server (0.162.0, generated protocol checked 2026-10-14;
+[upstream account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/account.rs))
+requires an idempotency key as well as a credit id for a
+consume attempt. The automatic hold episode supplies that key; an Accounts button press
+generates one for its request. The response has four explicit outcomes: `reset` and
+`alreadyRedeemed` confirm that attempt redeemed a credit, while `nothingToReset` and
+`noCredit` did not. A transport failure or unrecognized response is unknown, never
+success or proof that nothing was spent. The current response names no individual
+windows; the grant's `reset_type` remains its declared scope. After confirmed redemption,
+Concierge reads limits again through the same account home. Only a fresh read saying
+ordinary included work is allowed releases held work and announces a usable reset.
+If redemption is confirmed but the read fails or still denies ordinary work, the credit
+is reported redeemed and the work stays held. The Accounts button retains its two-press
+confirmation.
 
 ## Banked resets, so none of them lapses unused
 
@@ -652,18 +662,19 @@ thing read is whether a grant is still there at the instant work stopped. If he 
 spent it there is nothing to spend; if he has not, waiting for him to wake is the stall he
 asked us to end. There is no presence model anywhere in this.
 
-**One reset can never be spent twice.** Within an instance, the decision is recorded under
-an event id keyed to the exact hold episode *before* the attempt, so a second observer is
-refused by SQLite rather than by timing, and a crash mid-call cannot produce a second try.
-Across machines the provider is the lock: both instances can see the same exhausted account,
-and `consume` answers `alreadyRedeemed`, which is treated as "someone already did it" and
-not as a failure. Nothing tries to decide which machine goes first, because the only
-authority on whether a grant still exists is OpenAI.
+**One hold episode cannot automatically spend twice.** Within an instance, the decision
+is recorded before the attempt, so a second observer is refused by SQLite. The episode
+is also the consume request's idempotency key. A crash or ambiguous transport response
+never causes an automatic second attempt. Across machines, OpenAI owns the credit state;
+`alreadyRedeemed` means the *same key* previously completed a reset. It does not prove
+that another machine's differently keyed attempt succeeded.
 
-Afterwards the account is re-read, the work that was waiting on that reset instant is
-released with `releaseUsageHeldWork` (only the scheduled instant moves; nothing is
-replayed), and one notice says which account, why, how much work carried on and how many
-resets are left. There is deliberately no "about to use one" step before it: the hour-ahead
+After confirmed redemption and a fresh account read permitting ordinary work, the work
+that was waiting on that reset instant is released with `releaseUsageHeldWork` (only the
+scheduled instant moves; nothing is replayed), and one notice says which account, why,
+how much work carried on and how many resets are left. Unknown and redeemed-but-unverified
+outcomes leave work held and publish no "reset used" notice. There is deliberately no
+"about to use one" step before it: the hour-ahead
 forecast notice already exists, and adding a wait for acknowledgement would be the stall
 this removes. The Accounts button stays for when he wants to spend one himself.
 
@@ -704,7 +715,7 @@ and by agents through `sessions usage` and their budget brief):
 | Provider | What a reset restores | What happens to the clock | Source |
 | --- | --- | --- | --- |
 | Claude | The five-hour or the weekly limit it was offered for, back to full; cannot be undone; works before a limit is hit; expires on the offer's date | **Nothing.** "Your weekly limits still reset on their usual day and time." | support.claude.com 17007452 (What is a limit reset?), 11049741 (Max plan) |
-| Codex (banked grant) | The account's limits, at once; which windows is recorded in `windows_reset` the first time one is spent | For a purchased weekly reset OpenAI says the weekly clock restarts with the first request afterwards, seven days to the next | help.openai.com 20001507 |
+| Codex (banked grant) | The consume response confirms whether a grant redeemed, without naming individual windows; a fresh limits read shows current room | The clock behavior of a banked grant is not established by this response. The documented purchased weekly reset is a different mechanism. | Codex App Server 0.162.0 generated protocol; help.openai.com 20001507 for purchased weekly resets |
 
 This ledger's own readings of the account he reset (`provider_usage_readings`, 2026-10-13): the
 weekly stood at 100% all afternoon with its end at 08:00 UTC on Oct 14; at 16:50 UTC it read 0%
