@@ -35,6 +35,9 @@ after a newer release succeeds; see [repair ownership](docs/architecture/DEPLOYM
 
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
+The shared end-of-turn hook refuses Inbox completion while received human inputs remain
+unfiled, including earlier turns. Filing or an explicitly closed noise thread resolves it;
+see [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping).
 
 Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
 answer in that thread, with a two-minute reminder and three-minute overdue thread notice;

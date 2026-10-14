@@ -774,6 +774,27 @@ function isHisOwnRoot(root:string){
   const input=getAcceptedSessionInput(root);
   return input?.origin==='human'&&!db.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(root);
 }
+/** Stop checks delivery custody, not the sorting page (which also includes still-queued inputs). */
+export function unfiledReceivedInputs(sessionId:number,turnId:number) {
+  const session=getSessionById(sessionId);
+  if(!session||!sessionMetadata(session).inbox)return [];
+  refreshRootMemo();
+  // Outside-agent captures exercise the same filing path without impersonating Tejas. Imported
+  // test captures, worker requests and service returns have no filing obligation here.
+  const inputs=db.query(`SELECT input.id,input.created_at,substr(json_extract(input.payload_json,'$.text'),1,160) AS text
+    FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+    LEFT JOIN turn_steering_messages steering ON steering.id=input.steering_id
+    WHERE input.session_id=? AND input.kind IN ('input','create','inbox-capture')
+      AND (input.origin='human' OR (input.origin='agent' AND input.scope='capture:outside-agent'))
+      AND NOT EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=input.id)
+      AND ((input.steering_id IS NULL AND (turn.provider_input_acknowledged_at IS NOT NULL OR turn.id=?))
+        OR (input.steering_id IS NOT NULL AND steering.provider_sent_at IS NOT NULL))
+    ORDER BY input.rowid`).all(sessionId,turnId) as {id:string;created_at:string;text:string|null}[];
+  return inputs.flatMap(input=>{
+    const root=rootOf(sessionId,input.id)??input.id;
+    return topicOfRoot(root)?[]:[{input_id:input.id,root_id:root,at:input.created_at,text:input.text??''}];
+  });
+}
 /** Thread roots nobody has filed yet: the sorting pile above the topic list. */
 function sortingCaptures(session:SessionRow,index:EntryIndex) {
   const unplaced=[...index.byRoot.entries()].filter(([root])=>!topicOfRoot(root)&&isHisOwnRoot(root));
