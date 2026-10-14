@@ -82,7 +82,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // cannot read this"), so it is refused when declared, and a finished turn's is recorded done.
   let outcome=input.outcome;
   if(outcome==='response'&&notificationPromisePointed(input.inputId)){
-    if(input.refuseUnreadable)throw new Error('This input already has a future phone notification. Post any current status into its thread and declare done; its pointed session will send the requested push.');
+    if(input.refuseUnreadable)throw new Error('This input already has or had its pointed phone notification. Post current status into its thread, then declare done with --quiet-because explaining why this status needs no separate push.');
     log('info','pointed_notification_response_deferred',{session_id:input.sessionId,input_id:input.inputId,event_id:input.eventId});
     outcome='done';
   }

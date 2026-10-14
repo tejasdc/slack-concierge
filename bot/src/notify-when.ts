@@ -42,7 +42,10 @@ export function showNotificationPromise(inputId:string){
 }
 
 export function requestedNotificationInput(inputId:string):boolean{return !!promise(inputId);}
-export function notificationPromisePointed(inputId:string):boolean{return !!promise(inputId)?.target_session;}
+export function notificationPromisePointed(inputId:string):boolean{
+  const row=promise(inputId);
+  return !!row?.target_session&&row.state!=='expired';
+}
 export function responseSettlesNotification(inputId:string):boolean{
   const row=promise(inputId);
   return !!row&&row.state==='pending'&&!row.target_session&&row.expires_at_ms>Date.now();
