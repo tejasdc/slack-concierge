@@ -33,6 +33,10 @@ See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 Terminal repair claims whose runners have died are parked by the deployment owner
 after a newer release succeeds; see [repair ownership](docs/architecture/DEPLOYMENT-REPAIR.md#ownership).
 
+An Inbox message keeps its first accepted position when queue admission later becomes
+steering; subsequent delivery events remain audit records. The prepared and live readers
+share that identity rule so promotion cannot stall status indexing. See
+[waiting captures](docs/contracts/native-inbox.md#waiting-captures).
 The Inbox waiting list, Move next, and Work with current run controls use the canonical
 session queue and preserve each accepted capture's identity; see [waiting captures](docs/contracts/native-inbox.md#waiting-captures).
 Direct messages to the Inbox router join its running turn, ahead of later service inputs;

@@ -4,6 +4,7 @@ import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type Accepted
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot} from './inbox-request-root';
+import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 
 export type InboxCapture = {
@@ -71,6 +72,7 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
         ${closures?"OR event.kind='answer_closure'":''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
+    AND ${firstInboxAcceptanceSql}
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
