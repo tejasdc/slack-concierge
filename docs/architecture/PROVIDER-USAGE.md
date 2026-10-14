@@ -532,15 +532,18 @@ them back, because they were built for a screen. Now:
   reset instant, and mixing the two would flatten the line. Every forecast carries its
   source, sample count, span and rate so nobody has to trust it blindly, and no surface ever
   states a countdown — a rate cannot promise a time and agent work arrives in bursts.
-- **Tejas is told** only when an account reaches 90% of a window (`NOTICE_AT_PERCENT`), once
+- **Tejas is told** only when a fresh provider reading for that account reaches 90% of a window (`NOTICE_AT_PERCENT`), once
   per account per window per allowance period, for every account. No pace and no forecast: on
   2026-10-08 a pace projection warned him at 21% and he said "I do not want to be notified when
   it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually, 90% of
   above" [decision: usage-notice-only-at-90-percent]. It is a provider-free Inbox notice
   (`publishProviderFreeNotice`, kind `provider_usage_warning`): its own thread, a reading item and
-  the push thnkr.ing sends for every reading item. It says the account, the percentage used, when
-  it refills, and what happens when it runs out (Claude turns move to an account with room by
-  themselves; Codex waits unless he switches). When the window refills the thread says so and
+  the push thnkr.ing sends for every reading item. Each account's own read time must be within
+  the shared six-minute freshness limit; a newer provider-wide scan cannot refresh an old
+  account's number. The combined Claude/Codex warning likewise uses fresh measured windows,
+  never dispatch capacity raised to 100% by an earlier refusal. It names both accounts,
+  windows, percentages and observation times. Alternative accounts are described as having
+  room only when their readings are fresh. When the window refills the thread says so and
   closes; pace warnings sent before the change were withdrawn on the next reading. Until
   2026-10-07 it was a bare `provider_outage` event, which thnkr.ing never shows. Forecasts
   remain diagnostic and do not trigger budget notices. The banked-reset expiry notice uses

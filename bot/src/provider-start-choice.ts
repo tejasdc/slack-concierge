@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import { currentAccount, listProfiles } from './provider-accounts';
+import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
@@ -8,8 +8,7 @@ import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } f
 import {modelCapacityRefused} from './provider-model-capacity';
 
 export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
-type Candidate = { provider: AutomaticProvider; used: number; resetsAt: number | null; windowResetAt: number | null };
-const FRESH_MS = 6 * 60_000;
+type Candidate = { provider: AutomaticProvider; account: string; used: number; resetsAt: number | null; windowResetAt: number | null };
 
 /** New, unbound work only. A running session never changes provider. */
 function candidatesForNewWork(now: number): Candidate[] {
@@ -19,7 +18,7 @@ function candidatesForNewWork(now: number): Candidate[] {
     if(model&&modelCapacityRefused(provider,model,now))continue;
     const usage = providerAccountUsage(provider);
     const observedAt = Date.parse(usage?.observedAt ?? '');
-    if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - FRESH_MS) continue;
+    if (!usage || usage.problem || !Number.isFinite(observedAt) || observedAt < now - ACCOUNT_READING_MAX_AGE_MS) continue;
     const rooms = savedWorkAccountRooms(provider, usage, now);
     const storedClaude = provider === 'claude-code'
       ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
@@ -40,7 +39,7 @@ function candidatesForNewWork(now: number): Candidate[] {
       if (cachedReset) spent.push(cachedReset);
       const tightest = relevant.reduce((best, window) => window.usedPercent > best.usedPercent ? window : best);
       const windowResetAt = Date.parse(tightest.resetsAt ?? '');
-      candidates.push({ provider, used, resetsAt: spent.length ? Math.max(...spent) : null,
+      candidates.push({ provider, account: account.label, used, resetsAt: spent.length ? Math.max(...spent) : null,
         windowResetAt: Number.isFinite(windowResetAt) ? windowResetAt : null });
     }
   }
@@ -79,7 +78,7 @@ export function measuredBudgetPressure(provider: 'claude-code' | 'codex', accoun
     : usage.accounts.find(value => value.current);
   if (!account || account.problem) return null;
   const observedAt = Date.parse(account.readAt ?? usage.observedAt);
-  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > FRESH_MS) return null;
+  if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > ACCOUNT_READING_MAX_AGE_MS) return null;
   const window = account.windows.filter(value => value.name !== 'Weekly · Fable only'
     && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
     .sort((left, right) => right.usedPercent - left.usedPercent)[0];

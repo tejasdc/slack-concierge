@@ -227,11 +227,11 @@ function forecastWindow(provider: AccountIdentityProvider, account: AccountUsage
 /** Every window of every account of one provider, forecast from the latest reading. */
 export function usageForecasts(provider: AccountIdentityProvider): UsageForecast[] {
   const usage = storedUsage(provider);
-  if (!usage) return [];
+  if (!usage || usage.problem) return [];
   if (provider === "antigravity" && (usage.problem ||
     (at(usage.observedAt) ?? 0) < Date.now() - ACCOUNT_READING_MAX_AGE_MS)) return [];
   return usage.accounts.flatMap(account => account.problem ? []
-    : account.windows.map(window => forecastWindow(provider, account, window, usage.observedAt)));
+    : account.windows.map(window => forecastWindow(provider, account, window, account.readAt ?? usage.observedAt)));
 }
 
 /** The one window closest to stopping work on the account the agents are actually using. */
@@ -256,7 +256,10 @@ export const NOTICE_AT_PERCENT = 90;
 /** Every account of one provider with a window at 90% or more but not yet spent, its fullest window each. */
 export function accountsNearlySpent(provider: AccountIdentityProvider): UsageForecast[] {
   const fullest = new Map<string, UsageForecast>();
+  const now = Date.now();
   for (const forecast of usageForecasts(provider)) {
+    const observedAt = at(forecast.observedAt);
+    if (observedAt === null || observedAt > now || now - observedAt > ACCOUNT_READING_MAX_AGE_MS) continue;
     // A spent window is the usage hold's to report, with what is waiting on it.
     if (forecast.usedPercent < NOTICE_AT_PERCENT || forecast.usedPercent >= 100) continue;
     const held = fullest.get(forecast.account);
