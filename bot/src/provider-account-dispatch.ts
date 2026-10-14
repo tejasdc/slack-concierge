@@ -227,13 +227,14 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
 }
 
 /**
- * Whether a Claude account other than `refused` can take the work now, by the same rules dispatch
- * uses (selection, proof, usage, the refused account's recorded limit), so the two never disagree.
+ * Whether a Claude account other than `refused` has confirmed room now. Dispatch may allow an
+ * unreadable selected login one provider attempt, but that permission cannot support a room claim.
  */
 export function claudeAccountWithRoomBesides(refused:string|null,model?:string|null):boolean{
   try {
     const next=chooseClaudeDispatch(refused,0,undefined,model);
-    return !!next&&next.account!==refused;
+    return !!next&&next.account!==refused
+      &&accountAvailability('claude-code',model).some(account=>account.account===next.account&&account.hasRoom);
   } catch { return false; }
 }
 
