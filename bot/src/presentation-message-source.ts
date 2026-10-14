@@ -8,6 +8,7 @@ export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:str
 export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event.event_id,event.input_id,event.kind,event.created_at,
   json_extract(owner.native_metadata_json,'$.inbox') AS is_inbox,input.origin AS input_origin,
   CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.capture') IS NOT NULL ELSE 0 END AS has_capture,
+  CASE WHEN event.kind='accepted' THEN json_extract(input.payload_json,'$.alreadyPostedInThread') IS 1 ELSE 0 END AS already_posted_in_thread,
   CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
   CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
@@ -21,7 +22,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
   input_origin:string|null;
-  is_inbox:number|null;has_capture:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
+  is_inbox:number|null;has_capture:number;already_posted_in_thread:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
   return row.kind==='result'||row.kind==='post'||row.kind==='request'?row.event_id:row.input_id;
 }
@@ -80,7 +81,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox)return [];
     if(!(['result','inbox_capture','post','request'].includes(row.kind)
-      ||row.kind==='accepted'&&!row.has_capture))return [];
+      ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='result'&&!row.has_result_text&&!row.has_attachments)return [];
     const messageId=sourceMessageId(row);
     if(!messageId)return [];

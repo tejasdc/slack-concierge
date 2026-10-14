@@ -68,7 +68,8 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
 const inboxRowsWhere=(closures:boolean)=>` WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
         ${closures?"OR event.kind='answer_closure'":''}
-        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
+        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
+            AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;

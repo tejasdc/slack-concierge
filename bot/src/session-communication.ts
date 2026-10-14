@@ -1238,23 +1238,13 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         this.wake();
         return id;
     }
-    /**
-     * An agent's answer that goes into a thread instead of back to the router as a return: an answer
-     * to a reply he wrote in that thread, or the agent's own reply (partial or final, not a hand-back,
-     * which the router must act on) to a request the Inbox sent for a thread. Each is posted there as
-     * the agent's words the moment it is recorded (a stall on his forwarded reply as a service post),
-     * and a final one files what he needs to see; nothing wakes the router. Stalls, hand-backs,
-     * information the router asked for itself and the owner's own settlements of the router's
-     * requests still return to the router, whose judgement they need.
-     */
+    /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
         if(!request.source_input_id)return null;
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
         if(forwarded&&typeof forwarded.inboxInputId==='string')return {root:request.thread_root_input_id??request.source_input_id,forwarded};
-        // Information the router asked for itself (who owns this, what is the state) answers the router.
-        const work=JSON.parse(request.payload_json).requestedEffect==='work';
         // An answer that already became a return before this road existed keeps its return.
-        const agentReply=work&&!event.accepted_input_id&&!!declared.source&&(event.kind==='progress'||event.kind==='final')&&!declared.handBack;
+        const agentReply=!event.accepted_input_id&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
         const inbox=getSessionById(request.source_session_id);
         const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
         if(!agentReply||!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
@@ -1279,7 +1269,6 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
             .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
-        db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
         return true;
     }
@@ -1288,11 +1277,12 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),
-            attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],stalled:event.kind==='overdue'||!!declared.stalled,final:event.kind==='final',
+            attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
+            stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
             answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
             answerGroup:declared.answerGroup??null,
-            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null});
-        db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,
+            informational:JSON.parse(request.payload_json).requestedEffect==='informational'});
     }
     reply(input: {
         source: CommunicationSource;
@@ -1818,11 +1808,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:`A question Tejas asked in Inbox thread ${request.thread_root_input_id} has had no confirmed answer for three minutes. The addressed agent was reminded. Request ${request.request_id}: ${question}\nCheck the request's current replies before acting. If the answer has since arrived, do nothing. Otherwise help get an answer into that same thread; do not wait for the agent's work to finish.`});
         }
-        // An agent's answer for a thread goes into that thread as the agent's words, never as a
-        // return that would start a router turn.
+        // Posting belongs to the named thread. The requester also keeps its own final return.
         const thread=this.threadAnswer(request,event,declared);
-        if(thread){this.postThreadAnswer(request,event,declared,thread);return;}
-        if(declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared))return;
+        const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
+        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
+        const alreadyPostedInThread=!!thread||!!stoppedPost;
         // A progress note wakes nobody: it stays on the request, in the asker's record and in any
         // stalled notice, and the asker learns the outcome from the final. Each wake re-read the
         // asker's whole conversation; one lab session re-read ~860k tokens per note, four times for
@@ -1869,10 +1859,12 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
-                    deliveryNote:payload.output?.delivery_note??null,files:Array.isArray(payload.attachments)?payload.attachments.length:0,
+                    deliveryNote:alreadyPostedInThread?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
+                    files:Array.isArray(payload.attachments)?payload.attachments.length:0,
                     followUp:(()=>{const responder=getSessionById(coveredResponder);return responder?sessionAddress(responder):null;})()}),
                 // The answer's files travel with it: the requester opens them from its own turn.
-                ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
+                ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
+                ...(alreadyPostedInThread?{alreadyPostedInThread:true}:{})});
             for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);
             const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;

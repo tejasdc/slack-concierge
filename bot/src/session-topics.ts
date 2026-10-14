@@ -1968,19 +1968,21 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * to swipe away is worse than none. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean}):string|null {
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
   if(!post||!answer.final||answer.stalled)return post;
   const postText=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
   const filedText=postText?String(JSON.parse(postText.payload_json).text??answer.text):answer.text;
+  const disposition=answer.informational?'completed':answer.workDisposition;
+  const quiet=answer.informational?'Information-only answer posted in the thread; no separate alert.':
+    answer.workDisposition==='completed'&&typeof answer.quiet==='string'&&answer.quiet.trim()?answer.quiet.trim():null;
   // Filing closes the request before it files his item for this answer; the thread is judged once,
   // after both, below, so it never closes and reopens around one answer.
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition:answer.workDisposition,text:filedText,
-      quiet:answer.workDisposition==='completed'&&typeof answer.quiet==='string'&&answer.quiet.trim()?answer.quiet.trim():null});
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet});
   } catch(error) {
     // The answer is in the thread; what failed is only the filing, which the router can still do.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
