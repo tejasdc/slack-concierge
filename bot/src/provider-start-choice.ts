@@ -29,9 +29,9 @@ function candidatesForNewWork(now: number): Candidate[] {
       const canWaitForReset = !!cachedReset && !!storedClaude?.has(room.account);
       if (room.problem || room.tightestUsedPercent === null || (!room.home && !room.isDefault && !canWaitForReset)) continue;
       const account = usage.accounts.find(value => value.label === room.account);
-      if (!account || !accountReadingFresh(provider,usage,account,now)) continue;
+      if (!account || !accountReadingFresh(provider,usage,account,now,undefined,model)) continue;
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
-      const relevant = includedAllowanceWindows(provider,account);
+      const relevant = includedAllowanceWindows(provider,account,model);
       if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
       const used = cachedReset ? 100 : Math.max(...relevant.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)
