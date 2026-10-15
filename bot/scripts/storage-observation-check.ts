@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
-import { observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
+import { awaitingOutside, observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
 import { ledgerRows } from '../src/ledger-rows';
 import { startStorageIntervals, takeStorageInterval, observeSynchronousStorage } from '../src/storage-interval';
 
@@ -60,6 +60,26 @@ try {
   assert.equal(isolated[1]!.db_calls, 1);
   assert.equal(isolated[0]!.db_rows, 2);
   assert.equal(isolated[1]!.db_rows, 3);
+
+  // Waits on another process overlap: a search fans its archive retention proofs out to
+  // Thinkering together. The request was away for as long as at least one wait was pending,
+  // so overlapping waits, side by side or nested, count once as their union and waits that
+  // follow one another add up. Counting only the first sibling read a 29 s proof beside a
+  // 3 s one as 26 s of owner slowness (work-flow supervisor incident fa772103, 2026-10-15).
+  const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+  let waited: StorageWork | undefined;
+  const waitingBegan = performance.now();
+  await observeStorageOperation('waits', async () => {
+    await Promise.all([
+      awaitingOutside(() => pause(20)),
+      awaitingOutside(() => pause(120)),
+      awaitingOutside(() => awaitingOutside(() => pause(60))),
+    ]);
+    await awaitingOutside(() => pause(40));
+  }, value => { waited = value; });
+  const waitingWall = performance.now() - waitingBegan;
+  assert.ok(waited!.awaited_ms >= 150, `overlapping waits counted as their union, then the next one added: ${waited!.awaited_ms} ms`);
+  assert.ok(waited!.awaited_ms <= waitingWall + 1, `awaited never exceeds wall time: ${waited!.awaited_ms} of ${waitingWall} ms`);
 
   const failures = storageObservationFailures();
   assert.equal(observeStorageOperation('sink-failure', () => 42, () => { throw new Error('sink down'); }), 42);
