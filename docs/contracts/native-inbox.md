@@ -3,7 +3,11 @@
 ## Waiting captures
 
 The owner exposes a bounded, ordered page of human Inbox inputs and attributed outside-agent
-captures that are still queued and have never reached a provider. Thinkering's Inbox uses it
+captures that are still queued and have never reached a provider. A new executable capture
+joins the Inbox router's running turn by default; it appears in this waiting page when no
+run can accept it. Its bytes, accepted input and live-delivery intent commit together, and
+duplicate or restart recovery dispatches that exact input only if no turn or steering effect
+already took it. Thinkering's Inbox uses the waiting page
 to show what is waiting, marking outside-agent authorship explicitly.
 `Move next` raises one queued input's priority within this Inbox session; the owner claim and
 the older-turn blocker use that same priority, then original turn order. It changes neither
@@ -25,7 +29,7 @@ other sessions.
 
 Concierge owns the active canonical Inbox session, accepted inputs, attachment bytes
 and request obligations. Thinkering opens it with its existing conversation surface.
-The existing capture ingress and queue remain the producer boundary. A provider/cwd
+The existing capture ingress and owner delivery remain the producer boundary. A provider/cwd
 cutover creates a new active session; earlier Inbox sessions and their source and
 request evidence remain in the catalogue and visible Inbox history.
 
@@ -59,18 +63,20 @@ A human-surface message addressed to the Inbox router joins its running turn thr
 same provider controller used for agent requests and service notices. The owner applies
 this rule even when an older composer supplies `delivery:"queue"`. The Inbox composer
 does not offer Queue: it is the control conversation for ongoing work. Thread replies
-addressed to a worker still go to that worker. Captures still use ordered intake, with
-Move next and Work with current run; explicit Queue in ordinary sessions still means
+addressed to a worker still go to that worker. Captures join the running router when it
+can take them, and otherwise use ordered intake with Move next and Work with current run.
+Explicit Queue in ordinary sessions still means
 finish the current turn before starting this separate instruction. Saved work keeps its
 chosen time. Those guarantees are why queue delivery remains available.
 
 Admission retains `admissionIntent:"live"` atomically with the exact message before trying
 the provider. No active accepting run means this same input enters the normal queue. A
 provably unsent refusal recovers that input; acknowledged or ambiguous sends never replay.
-Every later live input to the Inbox first brings in earlier, unreceived direct human
-messages in arrival order, including messages old browsers marked Queue. It excludes
-captures, saved work, dependencies and any prior provider admission. This prevents a
-service notice from passing a human message during a run-start race.
+Every later live input first brings in earlier, unreceived unselected messages in
+accepted order, including captures and messages older browsers or outside-agent routes
+marked Queue as a default. Deliberate Queue, saved work, dependencies and any prior
+provider admission stay where they were. This prevents a later message from passing
+an earlier one during a run-start race.
 
 Queue admission followed by steering retains both `accepted` events for the same input.
 Only the earliest accepted event places that input in Inbox message history; the later

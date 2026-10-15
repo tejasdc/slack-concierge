@@ -2,6 +2,16 @@
 
 ## Human message delivery choice
 
+The accepting owner applies one live-delivery default to people, agents and
+service returns: an unselected message joins the current run when the provider
+can take it, then falls back to the session queue if that run ends before
+admission. Local, outside and peer agent requests use that same dispatch path.
+Source run identity records where a return came from; it pins a service notice
+only when that notice explicitly requests exact-run steering. Scheduled work,
+continuations and informational Inbox notices that are deliberately retained
+for a later turn keep their explicit Queue or saved-work rule. ChatGPT cannot
+accept live steering, so its messages wait for the next turn.
+
 A human session message asks the accepting owner to use its current run unless
 `delivery:"queue"` has `queueChosen:true`. The owner pins a joinable run and
 steers the message; if there is no joinable run, or it ends before the steering
