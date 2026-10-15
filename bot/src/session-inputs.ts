@@ -6,6 +6,7 @@ import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
 import {armThreadNotification} from './thread-notifications';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
+import {topicRouteAnchor} from './inbox-request-root';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -198,15 +199,19 @@ export function nativeRunId(turnId:number):string {
   return row.native_run_id;
 }
 export function recordSessionEvent(input:{eventId:string;sessionId:number;inputId?:string|null;turnId?:number|null;kind:string;payload:unknown}) {
-  const payload = JSON.stringify(input.payload);
+  const routeAnchorInputId=input.inputId?.startsWith('topic-change:')
+    ?topicRouteAnchor(db,input.sessionId,input.inputId):null;
+  const inputId=routeAnchorInputId??input.inputId??null;
+  const payload = JSON.stringify(routeAnchorInputId&&input.payload&&typeof input.payload==='object'&&!Array.isArray(input.payload)
+    ?{...input.payload,threadRoot:input.inputId}:input.payload);
   const previous = db.query('SELECT session_id,input_id,turn_id,kind,payload_json FROM session_owner_events WHERE event_id=?').get(input.eventId) as any;
   if (previous) {
-    if (previous.session_id!==input.sessionId || previous.input_id!==(input.inputId??null) || previous.turn_id!==(input.turnId??null) || previous.kind!==input.kind || previous.payload_json!==payload) throw new Error('Event identity conflict.');
+    if (previous.session_id!==input.sessionId || previous.input_id!==inputId || previous.turn_id!==(input.turnId??null) || previous.kind!==input.kind || previous.payload_json!==payload) throw new Error('Event identity conflict.');
     return;
   }
   db.transaction(()=>{
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
+      .run(input.eventId,input.sessionId,inputId,input.turnId??null,input.kind,payload);
   })();
   executionChanged();
 }

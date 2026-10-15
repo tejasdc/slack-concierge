@@ -64,7 +64,7 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  }
  // Answers the owner posted straight into this thread name the agent that wrote them.
  if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session FROM session_owner_events
-  WHERE session_id=? AND kind='post' AND input_id IN (${roots.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.postedBy')='owner-forward'`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null}[])
+  WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.postedBy')='owner-forward'`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null}[])
   add(row.from_session,'answered here',[row.event_id]);
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')

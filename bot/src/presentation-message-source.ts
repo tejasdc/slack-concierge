@@ -42,10 +42,17 @@ export function inboxRootResolver(db:Database) {
     if(!row?.input_id){memo.set(cacheKey,row?.input_id??null);return row?.input_id??null;}
     const inputId=row.input_id;
     if(row.kind==='post'){
-      const requestId=JSON.parse(row.payload_json)?.requestId;
+      const post=JSON.parse(row.payload_json);
+      if(typeof post?.threadRoot==='string'){memo.set(cacheKey,post.threadRoot);return post.threadRoot;}
+      const requestId=post?.requestId;
       if(typeof requestId==='string'){
         const linked=inboxRequestRoot(db,requestId,inputId);
         if(linked!==inputId){memo.set(cacheKey,linked);return linked;}
+      }
+      const replyTo=post?.replyToMessage?.messageId;
+      if(typeof replyTo==='string'&&replyTo!==messageId){
+        const linked=resolve(sessionId,replyTo,seen);
+        if(linked&&linked!==inputId){memo.set(cacheKey,linked);return linked;}
       }
     }
     if(seen.has(inputId))return inputId;
