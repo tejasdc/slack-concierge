@@ -239,6 +239,21 @@ export function claudeAccountWithRoomBesides(refused:string|null,model?:string|n
 }
 
 /**
+ * Whether usage-held Claude work can be released now: dispatch would run it on an account whose
+ * latest good reading shows room, fresh or not. A hold made while that account looked unreadable
+ * must not wait for a fresh reading the release check alone could accept.
+ */
+export function claudeHeldWorkCanRun(model?:string|null):boolean{
+  if(claudeAccountWithRoomBesides(null,model))return true;
+  try {
+    const next=chooseClaudeDispatch(null,0,undefined,model);
+    const reading=next?providerAccountUsage('claude-code')?.accounts.find(account=>account.label===next.account):null;
+    const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
+    return used!==null&&used<100;
+  } catch { return false; }
+}
+
+/**
  * When every Claude account this machine can launch is spent, the earliest moment one frees up,
  * by the same rules dispatch uses; null when one can run now or no reset is known.
  */
@@ -331,10 +346,12 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     // "until" the spent account's reset (2026-10-15, his account at 19% of its week). A launchable
     // account whose last reading showed room is tried; Claude's own refusal, if it is full, is cached
     // with its reset and excludes it next time.
+    // Only a reading that was good when taken counts: a sign-in or read problem keeps its last
+    // percentages but is not evidence the account can run.
     const lastShowedRoom=rooms.flatMap(room=>{
       if(!room.home||room.tightestUsedPercent!==null||claudeAccountCachedReset(room.account,model))return [];
       const reading=usage.accounts.find(account=>account.label===room.account);
-      const used=reading?accountUsedPercent('claude-code',reading,model):null;
+      const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
       return used!==null&&used<100?[{room,used}]:[];
     }).sort((a,b)=>Number(b.room.account===expected)-Number(a.room.account===expected)||a.used-b.used)[0];
     if(lastShowedRoom)return {account:lastShowedRoom.room.account,home:lastShowedRoom.room.home,

@@ -8,7 +8,7 @@ import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows} from './account-allowance-observation';
-import { claudeAccountWithRoomBesides, claudeEveryAccountClearsAt, proveClaudeHomesAhead } from "./provider-account-dispatch";
+import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
@@ -540,7 +540,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
         &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null));
       // A percentage drop cannot identify which window caused a model-specific refusal.
       // The exact model's success, a manual clear, or its stated reset retires that cache.
-      const claudeCanDispatch=provider==='claude-code'&&claudeAccountWithRoomBesides(null,null);
+      const claudeCanDispatch=provider==='claude-code'&&claudeHeldWorkCanRun(null);
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');

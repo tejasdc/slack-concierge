@@ -378,8 +378,10 @@ that account, allowing a safe queued retry to choose another immediately. When n
 room, the existing timed usage hold keeps the input for the earliest readable reset.
 "None has room" is a claim about readings and refusals only. A reading older than six minutes
 is unknown, not full: when no freshly read account has room, a launchable account whose last
-reading showed room, with no cached refusal, is tried, and Claude's own refusal excludes it if it
-is spent. On a Mac, a Keychain lookup that times out or cannot be asked is not "no login"; only
+reading was good when taken and showed room, with no cached refusal, is tried, and Claude's own
+refusal excludes it if it is spent. Each usage reading releases held work by that same rule
+(`claudeHeldWorkCanRun`), so a hold made while the account looked unreadable does not wait for a
+reading the release check alone would accept. On a Mac, a Keychain lookup that times out or cannot be asked is not "no login"; only
 `security`'s item-not-found answer (exit 44) is, and an unanswered lookup is logged as
 `claude_keychain_lookup_unanswered`. Filing a finished sign-in still requires the login to be
 found. Both closed the 2026-10-15 hold that kept his personal account (19% of its week) out of
