@@ -34,8 +34,8 @@ export class TopicError extends Error {
   constructor(message:string,readonly status=400,readonly code='TOPIC_ERROR'){super(message);}
 }
 
-export const TOPIC_EVENT_KINDS=['topic','topic_request','topic_question','topic_answer','topic_reading','topic_focus','topics_migration'] as const;
-const MANAGEMENT_KINDS=['topic','topic_request','topic_question','topic_answer'];
+export const TOPIC_EVENT_KINDS=['topic','topic_route','topic_request','topic_question','topic_answer','topic_reading','topic_focus','topics_migration'] as const;
+const MANAGEMENT_KINDS=['topic','topic_route','topic_request','topic_question','topic_answer'];
 
 export type TopicBy={kind:'agent'|'human'|'owner';sessionId?:string;inputId?:string;runId?:string};
 export type TopicActor={sessionId:number;turnId:number;inputId:string;runId:string};
@@ -439,7 +439,7 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
   applyTopicChange(change.kind,change.payload);
 }
 /** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
-function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:()=>{change:Change;result:T}):T&{duplicate?:boolean} {
+function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:(actionInputId:string)=>{change:Change;result:T}):T&{duplicate?:boolean} {
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
@@ -453,7 +453,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
       retainMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='compute';
       if(saved.duplicate){duplicate=true;phaseName='commit';return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};}
-      const {change,result}=run();
+      const {change,result}=run(saved.input.id);
       computeMs=performance.now()-phaseStart;
       resultForTrace=result;
       changeTopicId=typeof change.payload?.topicId==='string'?change.payload.topicId:null;
@@ -1137,9 +1137,35 @@ function placementRoots(session:SessionRow,values:unknown,field='--root') {
   refreshRootMemo();
   return roots.map(value=>{
     const root=rootOf(session.id,value)??value;
+    if(root!==value)throw new TopicError(`${value} is one message inside a conversation rooted at ${root}. Use topics route for that message, or name the root explicitly to move the whole conversation.`,409,'MESSAGE_IS_NOT_ROOT');
     if(!getAcceptedSessionInput(root))throw new TopicError(`${value} is not a message in this Inbox.`,404,'ROOT_UNKNOWN');
     return root;
   });
+}
+const routableMessage=(input:AcceptedSessionInput)=>humanAuthored(input)
+  ||input.origin==='agent'&&input.scope==='capture:outside-agent'
+    &&JSON.parse(input.payload_json)?.capture?.source?.kind==='outside-agent';
+/** The ask transaction calls this after retaining its target input; no receipt exists before both commit. */
+export function recordSessionMessageRoute(input:{sourceMessageId:string;destinationSessionId:string;destinationMessageId:string;
+  requestId:string;actor:TopicActor}) {
+  const session=getSessionById(input.actor.sessionId);
+  if(!session)throw new TopicError('Unknown Inbox session.',404,'ROUTE_SOURCE_UNKNOWN');
+  assertInbox(session);
+  const source=getAcceptedSessionInput(input.sourceMessageId);
+  if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox||!routableMessage(source))
+    throw new TopicError('Route one exact accepted human Inbox message or marked agent test capture.',404,'ROUTE_MESSAGE_UNKNOWN');
+  const sourceRoot=inboxThreadRoot(source.session_id,input.sourceMessageId);
+  const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
+  if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
+  const prior=db.query("SELECT event_id FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
+    .get(input.sourceMessageId) as {event_id:string}|null;
+  if(prior)throw new TopicError(`This message was already routed as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
+  const route={sourceMessageId:input.sourceMessageId,sourceRoot,sourceTopicId,
+    destinationSessionId:input.destinationSessionId,destinationMessageId:input.destinationMessageId,
+    requestId:input.requestId,by:byOf(input.actor),at:nowIso()};
+  recordSessionEvent({eventId:`session-route:${input.requestId}`,sessionId:session.id,inputId:input.actor.inputId,
+    turnId:input.actor.turnId,kind:'session_route',payload:route});
+  return route;
 }
 function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null) {
   const at=nowIso();
@@ -1473,6 +1499,31 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const topic=topicFor(body?.topic_id);
         const placed=placeChange(session,topic,roots,by,reason());
         return {change:placed.change,result:{topic:placed.topic,roots}};
+      });
+    }
+    case 'route':{
+      assertInbox(session);
+      const messageId=text(body?.message_id,'--message',500);
+      const destination=text(body?.topic_id,'topic id',200);
+      return agentMutation(actor,actionId(),{kind:'topic-route',messageId,destination,reason:reason()},actionInputId=>{
+        const source=getAcceptedSessionInput(messageId);
+        if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox||!routableMessage(source))
+          throw new TopicError('Route one exact accepted human Inbox message or marked agent test capture.',404,'ROUTE_MESSAGE_UNKNOWN');
+        const sourceRoot=inboxThreadRoot(source.session_id,messageId);
+        const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
+        if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
+        const prior=db.query("SELECT event_id FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
+          .get(messageId) as {event_id:string}|null;
+        if(prior)throw new TopicError(`This message was already routed as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
+        if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
+        const topic=topicFor(destination);
+        const destinationMessageId=`topic-change:${actionInputId}`;
+        const by=byOf(actor),at=nowIso(),next=bumped(topic);
+        const payload={change:'routed',topicId:destination,topic:next,sourceMessageId:messageId,
+          sourceRoot,sourceTopicId,destinationMessageId,by,reason:reason(),revision:next.revision,
+          roots:rootRecords(destination,[destinationMessageId],by,reason())};
+        return {change:{kind:'topic_route',payload},result:{route:{sourceMessageId:messageId,sourceRoot,sourceTopicId,
+          destinationMessageId,destinationTopicId:destination}}};
       });
     }
     case 'rename':{
@@ -2209,7 +2260,7 @@ function recordOwnerTopicChange(sessionId:number,eventId:string,kind:string,payl
 }
 
 /** A change that places new work in a closed thread opens it again, with what its closure ended. */
-const NEW_WORK_CHANGES=new Set(['placed','added','linked','request_reopened']);
+const NEW_WORK_CHANGES=new Set(['placed','routed','added','linked','request_reopened']);
 function reopenedForNewWork(change:Change):Change {
   const topic=change.payload?.topic as StoredTopic|undefined;
   if(!NEW_WORK_CHANGES.has(change.payload?.change)||topic?.state!=='closed'||topic.closure?.kind==='merged')return change;
