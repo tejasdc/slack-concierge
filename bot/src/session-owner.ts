@@ -1809,7 +1809,7 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const agent=agentTestSource(input.agentSource);
@@ -1818,6 +1818,14 @@ export class SessionOwner {
     validateReviewSelection(session.id,input);
     this.attachments(input.attachments);
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
+    if(input.queueChosen!==undefined&&(input.queueChosen!==true||input.delivery!=='queue'))throw new SessionOwnerError('Queue choice must name Queue delivery.');
+    if(input.steerChosen!==undefined&&(input.steerChosen!==true||input.delivery!=='steer'||!input.expectedRunId))throw new SessionOwnerError('Exact-run choice must name a live run.');
+    if(input.expectedRunId!==undefined&&input.delivery!=='steer')throw new SessionOwnerError('expectedRunId requires steer delivery.');
+    // Older pages and capture routes wrote Queue for their default; older pages also pinned a
+    // run that may have ended while speech or a tool was finishing. Neither is his Queue choice.
+    // Explicit controls carry their own markers. Otherwise the owner decides from the run it
+    // actually has at admission; an unchanged old page is safe to keep open.
+    if(input.queueChosen!==true&&input.steerChosen!==true){delete input.delivery;delete input.expectedRunId;}
     // HIS MESSAGE TO A SESSION ALWAYS REACHES IT. Sent while the agent is working, it joins that
     // piece of work; if that piece has already ended (an orchestrating session runs a new one every
     // few seconds), the same message is accepted as the session's next one instead of being refused.
@@ -1829,15 +1837,14 @@ export class SessionOwner {
     if(prior){const payload=JSON.parse(prior.payload_json);delete payload.notificationRequest;const kept=stablePayload(payload);
       const {delivery:_delivery,expectedRunId:_expectedRunId,...automatic}=payload;
       if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)
-        &&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))
+        &&!(input.steerChosen===true&&kept===stablePayload(asQueued(input)))
         &&!(input.delivery===undefined&&stablePayload(automatic)===stablePayload(input))))throw new SessionOwnerError('Idempotency conflict.',409);
       this.recoverAcceptedInput(prior);
       return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
     this.validateAttachments(session,input.attachments);
-    if(input.expectedRunId!==undefined&&input.delivery!=='steer')throw new SessionOwnerError('expectedRunId requires explicit steer delivery.');
-    if(input.delivery==='steer') {
+    if(input.steerChosen===true) {
       const active=db.query("SELECT id,native_run_id,stop_requested_at FROM turns WHERE session_id=? AND status='running'").get(session.id) as {id:number;native_run_id:string;stop_requested_at:string|null}|null;
-      const joinable=!!active&&!!input.expectedRunId&&active.native_run_id===input.expectedRunId&&!active.stop_requested_at
+      const joinable=!!active&&active.native_run_id===input.expectedRunId&&!active.stop_requested_at
         &&this.view(session).capabilities.steer&&acceptedInputForTurn(active.id)?.kind!=='fork';
       if(!joinable){const queued=asQueued(input);for(const key of Object.keys(input))delete input[key];Object.assign(input,queued);}
     }
