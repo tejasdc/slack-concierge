@@ -1,5 +1,22 @@
 # Unified session owner wire contract v1
 
+## Human message delivery choice
+
+A human session message with no `delivery` choice asks the accepting owner to use the
+current run. The owner pins that run and steers the message when it is joinable; if
+there is no joinable run, or it ends before the steering controller accepts the
+message, the same accepted input enters the session queue. This choice is made on
+the session's owning machine, including for Mac sessions, because a browser's
+prepared card may lag behind the running turn. An explicit `delivery:"queue"`
+always requests the next turn. An explicit `delivery:"steer"` retains its
+`expectedRunId` check. Replies addressed through an Inbox thread keep their
+addressed delivery; they are not converted into steering of the router.
+
+The accepted input records the chosen delivery and exact run when steering. A
+retry with the same action identity and original absent choice returns that
+accepted result, even when the run has since changed. The receipt still
+distinguishes owner acceptance from provider acknowledgement.
+
 ## Outside-agent owner socket entrance
 
 The root-only `requests.sock` also accepts `GET /supervisor/ping`. It reads no ledger and
