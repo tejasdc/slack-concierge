@@ -1,0 +1,1 @@
+Messages from agents, recordings, and Inbox captures now join a working agent immediately by default, while deliberate Queue and scheduled work keep their timing.
