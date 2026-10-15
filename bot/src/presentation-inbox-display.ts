@@ -1,7 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,routeTitle} from './inbox-request-root';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -26,6 +26,24 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const input=row.input_json?JSON.parse(row.input_json):{};
   const payload=input.firstInput??input;
   const event=JSON.parse(row.payload_json);
+  if(row.kind==='topic_route'){
+    const original=database.query('SELECT payload_json,origin,created_at,session_id FROM session_inputs WHERE id=?')
+      .get(event.sourceMessageId) as {payload_json:string;origin:string;created_at:string;session_id:number}|null;
+    if(!original)return null;
+    const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
+    const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
+    const attachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
+      inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
+      ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
+        title:routeTitle(database,event.sourceTopicId,null)},
+      createdAt:stamp(original.created_at.replace(' ','T')),timestampSource:'submitted'};
+    if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
+    return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],
+      contentCoverage:{complete:false,code:'message_preview',bytes:Buffer.byteLength(full.content),attachments:ids.length},
+      detailRef:{sessionId:`concierge:${sessionId}`,messageId:row.event_id}},detailJson:JSON.stringify(full)};
+  }
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const displayedRoot=post&&typeof event.requestId==='string'
     ?inboxRequestRoot(database,event.requestId,row.input_id):row.input_id;
@@ -61,7 +79,15 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const closing=post?database.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
     .get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
+  const routed=row.input_id&&!agent?(database.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
+    .get(row.input_id) as {payload_json:string}|null):null;
+  const route=routed?JSON.parse(routed.payload_json):null;
+  const peerRoute=route?.requestId?database.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?')
+    .get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
+      title:routeTitle(database,route.topicId,route.destinationSessionId),delivery}}:{}),
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&event.answersQuestion===true?{answersQuestion:true}:{}),
@@ -87,7 +113,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     ...(full.answersQuestion?{answersQuestion:true}:{}),
     ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
-    ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.relayed?{relayed:true}:{}),
+    ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.routedTo?{routedTo:full.routedTo}:{}),...(full.relayed?{relayed:true}:{}),
     ...(full.quiet?{quiet:bounded(String(full.quiet),160).text}:{}),
     ...(author?{author:{kind:author.kind,...(author.communication?{communication:author.communication}:{}),
       ...(author.requestId?{requestId:author.requestId}:{}),

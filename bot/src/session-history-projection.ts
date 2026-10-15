@@ -13,6 +13,12 @@ export function projectAcceptedInput(message:ProviderHistoryMessage,input:Accept
     const attachment=db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id);
     return attachment?[attachment]:[];
   }) as NonNullable<ProviderHistoryMessage['attachments']>;
+  if(payload.routedFrom&&typeof payload.routedFrom.originalText==='string'){
+    const kind:'human'|'agent'=payload.routedFrom.authorKind==='agent'?'agent':'human';
+    return {...message,role:'user',author:{kind},createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
+      content:payload.routedFrom.originalText,submissionId:input.id,routedFrom:payload.routedFrom,
+      ...(attachments.length?{attachments}:{})};
+  }
   return {...message,author,content:typeof text==='string'?text:payload.text,submissionId:input.id,
     ...(attachments.length?{attachments}:{})};
 }

@@ -5,11 +5,11 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, releaseFocusForPost, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -1004,6 +1004,8 @@ export class SessionCommunicationCoordinator {
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
+        /** Route this exact accepted Inbox message into the addressed session. */
+        routeMessageId?:string;
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
         saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number};
@@ -1013,6 +1015,28 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
+        if(input.routeMessageId!==undefined){
+            if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
+                throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
+            const owner=getSessionById(actor.session);
+            const source=getAcceptedSessionInput(input.routeMessageId);
+            if(!owner||!sessionMetadata(owner).inbox||!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
+                throw new Error('The routed message must be an accepted input in this Inbox.');
+            const body=JSON.parse(source.payload_json);
+            if(source.origin!=='human'&&!(source.origin==='agent'&&source.scope==='capture:outside-agent'&&body.capture?.source?.kind==='outside-agent'))
+                throw new Error('Only Tejas’s exact message or a marked agent test message can be routed.');
+            const root=inboxThreadRoot(source.session_id,source.id);
+            const topicId=root?topicOfRoot(root):null;
+            if(!root||!topicId)throw new Error('The source message must already belong to an Inbox thread.');
+            const originalText=typeof body.text==='string'?body.text:'';
+            const attachments=Array.isArray(body.attachments)?body.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
+            if(!originalText.trim()&&!attachments.length)throw new Error('The routed message has no words or attachments.');
+            const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
+            routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,title,originalText,
+                originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:source.origin==='human'?'human':'agent'};
+            input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
+        }
         text(input.text);
         const writing=isWritingSession(getSessionById(actor.session)!);
         if(input.requestedEffect==='work'&&writing)throw new Error(WRITING_SESSION_REFUSAL);
@@ -1050,7 +1074,7 @@ export class SessionCommunicationCoordinator {
         }
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
-        const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        const threadRoot=routedFrom?null:inboxRequestThread(getSessionById(actor.session)!,input.thread);
         if(input.return_to_requester!==undefined&&input.return_to_requester!==true)
             throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
@@ -1084,7 +1108,8 @@ export class SessionCommunicationCoordinator {
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester});
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester,
+                ...(routedFrom?{routedFrom}:{})});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
@@ -1098,7 +1123,7 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
+        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
@@ -1163,6 +1188,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?(input.provider==='chatgpt'&&!input.effort?.startsWith('tejas:')?`${input.text}
 
 ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -1189,6 +1215,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                     payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
                 recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`}});
+                if(routedFrom)recordSessionMessageRoute({sourceMessageId:routedFrom.messageId,destinationSessionId:`concierge:${selected.session}`,
+                    destinationMessageId:`request:${id}`,requestId:id,actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId!,runId:nativeRunId(actor.turn)}});
             }
         })();
         this.wake();
@@ -1262,8 +1290,14 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
     /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
         if(!request.source_input_id)return null;
-        const forwarded=JSON.parse(request.payload_json).forwardedReply;
-        if(forwarded&&typeof forwarded.inboxInputId==='string')return {root:request.thread_root_input_id??request.source_input_id,forwarded};
+        const payload=JSON.parse(request.payload_json);
+        if(payload.routedMessage)return null;
+        const forwarded=payload.forwardedReply;
+        if(forwarded&&typeof forwarded.inboxInputId==='string'){
+            const route=messageRouteForSource(forwarded.inboxInputId);
+            if(route&&'sessionId' in route)return null;
+            return {root:route&&'topicId' in route?route.messageId:request.thread_root_input_id??request.source_input_id,forwarded};
+        }
         // Pending old returns use the same post identity when custody moves to the thread.
         const agentReply=((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
         const inbox=getSessionById(request.source_session_id);
@@ -1279,8 +1313,10 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
      */
     private postHisStop(request:RequestRow,event:EventRow,declared:any):boolean {
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
+        const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
+        if(route&&'sessionId' in route)return false;
         const inbox=getSessionById(request.source_session_id);
-        const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id??(forwarded?request.source_input_id:null));
+        const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,request.request_id,request.thread_root_input_id??(forwarded?request.source_input_id:null));
         if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return false;
         const responder=getSessionById(request.target_session_id);
         const title=responder?sessionMetadata(responder).title??null:null;
@@ -1871,6 +1907,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
+        const requestPayload=JSON.parse(request.payload_json);
+        const routedMessage=requestPayload.routedMessage;
+        const forwardedRoute=requestPayload.forwardedReply?.inboxInputId?messageRouteForSource(requestPayload.forwardedReply.inboxInputId):null;
         if(event.kind==='overdue'&&(declared.promptAnswerOverdue?request.prompt_answered_at_ms!==null:!!request.outcome)){
             withdrawUnstartedServiceInput(`return:${event.event_id}`,"Answered before this notice was delivered.");
             withdrawUnstartedServiceInput(`question-overdue:${request.request_id}`,"Answered before this notice was delivered.");
@@ -1895,6 +1934,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if (event.kind === 'final')
             for (const notice of db.query("SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='overdue' AND accepted_input_id IS NOT NULL").all(request.request_id) as {accepted_input_id:string}[])
                 db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(notice.accepted_input_id);
+        if(routedMessage||(forwardedRoute&&'sessionId' in forwardedRoute)){
+            withdrawUnstartedServiceInput(`return:${event.event_id}`,'Answer retained in the destination session.');
+            db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+            return;
+        }
         if(!returnToRequester){
             if(!alreadyPostedInThread)throw new Error("The named thread has not received this reply.");
             withdrawUnstartedServiceInput(`return:${event.event_id}`,"Delivered directly to its Inbox thread.");

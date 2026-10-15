@@ -1104,6 +1104,7 @@ export class SessionOwner {
       notificationRequest:input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
         ?(Object.hasOwn(parsed,'notificationRequest')?parsed.notificationRequest:legacyNotificationRequest(String(parsed.text??parsed.firstInput?.text??''))):null,
       // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.
+      ...(parsed.routedFrom?{routedFrom:parsed.routedFrom}:{}),
       ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
         return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};

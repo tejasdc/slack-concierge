@@ -288,6 +288,10 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- kind='thread_link' can use this one.
         DROP INDEX IF EXISTS session_owner_events_kind_sequence;
         CREATE INDEX IF NOT EXISTS session_owner_events_thread_link ON session_owner_events(sequence) WHERE kind='thread_link';
+        -- A source message's receipt is read with every Inbox page; seek its one route directly.
+        CREATE INDEX IF NOT EXISTS session_owner_events_route_source
+          ON session_owner_events(json_extract(payload_json,'$.sourceMessageId'))
+          WHERE kind IN ('topic_route','session_route');
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);

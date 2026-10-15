@@ -7,6 +7,9 @@ metadata separated from bytes. The owner contract and query are in
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Routing one message out of an Inbox conversation keeps its original root and records
+linked source and destination views; whole-conversation placement requires the root.
+See [one-message routing](docs/plans/2026-10-15-route-one-inbox-message.md).
 
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the

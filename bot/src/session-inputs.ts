@@ -135,11 +135,25 @@ function peerDeliveryProvenance(input:AcceptedSessionInput) {
     requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer};
 }
 export function sessionInputProvenance(input:AcceptedSessionInput) {
-  if(!input.source_input_id||!input.source_run_id)return peerDeliveryProvenance(input);
+  const routedHuman=(candidate:AcceptedSessionInput)=>{
+    const routedFrom=JSON.parse(candidate.payload_json)?.routedFrom;
+    if(routedFrom?.authorKind!=='human'||typeof routedFrom.messageId!=='string')return null;
+    const original=getAcceptedSessionInput(routedFrom.messageId);
+    if(!original||!humanAuthored(original))return null;
+    const originalPayload=JSON.parse(original.payload_json);
+    // A forwarded human reply can be accepted without ever owning a provider turn.
+    return {inputId:original.id,runId:original.turn_id?nativeRunId(original.turn_id):'',
+      sessionId:`concierge:${original.session_id}`,...(originalPayload.capture?.id?{captureId:originalPayload.capture.id}:{})};
+  };
+  if(!input.source_input_id||!input.source_run_id){
+    const delivered=peerDeliveryProvenance(input);
+    const original=routedHuman(input);
+    return delivered&&original?{...delivered,originatingHuman:original}:delivered;
+  }
   const seen=new Set<string>();
   let current:AcceptedSessionInput|null=input;
   let source:{inputId:string;runId:string;sessionId:string}|null=null;
-  let human:({inputId:string;runId:string;sessionId:string;captureId?:string})|null=null;
+  let human:({inputId:string;runId:string;sessionId:string;captureId?:string})|null=routedHuman(input);
   let effectScope:'informational'|'work'|null=null;
   while(current?.source_input_id&&current.source_run_id&&!seen.has(current.id)) {
     seen.add(current.id);
@@ -158,9 +172,11 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
       const effect=JSON.parse((request??peer)!.payload_json).requestedEffect??'informational';
       effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
     }
+    const routedParent=routedHuman(parent);
+    if(routedParent){human=routedParent;break;}
     if(humanAuthored(parent)) {
       const payload=JSON.parse(parent.payload_json);
-      human={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};
+      human??={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};
       break;
     }
     current=parent;
