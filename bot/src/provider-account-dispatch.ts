@@ -13,7 +13,7 @@ import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './p
 import {log} from './log';
 import {accountFilesView,forgetAccountFiles} from './account-files-memo';
 import {accountAvailability} from './provider-usage-forecast';
-import {claudeKeychainHasLogin} from './claude-keychain';
+import {claudeKeychainMayHoldLogin} from './claude-keychain';
 import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 
@@ -57,7 +57,7 @@ const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','stats
  * §0.1). The Keychain is asked only whether that item exists; its secret is never read.
  */
 export function claudeHomeHasLogin(home:string):boolean {
-  return existsSync(join(home,'.credentials.json'))||claudeKeychainHasLogin(home);
+  return existsSync(join(home,'.credentials.json'))||claudeKeychainMayHoldLogin(home);
 }
 
 export function sharedClaudeHome(account:string,home=accountHome('claude-code',profileId(account)),prepare=false,claim=prepare):string|null {
@@ -326,6 +326,19 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
   if(choice.account===null){
+    // An old reading is not a limit. Each account is read about every twelve minutes and a reading
+    // counts for six, so an account with room routinely looked unreadable here and work was held
+    // "until" the spent account's reset (2026-10-15, his account at 19% of its week). A launchable
+    // account whose last reading showed room is tried; Claude's own refusal, if it is full, is cached
+    // with its reset and excludes it next time.
+    const lastShowedRoom=rooms.flatMap(room=>{
+      if(!room.home||room.tightestUsedPercent!==null||claudeAccountCachedReset(room.account,model))return [];
+      const reading=usage.accounts.find(account=>account.label===room.account);
+      const used=reading?accountUsedPercent('claude-code',reading,model):null;
+      return used!==null&&used<100?[{room,used}]:[];
+    }).sort((a,b)=>Number(b.room.account===expected)-Number(a.room.account===expected)||a.used-b.used)[0];
+    if(lastShowedRoom)return {account:lastShowedRoom.room.account,home:lastShowedRoom.room.home,
+      because:lastShowedRoom.room.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
     const resets=accountAvailability('claude-code',model).filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
       .flatMap(account=>account.freeAt!==null&&account.freeAt>Date.now()?[account.freeAt]:[]);

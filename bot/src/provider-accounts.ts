@@ -1,4 +1,4 @@
-import { claudeKeychainHasLogin } from "./claude-keychain";
+import { claudeKeychainMayHoldLogin } from "./claude-keychain";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -263,7 +263,7 @@ function installedAccounts(provider: ProviderKey): { id: string; path: string }[
       // counting only the file hid every Mac Claude home, so the Mac never chose between accounts
       // and a newly signed-in one never appeared in Accounts (2026-10-08).
       .filter(entry => entry.id.length > 0 && (existsSync(entry.path)
-        || (provider === "claude-code" && claudeKeychainHasLogin(join(root, entry.id)))))
+        || (provider === "claude-code" && claudeKeychainMayHoldLogin(join(root, entry.id)))))
       // A Claude credential names no account, so a home we cannot put an address to is not
       // offered: switching to an unnamed credential is how he was nearly moved onto the wrong
       // account on 2026-09-22. This box holds exactly such a leftover — `.claude-accounts/second`,
@@ -410,7 +410,7 @@ function readProfiles(provider: ProviderKey): ProviderProfile[] {
         detail: account?.detail ?? null,
         current,
         // A Mac home's login is in the Keychain: present there counts as held, as a file does here.
-        signedIn: credentials === null && provider === "claude-code" && claudeKeychainHasLogin(dirname(path)) ? true : holdsLogin(provider, credentials),
+        signedIn: credentials === null && provider === "claude-code" && claudeKeychainMayHoldLogin(dirname(path)) ? true : holdsLogin(provider, credentials),
       };
     })
     .sort((left, right) => left.label.localeCompare(right.label));

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { log } from "./log";
 
 /**
  * On a Mac, Claude Code keeps a login in the login Keychain, not in `.credentials.json`: one
@@ -16,9 +17,37 @@ export function claudeKeychainService(home: string): string {
   return `Claude Code-credentials-${createHash("sha256").update(home.replace(/\/+$/, "")).digest("hex").slice(0, 8)}`;
 }
 
+/** `security` exits 44 (errSecItemNotFound) when the item does not exist; any other failure means it could not be asked. */
+const ITEM_NOT_FOUND = 44;
+const unansweredSaid = new Set<string>();
+
+/**
+ * Whether the Keychain holds this home's login: present, absent, or not answered (a timeout, a
+ * busy or locked Keychain). Only "absent" is evidence that the account has no login. On
+ * 2026-10-15 a lookup during a restart of the Mac's owner dropped his personal account, at 19%
+ * of its week, from the accounts it could launch, and his work was held "until October 18" on
+ * the other, spent account.
+ */
+export function claudeKeychainLogin(home: string): "present" | "absent" | "unanswered" {
+  if (process.platform !== "darwin") return "absent";
+  const found = spawnSync(SECURITY, ["find-generic-password", "-s", claudeKeychainService(home)], { stdio: "ignore", timeout: 5_000 });
+  if (found.status === 0) { unansweredSaid.delete(home); return "present"; }
+  if (found.status === ITEM_NOT_FOUND) return "absent";
+  if (!unansweredSaid.has(home)) {
+    unansweredSaid.add(home);
+    log("warn", "claude_keychain_lookup_unanswered", { status: found.status, signal: found.signal, error: found.error ? String(found.error) : null });
+  }
+  return "unanswered";
+}
+
+/** A login known to be there: what filing a finished sign-in needs before it moves anything. */
 export function claudeKeychainHasLogin(home: string): boolean {
-  if (process.platform !== "darwin") return false;
-  return spawnSync(SECURITY, ["find-generic-password", "-s", claudeKeychainService(home)], { stdio: "ignore", timeout: 5_000 }).status === 0;
+  return claudeKeychainLogin(home) === "present";
+}
+
+/** Not known to be missing: what listing and launching an account need. Claude itself says if it is signed out. */
+export function claudeKeychainMayHoldLogin(home: string): boolean {
+  return claudeKeychainLogin(home) !== "absent";
 }
 
 function readSecret(service: string): string | null {
