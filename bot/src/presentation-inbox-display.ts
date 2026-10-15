@@ -27,8 +27,8 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const payload=input.firstInput??input;
   const event=JSON.parse(row.payload_json);
   if(row.kind==='topic_route'){
-    const original=database.query('SELECT payload_json,origin,created_at FROM session_inputs WHERE id=?')
-      .get(event.sourceMessageId) as {payload_json:string;origin:string;created_at:string}|null;
+    const original=database.query('SELECT payload_json,origin,created_at,session_id FROM session_inputs WHERE id=?')
+      .get(event.sourceMessageId) as {payload_json:string;origin:string;created_at:string;session_id:number}|null;
     if(!original)return null;
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
@@ -36,7 +36,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
       ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
-      routedFrom:{topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
+      routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
         title:routeTitle(database,event.sourceTopicId,null)},
       createdAt:stamp(original.created_at.replace(' ','T')),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};

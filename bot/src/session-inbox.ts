@@ -112,7 +112,7 @@ export function inboxMessage(row:any) {
     return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
       ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
-      routedFrom:{topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
+      routedFrom:{sessionId:source?`concierge:${source.session_id}`:undefined,topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
         title:routeTitle(db,route.sourceTopicId,null)},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
         :row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'submitted'};

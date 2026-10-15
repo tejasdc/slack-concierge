@@ -1526,7 +1526,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const topic=topicFor(destination);
         const destinationMessageId=`topic-change:${actionInputId}`;
         const by=byOf(actor),at=nowIso(),next=bumped(topic);
-        const payload={change:'routed',topicId:destination,topic:next,sourceMessageId:messageId,
+        const payload={change:'routed',topicId:destination,topic:next,destinationSessionId:`concierge:${session.id}`,sourceMessageId:messageId,
           sourceRoot,sourceTopicId,destinationMessageId,by,reason:reason(),revision:next.revision,
           roots:rootRecords(destination,[destinationMessageId],by,reason())};
         return {change:{kind:'topic_route',payload},result:{route:{sourceMessageId:messageId,sourceRoot,sourceTopicId,
