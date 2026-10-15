@@ -1,0 +1,1 @@
+A message sent from one thread to a session now carries the topic where you typed it, even if another thread prompted the routing.
