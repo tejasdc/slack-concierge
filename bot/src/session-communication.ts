@@ -1154,7 +1154,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('A session cannot ask itself to produce a separate answer.');
         // A session given a topic it does not handle yet is told so, with the other topics it is on,
         // so it can judge fit and hand the request back (session-fit.ts). Facts, never a refusal.
-        const topicRoot=topicRootFor(threadRoot,actor.inputId);
+        const topicRoot=routedFrom?.root??topicRootFor(threadRoot,actor.inputId);
         let fitNote:string|null=null;
         if(target&&targetSession&&!historical&&!consultationOnly&&targetSession.provider_id!=='chatgpt'&&!takesManySubjects(targetSession)&&input.requestedEffect==='work') {
             const fit=forTopic(targetSession,topicOf(topicRoot));
