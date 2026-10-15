@@ -1,7 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,routeTitle} from './inbox-request-root';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -36,7 +36,8 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
       ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
-      routedFrom:{topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId},
+      routedFrom:{topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
+        title:routeTitle(database,event.sourceTopicId,null)},
       createdAt:stamp(original.created_at.replace(' ','T')),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
     return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],
@@ -85,7 +86,8 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     .get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
   const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
-    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,delivery}}:{}),
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
+      title:routeTitle(database,route.topicId,route.destinationSessionId),delivery}}:{}),
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&event.answersQuestion===true?{answersQuestion:true}:{}),

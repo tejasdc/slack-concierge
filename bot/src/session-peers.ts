@@ -421,7 +421,7 @@ export class SessionPeers {
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
-    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
+    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -444,7 +444,11 @@ export class SessionPeers {
     const provenance=sessionInputProvenance(sourceInput);
     const runId=nativeRunId(actor.turn);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
-    const known=provenance?.originatingHuman??(humanAuthored(sourceInput)
+    const routedOriginal=input.routedFrom?.authorKind==='human'?getAcceptedSessionInput(input.routedFrom.messageId):null;
+    const known=routedOriginal&&humanAuthored(routedOriginal)
+      ?{inputId:routedOriginal.id,runId:routedOriginal.turn_id?nativeRunId(routedOriginal.turn_id):'',sessionId:`concierge:${routedOriginal.session_id}`,
+        ...(JSON.parse(routedOriginal.payload_json).capture?.id?{captureId:JSON.parse(routedOriginal.payload_json).capture.id}:{})}
+      :provenance?.originatingHuman??(humanAuthored(sourceInput)
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;

@@ -1015,7 +1015,7 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
-        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
+        let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
                 throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
@@ -1032,7 +1032,8 @@ export class SessionCommunicationCoordinator {
             const originalText=typeof body.text==='string'?body.text:'';
             const attachments=Array.isArray(body.attachments)?body.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
             if(!originalText.trim()&&!attachments.length)throw new Error('The routed message has no words or attachments.');
-            routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,originalText,
+            const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
+            routedFrom={sessionId:`concierge:${source.session_id}`,messageId:source.id,topicId,root,title,originalText,
                 originalCreatedAt:source.created_at.replace(' ','T')+'Z',authorKind:source.origin==='human'?'human':'agent'};
             input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
         }

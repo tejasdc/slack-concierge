@@ -3,7 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,routeTitle} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 
@@ -112,7 +112,8 @@ export function inboxMessage(row:any) {
     return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
       ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
-      routedFrom:{topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId},
+      routedFrom:{topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
+        title:routeTitle(db,route.sourceTopicId,null)},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
         :row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'submitted'};
   }
@@ -145,7 +146,8 @@ export function inboxMessage(row:any) {
   const peerRoute=route?.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
   const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
-    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,delivery}}:{}),
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
+      title:routeTitle(db,route.topicId,route.destinationSessionId),delivery}}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
