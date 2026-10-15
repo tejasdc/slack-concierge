@@ -1826,7 +1826,11 @@ export class SessionOwner {
     // in the session as failure"). Exact-run steering stays for service notices, which are not this route.
     const asQueued=(value:Record<string,any>)=>{const {expectedRunId:_run,...rest}=value;return {...rest,delivery:'queue'};};
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
-    if(prior){const payload=JSON.parse(prior.payload_json);delete payload.notificationRequest;const kept=stablePayload(payload);if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)&&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))))throw new SessionOwnerError('Idempotency conflict.',409);
+    if(prior){const payload=JSON.parse(prior.payload_json);delete payload.notificationRequest;const kept=stablePayload(payload);
+      const {delivery:_delivery,expectedRunId:_expectedRunId,...automatic}=payload;
+      if(prior.session_id!==session.id||prior.kind!=='input'||(kept!==stablePayload(input)
+        &&!(input.delivery==='steer'&&kept===stablePayload(asQueued(input)))
+        &&!(input.delivery===undefined&&stablePayload(automatic)===stablePayload(input))))throw new SessionOwnerError('Idempotency conflict.',409);
       this.recoverAcceptedInput(prior);
       return {operation:this.receipt(getAcceptedSessionInput(prior.id)!)};}
     this.validateAttachments(session,input.attachments);
@@ -1843,6 +1847,15 @@ export class SessionOwner {
     // Marked agent test inputs exercise the same thread forwarding path while retaining their
     // agent authorship. Ordinary service/agent inputs enter through admit, not this human surface.
     const forward=input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
+    // An unselected delivery choice belongs to the accepting owner, which sees the live run.
+    // A browser's delayed card must not turn an ordinary send into an explicit Queue.
+    if(!forward&&!sessionMetadata(session).inbox&&input.delivery===undefined) {
+      const active=db.query("SELECT id,native_run_id,stop_requested_at FROM turns WHERE session_id=? AND status='running'").get(session.id) as {id:number;native_run_id:string;stop_requested_at:string|null}|null;
+      if(active&&!active.stop_requested_at&&this.view(session).capabilities.steer&&acceptedInputForTurn(active.id)?.kind!=='fork') {
+        input.delivery='steer';
+        input.expectedRunId=active.native_run_id;
+      }
+    }
     // The Inbox is his control conversation. A queued composer choice (including an old
     // browser's default) must not put him behind service notices in its running turn.
     // Captures still use their ordered intake; addressed replies keep their target.

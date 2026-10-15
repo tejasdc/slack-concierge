@@ -1,5 +1,10 @@
 # Concierge agent guide
 
+Human session messages without a delivery choice use the owning machine's live
+run when it can accept steering; an explicit Queue remains queued. The retry,
+Mac parity and addressed Inbox boundaries are in the
+[session owner wire contract](docs/contracts/session-owner-v1.md#human-message-delivery-choice).
+
 The Inbox capture space reads a bounded page of retained inputs, with attachment
 metadata separated from bytes. The owner contract and query are in
 [capture presentation](docs/architecture/CAPTURE-PRESENTATION.md).
