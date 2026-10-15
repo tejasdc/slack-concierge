@@ -615,7 +615,7 @@ export class SessionCommunicationCoordinator {
             const session=getSessionById(actor.session)!;
             if(!sessionMetadata(session).inbox)throw new Error('Only the Inbox threads its own captures.');
             const target=getAcceptedSessionInput(input.input_id);
-            if(!target||target.session_id!==session.id||target.origin!=='human')throw new Error('Thread placement needs one of this Inbox\'s accepted human inputs.');
+            if(!target||target.session_id!==session.id||!routableMessage(target))throw new Error('Thread placement needs one of this Inbox\'s accepted human or marked test inputs.');
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
             if(root===target.id)throw new Error('A capture cannot continue its own thread.');
