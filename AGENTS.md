@@ -272,7 +272,8 @@ authorization or a change to the default rapid-iteration policy.
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
   an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.
   The installed machine command check refuses raw live-store copies even for older running agents;
-  its safety check is independent of their pinned session hooks. See [database operations](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
+  its private package-launch entrance accepts quoted arguments while refusing shell control outside them,
+  and its safety check is independent of their pinned session hooks. See [database operations](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
   The same catalogue document owns the release gates.
 Historical session-search routing evidence runs in the sealed read-only search process, and
 restart-time Inbox entry-index warm-up yields on elapsed time. Search answers are bounded
