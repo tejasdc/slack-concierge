@@ -66,7 +66,8 @@ export function inboxRootResolver(db:Database) {
     if(own?.origin==='service'&&own.request_id){
       const request=(db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,sessionId)
         ??db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,sessionId)) as {source:string|null}|null;
-      if(request?.source){const root=resolve(sessionId,request.source,seen)??inputId;memo.set(cacheKey,root);return root;}
+      if(request?.source){const routed=inboxRequestRoot(db,own.request_id,request.source);
+        const root=resolve(sessionId,routed??request.source,seen)??inputId;memo.set(cacheKey,root);return root;}
     }
     memo.set(cacheKey,inputId);return inputId;
   };
