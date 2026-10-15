@@ -15,9 +15,27 @@ function inheritedLiveState(){
 function privateEntrance(command:string){
   const path=process.env.CONCIERGE_PRIVATE_CODE_PATH;
   const bun=process.env.CONCIERGE_PRIVATE_CODE_BUN;
-  if(!path||!bun||/[;&|<>`$()\n\r]/.test(command))return false;
+  if(!path||!bun||shellControl(command))return false;
   const escape=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return new RegExp(`^\\s*['"]?${escape(bun)}['"]?\\s+run\\s+['"]?${escape(path)}['"]?\\s+--\\s+\\S.*$`).test(command);
+}
+function shellControl(command:string){
+  let quote:''|'single'|'double'='';
+  for(let i=0;i<command.length;i++){
+    const char=command[i];
+    if(char==='\n'||char==='\r')return true;
+    if(quote==='single'){if(char==="'")quote='';continue;}
+    if(char==='\\'){i++;continue;}
+    if(quote==='double'){
+      if(char==='"')quote='';
+      else if(char==='`'||char==='$')return true;
+      continue;
+    }
+    if(char==="'"){quote='single';continue;}
+    if(char==='"'){quote='double';continue;}
+    if(/[;&|<>`$()]/.test(char))return true;
+  }
+  return quote!=='';
 }
 function routerCommand(command:string){
   if(/[;&|<>`$\n\r]/.test(command))return false;

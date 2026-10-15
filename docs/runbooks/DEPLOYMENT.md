@@ -764,6 +764,9 @@ guard under its machine hook directory. Neither installation restarts provider t
 Older providers can still inherit the live ledger setting. The current machine guard
 refuses package runner launches that can import Concierge modules before a check chooses
 scratch state, and names the sealed `private-code-command` entrance in its refusal.
+That entrance accepts quoted release notes containing shell punctuation. Real shell
+chaining, command substitution and a second unwrapped package launch remain refused;
+the guard checks the command shape without executing the release.
 Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries
 remain available. For request status and results, use `router-actions.sh sessions get`
 with the exact request ID and source pair; it reads through the owner API.
