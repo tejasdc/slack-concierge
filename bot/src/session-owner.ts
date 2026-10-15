@@ -218,6 +218,8 @@ const ledgerHistory=Symbol('ledger history projection');
 const historyPath=Symbol('history path');
 type HistoryPath='inbox'|'provider'|'none';
 const HISTORY_WINDOW=20;
+const HISTORY_WINDOW_PAGES=60;
+const HISTORY_WINDOW_MS=4000;
 const savedExcerpt=(content:string)=>{const text=content.replace(/\s+/g,' ').trim();return text.length>280?text.slice(0,279)+'…':text;};
 // Marking a message that never streamed through the owner reads its transcript to prove
 // it exists; this bounds that walk for a very long session.
@@ -2236,7 +2238,27 @@ export class SessionOwner {
   }
   /** Every page states the ledger position it reflects, read before the page itself so
    * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
-  async history(id:string,cursor:string|null,limit:number,activity=false) {
+  /**
+   * One history answer can be a window counted in what he reads: `dialogue` collects pages, newest first,
+   * until at least that many non-tool messages, `untilInput` until one he or an agent sent. thnkr.ing used to
+   * walk owner pages itself, so a tool-heavy conversation cost 12-26 owner reads per open (2026-10-15). The
+   * walk is bounded in pages and time so a conversation of nothing but tools still answers; the
+   * continuation is the last page's and the delta position the newest page's.
+   */
+  async history(id:string,cursor:string|null,limit:number,activity=false,want={dialogue:0,untilInput:false}) {
+    const first=await this.historyPage(id,cursor,limit,activity) as any;
+    if(!want.dialogue&&!want.untilInput)return first;
+    const started=performance.now();
+    let last=first,messages=[...first.messages],reads=1;
+    const enough=()=>want.untilInput?messages.some((message:any)=>message.role==='user')
+      :messages.filter((message:any)=>message.role!=='tool').length>=want.dialogue;
+    while(last.nextCursor&&last.coverage?.complete!==false&&!enough()&&reads<HISTORY_WINDOW_PAGES&&performance.now()-started<HISTORY_WINDOW_MS){
+      last=await this.historyPage(id,last.nextCursor,limit,activity) as any;reads++;
+      messages=[...last.messages,...messages];
+    }
+    return {...first,messages,nextCursor:last.nextCursor,...(last.coverage?{coverage:last.coverage}:{}),collectedPages:reads};
+  }
+  private async historyPage(id:string,cursor:string|null,limit:number,activity=false) {
     const session=this.session(id);
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)&&!(activity&&sessionMetadata(session).inbox)){
       try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
@@ -3325,7 +3347,8 @@ export class SessionOwner {
         const activity=url.searchParams.get('activity')==='true';
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
         result=after!==null?await this.historyDelta(parts[1]!,after,activity)
-          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity);
+          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity,
+            {dialogue:Math.min(40,Math.max(0,Math.floor(Number(url.searchParams.get('dialogue'))||0))),untilInput:url.searchParams.get('untilInput')==='true'});
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6){
         const part=url.searchParams.has('part')?Number(url.searchParams.get('part')):null;
