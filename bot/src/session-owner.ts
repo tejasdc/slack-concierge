@@ -1849,7 +1849,7 @@ export class SessionOwner {
     const forward=input.delivery!=='steer'?this.threadReplyTarget(session,input):null;
     // An unselected delivery choice belongs to the accepting owner, which sees the live run.
     // A browser's delayed card must not turn an ordinary send into an explicit Queue.
-    if(!forward&&!sessionMetadata(session).inbox&&!agent&&input.delivery===undefined) {
+    if(!forward&&!sessionMetadata(session).inbox&&input.delivery===undefined) {
       const active=db.query("SELECT id,native_run_id,stop_requested_at FROM turns WHERE session_id=? AND status='running'").get(session.id) as {id:number;native_run_id:string;stop_requested_at:string|null}|null;
       if(active&&!active.stop_requested_at&&this.view(session).capabilities.steer&&acceptedInputForTurn(active.id)?.kind!=='fork') {
         input.delivery='steer';
