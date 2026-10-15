@@ -1,0 +1,1 @@
+Codex conversations now refresh when their history changes or cannot be checked, while unchanged conversations stay quiet after a reconnect.
