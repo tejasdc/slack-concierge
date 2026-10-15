@@ -68,7 +68,11 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
-const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request' OR event.kind='topic_route'
+const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR (event.kind='request' AND NOT EXISTS (
+          SELECT 1 FROM session_communication_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
+            AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL
+          UNION ALL SELECT 1 FROM session_peer_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
+            AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)) OR event.kind='post' OR event.kind='topic_route'
         ${closures?"OR event.kind='answer_closure'":''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
