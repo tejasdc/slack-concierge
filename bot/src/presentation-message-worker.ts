@@ -481,7 +481,7 @@ async function catchUp() {
         FROM presentation_messages WHERE generation=? AND message_id=? LIMIT 1`)
         .get(current.generation,sourceMessageId) as {sequence:number;root:string;sessionId:number}|null;
       if(original){writeDisplay(current.generation,original.sequence,original.sessionId,sourceMessageId);changedRoots.add(original.root);}
-      const topicRoute=source.query("SELECT 1 FROM session_owner_events WHERE kind='topic_route' AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
+      const topicRoute=source.query("SELECT 1 FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? AND json_extract(payload_json,'$.topicId') IS NOT NULL LIMIT 1")
         .get(sourceMessageId);
       if(!topicRoute)continue;
       for(const table of ['session_communication_requests','session_peer_requests'] as const){

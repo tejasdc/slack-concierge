@@ -22,7 +22,7 @@ export function inboxRequestRoot(database:Database,requestId:string,originalRoot
     ??database.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(requestId)) as {payload_json:string}|null;
   const forwarded=request?JSON.parse(request.payload_json)?.forwardedReply?.inboxInputId:null;
   if(typeof forwarded==='string'){
-    const route=database.query("SELECT json_extract(payload_json,'$.destinationMessageId') AS messageId FROM session_owner_events WHERE kind='topic_route' AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1")
+    const route=database.query("SELECT json_extract(payload_json,'$.destinationMessageId') AS messageId FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? AND json_extract(payload_json,'$.topicId') IS NOT NULL ORDER BY sequence LIMIT 1")
       .get(forwarded) as {messageId:string}|null;
     if(route?.messageId)return route.messageId;
   }
