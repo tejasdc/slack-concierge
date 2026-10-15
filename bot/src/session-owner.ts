@@ -3084,7 +3084,7 @@ export class SessionOwner {
             else await new Promise<void>(resolve=>setImmediate(resolve));
           }
           if(!caughtUp){caughtUp=true;controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
-        }catch(error){if(!closed)log.warn({event:'session_event_stream_failed',error:String(error)},'Session event stream page failed');stop();}
+        }catch(error){if(!closed)log('warn','session_event_stream_failed',{error:String(error)});stop();}
         finally{draining=false;}
       };
       dispose=()=>{if(closed)return false;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);readable();return true;};
