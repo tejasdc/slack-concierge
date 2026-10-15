@@ -481,6 +481,27 @@ async function catchUp() {
         FROM presentation_messages WHERE generation=? AND message_id=? LIMIT 1`)
         .get(current.generation,sourceMessageId) as {sequence:number;root:string;sessionId:number}|null;
       if(original){writeDisplay(current.generation,original.sequence,original.sessionId,sourceMessageId);changedRoots.add(original.root);}
+      const topicRoute=source.query("SELECT 1 FROM session_owner_events WHERE kind='topic_route' AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
+        .get(sourceMessageId);
+      if(!topicRoute)continue;
+      for(const table of ['session_communication_requests','session_peer_requests'] as const){
+        const requests=source.query(`SELECT request_id FROM ${table} WHERE source_input_id=? AND json_extract(payload_json,'$.forwardedReply.inboxInputId')=?`)
+          .all(sourceMessageId,sourceMessageId) as {request_id:string}[];
+        for(const request of requests){
+          const posts=source.query("SELECT sequence,session_id AS sessionId,event_id AS messageId FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?")
+            .all(request.request_id) as {sequence:number;sessionId:number;messageId:string}[];
+          for(const post of posts){
+            const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
+              .get(current.generation,post.sequence) as {root:string}|null;
+            const nextRoot=resolveRoot(post.sessionId,post.messageId);
+            if(!prior||!nextRoot||prior.root===nextRoot)continue;
+            changedRoots.add(prior.root);changedRoots.add(nextRoot);
+            prepared.query('UPDATE presentation_messages SET root_input_id=?,topic_id=? WHERE generation=? AND event_sequence=?')
+              .run(nextRoot,topicOf(nextRoot),current.generation,post.sequence);
+            writeDisplay(current.generation,post.sequence,post.sessionId,post.messageId);
+          }
+        }
+      }
     }
     for(const postId of closedPosts)refreshClosedAnswer(current.generation,postId,changedRoots);
     const dispatchesToReassign=new Set<string>();

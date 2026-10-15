@@ -230,9 +230,9 @@ function returnedRequestSource(sessionId:number,inputId:string):string|null {
  */
 export function requestThreadSource(sessionId:number,requestId:string):string|null {
   const local=db.query('SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  if(local)return local.thread_root_input_id??local.source_input_id??null;
+  if(local)return inboxRequestRoot(db,requestId,local.thread_root_input_id??local.source_input_id);
   const peer=db.query('SELECT source_input_id,thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  return peer?.thread_root_input_id??peer?.source_input_id??null;
+  return peer?inboxRequestRoot(db,requestId,peer.thread_root_input_id??peer.source_input_id):null;
 }
 /**
  * The thread an Inbox request works for, resolved at admission: the exact message the sender

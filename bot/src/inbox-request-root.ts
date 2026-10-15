@@ -18,6 +18,14 @@ export function threadOnlyReturnInputSql(input:string):string {
 
 /** The request's own placed root owns its answer, even if the sender named another thread. */
 export function inboxRequestRoot(database:Database,requestId:string,originalRoot:string|null):string|null {
+  const request=(database.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(requestId)
+    ??database.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(requestId)) as {payload_json:string}|null;
+  const forwarded=request?JSON.parse(request.payload_json)?.forwardedReply?.inboxInputId:null;
+  if(typeof forwarded==='string'){
+    const route=database.query("SELECT json_extract(payload_json,'$.destinationMessageId') AS messageId FROM session_owner_events WHERE kind='topic_route' AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1")
+      .get(forwarded) as {messageId:string}|null;
+    if(route?.messageId)return route.messageId;
+  }
   const ownRoot=`request:${requestId}`;
   if(database.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(ownRoot))return ownRoot;
   return originalRoot;
