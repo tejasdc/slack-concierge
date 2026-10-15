@@ -1,0 +1,1 @@
+A routed message keeps the identity of what you actually wrote, names both locations, and can be routed again if a Mac handoff fails before delivery.
