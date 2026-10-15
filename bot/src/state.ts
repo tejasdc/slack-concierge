@@ -2476,16 +2476,19 @@ export function getUniqueCodexSessionBinding(providerThreadUuid: string): CodexS
   `).get(providerThreadUuid, providerThreadUuid) as CodexSessionBinding | null;
 }
 
-/** A new baseline does not invalidate history; only a changed native head does. */
+/** Only an exact match to the retained native head leaves history unchanged. */
 export function recordCodexSessionHistoryHead(sessionId: number, providerThreadUuid: string, headDigest: string): boolean {
+  const readHead = () => db.query('SELECT provider_thread_uuid, head_digest FROM codex_session_history_heads WHERE session_id=?')
+    .get(sessionId) as { provider_thread_uuid: string; head_digest: string } | null;
+  const matches = (head: { provider_thread_uuid: string; head_digest: string } | null) =>
+    head !== null && head.provider_thread_uuid === providerThreadUuid && head.head_digest === headDigest;
+  if (matches(readHead())) return false;
   return db.transaction(() => {
-    const previous = db.query('SELECT provider_thread_uuid, head_digest FROM codex_session_history_heads WHERE session_id=?')
-      .get(sessionId) as { provider_thread_uuid: string; head_digest: string } | null;
-    if (previous?.provider_thread_uuid === providerThreadUuid && previous.head_digest === headDigest) return false;
+    if (matches(readHead())) return false;
     db.query(`INSERT INTO codex_session_history_heads(session_id,provider_thread_uuid,head_digest) VALUES(?,?,?)
       ON CONFLICT(session_id) DO UPDATE SET provider_thread_uuid=excluded.provider_thread_uuid,head_digest=excluded.head_digest`)
       .run(sessionId, providerThreadUuid, headDigest);
-    return previous?.provider_thread_uuid === providerThreadUuid;
+    return true;
   }).immediate();
 }
 

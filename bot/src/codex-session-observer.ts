@@ -161,19 +161,22 @@ export class CodexSessionObserver {
   }
 
   private async refreshHistoryHead(sessionId: number, providerThreadUuid: string) {
+    let digest: string;
     try {
       const page = await this.appServer.request("thread/items/list", {
         threadId: providerThreadUuid, limit: 1, sortDirection: "desc",
       });
       if (!Array.isArray(page?.data)) throw new Error("Codex did not return an item page.");
-      const digest = createHash("sha256").update(JSON.stringify(page.data[0] ?? null)).digest("hex");
-      if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
-        this.invalidateHistory(sessionId, providerThreadUuid);
-      }
+      digest = createHash("sha256").update(JSON.stringify(page.data[0] ?? null)).digest("hex");
     } catch (error) {
       log("warn", "codex_session_history_head_failed", {
         ...errorFields(error), provider_thread_uuid: providerThreadUuid, session_id: sessionId,
       });
+      this.invalidateHistory(sessionId, providerThreadUuid);
+      return;
+    }
+    if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
+      this.invalidateHistory(sessionId, providerThreadUuid);
     }
   }
 
