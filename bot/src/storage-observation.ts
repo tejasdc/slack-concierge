@@ -17,7 +17,9 @@ export type StorageWork = {
    * provider copy, another service), during which the owner was free for other work. */
   awaited_ms: number;
 };
-type Scope = { work: StorageWork; closed: boolean; awaiting: number };
+/** `awaiting` counts the outside waits currently pending; `awaitingSince` is when the first of
+ * the current overlap began, so the union of overlapping waits is added once, when the last ends. */
+type Scope = { work: StorageWork; closed: boolean; awaiting: number; awaitingSince: number };
 const scopes = new AsyncLocalStorage<Scope>();
 export type StorageReadBudget={maxCalls:number;maxRows:number;maxResultBytes:number};
 const readBudgets=new AsyncLocalStorage<StorageReadBudget>();
@@ -58,17 +60,18 @@ const empty = (): StorageWork => ({ db_calls: 0, db_duration_ms: 0, db_rows: 0,
  * (work-flow supervisor incident 838dfa4c). Every call over Thinkering's private capability
  * socket is such a wait (`SessionCapabilityClient`): the same incident reopened on the daily
  * ChatGPT transcript refresh, 267 s of waiting for Thinkering behind a rate-limited browser with
- * no loop lag and no ledger call, recorded as owner time. A wait inside another wait is counted
- * once, by the outermost. */
+ * no loop lag and no ledger call, recorded as owner time. Waits that overlap, nested or side by
+ * side, count once, as the time at least one of them was pending: a search fans its archive
+ * retention proofs out to Thinkering together, and counting only the first sibling recorded a
+ * 2.9 s proof while a 29 s copy of a 383 MB transcript beside it was read as 26 s of owner
+ * slowness (work-flow supervisor incident fa772103, 2026-10-15). */
 export async function awaitingOutside<T>(wait: () => Promise<T>): Promise<T> {
   const scope = scopes.getStore();
-  if (!scope || scope.closed || scope.awaiting > 0) return wait();
-  scope.awaiting++;
-  const started = performance.now();
+  if (!scope || scope.closed) return wait();
+  if (scope.awaiting++ === 0) scope.awaitingSince = performance.now();
   try { return await wait(); }
   finally {
-    scope.awaiting--;
-    if (!scope.closed) scope.work.awaited_ms += Math.round(performance.now() - started);
+    if (--scope.awaiting === 0 && !scope.closed) scope.work.awaited_ms += Math.round(performance.now() - scope.awaitingSince);
   }
 }
 
@@ -76,9 +79,12 @@ export function observeStorageOperation<T>(operation: string, callback: () => T,
   finished: (work: StorageWork) => void): T {
   // The caller owns the bounded operation vocabulary; neither SQL nor parameters leave here.
   void operation;
-  const scope: Scope = { work: empty(), closed: false, awaiting: 0 };
+  const scope: Scope = { work: empty(), closed: false, awaiting: 0, awaitingSince: 0 };
   const finish = () => {
     if (scope.closed) return;
+    // A wait still pending when the operation ends (a pass the caller stopped waiting for) was
+    // part of this operation up to now; what follows belongs to nobody's request.
+    if (scope.awaiting > 0) scope.work.awaited_ms += Math.round(performance.now() - scope.awaitingSince);
     scope.closed = true;
     // Observation failures must never replace the product's result or exception.
     try { finished({ ...scope.work }); } catch { observationFailures++; }
