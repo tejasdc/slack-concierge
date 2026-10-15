@@ -63,6 +63,8 @@ export interface ProviderHistoryMessage {
   inputId?: string;
   /** The exact message a deliberate thread post answers. */
   replyToMessage?: { kind: "message"; sessionId: string; messageId: string };
+  /** This session received the exact accepted Inbox message from another thread. */
+  routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
   toolCallId?: string;
   detailKey?: string;
   attachments?: Array<{ id: string; name: string; contentType: string }>;

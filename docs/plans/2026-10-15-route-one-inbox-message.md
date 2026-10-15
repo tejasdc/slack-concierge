@@ -15,6 +15,7 @@ Tejas asked about a Mac shortcut in a meditation thread. He then wrote an accoun
 1. The router names the exact accepted human message and a destination topic or session. The owner rejects a message that does not belong to the stated source or a destination that cannot receive it.
 2. The source conversation keeps its root and all of its original messages. At the exact question, Tejas sees a receipt naming and linking to the destination.
 3. The destination presents that message's original words, author, time, and attachments, plus a link to the source. The destination has its own message identity for page and reply targets; it names the original accepted input so provenance survives.
+   A route to a sleeping Mac session first records a pending receipt and an exact queued delivery on the server. The destination link becomes ready only after the Mac accepts that delivery; a refusal shows failed delivery at the source. A terminal refusal permits a new route for that same source message, while the failed attempt remains in the audit history.
 4. Follow-up work and answers use the destination's address. The source receipt does not become an answer or carry a second work obligation.
 5. `topics place` and whole-conversation moves require an explicit conversation root. Passing a reply returns a refusal that points to the one-message route. A genuine whole-conversation move remains available by naming the root.
 

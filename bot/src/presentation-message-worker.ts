@@ -449,6 +449,14 @@ async function catchUp() {
         const sourceMessageId=JSON.parse(row.payload_json).sourceMessageId;
         if(typeof sourceMessageId==='string')routedSources.add(sourceMessageId);
       }
+      if(row?.kind==='response'){
+        const requestId=JSON.parse(row.payload_json).requestId;
+        if(typeof requestId==='string'){
+          const request=source.query("SELECT json_extract(payload_json,'$.routedMessage.sourceInputId') AS sourceMessageId FROM session_peer_requests WHERE request_id=?")
+            .get(requestId) as {sourceMessageId:string|null}|null;
+          if(request?.sourceMessageId)routedSources.add(request.sourceMessageId);
+        }
+      }
       if(row?.kind==='answer_closure'){
         const postId=JSON.parse(row.payload_json).postId;
         if(typeof postId==='string')closedPosts.add(postId);

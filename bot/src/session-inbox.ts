@@ -87,10 +87,12 @@ const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(cl
 export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null;payload_json?:string})=>row.kind==='message'&&row.payload_json
   ?JSON.parse(row.payload_json).message?.id??row.event_id:['result','post','request','topic_route'].includes(row.kind)?row.event_id:row.input_id;
 export function messageRouteForSource(sourceMessageId:string):{topicId?:string;sessionId?:string;messageId:string}|null {
-  const row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1")
+  const row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
     .get(sourceMessageId) as {kind:string;payload_json:string}|null;
   if(!row)return null;
   const route=JSON.parse(row.payload_json);
+  const peer=route.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  if(peer?.delivery_json&&peer.outcome)return null;
   return {messageId:route.destinationMessageId,
     ...(row.kind==='topic_route'?{topicId:route.topicId}:{sessionId:route.destinationSessionId})};
 }
@@ -111,7 +113,8 @@ export function inboxMessage(row:any) {
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
       ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
       routedFrom:{topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId},
-      createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'received'};
+      createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
+        :row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'submitted'};
   }
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
@@ -137,10 +140,12 @@ export function inboxMessage(row:any) {
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
-  const routed=row.input_id&&!agent?(db.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1").get(row.input_id) as {payload_json:string}|null):null;
+  const routed=row.input_id&&!agent?(db.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1").get(row.input_id) as {payload_json:string}|null):null;
   const route=routed?JSON.parse(routed.payload_json):null;
+  const peerRoute=route?.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
-    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId}}:{}),
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,delivery}}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,

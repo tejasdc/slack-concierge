@@ -1138,13 +1138,22 @@ function placementRoots(session:SessionRow,values:unknown,field='--root') {
   return roots.map(value=>{
     const root=rootOf(session.id,value)??value;
     if(root!==value)throw new TopicError(`${value} is one message inside a conversation rooted at ${root}. Use topics route for that message, or name the root explicitly to move the whole conversation.`,409,'MESSAGE_IS_NOT_ROOT');
-    if(!getAcceptedSessionInput(root))throw new TopicError(`${value} is not a message in this Inbox.`,404,'ROOT_UNKNOWN');
+    if(!getAcceptedSessionInput(root)&&inboxRowByMessageId(session.id,root)?.kind!=='topic_route')
+      throw new TopicError(`${value} is not a message in this Inbox.`,404,'ROOT_UNKNOWN');
     return root;
   });
 }
 const routableMessage=(input:AcceptedSessionInput)=>humanAuthored(input)
   ||input.origin==='agent'&&input.scope==='capture:outside-agent'
     &&JSON.parse(input.payload_json)?.capture?.source?.kind==='outside-agent';
+function existingMessageRoute(sourceMessageId:string):{event_id:string}|null {
+  const route=db.query("SELECT event_id,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
+    .get(sourceMessageId) as {event_id:string;payload_json:string}|null;
+  if(!route)return null;
+  const requestId=JSON.parse(route.payload_json).requestId;
+  const peer=requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  return peer?.delivery_json&&peer.outcome?null:route;
+}
 /** The ask transaction calls this after retaining its target input; no receipt exists before both commit. */
 export function recordSessionMessageRoute(input:{sourceMessageId:string;destinationSessionId:string;destinationMessageId:string;
   requestId:string;actor:TopicActor}) {
@@ -1157,8 +1166,7 @@ export function recordSessionMessageRoute(input:{sourceMessageId:string;destinat
   const sourceRoot=inboxThreadRoot(source.session_id,input.sourceMessageId);
   const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
   if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
-  const prior=db.query("SELECT event_id FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
-    .get(input.sourceMessageId) as {event_id:string}|null;
+  const prior=existingMessageRoute(input.sourceMessageId);
   if(prior)throw new TopicError(`This message was already routed as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
   const route={sourceMessageId:input.sourceMessageId,sourceRoot,sourceTopicId,
     destinationSessionId:input.destinationSessionId,destinationMessageId:input.destinationMessageId,
@@ -1512,8 +1520,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const sourceRoot=inboxThreadRoot(source.session_id,messageId);
         const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
-        const prior=db.query("SELECT event_id FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? LIMIT 1")
-          .get(messageId) as {event_id:string}|null;
+        const prior=existingMessageRoute(messageId);
         if(prior)throw new TopicError(`This message was already routed as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
         if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
         const topic=topicFor(destination);

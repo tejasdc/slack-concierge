@@ -12,9 +12,9 @@ import {meaningIndex} from './meaning-index';
 import {enqueueSessionInput,getAcceptedSessionInput, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
-import {expireQuestionsForFinalReply,postAgentAnswer,topicOfRoot} from './session-topics';
+import {expireQuestionsForFinalReply,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
-import {followForwardedReply} from './session-inbox';
+import {followForwardedReply,messageRouteForSource} from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
@@ -421,6 +421,7 @@ export class SessionPeers {
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
+    routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -429,7 +430,7 @@ export class SessionPeers {
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
-      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{})});
+      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const previous=prior();
@@ -447,10 +448,38 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
+    const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Answer here; its original thread shows only the routing receipt.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(files.length?{files}:{})};
+      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
+      ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(files.length?{files}:{})};
+    const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
+      const raced=prior();
+      if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
+      const now=this.now();
+      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null);
+      const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
+        payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
+          ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
+        sourceInputId:actor.inputId,sourceRunId:runId,requestId:id}).input;
+      recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId)}});
+      if(input.routedFrom)recordSessionMessageRoute({sourceMessageId:input.routedFrom.messageId,
+        destinationSessionId:this.presentedSession(input.peer,accepted.sessionId),destinationMessageId:`request:${id}`,requestId:id,
+        actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId,runId}});
+    })();
+    const queuedAddress=()=>{
+      // An addressed session is known before its peer wakes; a new session is not.
+      let tuple:any=null;try{tuple=JSON.parse(Buffer.from((input.address??'').slice(8),'base64url').toString());}catch{}
+      return {sessionId:Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:'',address:input.address??'',operationId:`request:${id}`};
+    };
+    if(input.routedFrom){
+      // Commit the route and the exact replayable delivery before contacting the peer. A Mac
+      // acceptance can never leave a destination copy without a source receipt.
+      retain(queuedAddress(),true);
+      this.wake();
+      return this.receipt(this.row(id));
+    }
     let accepted:{sessionId:string;address:string;operationId:string};
     let queued=false;
     try {
@@ -460,24 +489,10 @@ export class SessionPeers {
     } catch(error) {
       this.note(input.peer,error);
       if(!(error instanceof PeerError&&error.kind==='unreachable'))throw error;
-      // The peer is off: keep the exact delivery and hand it over when the peer answers again.
-      // An addressed session is already known by its address; a new session has no identity yet.
-      let tuple:any=null;try{tuple=JSON.parse(Buffer.from((input.address??'').slice(8),'base64url').toString());}catch{}
-      accepted={sessionId:Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:'',address:input.address??'',operationId:`request:${id}`};
+      accepted=queuedAddress();
       queued=true;
     }
-    const now=this.now();
-    db.transaction(()=>{
-      const raced=prior();
-      if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
-      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null);
-      const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
-        payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
-          ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
-        sourceInputId:actor.inputId,sourceRunId:runId,requestId:id}).input;
-      recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId)}});
-    })();
+    retain(accepted,queued);
     this.wake();
     return this.receipt(this.row(id));
   }
@@ -656,12 +671,15 @@ export class SessionPeers {
         if(error instanceof PeerError&&error.kind!=='unreachable'){this.settle(row,'failed',error.message);return;}
         return;
       }
-      db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
-        .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
+      db.transaction(()=>{
+        db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
+          .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
+        recordSessionEvent({eventId:`peer-delivered:${row.request_id}`,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',
+          payload:{requestId:row.request_id,kind:'progress',text:`${row.peer} is back; the queued request was delivered to ${this.presentedSession(row.peer,accepted.sessionId)}.`}});
+      })();
       log('info','session_peer_request_delivered_late',{request_id:row.request_id,peer:row.peer});
       // His thread reply the Mac has now taken: its message stops saying it is queued.
       if(JSON.parse(row.payload_json).forwardedReply)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
-      recordSessionEvent({eventId:`peer-delivered:${row.request_id}`,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',payload:{requestId:row.request_id,kind:'progress',text:`${row.peer} is back; the queued request was delivered to ${this.presentedSession(row.peer,accepted.sessionId)}.`}});
       row=this.row(row.request_id);
     }
     let remote:any;
@@ -745,6 +763,9 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
+    const requestPayload=JSON.parse(row.payload_json);
+    const routedMessage=requestPayload.routedMessage;
+    const forwardedRoute=requestPayload.forwardedReply?.inboxInputId?messageRouteForSource(requestPayload.forwardedReply.inboxInputId):null;
     if(event.kind==='overdue'&&(declared.promptAnswerOverdue?row.prompt_answered_at_ms!==null:!!row.outcome)){
             withdrawUnstartedServiceInput(`return:${event.event_id}`,"Answered before this notice was delivered.");
             withdrawUnstartedServiceInput(`question-overdue:${row.request_id}`,"Answered before this notice was delivered.");
@@ -755,6 +776,11 @@ export class SessionPeers {
     const directPost=this.postThreadEvent(row,event,declared);
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
+    if(routedMessage||(forwardedRoute&&'sessionId' in forwardedRoute)){
+      withdrawUnstartedServiceInput(`return:${event.event_id}`,'Answer retained in the destination session.');
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
+      return;
+    }
     if(!returnToRequester){
             if(!directPost)throw new Error("The named thread has not received this reply.");
             withdrawUnstartedServiceInput(`return:${event.event_id}`,"Delivered directly to its Inbox thread.");
@@ -800,9 +826,12 @@ export class SessionPeers {
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
     // A named thread receives the peer's own reply; requester delivery needs its own choice.
-    const forwarded=JSON.parse(row.payload_json).forwardedReply;
+    const requestPayload=JSON.parse(row.payload_json);
+    const forwarded=requestPayload.forwardedReply;
+    const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
+    if(requestPayload.routedMessage||(route&&'sessionId' in route))return false;
     const inbox=getSessionById(row.source_session_id);
-    const answerRoot=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    const answerRoot=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
     const routed=!forwarded&&((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue')&&!!answerRoot
       &&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(answerRoot);
     const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
@@ -822,7 +851,7 @@ export class SessionPeers {
     }
     let stoppedPost=false;
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
-      const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
+      const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
         const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
         const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
@@ -954,6 +983,8 @@ export class SessionPeers {
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
     if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
+    if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent'].includes(input.routedFrom?.authorKind)))
+      throw new SessionOwnerError('A routed message needs its exact source and original words.');
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file.contentType!=='string'||typeof file.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     if(input.summary!==undefined&&(typeof input.summary!=='string'||!input.summary.trim()||input.summary.includes('\n')||input.summary.length>200))throw new SessionOwnerError('A session description is one line of at most 200 characters.');
     const effect=input.requestedEffect??'informational';
@@ -967,13 +998,16 @@ export class SessionPeers {
       const retained=existing.origin_provenance_json?JSON.parse(existing.origin_provenance_json):{};
       if(retained.forwardedIntent&&JSON.stringify(retained.forwardedIntent)!==JSON.stringify(forwardedIntent))
         throw new SessionOwnerError('Idempotency conflict: forwarded request payload changed.',409);
+      if(JSON.stringify(retained.routedFrom??null)!==JSON.stringify(input.routedFrom??null))
+        throw new SessionOwnerError('Idempotency conflict: routed message changed.',409);
       const target=getAcceptedSessionInput(existing.target_input_id)!;
       if(target.turn_id===null)this.dependencies.owner.dispatch(target);
       return this.accepted(existing);
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
-      ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{})};
+      ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{}),
+      ...(input.routedFrom?{routedFrom:input.routedFrom}:{})};
     const created=db.transaction(()=>{
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[]).map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,clientActionId:`peer-file:${requestId}:${index}`}).attachment.id);
       const scope=`peer:${origin.peer}:${origin.inputId}`;
@@ -989,7 +1023,8 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
+          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.routedFrom?{routedFrom:input.routedFrom}:{}),
+            ...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
       db.query(`INSERT INTO session_peer_deliveries(request_id,peer,origin_session_id,origin_input_id,origin_run_id,target_session_id,target_input_id,requested_effect,origin_provenance_json,created_at_ms)

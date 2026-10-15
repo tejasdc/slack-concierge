@@ -27,8 +27,8 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const payload=input.firstInput??input;
   const event=JSON.parse(row.payload_json);
   if(row.kind==='topic_route'){
-    const original=database.query('SELECT payload_json,origin FROM session_inputs WHERE id=?')
-      .get(event.sourceMessageId) as {payload_json:string;origin:string}|null;
+    const original=database.query('SELECT payload_json,origin,created_at FROM session_inputs WHERE id=?')
+      .get(event.sourceMessageId) as {payload_json:string;origin:string;created_at:string}|null;
     if(!original)return null;
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
@@ -37,7 +37,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
       ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
       routedFrom:{topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId},
-      createdAt:stamp(row.created_at),timestampSource:'received'};
+      createdAt:stamp(original.created_at.replace(' ','T')),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
     return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],
       contentCoverage:{complete:false,code:'message_preview',bytes:Buffer.byteLength(full.content),attachments:ids.length},
@@ -78,11 +78,14 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const closing=post?database.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
     .get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
-  const routed=row.input_id&&!agent?(database.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1")
+  const routed=row.input_id&&!agent?(database.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
     .get(row.input_id) as {payload_json:string}|null):null;
   const route=routed?JSON.parse(routed.payload_json):null;
+  const peerRoute=route?.requestId?database.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?')
+    .get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
-    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId}}:{}),
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,delivery}}:{}),
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&event.answersQuestion===true?{answersQuestion:true}:{}),

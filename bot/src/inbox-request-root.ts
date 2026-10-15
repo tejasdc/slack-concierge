@@ -12,7 +12,8 @@ export function threadOnlyReturnInputSql(input:string):string {
     'session_communication_requests','session_peer_requests',
   ].map(table=>`EXISTS (SELECT 1 FROM ${table} request WHERE request.request_id=${input}.request_id
     AND request.source_session_id=${input}.session_id
-    AND (request.thread_root_input_id IS NOT NULL OR json_extract(request.payload_json,'$.forwardedReply') IS NOT NULL)
+    AND (request.thread_root_input_id IS NOT NULL OR json_extract(request.payload_json,'$.forwardedReply') IS NOT NULL
+      OR json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)
     AND coalesce(json_extract(request.payload_json,'$.returnToRequester'),0)<>1)`).join(' OR ')})`;
 }
 
@@ -22,8 +23,8 @@ export function inboxRequestRoot(database:Database,requestId:string,originalRoot
     ??database.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(requestId)) as {payload_json:string}|null;
   const forwarded=request?JSON.parse(request.payload_json)?.forwardedReply?.inboxInputId:null;
   if(typeof forwarded==='string'){
-    const route=database.query("SELECT json_extract(payload_json,'$.destinationMessageId') AS messageId FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? AND json_extract(payload_json,'$.topicId') IS NOT NULL ORDER BY sequence LIMIT 1")
-      .get(forwarded) as {messageId:string}|null;
+    const route=database.query("SELECT json_extract(payload_json,'$.destinationMessageId') AS messageId FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
+      .get(forwarded) as {messageId:string|null}|null;
     if(route?.messageId)return route.messageId;
   }
   const ownRoot=`request:${requestId}`;
