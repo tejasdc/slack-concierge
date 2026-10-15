@@ -1,0 +1,1 @@
+A marked test reply can join its own test thread, so agents can check that a one-message route leaves the rest of the conversation intact.
