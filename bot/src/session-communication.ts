@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, messageRouteForSo
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -1024,7 +1024,7 @@ export class SessionCommunicationCoordinator {
             if(!owner||!sessionMetadata(owner).inbox||!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
                 throw new Error('The routed message must be an accepted input in this Inbox.');
             const body=JSON.parse(source.payload_json);
-            if(source.origin!=='human'&&!(source.origin==='agent'&&source.scope==='capture:outside-agent'&&body.capture?.source?.kind==='outside-agent'))
+            if(!routableMessage(source))
                 throw new Error('Only Tejas’s exact message or a marked agent test message can be routed.');
             const root=inboxThreadRoot(source.session_id,source.id);
             const topicId=root?topicOfRoot(root):null;

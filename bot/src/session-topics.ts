@@ -1143,9 +1143,14 @@ function placementRoots(session:SessionRow,values:unknown,field='--root') {
     return root;
   });
 }
-const routableMessage=(input:AcceptedSessionInput)=>humanAuthored(input)
-  ||input.origin==='agent'&&input.scope==='capture:outside-agent'
-    &&JSON.parse(input.payload_json)?.capture?.source?.kind==='outside-agent';
+export const routableMessage=(input:AcceptedSessionInput)=>{
+  if(humanAuthored(input))return true;
+  if(input.origin!=='agent'||input.kind!=='input'||!input.scope.startsWith('capture:'))return false;
+  const capture=JSON.parse(input.payload_json)?.capture?.source;
+  return capture?.kind==='outside-agent'||!!(capture?.metadata?.agentSource
+    &&capture.metadata.agentSource.inputId===input.source_input_id
+    &&capture.metadata.agentSource.runId===input.source_run_id);
+};
 function existingMessageRoute(sourceMessageId:string):{event_id:string}|null {
   const route=db.query("SELECT event_id,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
     .get(sourceMessageId) as {event_id:string;payload_json:string}|null;
