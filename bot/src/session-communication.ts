@@ -311,7 +311,7 @@ export class SessionCommunicationCoordinator {
         db.transaction(()=>{
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict.');return;}
-            const firstInput={text:`Session request ${id} from outside agent ${input.name}. This is agent-authored input, not a human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,requestedEffect:effect,delivery:'queue'};
+            const firstInput={text:`Session request ${id} from outside agent ${input.name}. This is agent-authored input, not a human message. Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,requestedEffect:effect};
             retainSessionInput({id:targetInputId,sessionId:session.id,scope:`external:${input.name}`,actionId:input.action_id,kind:'input',origin:'agent',payload:firstInput,requestId:id});
             db.query(`INSERT INTO session_external_requests(request_id,agent_name,action_id,target_session_id,target_input_id,requested_effect,text,payload_hash,created_at_ms)
                 VALUES(?,?,?,?,?,?,?,?,?)`).run(id,input.name,input.action_id,session.id,targetInputId,effect,input.text,digest,this.now());
@@ -2182,6 +2182,15 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 pendingAcceptedRecovery=true;
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','accepted_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
+            });
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
+                WHERE scope LIKE 'capture:%' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
+                  AND request_id IS NULL AND json_extract(receipt_json,'$.admissionIntent')='live'
+                  AND id='capture:' || json_extract(payload_json,'$.capture.id')
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`, input=>{
+                pendingAcceptedRecovery=true;
+                try{this.dependencies.owner.recoverAcceptedInput(input);}
+                catch(error){log('warn','capture_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
             });
             this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already

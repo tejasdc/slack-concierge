@@ -2,20 +2,40 @@
 
 ## Human message delivery choice
 
-A human session message with no `delivery` choice asks the accepting owner to use the
-current run. The owner pins that run and steers the message when it is joinable; if
-there is no joinable run, or it ends before the steering controller accepts the
-message, the same accepted input enters the session queue. This choice is made on
-the session's owning machine, including for Mac sessions, because a browser's
-prepared card may lag behind the running turn. An explicit `delivery:"queue"`
-always requests the next turn. An explicit `delivery:"steer"` retains its
-`expectedRunId` check. Replies addressed through an Inbox thread keep their
-addressed delivery; they are not converted into steering of the router.
+The accepting owner applies one live-delivery default to people, agents and
+service returns: an unselected message joins the current run when the provider
+can take it, then falls back to the session queue if that run ends before
+admission. Local, outside and peer agent requests use that same dispatch path.
+Source run identity records where a return came from; it pins a service notice
+only when that notice explicitly requests exact-run steering. Scheduled work,
+continuations and informational Inbox notices that are deliberately retained
+for a later turn keep their explicit Queue or saved-work rule. ChatGPT cannot
+accept live steering, so its messages wait for the next turn.
+
+A human session message asks the accepting owner to use its current run unless
+`delivery:"queue"` has `queueChosen:true`. The owner pins a joinable run and
+steers the message; if there is no joinable run, or it ends before the steering
+controller accepts the message, the same accepted input enters the session queue.
+The owning Mac or server makes this choice from its live run, including during a
+tool call or release. Earlier browser builds and share/voice replies wrote Queue
+as their default, and earlier browser builds pinned stale runs as Steer. The owner
+treats both hints as an unselected choice, so an open older page cannot force a
+queue. Only a current Queue control sends `queueChosen:true`; the current
+"Try the reply again" control sends `steerChosen:true` with its exact run and
+falls back to the next turn if that run has ended. Malformed markers are refused.
+Old pages cannot explicitly choose Queue until they update. Service
+notices retain their separate exact-run steering contract. Replies addressed
+through an Inbox thread keep their addressed delivery.
 
 The accepted input records the chosen delivery and exact run when steering. A
-retry with the same action identity and original absent choice returns that
+retry with the same action identity and original unselected choice returns that
 accepted result, even when the run has since changed. The receipt still
 distinguishes owner acceptance from provider acknowledgement.
+
+Install this owner rule on the server and Mac before publishing a Thinkering
+bundle that sends the two explicit-choice markers. An older owner refuses an
+unknown marker, which would leave an explicit send failed in the browser outbox.
+The owner upgrade already accepts every older Thinkering payload.
 
 ## Outside-agent owner socket entrance
 
@@ -409,7 +429,7 @@ Queued-human cancellation authenticates the current human owner and resolves the
 
 A coordinator-chosen live delivery is an optimization, never a contract the sender must satisfy. When the provider proves it never received such an input, the owner returns that input once to the recipient's queue and it runs when that session next accepts work; the sender's receipt stays open and becomes queued rather than failed. Refusal is reserved for a recipient that genuinely cannot receive the input — archived, suspended, or advertising `send:false` — and for the deliberate human pinned delivery below. `send` never depends on whether a run is currently active, so a busy session of any provider still accepts requests from a person or an agent. An ambiguous send is never re-enqueued.
 
-Human composer semantics: ordinary sessions retain explicit `delivery:"queue"` as a separate later turn. Direct messages to the Inbox router instead join its live run, including old clients that supply queue; the owner retains a live-delivery intent before dispatch, and earlier unreceived direct messages precede later service/agent input. Captures and addressed thread replies keep their own intake/recipient. Explicit `delivery:"steer"` carries the observed `expectedRunId`; if that run ended, was stopped, or cannot steer, a human message is accepted as the next message in the session (October 8 correction). A proven unsent delivery recovers the same input, while an acknowledged or ambiguous effect never replays. `expectedRunId` without steer is malformed. These controls belong to authenticated human surfaces and marked agent tests; model request delivery remains coordinator-owned. Repeating an action returns its existing receipt and never creates a second input. See [Inbox direct delivery](native-inbox.md#direct-messages-to-the-inbox-router).
+Human composer semantics: an ordinary session message requests a separate later turn only with `delivery:"queue",queueChosen:true`. Older pages and capture routes that supply Queue without that marker, or pin a stale Steer run, leave the choice to the owner and join its current run when possible. The current "Try the reply again" control sends `delivery:"steer",steerChosen:true` with an exact run; if that run has ended, the same input queues. Direct messages to the Inbox router join its live run; the owner retains a live-delivery intent before dispatch, and earlier unreceived direct messages precede later service/agent input. Captures and addressed thread replies keep their own intake/recipient. If a run ends, stops or cannot steer before delivery, the same human input is accepted as the next message in the session (October 8 correction). A proven unsent delivery recovers the same input, while an acknowledged or ambiguous effect never replays. `expectedRunId` without steer is malformed. These controls belong to authenticated human surfaces and marked agent tests; model request delivery remains coordinator-owned. Repeating an action returns its existing receipt and never creates a second input. See [Inbox direct delivery](native-inbox.md#direct-messages-to-the-inbox-router).
 
 Stop cancels only its exact active run. It does not suspend the session or require a
 direct human input in the target before later Inbox requests, ordinary messages or

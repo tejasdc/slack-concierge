@@ -1,8 +1,9 @@
 # Concierge agent guide
 
-Human session messages without a delivery choice use the owning machine's live
-run when it can accept steering; an explicit Queue remains queued. The retry,
-Mac parity and addressed Inbox boundaries are in the
+Messages from people, agents and service returns use the owning machine's live
+run when it can accept steering. Human Queue requires a current explicit-choice
+marker because older pages and share replies wrote Queue as their default;
+outside-agent requests do not silently Queue. The retry, Mac parity and addressed Inbox boundaries are in the
 [session owner wire contract](docs/contracts/session-owner-v1.md#human-message-delivery-choice).
 
 The Inbox capture space reads a bounded page of retained inputs, with attachment

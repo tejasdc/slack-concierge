@@ -702,7 +702,9 @@ export class SessionExecutionHost {
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
       // Stop owns this run only. New communication waits in its session's FIFO.
       if(!db.query("SELECT 1 FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(target.turnId))return false;
-      if(input.origin==='service'&&input.source_run_id!==nativeRunId(target.turnId))return false;
+      // A service return or notice without a pinned delivery choice joins whichever run is
+      // current, like an agent request. An explicit steer remains bound to its source run.
+      if(input.origin==='service'&&body.delivery==='steer'&&input.source_run_id!==nativeRunId(target.turnId))return false;
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
       // One message into the run, with its own words and files.
       const deliver=(one:AcceptedSessionInput):boolean=>{
@@ -734,7 +736,7 @@ export class SessionExecutionHost {
         if(!accepted){markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');deliveryChanged('failed');}
         return accepted;
       };
-      // His earlier messages still waiting for their own turn go in first, in his order
+      // Earlier unselected messages still waiting for their own turn go in first
       // (releaseEarlierWaitingInputs); one the run cannot take returns to the queue.
       const earlier=sessionMetadata(session).interactionPolicy==='consultation-only'?[]:releaseEarlierWaitingInputs(input.session_id,input.id);
       for(const one of earlier)if(!deliver(one))enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
