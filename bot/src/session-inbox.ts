@@ -68,7 +68,7 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
-const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request'
+const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR event.kind='post' OR event.kind='request' OR event.kind='topic_route'
         ${closures?"OR event.kind='answer_closure'":''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
@@ -81,7 +81,15 @@ const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
 const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(closures,true)}`;
 /** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
 export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null;payload_json?:string})=>row.kind==='message'&&row.payload_json
-  ?JSON.parse(row.payload_json).message?.id??row.event_id:['result','post','request'].includes(row.kind)?row.event_id:row.input_id;
+  ?JSON.parse(row.payload_json).message?.id??row.event_id:['result','post','request','topic_route'].includes(row.kind)?row.event_id:row.input_id;
+export function messageRouteForSource(sourceMessageId:string):{topicId?:string;sessionId?:string;messageId:string}|null {
+  const row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1")
+    .get(sourceMessageId) as {kind:string;payload_json:string}|null;
+  if(!row)return null;
+  const route=JSON.parse(row.payload_json);
+  return {messageId:route.destinationMessageId,
+    ...(row.kind==='topic_route'?{topicId:route.topicId}:{sessionId:route.destinationSessionId})};
+}
 export function inboxMessage(row:any) {
   if(row.kind==='message'){
     const message=JSON.parse(row.payload_json).message as ProviderHistoryMessage;
@@ -89,6 +97,18 @@ export function inboxMessage(row:any) {
       ...(message.createdAt?{}:{createdAt:row.created_at.replace(' ','T')+'Z',timestampSource:'received' as const})};
   }
   const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
+  if(row.kind==='topic_route'){
+    const route=JSON.parse(row.payload_json);
+    const source=getAcceptedSessionInput(route.sourceMessageId);
+    const original=source?JSON.parse(source.payload_json):{};
+    const originalPayload=original.firstInput??original;
+    const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
+      inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
+      ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      routedFrom:{topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId},
+      createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'received'};
+  }
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const eventPayload=JSON.parse(row.payload_json);
@@ -113,7 +133,10 @@ export function inboxMessage(row:any) {
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
+  const routed=row.input_id&&!agent?(db.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence LIMIT 1").get(row.input_id) as {payload_json:string}|null):null;
+  const route=routed?JSON.parse(routed.payload_json):null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId}}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
@@ -160,13 +183,13 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
 export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
   const scope=sessionId===null?'':' AND event.session_id=?';
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
-  return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
-    ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+  return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??null;
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
   const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
-  if(row?.kind==='request')return row.event_id;
+  if(row?.kind==='request'||row?.kind==='topic_route')return row.event_id;
   if(!row?.input_id)return row?.input_id??null;
   if(row.kind==='post'){
     const requestId=JSON.parse(row.payload_json)?.requestId;

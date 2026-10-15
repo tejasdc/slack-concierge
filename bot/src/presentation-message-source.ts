@@ -25,7 +25,7 @@ type SourceRow={sequence:number;session_id:number;event_id:string;input_id:strin
   input_origin:string|null;
   is_inbox:number|null;has_capture:number;already_posted_in_thread:number;has_result_text:number;has_attachments:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
-  return row.kind==='result'||row.kind==='post'||row.kind==='request'?row.event_id:row.input_id;
+  return row.kind==='result'||row.kind==='post'||row.kind==='request'||row.kind==='topic_route'?row.event_id:row.input_id;
 }
 
 /** Pure read-only resolver. Its rules mirror the canonical Inbox lineage rule. */
@@ -35,10 +35,10 @@ export function inboxRootResolver(db:Database) {
     const cacheKey=`${sessionId}:${messageId}`;
     if(memo.has(cacheKey))return memo.get(cacheKey)!;
     const row=(db.query(`SELECT event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
-      WHERE event.session_id=? AND event.event_id=? AND event.kind IN ('result','post','request') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
+      WHERE event.session_id=? AND event.event_id=? AND event.kind IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
       ??db.query(`SELECT event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
-      WHERE event.session_id=? AND event.input_id=? AND event.kind NOT IN ('result','post','request') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
-    if(row?.kind==='request'){memo.set(cacheKey,row.event_id);return row.event_id;}
+      WHERE event.session_id=? AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+    if(row?.kind==='request'||row?.kind==='topic_route'){memo.set(cacheKey,row.event_id);return row.event_id;}
     if(!row?.input_id){memo.set(cacheKey,row?.input_id??null);return row?.input_id??null;}
     const inputId=row.input_id;
     if(row.kind==='post'){
@@ -81,7 +81,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     .all(after,head,limit) as SourceRow[];
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox)return [];
-    if(!(['result','inbox_capture','post','request'].includes(row.kind)
+    if(!(['result','inbox_capture','post','request','topic_route'].includes(row.kind)
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='result'&&!row.has_result_text&&!row.has_attachments)return [];
     const messageId=sourceMessageId(row);
@@ -94,7 +94,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
         ??db.query('SELECT kind FROM session_peer_events WHERE event_id=?').get(eventId)) as {kind:string}|null;
       if(returned?.kind==='final')entryKind='final';
     }
-    return root?[{sequence:row.sequence,sessionId:row.session_id,messageId,inputId:row.kind==='request'?row.event_id:row.input_id??root,
+    return root?[{sequence:row.sequence,sessionId:row.session_id,messageId,inputId:row.kind==='request'||row.kind==='topic_route'?row.event_id:row.input_id??root,
       root,createdAt:row.created_at,entryKind}]:[];
   });
   const topicEvents=rows.flatMap(row=>{

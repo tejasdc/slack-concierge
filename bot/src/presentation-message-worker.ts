@@ -436,6 +436,7 @@ async function catchUp() {
   const changedReturnEvents=new Set<string>();
   const changedRoots=new Set<string>();
   const closedPosts=new Set<string>();
+  const routedSources=new Set<string>();
   for(const change of changes){
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
     if(change.source_table==='session_communication_events'||change.source_table==='session_peer_events')
@@ -444,6 +445,10 @@ async function catchUp() {
       const row=source.query('SELECT kind,input_id,turn_id,payload_json FROM session_owner_events WHERE sequence=?').get(Number(change.row_key)) as
         {kind:string;input_id:string|null;turn_id:number|null;payload_json:string}|null;
       if(row?.kind==='thread_link'&&row.input_id)linkedInputs.add(row.input_id);
+      if(row?.kind==='topic_route'||row?.kind==='session_route'){
+        const sourceMessageId=JSON.parse(row.payload_json).sourceMessageId;
+        if(typeof sourceMessageId==='string')routedSources.add(sourceMessageId);
+      }
       if(row?.kind==='answer_closure'){
         const postId=JSON.parse(row.payload_json).postId;
         if(typeof postId==='string')closedPosts.add(postId);
@@ -471,6 +476,12 @@ async function catchUp() {
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
+    for(const sourceMessageId of routedSources){
+      const original=prepared.query(`SELECT event_sequence AS sequence,root_input_id AS root,session_id AS sessionId
+        FROM presentation_messages WHERE generation=? AND message_id=? LIMIT 1`)
+        .get(current.generation,sourceMessageId) as {sequence:number;root:string;sessionId:number}|null;
+      if(original){writeDisplay(current.generation,original.sequence,original.sessionId,sourceMessageId);changedRoots.add(original.root);}
+    }
     for(const postId of closedPosts)refreshClosedAnswer(current.generation,postId,changedRoots);
     const dispatchesToReassign=new Set<string>();
     for(const root of movedRoots)if(root.startsWith('request:'))dispatchesToReassign.add(root.slice('request:'.length));
