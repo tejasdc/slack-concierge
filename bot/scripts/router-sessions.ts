@@ -659,6 +659,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('cancel does not accept text or a -- separator.');
     return {operation,body:{source,action_id:actionId,request_id:identity!,...(flags.has('--reason')?{reason:flags.get('--reason')!}:{})}};
   }
+  if(operation==='thread') {
+    if(separator>=0)invalid('thread does not accept text or a -- separator.');
+    const thread=flags.get('--thread');
+    if(detach===!!thread)invalid('Give either --thread <message id> or --detach.');
+    return {operation,body:{source,action_id:actionId,input_id:identity!,...(thread?{thread}:{detach:true})}};
+  }
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');
     // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
