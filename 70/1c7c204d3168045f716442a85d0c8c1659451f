@@ -1,0 +1,1 @@
+Routing a message to a session leaves a receipt in its original thread without duplicating the request there.
