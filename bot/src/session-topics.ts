@@ -75,9 +75,9 @@ const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','w
  */
 export type ReadingText={messageId:string;text:string;at:string};
 export function readsForTurn(sessionId:number,turnId:number,roots:ReadonlySet<string>):ReadingText[] {
-  const posts=db.query(`SELECT event_id,input_id,created_at,json_extract(payload_json,'$.text') AS text
-    FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as {event_id:string;input_id:string|null;created_at:string;text:string|null}[];
-  const here=posts.filter(post=>!!post.input_id&&roots.has(post.input_id)&&String(post.text??'').trim());
+  const posts=db.query(`SELECT event_id,coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,created_at,json_extract(payload_json,'$.text') AS text
+    FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as {event_id:string;root:string|null;created_at:string;text:string|null}[];
+  const here=posts.filter(post=>!!post.root&&roots.has(post.root)&&String(post.text??'').trim());
   if(here.length)return here.map(post=>({messageId:post.event_id,text:String(post.text),at:iso(post.created_at)!}));
   // No post: the turn's closing text, only when the input it answered is in this thread — a
   // turn can work for several threads, and another thread's answer is not his to read here.
@@ -2582,7 +2582,7 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
   if(roots.length) {
     const answers=(db.query(`SELECT event_id,created_at,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.requestId') AS request_id,
         json_extract(payload_json,'$.workDisposition') AS disposition,json_extract(payload_json,'$.replyKind') AS reply_kind,json_extract(payload_json,'$.text') AS text FROM session_owner_events
-      WHERE input_id IN (${roots.map(()=>'?').join(',')}) AND session_id=? AND kind='post' AND json_extract(payload_json,'$.postedBy')='owner-forward'
+      WHERE coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) AND session_id=? AND kind='post' AND json_extract(payload_json,'$.postedBy')='owner-forward'
       ORDER BY sequence DESC LIMIT 5`).all(...roots,sessionId) as any[]);
     if(answers.length)context.agentAnswers=answers.map(row=>({post:row.event_id,at:iso(row.created_at),from:row.from_session,request:row.request_id,
       kind:row.reply_kind??'answer',...(row.disposition?{disposition:row.disposition}:{}),text:String(row.text??'').slice(0,160)}));

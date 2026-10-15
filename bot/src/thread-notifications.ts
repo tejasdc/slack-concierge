@@ -22,7 +22,7 @@ function topic(sessionId:number,root:string):string|null {
 function agentMessage(sessionId:number,root:string,messageId:string):{text:string;sequence:number}|null {
   const row=db.query(`SELECT event.kind,event.payload_json,event.sequence,turn.agent_text FROM session_owner_events event
     LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE event.event_id=? AND event.session_id=? AND event.input_id=? AND event.kind IN ('post','result')`)
+    WHERE event.event_id=? AND event.session_id=? AND coalesce(json_extract(event.payload_json,'$.threadRoot'),event.input_id)=? AND event.kind IN ('post','result')`)
     .get(messageId,sessionId,root) as {kind:string;payload_json:string;sequence:number;agent_text:string|null}|null;
   if(!row)return null;
   const payload=JSON.parse(row.payload_json);

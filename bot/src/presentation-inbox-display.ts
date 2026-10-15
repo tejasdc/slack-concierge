@@ -1,7 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
-import {inboxRequestRoot,routeTitle} from './inbox-request-root';
+import {routeTitle} from './inbox-request-root';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -45,8 +45,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       detailRef:{sessionId:`concierge:${sessionId}`,messageId:row.event_id}},detailJson:JSON.stringify(full)};
   }
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
-  const displayedRoot=post&&typeof event.requestId==='string'
-    ?inboxRequestRoot(database,event.requestId,row.input_id):row.input_id;
+  const displayedRoot=post?inboxRootResolver(database)(sessionId,row.event_id)??row.input_id:row.input_id;
   const content=post?event.text??'':result?event.text??row.agent_text??'':payload.text??'';
   const attachmentIds=result||post?event.attachments:payload.attachments;
   const ids=Array.isArray(attachmentIds)?attachmentIds.filter((id:unknown):id is string=>typeof id==='string'):[];
@@ -68,9 +67,9 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
         WHERE source_turn_id=? AND source_session_id=?`).all(row.turn_id,sessionId) as {root:string|null}[];
       for(const item of roots)if(item.root)named.add(rootOf(sessionId,item.root)??item.root);
     }
-    const posts=database.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'")
-      .all(sessionId,row.turn_id) as {input_id:string|null}[];
-    for(const item of posts)if(item.input_id){named.add(item.input_id);if(item.input_id===own)answeredByPost=true;}
+    const posts=database.query("SELECT coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'")
+      .all(sessionId,row.turn_id) as {root:string|null}[];
+    for(const item of posts)if(item.root){named.add(item.root);if(item.root===own)answeredByPost=true;}
     mixedThreads=[...named].some(root=>root!==own);
   }
   const quiet=result&&row.turn_id!==null?(database.query(`SELECT json_extract(payload_json,'$.quiet') AS quiet

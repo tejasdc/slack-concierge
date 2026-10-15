@@ -113,11 +113,11 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
  const turn=question.legacyNeedEventId?(source.query('SELECT turn_id FROM session_owner_events WHERE event_id=?').get(question.legacyNeedEventId) as {turn_id:number|null}|null)?.turn_id:null;
  const turnId=turn??(question.owner?.runId?(source.query('SELECT id FROM turns WHERE native_run_id=?').get(question.owner.runId) as {id:number}|null)?.id:null);
  if(turnId!==null&&turnId!==undefined){
-  const posts=source.query(`SELECT event_id,input_id,created_at,${context.boundedReads?"''":"json_extract(payload_json,'$.text')"} AS text
+  const posts=source.query(`SELECT event_id,coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,created_at,${context.boundedReads?"''":"json_extract(payload_json,'$.text')"} AS text
     FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' ORDER BY sequence`).all(sessionId,turnId) as any[];
-  const here=posts.filter(post=>!!post.input_id&&roots.has(post.input_id));
+  const here=posts.filter(post=>!!post.root&&roots.has(post.root));
   const values=here.flatMap(post=>{
-   const message=context.boundedReads?messageById(context,post.event_id):{content:String(post.text??''),at:iso(post.created_at)!,root:post.input_id};
+   const message=context.boundedReads?messageById(context,post.event_id):{content:String(post.text??''),at:iso(post.created_at)!,root:post.root};
    return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];
   });
   if(values.length)return values;

@@ -1,5 +1,12 @@
 import type {Database} from 'bun:sqlite';
 
+/** A routed topic root is an event address; its retained action input owns FK custody. */
+export function topicRouteAnchor(database:Database,sessionId:number,root:string):string|null {
+  const row=database.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND event_id=? AND kind='topic_route'")
+    .get(sessionId,root) as {input_id:string|null}|null;
+  return row?.input_id??null;
+}
+
 export function routeTitle(database:Database,topicId:string|null|undefined,sessionId:string|null|undefined):string {
   if(topicId)return (database.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??topicId;
   if(!sessionId)return 'session';

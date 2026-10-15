@@ -3,7 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot,routeTitle} from './inbox-request-root';
+import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 
@@ -120,8 +120,7 @@ export function inboxMessage(row:any) {
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const eventPayload=JSON.parse(row.payload_json);
-  const displayedRoot=post&&typeof eventPayload.requestId==='string'
-    ?inboxRequestRoot(db,eventPayload.requestId,row.input_id):row.input_id;
+  const displayedRoot=post?inboxThreadRoot(row.session_id,row.event_id)??row.input_id:row.input_id;
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   // An agent message carries its own files: a post names them, and a result names them when
   // the retained result payload does. A human capture or a returned answer carries the
@@ -203,10 +202,17 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   if(row?.kind==='request'||row?.kind==='topic_route')return row.event_id;
   if(!row?.input_id)return row?.input_id??null;
   if(row.kind==='post'){
-    const requestId=JSON.parse(row.payload_json)?.requestId;
+    const post=JSON.parse(row.payload_json);
+    if(typeof post?.threadRoot==='string')return post.threadRoot;
+    const requestId=post?.requestId;
     if(typeof requestId==='string'){
       const linked=inboxRequestRoot(db,requestId,row.input_id);
       if(linked!==row.input_id)return linked;
+    }
+    const replyTo=post?.replyToMessage?.messageId;
+    if(typeof replyTo==='string'&&replyTo!==messageId){
+      const linked=inboxThreadRoot(sessionId,replyTo,seen);
+      if(linked&&linked!==row.input_id)return linked;
     }
   }
   if(seen.has(row.input_id))return row.input_id;
@@ -276,8 +282,10 @@ export function turnThreadActions(sessionId:number,turnId:number,ownInputId:stri
   for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   let answeredByPost=false;
-  for(const row of db.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {input_id:string|null}[])
-    if(row.input_id){named.add(row.input_id);if(row.input_id===own)answeredByPost=true;}
+  for(const row of db.query("SELECT event_id,input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {event_id:string;input_id:string|null}[]){
+    const root=inboxThreadRoot(sessionId,row.event_id)??row.input_id;
+    if(root){named.add(root);if(root===own)answeredByPost=true;}
+  }
   return {mixedThreads:[...named].some(root=>root!==own),answeredByPost};
 }
 export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|null)=>turnThreadActions(sessionId,turnId,ownInputId).mixedThreads;
@@ -298,7 +306,8 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
-  return !!db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' AND input_id=? LIMIT 1").get(sessionId,turnId,root);
+  return !!db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' AND input_id=? LIMIT 1")
+    .get(sessionId,turnId,topicRouteAnchor(db,sessionId,root)??root);
 }
 /**
  * A finished turn that owed a thread its answer and never posted has its closing text
@@ -398,7 +407,7 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
       if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
       carriedBy=earlier.event_id;
     } else if(answer.final&&answer.answerGroup&&!answer.stalled) {
-      const grouped=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+      const grouped=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
         AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
         .get(answer.inboxSessionId,answer.root,answer.answerGroup) as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;

@@ -6,7 +6,7 @@ import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
-import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
+import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
@@ -1154,7 +1154,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('A session cannot ask itself to produce a separate answer.');
         // A session given a topic it does not handle yet is told so, with the other topics it is on,
         // so it can judge fit and hand the request back (session-fit.ts). Facts, never a refusal.
-        const topicRoot=topicRootFor(threadRoot,actor.inputId);
+        const topicRoot=routedFrom?.root??topicRootFor(threadRoot,actor.inputId);
         let fitNote:string|null=null;
         if(target&&targetSession&&!historical&&!consultationOnly&&targetSession.provider_id!=='chatgpt'&&!takesManySubjects(targetSession)&&input.requestedEffect==='work') {
             const fit=forTopic(targetSession,topicOf(topicRoot));
@@ -1711,11 +1711,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             const group=declared?JSON.parse(declared.payload_json).answerGroup:null;
             const root=inboxRequestRoot(db,dependency.request_id,dependency.thread_root_input_id);
             const groupedPost=!directPost&&typeof group==='string'&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
                     AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
                     .get(dependency.source_session_id,root,group) as {sequence:number}|null:null;
             const answerPost=!directPost&&!groupedPost&&root
-                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='post'
+                ?db.query(`SELECT sequence FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
                     AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
                     .get(dependency.source_session_id,root,dependency.request_id) as {sequence:number}|null:null;
             const postSequence=(directPost??groupedPost??answerPost)?.sequence;
