@@ -589,6 +589,12 @@ CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
   observed_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(provider_thread_uuid, provider_item_id)
 );
+
+CREATE TABLE IF NOT EXISTS codex_session_history_heads (
+  session_id           INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  provider_thread_uuid TEXT NOT NULL,
+  head_digest          TEXT NOT NULL
+);
 `)).immediate();
 
 function migrateLegacyCodexRemoteMirrorEvents() {
@@ -2468,6 +2474,22 @@ export function getUniqueCodexSessionBinding(providerThreadUuid: string): CodexS
       )=1
     LIMIT 1
   `).get(providerThreadUuid, providerThreadUuid) as CodexSessionBinding | null;
+}
+
+/** Only an exact match to the retained native head leaves history unchanged. */
+export function recordCodexSessionHistoryHead(sessionId: number, providerThreadUuid: string, headDigest: string): boolean {
+  const readHead = () => db.query('SELECT provider_thread_uuid, head_digest FROM codex_session_history_heads WHERE session_id=?')
+    .get(sessionId) as { provider_thread_uuid: string; head_digest: string } | null;
+  const matches = (head: { provider_thread_uuid: string; head_digest: string } | null) =>
+    head !== null && head.provider_thread_uuid === providerThreadUuid && head.head_digest === headDigest;
+  if (matches(readHead())) return false;
+  return db.transaction(() => {
+    if (matches(readHead())) return false;
+    db.query(`INSERT INTO codex_session_history_heads(session_id,provider_thread_uuid,head_digest) VALUES(?,?,?)
+      ON CONFLICT(session_id) DO UPDATE SET provider_thread_uuid=excluded.provider_thread_uuid,head_digest=excluded.head_digest`)
+      .run(sessionId, providerThreadUuid, headDigest);
+    return true;
+  }).immediate();
 }
 
 export function getConciergeProviderTurn(providerThreadUuid: string, providerTurnId: string): {
