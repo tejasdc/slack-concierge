@@ -15,6 +15,7 @@ import {
   getConciergeProviderTurn,
   getUniqueCodexSessionBinding,
   listUniqueCodexSessionBindings,
+  recordCodexSessionHistoryHead,
 } from "./state";
 
 const OBSERVATION_RETRY_MS = 100;
@@ -111,7 +112,7 @@ export class CodexSessionObserver {
         });
         this.subscribedThreadIds.add(binding.provider_thread_uuid);
         await this.queueLifecycleRefresh(binding.provider_thread_uuid);
-        this.invalidateHistory(binding.session_id, binding.provider_thread_uuid);
+        await this.refreshHistoryHead(binding.session_id, binding.provider_thread_uuid);
         log("info", "codex_session_thread_subscribed", {
           provider_thread_uuid: binding.provider_thread_uuid,
           session_id: binding.session_id,
@@ -142,7 +143,7 @@ export class CodexSessionObserver {
     }
     this.subscribedThreadIds.add(providerThreadUuid);
     await this.queueLifecycleRefresh(providerThreadUuid);
-    this.invalidateHistory(binding.session_id, providerThreadUuid);
+    await this.refreshHistoryHead(binding.session_id, providerThreadUuid);
     log("info", "codex_session_thread_subscribed", {
       provider_thread_uuid: providerThreadUuid,
       session_id: binding.session_id,
@@ -157,6 +158,23 @@ export class CodexSessionObserver {
       kind: "history",
       payload: { providerThreadUuid },
     });
+  }
+
+  private async refreshHistoryHead(sessionId: number, providerThreadUuid: string) {
+    try {
+      const page = await this.appServer.request("thread/items/list", {
+        threadId: providerThreadUuid, limit: 1, sortDirection: "desc",
+      });
+      if (!Array.isArray(page?.data)) throw new Error("Codex did not return an item page.");
+      const digest = createHash("sha256").update(JSON.stringify(page.data[0] ?? null)).digest("hex");
+      if (recordCodexSessionHistoryHead(sessionId, providerThreadUuid, digest)) {
+        this.invalidateHistory(sessionId, providerThreadUuid);
+      }
+    } catch (error) {
+      log("warn", "codex_session_history_head_failed", {
+        ...errorFields(error), provider_thread_uuid: providerThreadUuid, session_id: sessionId,
+      });
+    }
   }
 
   private queueNotification(event: any) {

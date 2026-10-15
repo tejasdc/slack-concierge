@@ -103,6 +103,8 @@ owns the executable gates and their root-operator limits.
 Codex's App Server starts only under its native disabled-updater preference on both
 machines; installation and activation are separate, and a running listener is never
 restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
+The shared Codex session observer retains a native history head per bound session;
+reattaching an unchanged thread is silent. See [session ownership](docs/architecture/SESSION-OWNER.md).
 
 Server application logs use a bounded stdout/stderr sink; its loss counters and standalone
 socket-pause check are described in [Bounded application logging](docs/architecture/BOUNDED-APPLICATION-LOGGING.md).
