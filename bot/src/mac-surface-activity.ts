@@ -2,7 +2,10 @@
 export type MacSurfaceActivity = Readonly<{ key: string; action: string }>;
 
 function commandText(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') {
+    // Codex may report the executed command as one shell-wrapped string.
+    return value.replace(/^\s*(?:\/[^\s]+\/)?(?:bash|zsh|sh)\s+-[a-z]*c\s+['"]?/i, '');
+  }
   if (Array.isArray(value)) {
     const words = value.map(String);
     return words.some(word => /^-[a-z]*c$/.test(word)) ? words.at(-1) || '' : words.join(' ');
@@ -20,7 +23,10 @@ export function macSurfaceActivity(toolName: string, input: unknown): MacSurface
     ? details.arguments as Record<string, unknown> : {};
   const inputValue = details.input && typeof details.input === 'object'
     ? details.input as Record<string, unknown> : {};
-  const command = commandText(details.command ?? details.cmd);
+  const parsedCommand = Array.isArray(details.parsed_cmd)
+    ? details.parsed_cmd.find(part => part && typeof part === 'object' && typeof part.cmd === 'string')?.cmd
+    : undefined;
+  const command = commandText(parsedCommand ?? details.command ?? details.cmd);
   const code = command || commandText(details.code ?? argumentsValue.code ?? inputValue.code
     ?? argumentsValue.command ?? inputValue.command ?? details.input);
   const tool = toolName.toLowerCase();
