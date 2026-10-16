@@ -1,5 +1,22 @@
 # Pause all agent sessions
 
+## Focus hold
+
+Focus hold is a separate cloud-owned lease for the Inbox project router only. While
+`now < untilMs`, new router turns remain accepted and queued; other sessions start
+normally, and no running turn is stopped. The router is identified by native metadata
+`inboxRole: project-router`, the same role Pause all exempts. Captures and agent
+requests retain their existing intake and order.
+
+`GET /sessions/v1/focus-hold` reports the effective lease and the current count of
+queued router turns. `POST /sessions/v1/focus-hold` sets or renews it with `held: true`,
+`untilMs`, `label`, and a stable `clientActionId`, or clears it with `held: false` and
+the action ID. Each expiry must be in the next 15 minutes; Thinkering renews while
+focus continues. Repeating an action ID cannot change its meaning. Renewals preserve
+`since` while the prior lease remains live. The claim checks the deadline itself, and
+the queue timer wakes at expiry; clearing wakes it immediately. A Mac owner forwards
+these controls to the cloud. This does not change Pause all or interrupt running work.
+
 Concierge owns the pause. The cloud owner's SQLite ledger holds one generation and one
 admission gate. The native and legacy queue claims consult that gate in their claim
 transaction, so new messages, agent requests, scheduled turns and watch firings can be

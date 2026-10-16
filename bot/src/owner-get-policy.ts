@@ -10,6 +10,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/events',purpose:'cursor-paged owner event transport',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/status',purpose:'exact service health',maxResponseBytes:MiB,kind:'control'},
  {path:'/pause-all',purpose:'bounded global pause control state and stopped run receipts',maxResponseBytes:MiB,kind:'control'},
+ {path:'/focus-hold',purpose:'one bounded Inbox router lease and queued count',maxResponseBytes:MiB,kind:'control'},
  {path:'/sources/refresh',purpose:'the most recent ChatGPT source refresh pass, from owner memory',maxResponseBytes:MiB,kind:'control'},
  {path:'/releases',purpose:'release-control history; migration to a page remains due',maxResponseBytes:2*MiB,kind:'legacy'},
  {path:'/auth/providers',purpose:'provider sign-in/control state',maxResponseBytes:MiB,kind:'control'},

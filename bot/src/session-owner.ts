@@ -35,7 +35,7 @@ import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,globalPauseState,globalPauseHoldsSession,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,globalPauseState,globalPauseHoldsSession,focusHoldState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -145,6 +145,12 @@ const ownerStatusContext={
     if(!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
     const survivable=survivableRunKinds();
     return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
+  },
+  focusHold:(sessionId:number)=>{
+    const state=focusHoldState();
+    if(!state.held)return null;
+    const row=db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inboxRole')='project-router'").get(sessionId);
+    return row?state.untilMs:null;
   },
   olderBlockingTurn:(sessionId:number,turnId:number)=>db.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
     json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
@@ -559,6 +565,57 @@ export class SessionOwner {
   private get peers(){return this.communication?.peersOrNull()??null;}
   private get selfMachine(){return this.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';}
   private pauseSync:Promise<void>|null=null;
+  async focusHoldStatus(){
+    if(this.selfMachine!=='cloud'){
+      if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
+      return this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false);
+    }
+    const waiting=(db.query(`SELECT count(*) AS count FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='queued' AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router'`)
+      .get() as {count:number}).count;
+    return {...focusHoldState(),waiting};
+  }
+  async focusHoldControl(body:unknown){
+    const input=object(body);only(input,['held','untilMs','label','clientActionId']);
+    const held=input.held;
+    if(typeof held!=='boolean')throw new SessionOwnerError('held must be a boolean.',400,'FOCUS_HOLD_INVALID');
+    const clientActionId=actionId(input);
+    if(held){
+      if(!Number.isSafeInteger(input.untilMs))
+        throw new SessionOwnerError('Focus hold expiry must be a millisecond timestamp.',400,'FOCUS_HOLD_EXPIRY_INVALID');
+      if(input.label===undefined||(input.label!==null&&typeof input.label!=='string')||typeof input.label==='string'&&input.label.length>120)
+        throw new SessionOwnerError('Focus hold label must be at most 120 characters.',400,'FOCUS_HOLD_LABEL_INVALID');
+    } else if(input.untilMs!==undefined||input.label!==undefined){
+      throw new SessionOwnerError('Clearing a focus hold takes only an action ID.',400,'FOCUS_HOLD_INVALID');
+    }
+    if(this.selfMachine!=='cloud'){
+      if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
+      return this.peers.client('cloud').request('POST','/sessions/v1/focus-hold',input,8_000);
+    }
+    const now=Date.now();
+    const changed=db.transaction(()=>{
+      const previous=db.query('SELECT held,until_ms,label FROM focus_hold_actions WHERE action_id=?').get(clientActionId) as
+        {held:number;until_ms:number|null;label:string|null}|null;
+      if(previous){
+        if(previous.held!==(held?1:0)||previous.until_ms!==(held?input.untilMs:null)||previous.label!==(held?input.label:null))
+          throw new SessionOwnerError('Focus hold action identity has another meaning.',409,'IDEMPOTENCY_CONFLICT');
+        return false;
+      }
+      if(held&&(input.untilMs<=now||input.untilMs>now+15*60_000))
+        throw new SessionOwnerError('Focus hold expiry must be in the next 15 minutes.',400,'FOCUS_HOLD_EXPIRY_INVALID');
+      const current=focusHoldState(now);
+      db.query('UPDATE focus_hold SET until_ms=?,label=?,since_ms=?,action_id=? WHERE singleton=1')
+        .run(held?input.untilMs:null,held?input.label:null,held?(current.held?current.since:now):null,clientActionId);
+      db.query('INSERT INTO focus_hold_actions(action_id,held,until_ms,label) VALUES(?,?,?,?)')
+        .run(clientActionId,held?1:0,held?input.untilMs:null,held?input.label:null);
+      return true;
+    })();
+    if(changed){
+      log('info','focus_hold_changed',{held,untilMs:held?input.untilMs:null,label:held?input.label:null,actionId:clientActionId});
+      executionChanged();this.runtime.wake();
+    }
+    return this.focusHoldStatus();
+  }
   globalPauseStatus(){
     const state=globalPauseState();
     const running=db.query(`SELECT target.session_id,target.run_id,target.title,target.turn_id,target.stop_error,turn.status,
@@ -1175,6 +1232,11 @@ export class SessionOwner {
     // Admission may have queued the turn in its own transaction. Its post-commit
     // dispatch still owes the queue a wake even when no further write is needed.
     if(input.turn_id!==null){this.runtime.wake();return input;}
+    if(focusHoldState().held&&sessionMetadata(session).inboxRole==='project-router'){
+      enqueueSessionInput(input.id);
+      this.runtime.wake();
+      return getAcceptedSessionInput(input.id)!;
+    }
     if(!this.canSend(session)) return input;
     const payload=JSON.parse(input.payload_json);
     const liveInboxMessage=input.receipt_json&&JSON.parse(input.receipt_json).admissionIntent==='live';
@@ -3235,6 +3297,8 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
+      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
       else if(request.method==='GET'&&parts[0]==='pause-all'&&parts.length===1)result=this.globalPauseStatus();
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=await this.globalPauseControl(true,body);
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=await this.globalPauseControl(false,body);
