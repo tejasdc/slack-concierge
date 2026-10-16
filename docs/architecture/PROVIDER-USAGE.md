@@ -888,6 +888,19 @@ Claude's shared transcript folder cannot reveal the account used by a terminal p
 those conversations appear under an explicit unknown-account bucket. A Concierge turn
 without an account event is also unknown rather than assigned by guesswork.
 
+The same read exposes `scheduledFirings` for every repeating firing in the selected
+period, including queued and failed firings. Each row identifies its schedule root and
+sequence, intended fire time, status, provider wall time, raw token classes and published
+API price equivalent. The worker attributes transcript usage only within that turn's
+recorded provider start and end, so a queued or still-running firing, missing transcript
+records are not reported as zero cost. Missing usage remains `null` with
+`usageObserved=false`; an unlisted model uses the report's declared fallback price and
+appears in `fallbackModels`. CPU time and peak memory remain `null`: a persistent provider
+process and its helpers can span turns, and process totals cannot be honestly assigned to
+one firing. This is a read-only projection over the existing turn ledger and transcript
+cursor, with no new collector, credential, or effect on dispatch. A five-minute background
+refresh means the latest firing may appear before its usage record does.
+
 ## How long a conversation may grow
 
 Every model call, including each tool step inside a turn, re-sends the whole conversation;
