@@ -91,9 +91,10 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
 function commandReply(actionId:string) {
   const row=commandStatus(actionId);
   if(!row)return null;
-  return {custody:"server",actionId:row.action_id,status:row.exhausted_reason==='held_after_gap'?'held':row.exhausted_at_ms!==null?'unconfirmed':row.status,
+  const terminal=['delivered','refused','canceled'].includes(row.status);
+  return {custody:"server",actionId:row.action_id,status:terminal?row.status:row.exhausted_reason==='held_after_gap'?'held':row.exhausted_at_ms!==null?'unconfirmed':row.status,
     decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null,
-    ...(row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{})};
+    ...(!terminal&&row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{})};
 }
 
 function claimProof(eventId: string, body: Record<string, unknown>): CaptureClaimProof {
