@@ -709,6 +709,11 @@ export class SessionExecutionHost {
       // One message into the run, with its own words and files.
       const deliver=(one:AcceptedSessionInput):boolean=>{
         const input=one,body=JSON.parse(one.payload_json);
+        // Re-reading a retained return must not enqueue the same provider message
+        // again. Its first steering row owns the send state, even if a prior
+        // recovery detached the input's current placement.
+        if(input.steering_id!==null)return true;
+        if(db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=?').get(input.id))return false;
         const attached=attachSessionSteering(input.id,target.turnId);
         const steeringId=attached.steering_id!;
         // A follow-up's delivery changes mid-turn with no other owner event on it, so each
