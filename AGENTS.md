@@ -103,8 +103,11 @@ That repair credits the exact covered taste-mining request to the retained Codex
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 Automatic new-session choice spreads work across fresh, usable Claude and Codex allowance;
 a bounded small agent request also admits Google [decision: mix-claude-codex-google-for-new-work].
-Typed model refusals can move only a zero-work first turn, preserving its request identity.
-See [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
+Typed model refusals can move only a zero-work first turn, preserving its request identity;
+a request is pinned to the input its target retained, never to the address generation the move bumps.
+A model at capacity is one typed fact for App Server and outside Codex runs alike, waits under the
+turn's own `provider-capacity` budget rather than the shared provider one, and continues worked-on
+turns like a rate limit. See [automatic starts](docs/architecture/PROVIDER-SESSIONS.md#automatic-starts-for-new-work).
 
 Google Antigravity agent sessions use the existing durable execution host and retain the
 Google conversation ID for later turns. Each machine running them has its own sign-in and
@@ -727,7 +730,11 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   otherwise and relays an unposted closing text into the thread itself (2026-09-24). A turn
   answering a message Tejas sent himself cannot end `done` without `--quiet-because "<why he
   need not read this>"`; the owner refuses it, raises an undeclared end to `response` so he is
-  told, and shows the reason under the reply (2026-09-25, `answersHisOwnMessage`). Older sessions still use the exact final
+  told, and shows the reason under the reply (2026-09-25, `answersHisOwnMessage`). The thread an
+  outcome or question answers lives in its event payload; the event's input column holds that root only
+  when the root is an accepted input, because a routed topic's destination or a request's own entry is
+  a message, not an input, and writing it there failed the foreign key and rolled back a delivered
+  turn's completion (2026-10-16). Older sessions still use the exact final
   `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`) when they have not declared
   by action. Tejas rejected a provider-enforced form because it doubled Claude turns.
   Only needs_you and response (an answer he must

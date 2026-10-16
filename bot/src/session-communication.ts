@@ -1775,9 +1775,19 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             return;
         }
         if (request.target_input_id) {
+            // The request is pinned to the input the target session already retained, not to the
+            // address generation it was asked at. A zero-work first turn moved off a model at
+            // capacity bumps that generation while keeping the request's identity; re-decoding the
+            // address here settled such a request failed ("The exact session binding changed.")
+            // while the moved turn was running and answering it (2026-10-16). The address is only
+            // decoded again when the retained input is gone.
             let target:Address;
-            try {target=this.address(JSON.parse(request.payload_json).address);}
-            catch(error){this.settle(request,'failed',error instanceof Error?error.message:'The pinned session binding is unavailable.');return;}
+            const retained=getAcceptedSessionInput(request.target_input_id);
+            if(retained&&retained.session_id===request.target_session_id)target={session:retained.session_id,channel:null,root:null,native:true};
+            else {
+                try {target=this.address(JSON.parse(request.payload_json).address);}
+                catch(error){this.settle(request,'failed',error instanceof Error?error.message:'The pinned session binding is unavailable.');return;}
+            }
             if (!this.messageable({...target,native:true})) return;
             this.dependencies.owner!.dispatch(getAcceptedSessionInput(request.target_input_id)!);
             routed = this.binding(request);

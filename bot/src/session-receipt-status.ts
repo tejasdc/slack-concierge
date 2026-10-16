@@ -1,4 +1,5 @@
 import { providerDisplayName } from "./aliases";
+import { isModelCapacityRefusal } from "./model-capacity-refusal";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -91,6 +92,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
       ?`No ${product} account has room until ${when}, when the first one frees up. Your message is kept and starts then by itself, or straight away if you add an account with room in Accounts.`
       :`No ${product} account has room, and none has said when it frees up. Your message is kept and starts by itself as soon as one has room, or straight away if you add an account with room in Accounts.`,clearsAt:next,automaticRetry:true};
     const again=when?`at ${when}`:'now';
+    if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. Your message is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
     return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} Your message is kept and goes again ${again}; nothing is needed from you.`
       :`${product} is not answering right now. Your message is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
   }

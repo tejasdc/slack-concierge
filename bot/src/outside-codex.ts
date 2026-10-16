@@ -24,7 +24,7 @@ import type { AgentProvider } from "./providers";
 import type { ClaudeCodeTransport } from "./claude-code";
 import type { RunResult } from "./codex";
 import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
-import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError, isModelCapacityRefusal } from "./provider-failures";
 import { ProviderCapabilityUnavailableError } from "./provider-policy";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 
@@ -54,8 +54,12 @@ type CodexEvent = {
 
 const MAX_PROTOCOL_LINE = 8 * 1024 * 1024;
 const MAX_ERROR_TEXT = 1_000;
-/** Item kinds that are the agent talking or thinking, not using a tool. */
-const NOT_TOOLS = new Set(["agent_message", "reasoning"]);
+/**
+ * Item kinds that are the agent talking or thinking, not using a tool. An `error` item is the
+ * CLI reporting trouble (a 503 reconnect, a transport fallback); counting it as a tool made a
+ * run that did nothing look worked-on, so its refusal could never be retried.
+ */
+const NOT_TOOLS = new Set(["agent_message", "reasoning", "error"]);
 
 export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult> {
   if (input.interactionPolicy === "consultation-only")
@@ -154,11 +158,17 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
     if (cancelRequested && !completed) throw new ProviderTurnCancelledError("The outside Codex run was stopped.");
     if (!completed) {
       const signedOut = /401 Unauthorized|token_expired|refresh_token_reused|sign in again|not logged in/i.test(`${failure ?? ""} ${stderrTail}`);
+      // A capacity refusal the CLI printed only on stderr (a resumed run's remote compaction died
+      // on one on 2026-10-16 with no error event, so the run read as "ended with code 1").
+      const capacityOnStderr = failure === null && isModelCapacityRefusal(stderrTail)
+        ? "Selected model is at capacity. Please try a different model." : null;
       throw new ProviderDispatchError({
-        message: (failure ?? (signedOut ? "Codex is signed out on this machine."
+        message: (failure ?? capacityOnStderr ?? (signedOut ? "Codex is signed out on this machine."
           : `Codex ended ${exit.signal ? `on signal ${exit.signal}` : `with code ${exit.code}`} before finishing its turn.`)).slice(0, MAX_ERROR_TEXT),
-        // Only a run that never began a turn is known to have done nothing.
-        terminalConfirmed: !acknowledged && !observedOutput && toolsUsed.size === 0,
+        // The process has exited, so the turn is over. It is known to have done nothing when it
+        // never began a turn, or when the CLI itself reported the failure (turn.failed, an error
+        // event, or a capacity refusal on stderr) and no output or tool item ever appeared.
+        terminalConfirmed: (!acknowledged || failure !== null || capacityOnStderr !== null) && !observedOutput && toolsUsed.size === 0,
         assistantOutput: observedOutput, providerSessionId: threadId, toolsUsed: [...toolsUsed] });
     }
     if (!threadId)
