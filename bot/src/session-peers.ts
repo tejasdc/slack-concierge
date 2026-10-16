@@ -785,7 +785,7 @@ export class SessionPeers {
       return;
     }
     const legacyAgentReminder=event.kind==='overdue'&&/^(This request has no confirmed answer after|The other machine has not answered for) \d+ minutes[.;]/.test(String(declared.text??''));
-    if(event.kind==='overdue'&&(declared.agentReminder||legacyAgentReminder)){
+    if(event.kind==='overdue'&&(declared.agentReminder||legacyAgentReminder||declared.held)){
       const source=getSessionById(row.source_session_id);
       if(!source||!this.dependencies.owner.canSend(source)){
         db.query("UPDATE session_peer_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=?").run(event.event_id);
@@ -793,7 +793,8 @@ export class SessionPeers {
       }
       const inputId=`request-reminder:${event.event_id}`;
       const text=legacyAgentReminder?unresolvedRequestReminder(row.payload_json,STILL_WAITING_MINUTES,
-        'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'):String(declared.text);
+        'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.')
+        :declared.held&&!declared.agentReminder?`${requestLabel(row.payload_json)} is waiting: ${String(declared.text)}`:String(declared.text);
       const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,text});
       const observed=readInputExecution(accepted);
       const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
@@ -949,7 +950,8 @@ export class SessionPeers {
       const forwarded=!!JSON.parse(row.payload_json).forwardedReply;
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        if(!forwarded)this.event(row,'overdue',{text:heldRequestNotice(hold),health:`held: ${hold.code}`,held:hold.code});
+        if(!forwarded)this.event(row,'overdue',{text:`${requestLabel(row.payload_json)} is waiting: ${heldRequestNotice(hold)}`,
+          health:`held: ${hold.code}`,held:hold.code,agentReminder:true});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
   }
