@@ -41,12 +41,14 @@ export function sessionMutuals(sessionIds:readonly number[],now=Date.now()):Map<
 export function mutualLift(sessionId:number,anchors:readonly number[],mutuals:Map<number,Mutual[]>):number{
  const own=mutuals.get(sessionId)??[];
  if(!own.length)return 0;
+ const degree=new Map<string,number>();
+ for(const list of mutuals.values())for(const edge of list)degree.set(edge.topicId,(degree.get(edge.topicId)??0)+1);
  let strength=0;
  for(const [rank,anchor] of anchors.entries()){
   if(anchor===sessionId)continue;
   const theirs=mutuals.get(anchor)??[];
   for(const edge of own){const match=theirs.find(item=>item.topicId===edge.topicId);
-   if(match)strength+=Math.min(edge.strength,match.strength)/(1+rank);
+   if(match)strength+=Math.min(edge.strength,match.strength)/((1+rank)*Math.sqrt(degree.get(edge.topicId)??1));
   }
  }
  return Math.min(0.001,strength*0.00025);
