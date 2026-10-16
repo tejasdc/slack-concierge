@@ -13,9 +13,16 @@
  * `scp`). Read-only queries stay allowed. Like the Messages refusal, it matches places, not
  * intent: a path built at runtime gets through, and the snapshot entrance's size and time limits
  * remain the backstop for copies made through it.
+ *
+ * A live store is found where it really is, not where it used to be. The state directory is the
+ * ledger's one address: moving a database to its own filesystem leaves it there as a link to its
+ * current home (bot/scripts/relocate-ledger.ts), so following those links names every live
+ * location. On 2026-10-15 a `.backup` of /var/lib/concierge-ledger/state.db, the ledger's new home,
+ * passed a check that knew only the old path and wrote 10.7 GB before it was killed.
  */
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const LIVE_STORE = /(?:\.local\/state\/concierge(?:[/'"\s]|$)|\$\{?CONCIERGE_STATE_(?:DIR|DB)\}?)/;
 // A bare file name counts only when the command runs in the state directory itself.
@@ -78,13 +85,57 @@ export const LIVE_STORE_COPY_REFUSAL = 'Refused: this would copy a live Concierg
   + 'the bounded entrance: `python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py <source.db> '
   + '<private/new-path.db>` (docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md), or read it with read-only queries.';
 
-export function liveStoreCopyRefusal(command: string | null, cwd = ''): string | null {
+function canonicalPath(path: string): string {
+  try { return realpathSync(path); } catch {}
+  try { return join(realpathSync(dirname(path)), basename(path)); } catch { return resolve(path); }
+}
+
+type LiveStores = { directories: string[]; files: { dev: number; ino: number }[] };
+
+/** Every directory holding a live store, and the identity of each database file in them. */
+export function liveStores(stateDir = join(homedir(), '.local/state/concierge')): LiveStores {
+  const directories = new Set([canonicalPath(stateDir)]);
+  let entries: string[] = [];
+  try { entries = readdirSync(stateDir).filter(name => /\.db$/.test(name)); } catch {}
+  for (const name of entries) directories.add(dirname(canonicalPath(join(stateDir, name))));
+  const files: LiveStores['files'] = [];
+  for (const directory of directories) {
+    let names: string[] = [];
+    try { names = readdirSync(directory).filter(name => /\.db(?:-wal)?$/.test(name)); } catch {}
+    for (const name of names) {
+      try { const { dev, ino } = statSync(join(directory, name)); files.push({ dev, ino }); } catch {}
+    }
+  }
+  return { directories: [...directories], files };
+}
+
+// Absolute, home-relative and dot-relative paths, including SQLite `file:` URIs.
+const PATH_ARGUMENT = /(?:file:)?((?:~|\.{1,2})?\/[^\s'"`;&|()<>?]+)/g;
+
+/** A path names a live store when it resolves inside a live directory or is the same file
+ * as a live database, so links, `..` detours and hard links reach the same answer. */
+function namesLiveStore(text: string, cwd: string, stores: LiveStores): boolean {
+  for (const match of text.matchAll(PATH_ARGUMENT)) {
+    const raw = match[1].startsWith('~') ? homedir() + match[1].slice(1) : match[1];
+    const path = canonicalPath(resolve(cwd || '.', raw));
+    if (stores.directories.some(directory => path === directory || path.startsWith(directory + '/'))) return true;
+    try {
+      const { dev, ino } = statSync(path);
+      if (stores.files.some(file => file.dev === dev && file.ino === ino)) return true;
+    } catch {}
+  }
+  return false;
+}
+
+export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = liveStores()): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
   const inspected = command + mentionedScripts(command, cwd);
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
-  if (!LIVE_STORE.test(inspected) && !(STATE_DIR.test(canonicalCwd) && BARE_STORE.test(inspected))) return null;
+  const inLiveDirectory = STATE_DIR.test(canonicalCwd) || stores.directories.includes(canonicalCwd);
+  if (!LIVE_STORE.test(inspected) && !(inLiveDirectory && BARE_STORE.test(inspected))
+    && !namesLiveStore(inspected, cwd, stores)) return null;
   return SQLITE_COPY.test(inspected) || FILE_COPY.test(executableText(command))
     || (/[`]|\$\(/.test(command) && SUBSTITUTION_COPY.test(command))
     || SCRIPT_COPY.test(inspected) || REHEARSAL.test(inspected)

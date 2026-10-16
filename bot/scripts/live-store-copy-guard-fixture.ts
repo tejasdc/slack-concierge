@@ -1,8 +1,8 @@
 /** Exercises the installer's generated machine wrapper without touching machine settings. */
-import {existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {homedir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 
 const root=mkdtempSync(join(tmpdir(),'concierge-live-copy-hook-'));
 const bun=process.execPath;
@@ -51,11 +51,11 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   run('bash',['-c',`${compatBuilder}\n${wrapperFunction}\nwrite_wrapper "$guard" history-guard "fixture" "" ""`],env);
   const wrapper=readFileSync(destination,'utf8');
   check(wrapper.includes(guard),'wrapper did not pin physical guard path');
-  const execute=(command:string)=>{
+  const execute=(command:string,env:Record<string,string>={})=>{
     const input=JSON.stringify({tool_name:'Bash',tool_input:{command},cwd:root});
     const inputPath=join(root,'hook-input.json');
     writeFileSync(inputPath,input);
-    const output=Bun.spawnSync([destination],{env:{...process.env,CONCIERGE_ROUTER_BOT_DIR:old,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge')},stdin:Bun.file(inputPath),stdout:'pipe',stderr:'pipe'});
+    const output=Bun.spawnSync([destination],{env:{...process.env,CONCIERGE_ROUTER_BOT_DIR:old,CONCIERGE_STATE_DIR:join(homedir(),'.local/state/'+'concierge'),...env},stdin:Bun.file(inputPath),stdout:'pipe',stderr:'pipe'});
     check(output.exitCode===0,`wrapper failed: ${output.stderr.toString()}`);
     const decision=output.stdout.toString().trim();
     return decision ? JSON.parse(decision).hookSpecificOutput : {};
@@ -100,6 +100,24 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   else check(process.env.GITHUB_ACTIONS==='true','canonical live state missing outside the clean CI worker');
   const raw='sqlite3 /root/.local/state/'+'concierge/state.db "'+'.back'+'up /tmp/raw.db"';
   check(execute(raw).permissionDecision==='deny','current machine policy did not deny raw live copy');
+  // The ledger's own filesystem: the state directory keeps a link to wherever the ledger lives
+  // now, and the installed check follows it (2026-10-15, a raw .backup of the new home ran).
+  const movedHome=join(root,'moved-home'), movedState=join(movedHome,'.local/state/'+'concierge'), ledgerHome=join(root,'ledger-home');
+  mkdirSync(movedState,{recursive:true}); mkdirSync(ledgerHome);
+  writeFileSync(join(ledgerHome,'state.db'),'');
+  symlinkSync(join(ledgerHome,'state.db'),join(movedState,'state.db'));
+  symlinkSync(ledgerHome,join(root,'ledger-alias'));
+  const moved={HOME:movedHome,CONCIERGE_STATE_DIR:movedState};
+  check(execute(`sqlite3 ${ledgerHome}/state.db ".backup /tmp/raw.db"`,moved).permissionDecision==='deny','raw copy at the ledger home was not refused');
+  check(execute(`sqlite3 ${root}/ledger-alias/state.db ".backup /tmp/raw.db"`,moved).permissionDecision==='deny','raw copy through a link to the ledger home was not refused');
+  check(execute(`sqlite3 -readonly "file:${ledgerHome}/state.db?mode=ro" "SELECT 1"`,moved).additionalContext==='PINNED_OLD_SEMANTIC','read-only query at the ledger home was refused');
+  // The service host's real ledger home, wherever its state directory points.
+  const realLedger=join(canonical,'state.db');
+  if(existsSync(realLedger)){
+    const home=dirname(realpathSync(realLedger));
+    check(execute(`sqlite3 ${home}/state.db ".backup /tmp/raw.db"`).permissionDecision==='deny',`raw copy at ${home} was not refused`);
+    check(execute(`sqlite3 -readonly "file:${home}/state.db?mode=ro" "SELECT 1"`).additionalContext==='PINNED_OLD_SEMANTIC',`read-only query at ${home} was refused`);
+  }
   const marked=Bun.spawnSync([bun,resolve(import.meta.dir,'history-guard.ts')],{
     env:{...process.env,CONCIERGE_CURRENT_LIVE_COPY_CHECKED:'1'},
     stdin:Buffer.from(JSON.stringify({tool_name:'Bash',tool_input:{command:raw},cwd:root})),
@@ -113,5 +131,5 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   check(execute(raw).permissionDecision==='deny','rollback symlink lost installed guard');
   renameSync(guard,`${guard}.hidden`);
   check(execute('echo safe').permissionDecision==='deny','missing current guard did not fail closed');
-  console.log('PASS generated wrapper: pinned dispatch, ordinary parsing and read-only queries, inherited-live package check refusal, private entrance, raw copy refusal, rollback pin, missing-guard denial');
+  console.log('PASS generated wrapper: pinned dispatch, ordinary parsing and read-only queries, inherited-live package check refusal, private entrance, raw copy refusal at the state directory and the ledger home it links to, rollback pin, missing-guard denial');
 } finally {rmSync(root,{recursive:true,force:true});}
