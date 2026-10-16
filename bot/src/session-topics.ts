@@ -2238,7 +2238,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
       payload:{outcome:requestedResult?'response':decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
         inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId,
-        ...(decision?{agentName:sessionAuthor(answer.respondingSessionId)?.agentName??null,
+        ...(decision?{blockingNotification:true,agentName:sessionAuthor(answer.respondingSessionId)?.agentName??null,
           taskTitle:answer.respondingTitle??sessionAuthor(answer.respondingSessionId)?.title??null}:{}),
         ...(requestedResult?{requestedNotification:true}:{}),...(notificationInputId?{notificationInputId}:{})}});
   })();
