@@ -490,7 +490,14 @@ export class SessionCapabilityClient {
           || outcome.error.code === "CAPABILITY_DISCONNECTED"
           || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE"
           || outcome.error.status === 503);
-      if (!ownerStarting || Date.now() + pause > until) throw outcome.error;
+      if (!ownerStarting) throw outcome.error;
+      // Thinkering still restarting after two minutes is a lost place in line, not an uncertain
+      // send: the next attempt starts under this same run id, which Thinkering accepts at most once
+      // (an effect it already holds is returned, never sent again). Parking it as uncertain stranded
+      // a question Thinkering had no record of (6801, 12:47 on 2026-10-16).
+      if (Date.now() + pause > until) throw new SessionCapabilityError("CHATGPT_NOT_SENT",
+        "Thinkering was restarting and did not take this send; it goes again under the same run, which ChatGPT receives at most once.",
+        outcome.error instanceof SessionCapabilityError ? outcome.error.status : null, false);
       await new Promise(resolve => setTimeout(resolve, pause));
     }
   }
