@@ -52,6 +52,25 @@ same check passed alone in under a second and the full gate passed in a later
 isolated run. Serializing this one startup removes the gate's own import burst;
 the remaining independent checks still run together within the same envelope.
 
+In incident `9fef91cf-19bd-4725-b968-f84826c8a928` (October 16), candidate
+`9a5a2307e56e16a7257d2dd8c1547bff7f03ea4f` reached `owner-loaded` at 13,143 ms and
+`queued-with-journal` at 13,988 ms, then hit the 15,000 ms child deadline before
+`raw-control-complete`. The actual queue claim had not run. The intervening raw
+connection performed a diagnostic update and rollback with default auto-checkpointing,
+outside the canonical writer policy. Remove that diagnostic write and its constructor
+exception: the real claim, exact owner/attempt, no-second-claim and journal assertions
+already prove the required behavior. Extending the timeout would retain the unnecessary
+disk work. The child and outer deadlines remain unchanged.
+
+The retained phases localize the stop to that diagnostic block; they do not distinguish
+opening, updating, releasing its savepoint or closing, nor prove why owner loading took
+13 seconds. The deployment journal records a nearby 758 ms commit with 0 ms writer
+acquisition, supporting disk latency without proving this child's individual waits.
+The candidate change affected the presentation worker, which this gate starts only after
+dispatch succeeds; the failed range alone does not establish causality. No tests or
+reviews were run for this repair. Integration and activation proof belong to the external
+supervisor and detached controller.
+
 The SQLite constructor gate parses every scanned TypeScript source before inspecting
 database openings. Its `cannot parse TypeScript` error identifies invalid source,
 not a database-access failure. In incident 053dbab8 (October 10, 2026), the Brief

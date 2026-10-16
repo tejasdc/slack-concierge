@@ -16,7 +16,6 @@ const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
 };
 const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/check-presentation-worker.ts': ["new Database(join(dir,'state.db'),{create:true})", "new Database(join(dir,'state.db'))"],
-  'scripts/dispatch-claim-fixture.ts': ["new Database(join(process.env.CONCIERGE_STATE_DIR!,'state.db'))"],
   'scripts/release-application-compatibility.ts': ["new Database(join(workerState,'presentation.db'))", "new Database(join(workerState,'state.db'))"],
   'scripts/presentation-message-growth-fixtures.ts': ["new Database(':memory:')"],
   'scripts/storage-observation-check.ts': ["new Database(':memory:')"],
