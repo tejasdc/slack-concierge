@@ -1,11 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ledgerWriteResults } from '../src/ledger-write-results';
 import { isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups } from '../src/verified-sqlite-backup';
-import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
+import { liveStoreCopyRefusal, liveStores } from '../src/live-store-copy-policy';
 import { privateDatabaseCommand } from '../src/private-database-command';
 
 const root = mkdtempSync(join(tmpdir(), 'concierge-schema-plan-'));
@@ -49,6 +49,25 @@ try {
   assert.equal(liveStoreCopyRefusal(`sed -n '1,95p' ${script}`), null);
   assert.equal(liveStoreCopyRefusal('python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py /root/.local/state/concierge/state.db /tmp/new.db'), null);
   assert.equal(liveStoreCopyRefusal('sqlite3 -readonly /root/.local/state/concierge/state.db "select 1"'), null);
+  // A ledger moved to its own filesystem is found through the state directory's link, at any
+  // path that reaches the same file (2026-10-15: a `.backup` of the new home was not refused).
+  const stateDir = join(root, 'relocated-state'), ledgerHome = join(root, 'ledger-home');
+  mkdirSync(stateDir); mkdirSync(ledgerHome);
+  writeFileSync(join(ledgerHome, 'state.db'), '');
+  symlinkSync(join(ledgerHome, 'state.db'), join(stateDir, 'state.db'));
+  symlinkSync(ledgerHome, join(root, 'ledger-alias'));
+  linkSync(join(ledgerHome, 'state.db'), join(root, 'hard-link.db'));
+  const stores = liveStores(stateDir);
+  for (const command of [
+    `sqlite3 ${ledgerHome}/state.db ".backup /tmp/copy.db"`,
+    `sqlite3 ${root}/ledger-alias/state.db ".backup /tmp/copy.db"`,
+    `cp ${root}/ledger-home/../ledger-home/state.db /tmp/copy.db`,
+    `sqlite3 ${root}/hard-link.db "VACUUM INTO '/tmp/copy.db'"`,
+    `sqlite3 "file:${ledgerHome}/state.db?mode=ro" ".backup /tmp/copy.db"`,
+  ]) assert(liveStoreCopyRefusal(command, root, stores), command);
+  assert(liveStoreCopyRefusal('sqlite3 state.db ".backup /tmp/copy.db"', ledgerHome, stores));
+  assert.equal(liveStoreCopyRefusal(`sqlite3 -readonly "file:${ledgerHome}/state.db?mode=ro" "select 1"`, root, stores), null);
+  assert.equal(liveStoreCopyRefusal(`cp ${root}/source.db /tmp/copy.db`, root, stores), null);
 
   // Real command import with another connection holding the writer. Before this fix, lkg
   // reran schema UPDATEs and exhausted busy_timeout despite being a read-only operation.

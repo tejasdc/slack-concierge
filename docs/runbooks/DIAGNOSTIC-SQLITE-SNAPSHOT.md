@@ -31,7 +31,10 @@ that command can restart its copy when writes occur between steps. See the
 
 Each invocation represents one database cut. Running this command separately for two
 databases does **not** produce a shared point in time. The agent command guard refuses direct
-raw copies and named copy scripts; the canonical ledger module refuses ad-hoc live rehearsal
+raw copies and named copy scripts at every place a live store really is: the state directory and
+wherever its database links point, such as the ledger's own filesystem at `/var/lib/concierge-ledger`,
+reached through any link, `..` detour or hard link to the same file. It reads those links on each
+command, so a future move needs no change to the guard. The canonical ledger module refuses ad-hoc live rehearsal
 imports. Candidate release checks have an OS boundary making the live state inaccessible.
 The diagnostic script itself is an operator entrance, not a universal restriction on an
 unrestricted root shell. Its output is forensic evidence rather than a verified deployment
