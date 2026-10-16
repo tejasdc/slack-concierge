@@ -93,6 +93,19 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
   const requestId=question.owner?.dispatchRequestId;
   const sources=Array.isArray(question.sources)?question.sources:[];
   const followups=typeof requestId==='string'&&requestId?sources.slice(1):sources;
+  const expandedFollowups:string[]=[];
+  for(const id of followups){
+   expandedFollowups.push(id);
+   const route=context.source.query(`SELECT payload_json FROM session_owner_events
+    WHERE kind IN ('topic_route','session_route')
+      AND (event_id=? OR json_extract(payload_json,'$.destinationMessageId')=? OR json_extract(payload_json,'$.sourceMessageId')=?)
+    ORDER BY sequence DESC LIMIT 1`).get(id,id,id) as {payload_json:string}|null;
+   if(route){
+    const payload=JSON.parse(route.payload_json);
+    if(payload.destinationMessageId)expandedFollowups.push(payload.destinationMessageId);
+    if(payload.sourceMessageId)expandedFollowups.push(payload.sourceMessageId);
+   }
+  }
   const posts=context.source.query(`SELECT event_id FROM session_owner_events
    WHERE session_id=? AND kind='post' AND (
     (?<>'' AND json_extract(payload_json,'$.requestId')=?)
@@ -100,13 +113,23 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
    ) AND (
     json_extract(payload_json,'$.answersQuestion')=1
     OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
-   ) ORDER BY sequence`).all(context.sessionId,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify(followups)) as {event_id:string}[];
+   ) ORDER BY sequence`).all(context.sessionId,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
   return posts.flatMap(post=>{const message=messageById(context,post.event_id);
    return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
  }
  if(question.kind!=='reading')return [];
  const {source,sessionId,root}=context;
- for(const id of question.sources??[])roots.add(root(sessionId,id)??id);
+ for(const id of question.sources??[]){
+  roots.add(root(sessionId,id)??id);
+  const route=context.source.query(`SELECT payload_json FROM session_owner_events
+    WHERE kind IN ('topic_route','session_route')
+      AND (event_id=? OR json_extract(payload_json,'$.destinationMessageId')=? OR json_extract(payload_json,'$.sourceMessageId')=?)
+    ORDER BY sequence DESC LIMIT 1`).get(id,id,id) as {payload_json:string}|null;
+  if(route){
+   const payload=JSON.parse(route.payload_json);
+   if(payload.destinationMessageId)roots.add(payload.destinationMessageId);
+  }
+ }
  const named=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown)=>typeof id==='string'&&!!id.trim()):[];
  if(named.length)return named.flatMap((id:string)=>{const message=messageById(context,id);
   return message&&(message.content.trim()||message.detailRef)&&message.root&&roots.has(message.root)?[readingValue(id,message)]:[];});
@@ -142,7 +165,11 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
 function questionValue(context:TopicContext,row:any,roots:string[],replies:{inputId:string;at:string;reviews:string[];replyTo:string|null}[]){
  const sources=parse(row.sources_json,[]);
  const askedSource=row.kind==='asked'&&typeof sources[0]==='string'
-  ?context.source.query('SELECT created_at FROM session_inputs WHERE id=?').get(sources[0]) as {created_at:string}|null:null;
+  ?(context.source.query('SELECT created_at FROM session_inputs WHERE id=?').get(sources[0]) as {created_at:string}|null
+    ?? context.source.query(`SELECT i.created_at FROM session_owner_events e
+         JOIN session_inputs i ON i.id = json_extract(e.payload_json, '$.sourceMessageId')
+         WHERE (e.event_id=? OR json_extract(e.payload_json, '$.destinationMessageId')=?) AND e.kind='topic_route'`).get(sources[0],sources[0]) as {created_at:string}|null)
+  :null;
  const question={id:row.question_id,topicId:row.topic_id,revision:row.revision,state:row.state,blocking:!!row.blocking,
   optional:!!row.optional,context:row.context,brief:parse(row.brief_json,{}),owner:parse(row.owner_json),sources,
   replaces:row.replaces,replacedBy:row.replaced_by,answer:parse(row.answer_json),recovered:!!row.recovered,
