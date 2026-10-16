@@ -102,9 +102,13 @@ it does not prove the runtime value of an exception's destination variable, so r
 change to an exception's path provenance with its registration.
 Telemetry stays separate from this write-result contract. See the October 8 dispatch incident.
 The presentation release gate runs `dispatch-claim-fixture.ts` against an isolated canonical
-ledger with the real journal triggers: a raw Bun update demonstrates the inflated count,
-then the shipping queue coordinator must hand one claimed turn to a recording runner exactly
-once and find no second claim. No provider starts.
+ledger with the real journal triggers: the shipping queue coordinator must hand one claimed
+turn to a recording runner exactly once, retain its owner and dispatch attempt, and find no
+second claim. No provider starts. The gate uses only the canonical connection; a separate
+raw Bun count comparison no longer writes and rolls back before the authoritative claim.
+That diagnostic connection had SQLite's default auto-checkpoint enabled, bypassing the
+canonical writer policy and adding disk work unrelated to proving dispatch. Its constructor
+exception is removed too. The 15-second child deadline and journal assertions are unchanged.
 
 The shared ledger connection is wrapped by `observedDatabase` in `state-database.ts`.
 `observeStorageOperation` scopes synchronous database work through async request execution;

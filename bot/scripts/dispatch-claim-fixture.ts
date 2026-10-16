@@ -2,7 +2,6 @@ import {strict as assert} from 'node:assert';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Database} from 'bun:sqlite';
 import {runFixtureChild} from './fixture-child';
 
 /** Exercise the shipping queue claim with the canonical presentation triggers installed. */
@@ -32,19 +31,8 @@ async function childFixture(){
  assert.ok(db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='presentation_change_turns_update'").get());
  phase('queued-with-journal');
 
- // Record Bun's raw count for diagnosis without requiring a particular runtime bug.
- // Roll back the control write; the actual claim below must still find this queued turn.
- const raw=new Database(join(process.env.CONCIERGE_STATE_DIR!,'state.db'));
- let rawChanges:number,directChanges:number;
- try{
-  raw.exec('SAVEPOINT raw_change_control');
-  rawChanges=raw.query("UPDATE turns SET status='running' WHERE id=? AND status='queued'").run(queued.turn_id).changes;
-  directChanges=(raw.query('SELECT changes() AS count').get() as {count:number}).count;
-  raw.exec('ROLLBACK TO raw_change_control; RELEASE raw_change_control');
- }finally{raw.close();}
- assert.equal(directChanges,1);
- phase('raw-control-complete');
-
+ // Exercise only the authoritative claim. A diagnostic raw connection used to write
+ // and roll back first, allowing its default checkpoint to consume the claim deadline.
  const delivered:number[]=[];
  let finish!:()=>void;
  const pending=new Promise<void>(resolve=>{finish=resolve;});
@@ -66,7 +54,7 @@ async function childFixture(){
    .get(queued.turn_id) as {count:number};
   assert.ok(journal.count>=4,'the real journal triggers must have fired on insert and claim');
   phase('claim-verified');
-  console.log(JSON.stringify({fixture:'dispatch-claim',rawChanges,directChanges,dispatches:delivered.length,
+  console.log(JSON.stringify({fixture:'dispatch-claim',dispatches:delivered.length,
    unmatchedClaim:unmatched!==null,journalRows:journal.count}));
  }finally{queue.stop();finish();}
 }
