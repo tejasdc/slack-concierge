@@ -15,6 +15,7 @@ import { SteeringNotSentError, SteeringSender } from "./steering";
 import { SubprocessClaudeCodeTransport, type ClaudeCodeTransport, type TransportFrameMeta } from "./claude-code";
 import { webActivityDetails } from "./agent-progress";
 import { ledgerDurable } from "./ledger-durability-barrier";
+import { macSurfaceActivity, type MacSurfaceActivity } from "./mac-surface-activity";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
   CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
 
@@ -40,6 +41,7 @@ export type ProgressEvent =
   | { type: "steering"; clientMessageId: string }
   | { type: "tool_use"; toolName?: string; itemId?: string; details?: string }
   | { type: "tool_started" | "tool_finished"; toolName?: string; itemId?: string }
+  | { type: "mac_surface_activity"; itemId: string; activity: MacSurfaceActivity }
   | { type: "done"; text?: string };
 
 export type ProgressCb = (event: ProgressEvent) => void;
@@ -665,6 +667,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
+    if (itemId && process.platform === 'darwin') {
+      const activity = macSurfaceActivity(toolName, item);
+      if (activity) onProgress?.({ type: 'mac_surface_activity', itemId, activity });
+    }
     onProgress?.({type:phase==='started'?'tool_started':'tool_finished',toolName,...(itemId?{itemId}:{})});
     if (itemId) {
       if (progressedToolItemIds.has(itemId)) return;
@@ -1164,6 +1170,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
+    if (itemId && process.platform === 'darwin') {
+      const activity = macSurfaceActivity(toolName, item);
+      if (activity) onProgress?.({ type: 'mac_surface_activity', itemId, activity });
+    }
     onProgress?.({type:phase==='started'?'tool_started':'tool_finished',toolName,...(itemId?{itemId}:{})});
     if (itemId) {
       if (progressedToolItemIds.has(itemId)) return;

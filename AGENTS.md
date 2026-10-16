@@ -45,6 +45,9 @@ Explicit phone requests arm one notification on the Inbox topic, consumed by the
 agent answer. An agent may explicitly notify one posted message. Old session promises
 and their watchers are inert;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+Mac agent actions that can surface a permission prompt, background item, browser debugger,
+screen capture or install publish one retained activity event per action kind and turn;
+see [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
 
 The coordinated responsiveness release follows the dependency checkpoints in
 [Deployment](docs/runbooks/DEPLOYMENT.md#coordinated-responsiveness-release-dependency-order):

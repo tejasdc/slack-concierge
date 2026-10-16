@@ -1,0 +1,47 @@
+/** Actions likely to put an agent in front of the Mac's user, observed from provider tool calls. */
+export type MacSurfaceActivity = Readonly<{ key: string; action: string }>;
+
+function commandText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const words = value.map(String);
+    return words.some(word => /^-[a-z]*c$/.test(word)) ? words.at(-1) || '' : words.join(' ');
+  }
+  return '';
+}
+
+function safeName(value: string): string {
+  return value.split('/').at(-1)?.replace(/[^a-zA-Z0-9 ._-]/g, '').slice(0, 60) || 'software';
+}
+
+export function macSurfaceActivity(toolName: string, input: unknown): MacSurfaceActivity | null {
+  const details = input && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const argumentsValue = details.arguments && typeof details.arguments === 'object'
+    ? details.arguments as Record<string, unknown> : {};
+  const inputValue = details.input && typeof details.input === 'object'
+    ? details.input as Record<string, unknown> : {};
+  const command = commandText(details.command ?? details.cmd);
+  const code = command || commandText(details.code ?? argumentsValue.code ?? inputValue.code
+    ?? argumentsValue.command ?? inputValue.command ?? details.input);
+  const tool = toolName.toLowerCase();
+  const start = '(?:^|[;&|]\\s*|\\n\\s*)(?:sudo\\s+)?';
+  const install = new RegExp(start+'(?:/opt/homebrew/bin/)?(?:brew\\s+install(?:\\s+--cask)?|mas\\s+install|uv\\s+tool\\s+install|pip(?:3)?\\s+install|npm\\s+install\\s+-g)\\s+([\\w./-]+)','i').exec(code);
+  if (install) {
+    const name = safeName(install[1]!);
+    return { key: `install:${name.toLowerCase()}`, action: `Installing ${name}` };
+  }
+  if (new RegExp(start+'(?:/bin/)?launchctl\\s+(?:bootstrap|load|enable)\\b','i').test(code))
+    return { key: 'background-item', action: 'Adding a Mac background item' };
+  if (/--remote-debugging-(?:port|pipe)\b|\bconnectOverCDP\b/i.test(code) && !/^\s*(?:rg|grep|sed|cat|git\s+diff)\b/.test(code))
+    return { key: 'chrome-debugging', action: 'Opening Chrome with debugging access' };
+  if (new RegExp(start+'(?:[^\\s]+/)?(?:mac-screenshot|mac-capture|screencapture)\\b','i').test(code))
+    return { key: 'screen-capture', action: 'Capturing a Mac window or screen' };
+  if (new RegExp(start+'(?:/usr/bin/)?osascript\\b','i').test(code) || /cua_repl|computer.use|skycomputeruse/i.test(tool))
+    return { key: 'app-control', action: 'Controlling or inspecting a Mac app' };
+  const launched = new RegExp(start+'(?:/usr/bin/)?open\\s+-a\\s+(?:[\\\'"]?/Applications/)?([^\\\'"\\s/]+(?:\\s[^\\\'"/]+)?\\.app)','i').exec(code);
+  if (launched) {
+    const name = safeName(launched[1]!.replace(/\.app$/i, ''));
+    return { key: `open:${name.toLowerCase()}`, action: `Opening ${name} on the Mac` };
+  }
+  return null;
+}
