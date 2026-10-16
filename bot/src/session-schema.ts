@@ -292,6 +292,9 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_route_source
           ON session_owner_events(json_extract(payload_json,'$.sourceMessageId'))
           WHERE kind IN ('topic_route','session_route');
+        CREATE INDEX IF NOT EXISTS session_owner_events_route_destination
+          ON session_owner_events(json_extract(payload_json,'$.destinationMessageId'))
+          WHERE kind IN ('topic_route','session_route');
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);

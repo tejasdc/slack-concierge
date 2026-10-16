@@ -100,6 +100,64 @@ function turnOfQuestion(question:{legacyNeedEventId:string|null;owner:any}):numb
   const turn=db.query('SELECT id FROM turns WHERE native_run_id=?').get(runId) as {id:number}|null;
   return turn?.id??null;
 }
+export function routedMessageFor(messageId:unknown) {
+  if(typeof messageId!=='string'||!messageId.trim())return null;
+  const id=messageId.trim();
+  let row:{kind:string;payload_json:string}|null=null;
+  if(id.startsWith('topic-change:')||id.startsWith('session-route:')){
+    row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE event_id=? AND kind IN ('topic_route','session_route')").get(id) as {kind:string;payload_json:string}|null;
+  }
+  if(!row&&id.startsWith('request:')){
+    row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {kind:string;payload_json:string}|null;
+  }
+  if(!row){
+    row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {kind:string;payload_json:string}|null;
+  }
+  if(!row){
+    row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {kind:string;payload_json:string}|null;
+  }
+  if(!row)return null;
+  const route=JSON.parse(row.payload_json);
+  const peer=route.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
+  if(peer?.delivery_json&&peer.outcome)return null;
+  return {
+    kind: row.kind,
+    destinationMessageId: route.destinationMessageId as string,
+    sourceMessageId: route.sourceMessageId as string,
+    topicId: route.topicId as string|undefined,
+    sourceTopicId: route.sourceTopicId as string|undefined,
+    sourceRoot: route.sourceRoot as string|undefined,
+  };
+}
+
+function sourcesMatch(questionSources:string[],repliedTo:string|null):boolean {
+  if(!repliedTo)return false;
+  if(questionSources.includes(repliedTo))return true;
+  const route=routedMessageFor(repliedTo);
+  if(route&&(questionSources.includes(route.destinationMessageId)||questionSources.includes(route.sourceMessageId)))return true;
+  for(const s of questionSources){
+    const sRoute=routedMessageFor(s);
+    if(sRoute&&(sRoute.destinationMessageId===repliedTo||sRoute.sourceMessageId===repliedTo))return true;
+  }
+  return false;
+}
+
+function resolveAskedSource(rawId:string,topic:StoredTopic):{source:AcceptedSessionInput}|null {
+  if(typeof rawId!=='string'||!rawId.trim())return null;
+  const id=rawId.trim();
+  const route=routedMessageFor(id);
+  if(route&&route.kind==='topic_route'&&route.topicId===topic.topicId){
+    const source=getAcceptedSessionInput(route.sourceMessageId);
+    if(source&&source.session_id===topic.sessionId&&humanAuthored(source))return {source};
+    return null;
+  }
+  const source=getAcceptedSessionInput(id);
+  if(!source||source.session_id!==topic.sessionId||!humanAuthored(source))return null;
+  const root=inboxThreadRoot(topic.sessionId,source.id)??source.id;
+  if(topicOfRoot(root)!==topic.topicId)return null;
+  return {source};
+}
+
 export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
   if((question.kind??'decision')!=='reading')return [];
   const topic=db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(question.topicId) as {session_id:number}|null;
@@ -107,7 +165,12 @@ export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedE
   // The threads an answer may sit in: this topic's, and the thread of the message that raised
   // the item — a router files an item under the topic it belongs to, which is not always the
   // thread the turn answered in (the two items of 2026-09-24 were filed that way).
-  const roots=new Set([...topicRoots(question.topicId),...(question.sources??[]).map(source=>inboxThreadRoot(topic.session_id,source)??source)]);
+  const roots=new Set([...topicRoots(question.topicId),...(question.sources??[]).flatMap(source=>{
+    const route=routedMessageFor(source);
+    const dest=route?.kind==='topic_route'?route.destinationMessageId:null;
+    const root=inboxThreadRoot(topic.session_id,source);
+    return [root??source,...(dest?[dest]:[])];
+  })]);
   const named:string[]=Array.isArray(question.brief?.reads)?question.brief.reads.filter((id:unknown):id is string=>typeof id==='string'&&!!id.trim()):[];
   if(named.length) {
     const found:ReadingText[]=[];
@@ -1158,10 +1221,25 @@ function assertInbox(session:SessionRow) {
   if(!sessionMetadata(session).inbox)throw new TopicError('Only the Inbox session owns topics.',403,'TOPIC_FORBIDDEN');
 }
 /** A worker may declare questions against a topic it actually holds a linked dispatch for. */
-function ownsLinkedDispatch(sessionId:number,topicId:string) {
+function ownsLinkedDispatch(sessionId:number,topicId:string,declarations?:unknown) {
   const address=`concierge:${sessionId}`;
   for(const request of topicRequests(topicId))
     if(request.dispatches.some((dispatch:any)=>dispatch.targetSessionId===address))return true;
+  const commRows=db.query(`SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE target_session_id=?`).all(sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}[];
+  for(const row of commRows){
+    if(row.source_input_id&&(topicOfRoot(row.source_input_id)===topicId||topicOfRoot(rootOf(topicRow(topicId).sessionId,row.source_input_id)??row.source_input_id)===topicId))return true;
+    if(row.thread_root_input_id&&(topicOfRoot(row.thread_root_input_id)===topicId||topicOfRoot(rootOf(topicRow(topicId).sessionId,row.thread_root_input_id)??row.thread_root_input_id)===topicId))return true;
+  }
+  const peerRows=db.query(`SELECT source_input_id FROM session_peer_requests WHERE remote_session_id=?`).all(sessionId) as {source_input_id:string|null}[];
+  for(const row of peerRows){
+    if(row.source_input_id&&(topicOfRoot(row.source_input_id)===topicId||topicOfRoot(rootOf(topicRow(topicId).sessionId,row.source_input_id)??row.source_input_id)===topicId))return true;
+  }
+  if(Array.isArray(declarations)){
+    const dispatches=new Set(topicRequests(topicId).flatMap((r:any)=>(r.dispatches??[]).map((d:any)=>String(d.requestId))));
+    for(const item of declarations){
+      if(item?.owner?.dispatchRequestId&&dispatches.has(String(item.owner.dispatchRequestId)))return true;
+    }
+  }
   return false;
 }
 const byOf=(actor:TopicActor):TopicBy=>({kind:'agent',sessionId:`concierge:${actor.sessionId}`,inputId:actor.inputId,runId:actor.runId});
@@ -1372,6 +1450,7 @@ const briefChanged=(first:any,second:any)=>JSON.stringify(first)!==JSON.stringif
 
 function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:unknown,by:TopicBy,reason:string|null) {
   if(!Array.isArray(declarations)||!declarations.length)throw new TopicError('Question reconciliation needs a nonempty JSON array.');
+  const inboxSessionRow=getSessionById(topic.sessionId)??session;
   const at=nowIso();
   const written:StoredQuestion[]=[];
   const seen=new Map<string,StoredQuestion>();
@@ -1383,6 +1462,10 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     const declaredContext=questionContext(item.context);
     const state:QuestionState=item.state==='partial'?'partial':'open';
     const owner=questionOwner(item.owner);
+    if(owner&&owner.dispatchRequestId&&!owner.sessionId){
+      const dispatch=topicRequests(topic.topicId).flatMap((r:any)=>r.dispatches??[]).find((d:any)=>d.requestId===owner.dispatchRequestId);
+      if(dispatch?.targetSessionId)owner.sessionId=dispatch.targetSessionId;
+    }
     const sources=idList(item.sources,'sources');
     // The read API spells the identity `id`; both spellings name the same question here.
     if(item.questionId!==undefined&&item.id!==undefined&&String(item.questionId)!==String(item.id))
@@ -1399,6 +1482,12 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
       if(existing.kind!=='reading'&&context==='ready'&&by.kind==='agent'&&briefChanged(existing.brief,brief)){
         try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
       const nextOwner=owner===undefined?existing.owner:owner;
+      if(existing.kind==='asked'&&sources.length){
+        for(const s of sources){
+          if(!resolveAskedSource(s,topic))
+            throw new TopicError('The source must be Tejas’s message in this thread.',409,'QUESTION_SOURCE_MISMATCH');
+        }
+      }
       const nextSources=existing.kind==='asked'?[...new Set([...existing.sources,...sources])]:sources.length?sources:existing.sources;
       const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context
         ||briefChanged(existing.owner,nextOwner)||briefChanged(existing.sources,nextSources);
@@ -1418,21 +1507,23 @@ function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:un
     if(twin)throw new TopicError(`That decision is already open here as ${twin.questionId}; revise it with questionId, or replace it with replaces.`,409,'QUESTION_DUPLICATE');
     const context=declaredContext??(missing.length?'agent_checking':'ready');
     // `from` files an unfiled attention entry with this full brief instead of a bare one.
-    const filed=typeof item.from==='string'?fileNeed(session,topic,item.from,by,brief):null;
+    const filed=typeof item.from==='string'?fileNeed(inboxSessionRow,topic,item.from,by,brief):null;
     const kind:QuestionKind=item.kind==='reading'?'reading':item.kind==='asked'?'asked':filed?.kind??'decision';
+    let askedAt:string|null=null;
     if(kind==='asked'){
       if(sources.length!==1)throw new TopicError('A question Tejas asked needs its one source message.',400,'QUESTION_SOURCE_REQUIRED');
-      const source=getAcceptedSessionInput(sources[0]!);
-      if(!source||source.session_id!==session.id||!humanAuthored(source)||topicOfRoot(inboxThreadRoot(session.id,source.id)??source.id)!==topic.topicId)
+      const resolved=resolveAskedSource(sources[0]!,topic);
+      if(!resolved)
         throw new TopicError('The source must be Tejas’s message in this thread.',409,'QUESTION_SOURCE_MISMATCH');
+      askedAt=iso(resolved.source.created_at);
     }
     if(kind==='decision'&&context==='ready'&&by.kind==='agent'){
       try{brief=withHisWords(brief,by);}catch(error){throw new TopicError((error as Error).message,400,'QUESTION_NEEDS_HIS_WORDS');}}
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
       brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??(by.sessionId?{sessionId:by.sessionId,runId:by.runId??null}:null),sources:sources.length?sources:filed?.sources??[],
       replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:filed?.legacyNeedEventId??null,
-      kind,origin:filed?'marker':'declared',generation:filed?.generation??raiseGeneration(session),
-      createdAt:filed?.createdAt??at,updatedAt:at};
+      kind,origin:filed?'marker':'declared',generation:filed?.generation??raiseGeneration(inboxSessionRow),
+      createdAt:askedAt??filed?.createdAt??at,updatedAt:at};
     // A declared reading item names, or is resolved to, messages in this thread he can read.
     if(kind==='reading'&&!readsFor(question).length)throw new TopicError(NOTHING_TO_READ,409,'NOTHING_TO_READ');
     if(question.replaces) {
@@ -1517,7 +1608,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
   };
   const guard=(topicId?:string)=>{
     if(inbox)return;
-    if(topicId&&['questions','read','items','detail'].includes(verb)&&ownsLinkedDispatch(actor.sessionId,topicId))return;
+    if(topicId&&['questions','read','items','detail'].includes(verb)&&ownsLinkedDispatch(actor.sessionId,topicId,body?.questions))return;
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
@@ -1902,7 +1993,7 @@ export function topicHumanAction(topicId:string,body:any) {
         const inputId=text(action.inputId,'inputId',200);
         const input=getAcceptedSessionInput(inputId);
         const repliedTo=input?JSON.parse(input.payload_json)?.replyToMessage?.messageId:null;
-        if(!input||input.session_id!==session.id||!humanAuthored(input)||!question.sources.includes(repliedTo))
+        if(!input||input.session_id!==session.id||!humanAuthored(input)||!sourcesMatch(question.sources,repliedTo))
           throw new TopicError('The follow-up must be your accepted reply in this thread.',409,'FOLLOWUP_SOURCE_MISMATCH');
         const written:StoredQuestion={...question,sources:[...new Set([...question.sources,inputId])],revision:question.sources.includes(inputId)?question.revision:question.revision+1,updatedAt:at};
         const next=bumped(topic);
