@@ -233,6 +233,14 @@ export class SessionPeers {
     return hub&&!this.offline(hub.name)?hub.name:null;
   }
   /**
+   * The machine that runs ChatGPT for this one: the always-on peer whose archive is not kept
+   * here (the server), where thnkr.ing's signed-in Chrome lives. Unlike search there is no local
+   * fallback, so a sleeping or unreachable server still gets the request, queued until it answers.
+   */
+  chatGptHost():string|null {
+    return [...this.dependencies.clients.values()].find(client=>!client.archives?.length)?.name??null;
+  }
+  /**
    * Run the whole search on `peer` and read its answer from here: its own sessions become
    * `<peer>:<n>`, and sessions it found on this machine (named `<self>:<n>` there) are this
    * machine's own, shown with this machine's current view of them.
