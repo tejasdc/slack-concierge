@@ -6,6 +6,24 @@ obligation. This deliberately includes messages without a question mark: punctua
 classification cannot be the enforcement boundary. The recipient can keep working on the original
 task while answering the new message.
 
+The main thread and a message reply thread are separate durable scopes. `replyToMessage` keeps
+the immediate parent link that the main thread already used; `messageThreadRootId` names the
+agent message whose nested conversation is open. Its absence means the main thread. The owner
+accepts a nested human reply only when that root is an agent message in the same Inbox topic, the
+immediate parent is the root or already belongs to its nested conversation, and the fixed
+recipient is the root message's recorded author. The root's request identity is retained with the
+forwarded work, so two messages from the same session but different requests remain different
+conversations. These checks run again at the owner rather than trusting the browser's recipient.
+
+Every returned answer carries the same message-thread root and replies to the exact human message
+that prompted it. This applies across the server and Mac peer paths and to overdue or stopped
+terminal posts. An agent may add `--also-main-thread` to a reply when the same words should also be
+visible in the main conversation; the owner writes a separate attributed main-thread post whose
+message-thread root is absent. The flag is refused for an ordinary main-thread request. Human
+messages sent to the main composer keep the existing default: the owner of the item replied under,
+otherwise the one agent still at work, otherwise the Inbox router when ownership is absent or
+ambiguous.
+
 Previously the forwarded request explicitly entered the recipient's queue, so a long running
 agent did not see it until its turn ended. Partial replies already posted in the thread, but their
 only durable meaning was progress. The ordinary overdue check ran after fifteen minutes and

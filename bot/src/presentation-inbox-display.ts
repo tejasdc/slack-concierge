@@ -85,6 +85,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     .get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
   const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
+    ...(typeof (post?event.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?event.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
       title:routeTitle(database,route.topicId,route.destinationSessionId),delivery}}:{}),
     ...(mixedThreads?{mixedThreads:true}:{}),...(answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
@@ -93,7 +94,9 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     content:typeof content==='string'?content:String(content),tool:null,phase:null,...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent',outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(request?{author:{kind:'agent',communication:'request',requestId:event.requestId}}:{}),
+    ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
+      ...(typeof event.requestId==='string'?{requestId:event.requestId}:{}),
       ...(typeof event.postedBySession==='string'?{fromSession:event.postedBySession}:{})},...(event.relayed?{relayed:true}:{})}:{}),
     ...(link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:link.thread},routedBy:link.routedBy}:{}),
     ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),
@@ -112,6 +115,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     ...(full.answersQuestion?{answersQuestion:true}:{}),
     ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),
+    ...(full.messageThreadRootId?{messageThreadRootId:full.messageThreadRootId}:{}),
     ...(full.routedBy?{routedBy:full.routedBy}:{}),...(full.routedTo?{routedTo:full.routedTo}:{}),...(full.relayed?{relayed:true}:{}),
     ...(full.quiet?{quiet:bounded(String(full.quiet),160).text}:{}),
     ...(author?{author:{kind:author.kind,...(author.communication?{communication:author.communication}:{}),
