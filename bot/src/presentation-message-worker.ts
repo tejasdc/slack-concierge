@@ -309,6 +309,30 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
   }
   return changedRoots;
 }
+/** Reproject only marked surface replies and their descendants after their trusted lineage rule changes. */
+async function upgradeMarkedReplyRoots(generation:number){
+  const version=(prepared.query('SELECT marked_reply_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=1)return;
+  const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
+  let after=0;
+  while(true){
+    const rows=source.query(`SELECT rowid,id FROM session_inputs
+      WHERE rowid>? AND origin='agent' AND scope='surface:thinkering'
+        AND source_input_id IS NOT NULL AND source_run_id IS NOT NULL AND json_valid(payload_json)
+        AND json_extract(payload_json,'$.agentSource.inputId')=source_input_id
+        AND json_extract(payload_json,'$.agentSource.runId')=source_run_id
+        AND json_type(payload_json,'$.replyToMessage.messageId')='text'
+      ORDER BY rowid LIMIT 50`).all(after) as {rowid:number;id:string}[];
+    if(!rows.length)break;
+    for(const row of rows)for(const root of await reassignLinkedInput(generation,row.id,resolveRoot))changedRoots.add(root);
+    after=rows.at(-1)!.rowid;
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET marked_reply_roots_version=1 WHERE singleton=1').run();})();
+}
 async function relocateRoot(generation:number,root:string){
   const topic=topicOf(root);
   let after=0;
@@ -451,9 +475,7 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
-  const markedReplyRootsVersion=(prepared.query(`SELECT marked_reply_roots_version AS version
-    FROM presentation_message_meta WHERE singleton=1`).get() as {version:number}).version;
-  if(markedReplyRootsVersion<1){await rebuild();return;}
+  await upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
