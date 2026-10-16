@@ -30,6 +30,18 @@ flag; a bodyless final cannot. These commands are available on both local and
 peer sessions. The resulting push uses the answer's own words and the normal
 thnkr.ing attention notifier. There is no direct push call from Concierge.
 
+A ready decision question that blocks on Tejas, a `needs_you` turn outcome, and
+a final `needs_decision` reply now produce a push by default. The owner retains
+the blocking attention event with its exact Inbox thread or session, question,
+agent identity and task title. A question declared in a topic emits that event
+when it first becomes ready; a later turn outcome for that same run and thread
+does not emit another. A reply already produces the thread's single attention
+event. When the same posted message has already used `--notify` or consumed a
+human notification arm, the blocking question remains visible without another
+push. The notifier still suppresses a push while Tejas is viewing that exact
+thread and keeps its normal per-thread slot and device delivery record.
+Routine progress and completed work do not acquire this default.
+
 The old per-input session promises, session watcher, peer replay, expiry,
 backfill, and service posts are retired. Their historical ledger rows remain
 inert, including any pending rows. They no longer create notifications or

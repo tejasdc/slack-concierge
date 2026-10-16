@@ -3,7 +3,8 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
-import {consumeThreadNotification,dispatchedFromInput} from './thread-notifications';
+import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
+import {sessionAuthor} from './session-message-author';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -109,15 +110,22 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputId,input.turnId,'turn_outcome',JSON.stringify(payload));
   if(question) {
-    const answer=outcome==='response'&&meta.inbox&&!dispatchedFromInput(input.inputId)
+    const answer=meta.inbox
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
-    const notificationInputId=answer?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
+    const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
+      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
+    const alreadyNotified=!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
+      ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='needs_you'
+        AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId);
+    const author=sessionAuthor(`concierge:${input.sessionId}`);
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
-    db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
+    if(!alreadyNotified)db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
         question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,
-        ...(notificationInputId?{notificationInputId,requestedNotification:true,postId:answer!.messageId}:{})}));
+        ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
+        ...(answer?{postId:answer.messageId}:{}),
+        ...(notificationInputId?{notificationInputId,requestedNotification:true}:{})}));
   }
   updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at,...(quiet?{quiet}:{})}});
   executionChanged();
