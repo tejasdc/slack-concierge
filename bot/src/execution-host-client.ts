@@ -242,7 +242,7 @@ export async function startHost(input: {
   if (process.platform === "linux") {
     const result = await supervisorCommand("systemd-run", [
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
-      "--property=Restart=no", "--property=KillMode=control-group",
+      "--property=Restart=no", "--property=KillMode=control-group", "--property=IOAccounting=yes",
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,

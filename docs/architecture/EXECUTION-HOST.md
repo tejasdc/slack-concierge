@@ -338,7 +338,7 @@ preflight that refuses a candidate missing a protocol in use belongs to the depl
 ## Disk limit for agent work
 
 On Linux each execution host is launched into `agents.slice` (`bot/src/agent-work-slice.ts`), as is the
-shared Codex App Server when Concierge moves it into its own scope. remote-box's `systemd/agents.slice`
+shared Codex App Server when Concierge moves it into its own scope. Each transient unit requests systemd I/O accounting at creation, including the App Server's normal start and custody-move paths, so remote-box can attribute disk reads and writes per unit without restarting agent work. The parent slice's accounting alone does not turn on the property for its children. remote-box's `systemd/agents.slice`
 caps the slice's writes to md2 at 30 MB/s in total. On 2026-10-09 an agent's `sqlite3 .backup` of a live
 database wrote 2.5 GB in 10 s and held the owner's ledger writes for up to 9.5 s each (145 s of loop stalls).
 md2 is software RAID, so proportional I/O weights do not apply and the limit is a hard cap. Measured live:
