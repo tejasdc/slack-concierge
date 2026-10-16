@@ -1387,6 +1387,8 @@ operator recovery. Never bypass a known usage limit outside that deliberate chec
 Clear does not authorize replay or resume stopped work.
 The separate [usage breakdown](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance)
 reads provider transcripts off the owner event loop and stores its cursor outside the ledger.
+Its repeating-firing rows join recorded provider intervals to transcript token events;
+missing usage, per-firing CPU and peak memory remain unknown, never zero.
 
 ## Response contract
 
