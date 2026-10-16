@@ -184,7 +184,9 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Grafana health alerts queue the standing repair agent without a human Inbox thread; the external work-flow supervisor owns
   host resource pressure plus responsive-owner/speech memory and latency repair. Webhook acceptance alone does not
-  prove notice delivery or agent admission. See [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
+  prove notice delivery or agent admission. The same allowlisted receiver owns server and
+  Mac recurring-job conditions; missed Mac runs require a current awake report, and an
+  absent report does not prove sleep. See [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
 
 - Scheduled and banked work use the existing queued turn and wake timer. A saved item starts
   in its own named session. While it waits for its own time it is not in line: later inputs
