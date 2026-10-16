@@ -39,9 +39,14 @@ async function ownerMode(root:string){
   owner.inbox();
   const capture=owner.acceptInboxCapture({source:{kind:'thinkering',id:'foreground-fixture-root',recordedAt:'2026-10-09T00:00:00Z'},
     text:'Fixture Threads root with retained history',importOnly:true});
+  const createdArea=await owner.handle(new Request('http://fixture/sessions/v1/inbox/areas',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'foreground-fixture-area',
+      name:'Composed fixture area'})}));
+  if(!createdArea?.ok)throw new Error(`Fixture area creation failed: ${await createdArea?.text()}`);
+  const areaId=(await createdArea!.json() as any).area.id as string;
   const created=await owner.handle(new Request('http://fixture/sessions/v1/inbox/topics',{method:'POST',
     headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'foreground-fixture-topic',
-      title:'Composed fixture thread',roots:[capture.operation.id]})}));
+      title:'Composed fixture thread',areaIds:[areaId],roots:[capture.operation.id]})}));
   if(!created?.ok)throw new Error(`Fixture topic creation failed: ${await created?.text()}`);
   const topic=(await created!.json() as any).topic.topicId as string;
   const uploaded=await owner.handle(new Request('http://fixture/sessions/v1/attachments',{method:'POST',

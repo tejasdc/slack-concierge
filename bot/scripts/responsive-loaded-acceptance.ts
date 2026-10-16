@@ -60,8 +60,12 @@ async function probe(mode:"pre"|"measure",configPath:string){
   if(process.env.CONCIERGE_ACCEPTANCE_EXTERNAL_BROWSER==='1'){
    const capture=owner.acceptInboxCapture({source:{kind:'thinkering',id:'loaded-topic-root',recordedAt:'2026-10-08T00:00:00.000Z'},
     text:'Synthetic root for encoded topic controls.',importOnly:true});
+   const area=await owner.handle(new Request('http://fixture/sessions/v1/inbox/areas',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'loaded-area-create',name:'Loaded fixture area'})}));
+   if(!area?.ok)throw new Error('Could not prepare the loaded area fixture: '+String(await area?.text()));
+   const areaId=String((await area.json() as any).area.id);
    const topic=await owner.handle(new Request('http://fixture/sessions/v1/inbox/topics',{method:'POST',
-    headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'loaded-topic-create',title:'Loaded topic',roots:[capture.operation.id]})}));
+    headers:{'content-type':'application/json'},body:JSON.stringify({clientActionId:'loaded-topic-create',title:'Loaded topic',areaIds:[areaId],roots:[capture.operation.id]})}));
    if(!topic?.ok)throw new Error('Could not prepare the loaded topic fixture: '+String(await topic?.text()));
    const topicResult=await topic.json() as any;
    topicId=String(topicResult.topic?.topicId??topicResult.topic?.id??topicResult.id??'');
