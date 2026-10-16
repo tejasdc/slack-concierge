@@ -2030,7 +2030,8 @@ export class SessionOwner {
     const nestedRoot=hasMessageThread?input.messageThreadRootId as string:null;
     let nestedAuthor:{sessionId:string;requestId:string|null}|null=null;
     if(nestedRoot){
-      const rootMessage=inboxMessageById(session.id,nestedRoot) as any;
+      const retainedRoot=inboxMessageById(session.id,nestedRoot) as any;
+      const rootMessage=retainedRoot?inboxAttribution(db)(retainedRoot):null;
       const rootSession=rootMessage?.author?.session?.id;
       if(rootMessage?.role!=='assistant'||rootMessage?.author?.kind!=='agent'||typeof rootSession!=='string')
         throw new SessionOwnerError('A message reply thread starts from one exact agent message.',409,'MESSAGE_THREAD_ROOT_INVALID');
