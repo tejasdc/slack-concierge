@@ -103,6 +103,12 @@ process.stdout.write(JSON.stringify({hookSpecificOutput})+'\\n');`);
   if(existsSync(canonical))
     check(run(bun,['run',privateCommand,'--',bun,'-e',probe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden','private child could access canonical live state');
   else check(process.env.GITHUB_ACTIONS==='true','canonical live state missing outside the clean CI worker');
+  // The ledger's own filesystem, reached by its real path rather than the state directory's link.
+  if(existsSync(join(canonical,'state.db'))){
+    const ledgerFile=realpathSync(join(canonical,'state.db'));
+    const ledgerProbe=`const fs=require('node:fs');try{fs.accessSync(${JSON.stringify(ledgerFile)},fs.constants.R_OK);process.exit(11)}catch(error){if(error.code==='EACCES'||error.code==='ENOENT')console.log('hidden');else throw error}`;
+    check(run(bun,['run',privateCommand,'--',bun,'-e',ledgerProbe],{CONCIERGE_STATE_DIR:canonical}).trim()==='hidden',`private child could open the ledger at ${ledgerFile}`);
+  }
   const raw='sqlite3 /root/.local/state/'+'concierge/state.db "'+'.back'+'up /tmp/raw.db"';
   check(execute(raw).permissionDecision==='deny','current machine policy did not deny raw live copy');
   // The ledger's own filesystem: the state directory keeps a link to wherever the ledger lives
