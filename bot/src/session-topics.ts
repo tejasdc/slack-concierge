@@ -2349,29 +2349,18 @@ function closeThreadIfFinished(topicId:string,cause:string):boolean {
   return recorded;
 }
 
-/**
- * His replies to an agent working on a request are that request's work: linked in time order, so
- * the answer to his reply settles the request exactly as the first answer would have. A reply sent
- * after the request closed reopens it while that work runs.
- */
+/** A reply joins earlier work only when its addressed answer proves which work it continues. */
 function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
   const roots=new Set(topicRoots(topicId));
   const mine=forwards.filter(forward=>!!forward.root&&roots.has(forward.root));
   let linked=0;
   for(const forward of mine) {
-    // The request his reply is about, and only when that is certain: the one whose answer he
-    // replied to, else the one request that agent is still working on here, else (all closed) the
-    // newest it worked on. When it holds several open ones and he replied to none of their answers,
-    // nothing is linked: a guess could close the wrong request completed.
+    // A shared agent and thread do not establish that his new message continues earlier work.
+    // A reply to a different answer must never settle that earlier request.
     const requests=topicRequests(topicId);
     const answered=workHisReplyAnswered(forward);
-    const worked=requests.filter(request=>request.dispatches.some((dispatch:any)=>{
-      const work=workRow(String(dispatch?.requestId??''));
-      return !!work&&work.id!==forward.id&&work.target===forward.target&&work.createdAtMs<=forward.createdAtMs;
-    }));
-    const open=worked.filter(request=>request.state==='open');
     const byAnswer=answered?requests.filter(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===answered)):[];
-    const targets=byAnswer.length===1?byAnswer:open.length===1?open:open.length?[]:worked.slice(-1);
+    const targets=byAnswer.length===1?byAnswer:[];
     for(const request of targets) {
       if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
       const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);

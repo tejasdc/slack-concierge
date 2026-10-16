@@ -366,12 +366,11 @@ capture `d30a141a`: "you're not maintaining the threads, so a lot of threads tha
 are still in my thread view"). On that day 71 open threads held requests whose work had ended:
 his replies to the agent working on a request were never counted as its work, a "could not finish"
 answer posted into the thread closed nothing, and no thread ever closed itself. Now:
-- His reply forwarded to the agent working on a request is linked to that request as a dispatch
-  (`topic-link:forward:<request>:<topicRequest>`), in time order, so the answer to his reply
-  settles the request; a reply after the request closed reopens it while that work runs. It is
-  linked only when the request is certain: the one whose posted answer he replied to, else the
-  one open request that agent works on in the thread, else (all closed) the newest it worked on.
-  With several open and no answer replied to, nothing is linked.
+- His reply forwarded to an agent is linked to earlier work only when it replies to that
+  work's posted answer (`topic-link:forward:<request>:<topicRequest>`). Its answer can then
+  settle that request, and a reply after closure reopens it while that work runs. Sharing a
+  thread or agent does not establish that a new question continues earlier work: the October 16
+  Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread.
 - Once nothing sent for an open request is running, its latest answer decides (owner event
   `topic-settle:<request>:<work>`): done closes it `completed` under `refuseUnfinishedCompletion`,
   an agent's `failed` closes it `failed`, a cancelled send closes it `withdrawn`, and a decision
