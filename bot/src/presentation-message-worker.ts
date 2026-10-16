@@ -492,10 +492,41 @@ async function rebuild() {
   } finally {rebuilding=false;}
 }
 
+/** Remove only agent coordination rows inherited from the older visible-message rule. */
+async function upgradeAgentRequestVisibility(generation:number){
+  const rows=prepared.query(`SELECT event_sequence AS sequence,input_id AS inputId,root_input_id AS root
+    FROM presentation_messages WHERE generation=? AND input_id LIKE 'request:%' ORDER BY event_sequence`)
+    .all(generation) as {sequence:number;inputId:string;root:string}[];
+  const changedRoots=new Set<string>();
+  for(let offset=0;offset<rows.length;offset+=50){
+    const hidden=rows.slice(offset,offset+50).filter(row=>{
+      const input=source.query('SELECT origin,request_id FROM session_inputs WHERE id=?').get(row.inputId) as
+        {origin:string;request_id:string|null}|null;
+      if(input?.origin!=='agent'||!input.request_id)return false;
+      const event=source.query('SELECT kind FROM session_owner_events WHERE sequence=?').get(row.sequence) as {kind:string}|null;
+      return event?.kind==='accepted'||event?.kind==='result';
+    });
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of hidden){
+        prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        changedRoots.add(row.root);
+      }
+    })();
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET agent_request_visibility_version=1 WHERE singleton=1').run();})();
+}
+
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!current.agent_request_visibility_version||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);

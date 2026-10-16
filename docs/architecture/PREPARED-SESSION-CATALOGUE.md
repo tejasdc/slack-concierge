@@ -117,6 +117,10 @@ contains at most twenty items; large exact text is retrieved only through explic
 digest-addressed parts. Missing prepared values report indexing rather than returning a
 false empty result. Topic timelines combine prepared message and management displays,
 without parsing retained canonical event bodies on the request thread.
+When an older prepared generation still includes agent coordination inputs, the message
+worker removes those rows in bounded batches and advances from its existing watermark.
+It does not rebuild every retained message to apply that visibility rule; a full rebuild
+left fresh thread replies unavailable for hours on 2026-10-16.
 An attention item keeps one identity while its question moves between topics; preparing
 the new topic updates that item before the old topic is refreshed.
 
