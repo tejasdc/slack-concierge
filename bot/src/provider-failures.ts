@@ -16,18 +16,8 @@ export function isContextOverflowRefusal(message: string) {
   return /\bprompt is too long\b|\bconversation is too long\b|\bcontext (?:window )?(?:limit )?exceeded\b/i.test(message);
 }
 
-/**
- * OpenAI saying a model has no serving capacity right now ("Selected model is at capacity.
- * Please try a different model.", or the App Server's typed `serverOverloaded`). It is a
- * temporary provider condition, like a rate limit, never a verdict on the request: on
- * 2026-10-16 it was read as permanent after two attempts in forty seconds and an outside
- * Codex run resuming through a remote compaction died on it. The App Server names it with a
- * typed code; `codex exec` prints it only as an error line or on stderr, so the words are
- * matched too, and the match lives here so every provider path decides it the same way.
- */
-export function isModelCapacityRefusal(message: string): boolean {
-  return /\bat capacity\b|server_overloaded|serverOverloaded/i.test(message);
-}
+import { isModelCapacityRefusal } from './model-capacity-refusal';
+export { isModelCapacityRefusal };
 
 export class ProviderTurnCancelledError extends Error {
   constructor(message = "Turn stopped from Slack.") {

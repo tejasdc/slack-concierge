@@ -1,5 +1,5 @@
 import { providerDisplayName } from "./aliases";
-import { isModelCapacityRefusal } from "./provider-failures";
+import { isModelCapacityRefusal } from "./model-capacity-refusal";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
