@@ -1507,9 +1507,21 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
     if (interruptionReason) throw interruptionReason;
-    const threadResponse = sessionUUID
-      ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
-      : await request("thread/start", threadParams);
+    let threadResponse: any;
+    try {
+      threadResponse = sessionUUID
+        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+        : await request("thread/start", threadParams);
+    } catch (error) {
+      // Neither operation sends the user's input. Even if the App Server created or
+      // resumed a thread before the response was lost, a new dispatch cannot repeat
+      // the requested work because turn/start has not been called yet.
+      if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous") {
+        throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
+          failureClass: "retryable", toolsUsed });
+      }
+      throw error;
+    }
     verifyCodexConsultationPolicy(input, threadResponse);
     threadId = threadResponse?.thread?.id || sessionUUID;
     model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;

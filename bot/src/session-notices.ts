@@ -22,6 +22,12 @@ export function requestLabel(payloadJson: string): string {
     return `your request “${words.length > 100 ? `${words.slice(0, 99).trimEnd()}…` : words}”`;
 }
 
+/** A due-time reminder addressed to the asking agent, never a post in the human thread. */
+export function unresolvedRequestReminder(payloadJson: string, minutes: number, next: string): string {
+    const label = requestLabel(payloadJson);
+    return `No confirmed answer to ${label} after ${minutes} minutes. ${next} The request stays open; a later answer still reaches its chosen destination. Nothing has been sent twice.`;
+}
+
 /** A local session named by its title. */
 export function sessionLabel(sessionId: number): string {
     const session = getSessionById(sessionId);

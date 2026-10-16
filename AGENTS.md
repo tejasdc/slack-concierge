@@ -13,6 +13,9 @@ metadata separated from bytes. The owner contract and query are in
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Forwarded thread replies join earlier work only through the exact answer they address;
+Codex launch failures before any input submission retry safely. See [native Inbox](docs/contracts/native-inbox.md)
+and [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
 
 Areas of interest are named groups above Inbox threads. A thread can belong to several
 areas; neighboring areas are explicit links. New Inbox threads name an area at creation;

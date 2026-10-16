@@ -20,7 +20,7 @@ import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
 import {noticeTime} from './provider-free-notice';
-import {answerNotice,requestLabel} from './session-notices';
+import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 
@@ -784,6 +784,24 @@ export class SessionPeers {
       db.query("UPDATE session_peer_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
       return;
     }
+    const legacyAgentReminder=event.kind==='overdue'&&/^(This request has no confirmed answer after|The other machine has not answered for) \d+ minutes[.;]/.test(String(declared.text??''));
+    if(event.kind==='overdue'&&(declared.agentReminder||legacyAgentReminder||declared.held)){
+      const source=getSessionById(row.source_session_id);
+      if(!source||!this.dependencies.owner.canSend(source)){
+        db.query("UPDATE session_peer_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=?").run(event.event_id);
+        return;
+      }
+      const inputId=`request-reminder:${event.event_id}`;
+      const text=legacyAgentReminder?unresolvedRequestReminder(row.payload_json,STILL_WAITING_MINUTES,
+        'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.')
+        :declared.held&&!declared.agentReminder?`${requestLabel(row.payload_json)} is waiting: ${String(declared.text)}`:String(declared.text);
+      const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,text});
+      const observed=readInputExecution(accepted);
+      const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
+      db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=?')
+        .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
+      return;
+    }
     const returnToRequester=returnsToRequester(row);
     const directPost=this.postThreadEvent(row,event,declared);
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
@@ -932,7 +950,8 @@ export class SessionPeers {
       const forwarded=!!JSON.parse(row.payload_json).forwardedReply;
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        if(!forwarded)this.event(row,'overdue',{text:heldRequestNotice(hold),health:`held: ${hold.code}`,held:hold.code});
+        if(!forwarded)this.event(row,'overdue',{text:`${requestLabel(row.payload_json)} is waiting: ${heldRequestNotice(hold)}`,
+          health:`held: ${hold.code}`,held:hold.code,agentReminder:true});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
   }
@@ -963,7 +982,8 @@ export class SessionPeers {
         // this work matters to him now (his decision, 2026-09-27).
         db.transaction(()=>{
           if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-          this.event(row,'overdue',{text:`The other machine has not answered for ${STILL_WAITING_MINUTES} minutes; it may be asleep or offline. ${row.status==='queued_offline'?'This request will be delivered':'Its status will be checked again'} when that machine is back. Nothing has been sent twice.`,health:`${row.peer} unreachable`});
+          this.event(row,'overdue',{text:unresolvedRequestReminder(row.payload_json,STILL_WAITING_MINUTES,
+            `The ${row.peer} may be asleep or offline. ${row.status==='queued_offline'?'Delivery will resume':'Its status will be checked again'} when it reconnects; inspect it then if an answer is still needed.`),health:`${row.peer} unreachable`,agentReminder:true});
           db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
         })();
         return;
@@ -973,7 +993,8 @@ export class SessionPeers {
         :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
-        this.event(row,'overdue',{text:`This request has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. It remains recorded and has not been sent again. The agent that sent it can inspect its progress and decide what to do next.`,health});
+        this.event(row,'overdue',{text:unresolvedRequestReminder(row.payload_json,STILL_WAITING_MINUTES,
+          'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'),health,agentReminder:true});
         db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,row.request_id);
       })();
   }
