@@ -20,6 +20,7 @@ See [one-message routing](docs/plans/2026-10-15-route-one-inbox-message.md).
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.
+Session search derives shared Inbox work from request receipts and current thread placement; its bounded mutuals projection and ranking contract are in [session mutuals](docs/architecture/SESSION-MUTUALS.md).
 Saved journal-screen entries enter the existing journal keeper as service-origin inputs through the authenticated [journal observation admission](docs/contracts/journal-observation-admission.md), preserving authorship and action identity.
 Live event subscriptions stay with the accepting owner, but retained event pages are
 projected by its existing read executors; see [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
