@@ -39,8 +39,8 @@ When the Inbox asks another session to work on a named thread, the owner posts t
 answers, final result, failure and cancellation into the thread under the answer's exact event
 identity. The request's status remains readable with `sessions get`; the Inbox router does not
 receive a second runnable copy. An ask that truly needs its result to continue routing says
-`--return-to-requester`. The owner also keeps overdue reminders in the thread without a
-separate router turn. A stopped run at Tejas's request stays a quiet service note; other terminal
+`--return-to-requester`. A 15-minute unresolved-request reminder goes to the asking agent with
+the exact request summary or words, not into Tejas's thread. A stopped run at Tejas's request stays a quiet service note; other terminal
 failures create a reading item in that thread. New reply and notice posts commit beside the
 request event in owner receipt order; they do not wait for a router turn. A delayed peer reply
 is ordered when the owner receives it, rather than pretending it arrived while the peer was offline.

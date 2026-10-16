@@ -24,7 +24,7 @@ import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdr
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
-import { answerNotice, requestLabel, sessionLabel } from './session-notices';
+import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
@@ -1924,6 +1924,23 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             db.query("UPDATE session_communication_events SET status='received',error='Answered before this notice was delivered; not sent.' WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);
             return;
         }
+        const legacyAgentReminder=event.kind==='overdue'&&/^This request has no confirmed answer after \d+ minutes\./.test(String(declared.text??''));
+        if (event.kind === 'overdue' && (declared.agentReminder || legacyAgentReminder)) {
+            const source = getSessionById(request.source_session_id);
+            if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
+                db.query("UPDATE session_communication_events SET status='held',error='Asking agent is unavailable; reminder retained.' WHERE event_id=?").run(event.event_id);
+                return;
+            }
+            const inputId = `request-reminder:${event.event_id}`;
+            const text=legacyAgentReminder?unresolvedRequestReminder(request.payload_json,STILL_WAITING_MINUTES,
+                'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'):String(declared.text);
+            const accepted=this.dependencies.owner!.admit({sessionId:source.id,inputId,origin:'service',sourceInputId:request.source_input_id!,sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,text});
+            const observed=readInputExecution(accepted);
+            const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
+            db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=NULL WHERE event_id=?')
+                .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
+            return;
+        }
         const returnToRequester=returnsToRequester(request);
         // A named thread is the result destination. A requester turn is a separately chosen effect.
         const alreadyPostedInThread=this.postThreadEvent(request,event,declared);
@@ -2126,7 +2143,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
                 if (!reported)
-                    this.event(request, 'overdue', { text: `This request has no confirmed answer after ${STILL_WAITING_MINUTES} minutes. It remains recorded and has not been sent again. The agent that sent it can inspect its progress and decide what to do next.`, health });
+                    this.event(request, 'overdue', { text: unresolvedRequestReminder(request.payload_json, STILL_WAITING_MINUTES,
+                        'Inspect the recipient’s status and follow up or cancel if the work can no longer wait.'), health, agentReminder:true });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
     }
