@@ -1,6 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRequestRoot} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {retainedReplyTarget} from './inbox-reply-lineage';
 
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
@@ -62,13 +63,11 @@ export function inboxRootResolver(db:Database) {
     if(link){const value=JSON.parse(link.payload_json);if(value.attached!==false&&typeof value.root==='string'){
       memo.set(cacheKey,value.root);return value.root;
     }}
-    const own=db.query('SELECT origin,payload_json,request_id FROM session_inputs WHERE id=?').get(inputId) as
-      {origin:string;payload_json:string;request_id:string|null}|null;
-    if(own?.origin==='human'){
-      const replyTo=JSON.parse(own.payload_json)?.replyToMessage;
-      if(typeof replyTo?.messageId==='string'&&replyTo.messageId!==inputId){
-        const root=resolve(sessionId,replyTo.messageId,seen)??inputId;memo.set(cacheKey,root);return root;
-      }
+    const own=db.query('SELECT origin,scope,source_input_id,source_run_id,payload_json,request_id FROM session_inputs WHERE id=?').get(inputId) as
+      {origin:string;scope:string;source_input_id:string|null;source_run_id:string|null;payload_json:string;request_id:string|null}|null;
+    const replyTo=retainedReplyTarget(own);
+    if(replyTo&&replyTo.messageId!==inputId){
+      const root=resolve(sessionId,replyTo.messageId,seen)??inputId;memo.set(cacheKey,root);return root;
     }
     if(own?.origin==='service'&&own.request_id){
       const request=(db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,sessionId)
