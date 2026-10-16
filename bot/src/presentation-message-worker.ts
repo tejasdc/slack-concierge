@@ -98,6 +98,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='marked_reply_roots_version');
   if(!hadMarkedReplyRoots)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN marked_reply_roots_version INTEGER NOT NULL DEFAULT 0');
+  const hadAgentRequestVisibility=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='agent_request_visibility_version');
+  if(!hadAgentRequestVisibility)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN agent_request_visibility_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -140,8 +144,8 @@ const withoutHeader=(text:string)=>{
   const end=text.indexOf('\n\n');return end<0?'':text.slice(end+2);
 };
 
-const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready FROM presentation_message_meta WHERE singleton=1')
-  .get() as {generation:number;event_watermark:number;source_head:number;ready:number};
+const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version FROM presentation_message_meta WHERE singleton=1')
+  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
 async function yieldProgress(delay=0){observation.advance();await Bun.sleep(delay);}
@@ -471,7 +475,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1,marked_reply_roots_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -491,7 +495,7 @@ async function rebuild() {
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!current.ready||!current.agent_request_visibility_version||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
   upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);

@@ -78,6 +78,9 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
     AND ${firstInboxAcceptanceSql}
+    -- A request addressed to the Inbox router is agent coordination, not a message to Tejas.
+    -- Its durable input and reply remain available through the request protocol.
+    AND NOT (event.kind IN ('accepted','result') AND COALESCE(input.origin='agent' AND input.request_id IS NOT NULL,0))
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
