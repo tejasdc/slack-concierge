@@ -487,10 +487,17 @@ but its accepted input is omitted from the Inbox Conversation and its `result_wa
 The `<topic>` block lists the direct posts as `agentAnswers`. This keeps the router informed
 without requiring it to relay or creating a second visible answer.
 
-Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
+Human Inbox inputs and agent-marked captures carry their thread in the prompt: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned
 the exact questions it answers), or `<topic-placement>` for an unplaced capture, with the
 eight most recently active open topics and the instruction to file it before routing.
+An unplaced agent request to the Inbox carries neither a placement instruction nor a
+filing obligation: its request/reply record is agent coordination. The Inbox's
+Conversation and prepared topic pages omit its accepted input and turn result, while
+deliberate agent posts remain visible. The request and reply stay in their exact
+session receipts for the agents. The presentation worker rebuilds its prepared
+messages once when this visibility rule is installed, so old coordination cards
+leave the conversation without deleting their records.
 The Inbox's standing instructions (its routing preamble and the attention rule) are in its
 per-run instructions, read once per run; an input carries only its identity header, its capture
 identity and these per-input facts. The routing preamble was prefixed to every input until

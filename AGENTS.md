@@ -14,6 +14,9 @@ metadata separated from bytes. The owner contract and query are in
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Agent requests to the Inbox are request/reply coordination, not conversation roots;
+unplaced requests do not demand topic filing and stay out of his prepared conversation.
+Deliberate agent posts remain visible. See [native Inbox](docs/contracts/native-inbox.md#filing-before-stopping).
 Forwarded thread replies join earlier work only through the exact answer they address;
 Codex launch failures before any input submission retry safely. See [native Inbox](docs/contracts/native-inbox.md)
 and [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).

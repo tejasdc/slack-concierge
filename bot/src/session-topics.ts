@@ -2682,6 +2682,9 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
   const root=rootOf(sessionId,target)??rootOf(sessionId,inputId);
   const topicId=root?topicOfRoot(root):null;
   if(!topicId) {
+    // Agent requests have their own request/reply custody and do not need a human topic.
+    const input=getAcceptedSessionInput(inputId);
+    if(input?.origin==='agent'&&input.request_id)return '';
     const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id=? AND state='open'
       ORDER BY updated_at DESC LIMIT 8`).all(sessionId) as any[]).map(row=>({id:row.topic_id,title:row.title,summary:row.summary,lastEntryAt:iso(row.updated_at)}));
     return `\n\n<topic-placement>\n${JSON.stringify({instruction:PLACEMENT_INSTRUCTION,openTopics:recent})}\n</topic-placement>`;
