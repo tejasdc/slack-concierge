@@ -73,6 +73,9 @@ function mentionedScripts(command: string, cwd: string): string {
     // The reviewed snapshot entrance is allowed as an executable, never as a blanket token
     // that exempts a second command on the same line.
     if (/\/scripts\/diagnostic-sqlite-snapshot\.py$/.test(path)) continue;
+    // The router helper names the state directory in its own text, so reading it made any piped
+    // router message that mentions a copy command look like a copy (2026-10-16).
+    if (/\/router-actions\.sh$/.test(path)) continue;
     try {
       if (existsSync(path) && statSync(path).size <= 1024 * 1024) text += '\n' + readFileSync(path, 'utf8');
     } catch { /* Direct command inspection and the ledger's canonical entrance still apply. */ }
