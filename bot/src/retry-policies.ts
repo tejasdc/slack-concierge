@@ -24,6 +24,10 @@ export const RETRY_POLICIES = Object.freeze({
   peerNotify: policy({ name: "peer-notify", maxAttempts: 12, baseDelayMs: 5_000, capDelayMs: 60_000, jitterFraction: 0.25, maxAgeMs: 15 * 60_000 }),
   peerRequest: policy({ name: "peer-request", maxAttempts: 15, baseDelayMs: 5_000, capDelayMs: 10 * 60_000, jitterFraction: 0.25, maxAgeMs: 60 * 60_000 }),
   providerRequest: policy({ name: "provider-request", maxAttempts: 5, baseDelayMs: 15_000, capDelayMs: 30 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
+  // A model OpenAI says is at capacity: one turn's own wait, 30 s doubling to 10 min for up to two
+  // hours, kept apart from the shared provider budget so a capacity refusal never trips the whole
+  // provider and another turn's permanent failure never ends this wait (2026-10-16).
+  providerCapacity: policy({ name: "provider-capacity", maxAttempts: 12, baseDelayMs: 30_000, capDelayMs: 10 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
   providerCredentialProbe: policy({ name: "provider-credential-probe", maxAttempts: 3, baseDelayMs: 1_500, capDelayMs: 1_500, jitterFraction: 0, maxAgeMs: 45_000 }),
   externalHttp: policy({ name: "external-http", maxAttempts: 5, baseDelayMs: 5_000, capDelayMs: 15 * 60_000, jitterFraction: 0.25, maxAgeMs: 30 * 60_000 }),
   deployHealthProbe: policy({ name: "deploy-health-probe", maxAttempts: 3, baseDelayMs: 60_000, capDelayMs: 60 * 60_000, jitterFraction: 0.25, maxAgeMs: 2 * 60 * 60_000 }),
@@ -50,6 +54,7 @@ export const PEER_REQUEST_ORPHAN_GRACE_MS = 10 * 60_000;
 
 export const RETRY_POLICY_FOR_SITE = Object.freeze({
   provider: RETRY_POLICIES.providerRequest,
+  "provider-capacity": RETRY_POLICIES.providerCapacity,
   deployment: RETRY_POLICIES.deployHealthProbe,
   peer: RETRY_POLICIES.peerRequest,
   notice: RETRY_POLICIES.noticeDelivery,

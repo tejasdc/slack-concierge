@@ -3,6 +3,7 @@ import {db,getSessionById,observeTurnFacts} from './state';
 import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
 import {recordUnsaidTurnOutcome} from './session-turn-outcome';
+import {errorFields,log} from './log';
 import {clearFocusForEndedRun} from './session-topics';
 import type {ProviderHistoryMessage} from './provider-history';
 
@@ -54,7 +55,11 @@ export function installSessionProjection(owner:SessionOwner) {
       if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status)
         && !db.query('SELECT 1 FROM session_inputs WHERE id=?').get(`turn-continuation:${turnId}`))recordSessionInputAttention(turn.accepted_input_id);
       if(kind==='terminal'&&['done','error','cancelled','interrupted','parked','delivery_parked'].includes(turn.status)) {
-        recordUnsaidTurnOutcome(turn);
+        // Recording the unsaid outcome runs inside the transaction that finishes the turn. It must
+        // never undo that finish: on 2026-10-16 a constraint failure here rolled back a delivered
+        // turn's completion three times and left it stuck in delivering.
+        try {recordUnsaidTurnOutcome(turn);}
+        catch(error){log('error','turn_unsaid_outcome_record_failed',{...errorFields(error),turn_id:turn.id,session_id:turn.session_id});}
         // A run that ended, errored or was stopped is not working on a topic any more. No
         // badge waits for the agent to remember cleanup, and no timer is needed.
         clearFocusForEndedRun(turn);

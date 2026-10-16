@@ -10,8 +10,9 @@ Concierge accepts Slack events and authenticated native surface input into the s
 
 ## Continuing work after a provider refusal
 
-When Claude or Codex confirms that a turn failed on usage, rate limiting or sign-in after
-producing assistant content or using tools, the failed turn remains in history. In the
+When Claude or Codex confirms that a turn failed on usage, rate limiting, a model at
+capacity (treated as rate limiting; see [provider sessions](PROVIDER-SESSIONS.md#automatic-starts-for-new-work))
+or sign-in after producing assistant content or using tools, the failed turn remains in history. In the
 same ledger transaction, `queueTurnContinuation` accepts one service input whose identity
 comes from that failed turn. It tells the next run when and why work stopped and to check
 its transcript, repository and remote effects before acting. It never resends the original

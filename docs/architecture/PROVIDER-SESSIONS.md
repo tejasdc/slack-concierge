@@ -410,9 +410,37 @@ agent-request creation; the Automatic origin and small-task mark stay with the s
 conversation with earlier turns never changes provider. Saved work retains its chosen
 provider and time. Choosing a model on an Automatic session removes its eligibility.
 Every other capacity refusal (an explicit choice, a later turn, or no alternative with
-room) waits and retries on its own provider under the ordinary bounded retry policy,
-instead of failing. The first version of this fix (October 13) required the input to be
-unacknowledged, so it moved none of the refusals that actually occur and parked them.
+room) waits and retries on its own provider instead of failing. The first version of this
+fix (October 13) required the input to be unacknowledged, so it moved none of the refusals
+that actually occur and parked them.
+
+The move keeps the request open. A request addressed to that session was pinned to the
+address generation it was asked at, and the sweep that re-dispatches open requests on
+every execution change decoded that address again; the move bumps the generation, so on
+October 16 the sweep settled request `10183b3a` failed with "The exact session binding
+changed." while the moved turn was running and answering it. `dispatch` in
+`session-communication.ts` now pins a request to the input the target session already
+retained (`target_input_id` in `target_session_id`) and decodes the address only when that
+input is gone.
+
+**Capacity is one typed fact, wherever it comes from.** `isModelCapacityRefusal` in
+`provider-failures.ts` matches OpenAI's words ("Selected model is at capacity", the App
+Server's `server_overloaded`), and `ProviderDispatchError` derives `modelAtCapacity` from
+the message when no typed code was given. `codex exec` (outside runs) reports it as an
+`error` event, a `turn.failed`, or only on stderr: a resumed outside run whose remote
+compaction died on it read as "Codex ended with code 1" (turn 9421, October 16), which
+was classified permanent. `outside-codex.ts` now names the capacity refusal from stderr,
+treats the CLI's own failure report with no output or tool items as confirmed zero work,
+and no longer counts the CLI's `error` items (503 reconnects, transport fallbacks) as tools.
+
+**The wait is the turn's own.** A capacity retry is recorded under the `provider-capacity`
+policy (30 s doubling to 10 min, at most twelve attempts over two hours) keyed by the turn,
+never under the shared provider budget: on October 16 one turn's capacity retry and
+another turn's permanent failure shared the provider key, which exhausted after two
+attempts in forty seconds and refused the next Codex turn outright. A worked-on turn that
+is refused for capacity gets the same `rate_limit` continuation a 429 gets, after the
+ordinary provider backoff, and is never replayed. The receipt says the model is at
+capacity and when the message goes again.
 
 The owner ignores stale or unreadable allowance as proof of room. If all eligible providers are spent,
 it binds the new request to the provider whose spent window refills first, so the existing
