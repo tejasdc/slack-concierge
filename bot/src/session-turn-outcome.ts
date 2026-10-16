@@ -135,21 +135,28 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   if(question&&!declared&&!returnedDecision)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
   const quiet=outcome==='done'?input.quiet?.trim().slice(0,2000)||null:null;
   const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,...(quiet?{quiet}:{})};
+  // The thread an outcome answers is in its payload. The event's input column references
+  // accepted inputs, and an Inbox thread root can be a message that is not one: a routed
+  // topic's destination or a request's own entry. Writing such a root there failed the
+  // foreign key, which refused the Inbox's outcome for a recovered held reply three times and
+  // rolled back the delivered turn's completion (2026-10-16). The column carries the root only
+  // when the root is an accepted input; readers join on the payload.
+  const inputColumn=getAcceptedSessionInput(inputId)?inputId:null;
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-    .run(input.eventId,input.sessionId,inputId,input.turnId,'turn_outcome',JSON.stringify(payload));
+    .run(input.eventId,input.sessionId,inputColumn,input.turnId,'turn_outcome',JSON.stringify(payload));
   if(question) {
     const answer=meta.inbox
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
     const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
       ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
     const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
-      ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='needs_you'
+      ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
         AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId);
     const author=sessionAuthor(`concierge:${input.sessionId}`);
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     if(!alreadyNotified)db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
+      .run(`needs_you:${input.eventId}`,input.sessionId,inputColumn,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
         question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
         ...(answer?{postId:answer.messageId}:{}),

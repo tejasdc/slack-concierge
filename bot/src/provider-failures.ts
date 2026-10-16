@@ -16,6 +16,19 @@ export function isContextOverflowRefusal(message: string) {
   return /\bprompt is too long\b|\bconversation is too long\b|\bcontext (?:window )?(?:limit )?exceeded\b/i.test(message);
 }
 
+/**
+ * OpenAI saying a model has no serving capacity right now ("Selected model is at capacity.
+ * Please try a different model.", or the App Server's typed `serverOverloaded`). It is a
+ * temporary provider condition, like a rate limit, never a verdict on the request: on
+ * 2026-10-16 it was read as permanent after two attempts in forty seconds and an outside
+ * Codex run resuming through a remote compaction died on it. The App Server names it with a
+ * typed code; `codex exec` prints it only as an error line or on stderr, so the words are
+ * matched too, and the match lives here so every provider path decides it the same way.
+ */
+export function isModelCapacityRefusal(message: string): boolean {
+  return /\bat capacity\b|server_overloaded|serverOverloaded/i.test(message);
+}
+
 export class ProviderTurnCancelledError extends Error {
   constructor(message = "Turn stopped from Slack.") {
     super(message);
@@ -65,7 +78,7 @@ export class ProviderDispatchError extends Error {
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;
-    this.modelAtCapacity = input.modelAtCapacity === true;
+    this.modelAtCapacity = input.modelAtCapacity === true || isModelCapacityRefusal(input.message);
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
   }
@@ -76,6 +89,7 @@ export function classifyProviderDispatchFailure(message: string): ProviderDispat
   if (
     /\b429\b|\b5\d\d\b/.test(normalized)
     || /rate[ -]?limit|overload|temporar(?:y|ily)|service unavailable|gateway timeout|internal server error/.test(normalized)
+    || isModelCapacityRefusal(message)
   ) {
     return "retryable";
   }
@@ -109,7 +123,9 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
   if(isRefreshableAuthFailure(message))return {kind:'provider_refused',refusal:'sign_in',detail};
   if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message))
     return {kind:'provider_refused',refusal:'usage',detail,waitUntilMs:clearsAtMs};
-  if(/\b429\b|rate[ -]?limit|too many requests/i.test(message))return {kind:'provider_refused',
+  // A model at capacity is the same kind of wait as a rate limit: the provider will take the
+  // work again soon and names no instant, so a worked-on turn continues after a short backoff.
+  if(/\b429\b|rate[ -]?limit|too many requests/i.test(message)||isModelCapacityRefusal(message))return {kind:'provider_refused',
     refusal:'rate_limit',detail,waitUntilMs:failedAtMs+providerRetryDelayMs(attempt)};
   return null;
 }

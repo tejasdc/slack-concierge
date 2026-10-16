@@ -348,6 +348,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const providerBreakerKey = `provider:${input.providerId}:${input.providerId === 'chatgpt'
     ? 'profile' : currentAccount(input.providerId)?.label ?? 'unavailable'}`;
   const chatGptNeverSentBreakerKey = `${providerBreakerKey}:turn:${input.turnId}`;
+  const capacityBreakerKey = `${providerBreakerKey}:capacity:turn:${input.turnId}`;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let attachmentRoot: string | null = null;
   let deliveryStarted = false;
@@ -716,6 +717,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
     clearRetryBreaker(providerBreakerKey);
+    clearRetryBreaker(capacityBreakerKey);
     const completedModel=input.model??sessionMetadata(input.session).model;
     if(completedModel)clearModelCapacityRefusal(input.providerId,completedModel);
     if (input.providerId === 'chatgpt') clearRetryBreaker(chatGptNeverSentBreakerKey);
@@ -1192,10 +1194,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               restartSignal: 'the request is corrected and retried' };
         // A proven never-sent turn has its own bounded retry episode. An older terminal
         // refusal for another ChatGPT turn must not suppress this safe retry.
-        const retryKey = input.providerId === 'chatgpt' && structuredFailure?.failureClass === 'retryable'
+        // A model at capacity is a wait of this turn's own (`provider-capacity`): it must not
+        // spend or trip the provider-wide budget, and a permanent failure elsewhere on the
+        // provider must not end it. On 2026-10-16 one turn's capacity retry and another's
+        // "ended with code 1" shared the provider key, which exhausted after two attempts in
+        // forty seconds and refused every Codex turn that followed.
+        const capacityWait = retryable && structuredFailure?.modelAtCapacity === true;
+        const retryKey = capacityWait ? capacityBreakerKey
+          : input.providerId === 'chatgpt' && structuredFailure?.failureClass === 'retryable'
           ? chatGptNeverSentBreakerKey : providerBreakerKey;
-        const decision = recordRetryFailure({ key: retryKey, site: 'provider',
-          what: `The ${input.providerId} account's work`, failure });
+        const decision = recordRetryFailure({ key: retryKey, site: capacityWait ? 'provider-capacity' : 'provider',
+          what: capacityWait ? `The ${input.providerId} model's capacity` : `The ${input.providerId} account's work`, failure });
         if (decision.action === 'stop') retryable = false;
         if (decision.action === 'retry') policyRetryAtMs = decision.atMs;
       }
