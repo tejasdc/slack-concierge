@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -128,6 +128,22 @@ export function createCaptureQueueRequestHandler(
         if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:"command_identity_conflict"});
         log("warn","human_command_custody_refused",errorFields(error));
         return jsonResponse(400,{error:"invalid_command_envelope"});
+      }
+    }
+    if(url.pathname==='/commands/release-missing-slot'&&request.method==='POST'){
+      try{
+        const body=await requestBody(request);
+        const clientId=requiredString(body.clientId,'clientId',128);
+        const sessionId=requiredString(body.sessionId,'sessionId',200);
+        const sequence=requiredNonnegativeInteger(body.sequence,'sequence');
+        if(sequence<1)throw new Error('sequence must be positive');
+        const recoveryActionId=requiredString(body.recoveryActionId,'recoveryActionId',200);
+        const reason=requiredString(body.reason,'reason',1000);
+        const nextSequence=releaseMissingHumanCommandSlot({clientId,sessionId,sequence,recoveryActionId,reason});
+        return jsonResponse(200,{ok:true,nextSequence});
+      }catch(error){
+        log('warn','human_command_missing_slot_release_refused',errorFields(error));
+        return jsonResponse(409,{error:'missing_slot_release_refused'});
       }
     }
     if(url.pathname==='/commands/refuse-before-custody'&&request.method==='POST'){

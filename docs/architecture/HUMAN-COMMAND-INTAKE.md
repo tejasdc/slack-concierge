@@ -45,6 +45,17 @@ client/session stream must settle before the next is delivered; a terminal refus
 stream. Sequence slots start at one; a missing earlier network arrival holds later ordinary
 commands. The browser retains that earlier command and retries it while the page is open and after
 reload; the queue must not invent a terminal slot without its bytes or a confirmed refusal.
+If an older browser build already discarded a command before server custody, a private,
+authenticated recovery operation may mark that exact absent sequence as missing. The queue
+requires it to be the current stream head, still absent, with a later ordinary command
+pending and eligible for automatic delivery; the operator supplies a stable recovery action
+and reason. The marker is audited
+separately from commands and makes no claim about the missing command's contents or owner
+effect. It releases later retained commands with their original bytes and action IDs. If the
+device later uploads the missing sequence, ingress accepts it into the original slot and
+the worker delivers it once under its original identity, even though later commands may
+have been accepted first. This operation is for a proven historical gap, not a normal
+browser retry or a synthetic refusal.
 Exact-run Stop and cancel-by-action bypass predecessor order. When cancellation arrives
 while its exact session/action target is still pending in ingress,
 one transaction freezes the target transport row and retains the cancellation command. The owner

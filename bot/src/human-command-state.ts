@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS human_command_streams(
   client_id TEXT NOT NULL,session_id TEXT NOT NULL,next_sequence INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(client_id,session_id)
 );
+CREATE TABLE IF NOT EXISTS human_command_missing_slots(
+  client_id TEXT NOT NULL,session_id TEXT NOT NULL,sequence INTEGER NOT NULL,
+  recovery_action_id TEXT NOT NULL UNIQUE,reason TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(client_id,session_id,sequence)
+);
 `);
 const commandColumns=captureDb.query("PRAGMA table_info(human_commands)").all() as {name:string}[];
 if(!commandColumns.some(column=>column.name==='decision_stage'))captureDb.exec("ALTER TABLE human_commands ADD COLUMN decision_stage TEXT CHECK(decision_stage IN ('preparation','owner'))");
@@ -92,7 +98,11 @@ function advanceStream(clientId:string,sessionId:string){
  let next=stream.next_sequence;
  for(;;){
   const found=captureDb.query('SELECT status FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?').get(clientId,sessionId,next) as {status:string}|null;
-  if(!found||!['delivered','refused','canceled'].includes(found.status))break;
+  if(!found){
+   const skipped=captureDb.query('SELECT 1 FROM human_command_missing_slots WHERE client_id=? AND session_id=? AND sequence=?')
+    .get(clientId,sessionId,next);
+   if(!skipped)break;
+  }else if(!['delivered','refused','canceled'].includes(found.status))break;
   next++;
  }
  if(next!==stream.next_sequence)captureDb.query('UPDATE human_command_streams SET next_sequence=? WHERE client_id=? AND session_id=?').run(next,clientId,sessionId);
@@ -103,6 +113,37 @@ function row(actionId: string): HumanCommandRow | null {
 }
 
 export function commandStatus(actionId: string): HumanCommandRow | null { return row(actionId); }
+
+/** An audited missing arrival can release later retained commands without occupying its slot.
+ * If its original bytes arrive later, the ordinary identity check still accepts them. */
+export function releaseMissingHumanCommandSlot(input:Readonly<{clientId:string;sessionId:string;sequence:number;recoveryActionId:string;reason:string}>):number {
+ return captureDb.transaction(()=>{
+  const existing=captureDb.query('SELECT client_id,session_id,sequence,reason FROM human_command_missing_slots WHERE recovery_action_id=?')
+   .get(input.recoveryActionId) as {client_id:string;session_id:string;sequence:number;reason:string}|null;
+  if(existing){
+   if(existing.client_id!==input.clientId||existing.session_id!==input.sessionId||existing.sequence!==input.sequence||existing.reason!==input.reason)
+    throw new CommandIdentityConflict();
+   return (captureDb.query('SELECT next_sequence FROM human_command_streams WHERE client_id=? AND session_id=?')
+    .get(input.clientId,input.sessionId) as {next_sequence:number}).next_sequence;
+  }
+  const stream=captureDb.query('SELECT next_sequence FROM human_command_streams WHERE client_id=? AND session_id=?')
+   .get(input.clientId,input.sessionId) as {next_sequence:number}|null;
+  if(!stream||stream.next_sequence!==input.sequence)throw new Error('The missing slot is no longer the stream head.');
+  const occupied=captureDb.query('SELECT 1 FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
+   .get(input.clientId,input.sessionId,input.sequence);
+  if(occupied)throw new Error('The slot has arrived and cannot be skipped.');
+  const later=captureDb.query(`SELECT 1 FROM human_commands WHERE client_id=? AND session_id=? AND sequence>?
+   AND status='pending' AND exhausted_at_ms IS NULL
+   AND path NOT LIKE '%/stop' AND path NOT LIKE '%/actions/%/cancel' LIMIT 1`)
+   .get(input.clientId,input.sessionId,input.sequence);
+  if(!later)throw new Error('No later retained command is waiting for this slot.');
+  captureDb.query('INSERT INTO human_command_missing_slots(client_id,session_id,sequence,recovery_action_id,reason) VALUES(?,?,?,?,?)')
+   .run(input.clientId,input.sessionId,input.sequence,input.recoveryActionId,input.reason);
+  advanceStream(input.clientId,input.sessionId);
+  return (captureDb.query('SELECT next_sequence FROM human_command_streams WHERE client_id=? AND session_id=?')
+   .get(input.clientId,input.sessionId) as {next_sequence:number}).next_sequence;
+ }).immediate();
+}
 
 export class CommandIdentityConflict extends Error {
   constructor() { super("The command identity already names different bytes or a different place in the stream."); }
@@ -204,7 +245,9 @@ export function claimHumanCommand(claimId:string,owner:ProcessIdentity,workerId:
     const candidate = captureDb.query(`SELECT * FROM human_commands AS command
       WHERE command.status='pending' AND command.exhausted_at_ms IS NULL AND (command.next_attempt_ms IS NULL OR command.next_attempt_ms<=?)
       AND (command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' OR command.sequence=(
-        SELECT next_sequence FROM human_command_streams stream WHERE stream.client_id=command.client_id AND stream.session_id=command.session_id))
+        SELECT next_sequence FROM human_command_streams stream WHERE stream.client_id=command.client_id AND stream.session_id=command.session_id)
+        OR EXISTS(SELECT 1 FROM human_command_missing_slots slot WHERE slot.client_id=command.client_id
+          AND slot.session_id=command.session_id AND slot.sequence=command.sequence))
       ORDER BY CASE WHEN command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' THEN 0 ELSE 1 END,
         command.created_at,command.sequence LIMIT 1`).get(now) as HumanCommandRow|null;
     if (!candidate) return null;
