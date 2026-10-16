@@ -1070,7 +1070,7 @@ export async function runClaudeCodeTurn(input: {
       for (const block of event.message.content) {
         if (block?.type !== "tool_use") continue;
         const toolName = String(block.name || "tool");
-        if (process.platform === 'darwin' && typeof block.id === 'string') {
+        if (typeof block.id === 'string') {
           const activity = macSurfaceActivity(toolName, block.input);
           if (activity) input.onProgress?.({type:'mac_surface_activity',itemId:block.id,activity});
         }

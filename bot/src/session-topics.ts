@@ -1351,6 +1351,14 @@ function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?
 }
 
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
+  for(const root of roots){
+    const previous=topicOfRoot(root);
+    if(!previous||previous===topic.topicId)continue;
+    const linked=db.query(`SELECT request_id FROM session_communication_requests
+      WHERE thread_root_input_id=? AND json_extract(payload_json,'$.forwardedReply.topicId')=? LIMIT 1`)
+      .get(root,previous) as {request_id:string}|null;
+    if(linked)throw new TopicError(`This conversation has a human reply already sent to an agent for ${previous} (${linked.request_id}). Route the exact human message instead of moving its conversation.`,409,'FORWARDED_REPLY_TOPIC_MOVE');
+  }
   const next=bumped(topic);
   return {topic:next,change:{kind:'topic',payload:{change:'placed',topicId:topic.topicId,topic:next,
     roots:rootRecords(topic.topicId,roots,by,reason),by,reason,revision:next.revision}} as Change};

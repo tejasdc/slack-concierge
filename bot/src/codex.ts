@@ -667,7 +667,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
-    if (itemId && process.platform === 'darwin') {
+    if (itemId) {
       const activity = macSurfaceActivity(toolName, item);
       if (activity) onProgress?.({ type: 'mac_surface_activity', itemId, activity });
     }
@@ -1170,7 +1170,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     const toolName = toolNameFromItem(item);
     if (!toolName) return;
     const itemId = typeof item.id === "string" ? item.id : null;
-    if (itemId && process.platform === 'darwin') {
+    if (itemId) {
       const activity = macSurfaceActivity(toolName, item);
       if (activity) onProgress?.({ type: 'mac_surface_activity', itemId, activity });
     }

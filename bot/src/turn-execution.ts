@@ -647,7 +647,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
-        if (event.type === 'mac_surface_activity' && input.presentation === 'native' && process.platform === 'darwin') {
+        if (event.type === 'mac_surface_activity' && input.presentation === 'native'
+          && (process.platform === 'darwin' || event.activity.remoteMac)) {
           try {
             recordSessionEvent({eventId:`mac-surface:${input.turnId}:${event.activity.key}`,sessionId:input.session.id,
               inputId:input.inputId,turnId:input.turnId,kind:'mac_surface_activity',
