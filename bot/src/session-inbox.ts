@@ -145,6 +145,7 @@ export function inboxMessage(row:any) {
   const peerRoute=route?.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
   const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
+    ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
       title:routeTitle(db,route.topicId,route.destinationSessionId),delivery}}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
@@ -154,7 +155,9 @@ export function inboxMessage(row:any) {
     // A post is the router's unless the service itself wrote it (a notice's "running again").
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent' as const,outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
     ...(request?{author:{kind:'agent' as const,communication:'request' as const,requestId:eventPayload.requestId}}:{}),
+    ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
+      ...(typeof eventPayload.requestId==='string'?{requestId:eventPayload.requestId}:{}),
       // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
       ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
@@ -333,7 +336,7 @@ export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;input
  * names it, and the Timeline says where it went. The request that carries his words is opened by
  * the communication layer (`forwardReply`), never here.
  */
-export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessionInput,target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}) {
+export function recordForwardedThreadReply(inbox:SessionRow,input:AcceptedSessionInput,target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string;messageThreadRootId?:string;messageThreadRequestId?:string}) {
   const payload=JSON.parse(input.payload_json);
   const to={sessionId:target.sessionId,title:target.title};
   recordSessionEvent({eventId:`forwarded:${input.id}`,sessionId:inbox.id,inputId:input.id,kind:'accepted',payload:{origin:input.origin,text:payload.text??'',forwardedTo:to}});
@@ -376,11 +379,12 @@ export function followForwardedReply(inboxInputId:string,to:{sessionId:string;re
   log('info','inbox_reply_progress',{input_id:inboxInputId,request_id:to.requestId,stage:working?'working':progress.hold?progress.hold.code:'delivered'});
 }
 /** What the agent reads with his forwarded thread reply, on this server or on his Mac alike. */
-export function forwardedReplyFraming(requestId:string,text:string,origin:'human'|'agent'='human',topicId?:string,inputId?:string) {
+export function forwardedReplyFraming(requestId:string,text:string,origin:'human'|'agent'='human',topicId?:string,inputId?:string,messageThreadRootId?:string,messageThreadRequestId?:string) {
   const author=origin==='human'?"a reply Tejas wrote":"a marked agent test reply";
   const reader=origin==='human'?"him":"the test agent";
   const tracking=origin==='human'&&topicId&&inputId?` If he asks a specific question, declare it before answering with sessions topics questions ${topicId}: one kind "asked" entry in his words, sources ["${inputId}"], and owner.dispatchRequestId "${requestId}".`:'';
-  return `Session request ${requestId}: ${author} inside the thnkr.ing Inbox thread you are working on, addressed to you. The Inbox router is not in the middle. Requested effect: work within that thread's request. Answer the question now, even while other work continues: within three minutes use sessions reply ${requestId} --partial --answers-question -- "<answer>". That posts your answer in the thread without closing the work. A progress-only partial does not settle this prompt-answer obligation. If you cannot know the answer yet, say exactly what is unknown and when ${reader} will hear more; the owner will still mark the question overdue until it receives an answer. Once you have answered, close the request with a final reply carrying disposition, summary and checked/not-checked facts but no repeated body. Those closing facts appear under your existing answer. A final body is posted as new words. A final reply without an earlier prompt answer must include the answer in its body. Write for ${reader} (TL;DR first, product language).${tracking} If the reply settles a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
+  const nested=messageThreadRootId?` This is a reply under your exact agent message ${messageThreadRootId}${messageThreadRequestId?` from request ${messageThreadRequestId}`:''}; your sessions reply stays inside that message's reply thread. Add --also-main-thread only when the same answer should also appear in the thread's main conversation.`:'';
+  return `Session request ${requestId}: ${author} inside the thnkr.ing Inbox thread you are working on, addressed to you. The Inbox router is not in the middle. Requested effect: work within that thread's request.${nested} Answer the question now, even while other work continues: within three minutes use sessions reply ${requestId} --partial --answers-question -- "<answer>". That posts your answer in the thread without closing the work. A progress-only partial does not settle this prompt-answer obligation. If you cannot know the answer yet, say exactly what is unknown and when ${reader} will hear more; the owner will still mark the question overdue until it receives an answer. Once you have answered, close the request with a final reply carrying disposition, summary and checked/not-checked facts but no repeated body. Those closing facts appear under your existing answer. A final body is posted as new words. A final reply without an earlier prompt answer must include the answer in its body. Write for ${reader} (TL;DR first, product language).${tracking} If the reply settles a question you asked in that thread, record it (sessions topics question settle). ${REQUEST_PROTOCOL_POINTER}\n\n${text}`;
 }
 /**
  * An agent's answer, posted into the thread it was asked from as that agent's words the moment it
@@ -392,7 +396,7 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * nothing here wakes the router. A bodyless final refers to this request's earlier prompt-answer
  * post by request identity. Its closing facts are an append-only event projected beneath that post.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;hisInputId?:string|null;quiet?:string|null}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
@@ -408,12 +412,14 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
       carriedBy=earlier.event_id;
     } else if(answer.final&&answer.answerGroup&&!answer.stalled) {
       const grouped=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-        AND json_extract(payload_json,'$.answerGroup')=? ORDER BY sequence LIMIT 1`)
-        .get(answer.inboxSessionId,answer.root,answer.answerGroup) as {event_id:string}|null;
+        AND json_extract(payload_json,'$.answerGroup')=?
+        AND coalesce(json_extract(payload_json,'$.messageThreadRootId'),'')=? ORDER BY sequence LIMIT 1`)
+        .get(answer.inboxSessionId,answer.root,answer.answerGroup,answer.messageThreadRootId??'') as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;
       else if(text||answer.attachments.length){
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
+            ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
             answerGroup:answer.answerGroup,replyKind:'final',answersQuestion:true,workDisposition:answer.workDisposition,
             ...(answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),postedBy:'owner-forward',postedBySession:answer.respondingSessionId,
             ...(answer.attachments.length?{attachments:answer.attachments}:{})}});
@@ -422,6 +428,7 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
     } else if(text||answer.attachments.length) {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
+            ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
             replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
@@ -429,6 +436,14 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
     }
     if(answer.final&&carriedBy&&answer.closingLine)recordSessionEvent({eventId:`post:closure:${carriedBy}`,sessionId:answer.inboxSessionId,inputId:answer.root,
       kind:'answer_closure',payload:{postId:carriedBy,closingLine:answer.closingLine}});
+    if(answer.messageThreadRootId&&answer.alsoMainThread&&(text||answer.attachments.length)){
+      const mainPostId=`${postId}:main`;
+      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(mainPostId))
+        recordSessionEvent({eventId:mainPostId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',payload:{text,
+          replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.root},requestId:answer.requestId,
+          ...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),postedBy:'owner-forward',postedBySession:answer.respondingSessionId,
+          sharedFromMessageThreadRootId:answer.messageThreadRootId,...(answer.attachments.length?{attachments:answer.attachments}:{})}});
+    }
     if(answer.hisInputId&&(answer.final||answer.stalled)) {
       const to={sessionId:answer.respondingSessionId,requestId:answer.requestId};
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(answer.stalled

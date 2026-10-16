@@ -431,7 +431,7 @@ export class SessionPeers {
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
-    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent'}}) {
+    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     const client=this.client(input.peer);
     const effect=input.requestedEffect??'informational';
@@ -594,6 +594,10 @@ export class SessionPeers {
     const disposition:WorkDisposition|undefined=input.workDisposition;
     const requestPayload=JSON.parse(row.payload_json);
     const requestedEffect=requestPayload.requestedEffect;
+    if(input.alsoMainThread&&!requestPayload.forwardedReply?.messageThreadRootId)
+      throw new SessionOwnerError('--also-main-thread belongs to a reply inside one agent message thread.');
+    if(input.alsoMainThread&&final&&input.replyBody===''&&!input.files?.length)
+      throw new SessionOwnerError('--also-main-thread needs new answer words or a file to copy into the main thread.');
     if(input.notify){
       const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
       const inbox=getSessionById(row.source_session_id);
@@ -620,7 +624,7 @@ export class SessionPeers {
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-        ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),
+        ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
@@ -651,7 +655,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -877,6 +881,8 @@ export class SessionPeers {
         answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
         answerGroup:declared.answerGroup??null,
         hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
+        messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
+        alsoMainThread:declared.alsoMainThread===true,
         informational:JSON.parse(row.payload_json).requestedEffect==='informational'});
     }
     let stoppedPost=false;
@@ -888,7 +894,8 @@ export class SessionPeers {
         postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??root,
           respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
           text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
+          attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
+          messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
           .run(JSON.stringify({state:'canceled',stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:row.request_id,thread:root,peer:row.peer});
@@ -1014,7 +1021,9 @@ export class SessionPeers {
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
-    if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))))
+    if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))
+      ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
+      ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
     if(input.routedFrom!==undefined&&(typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent'].includes(input.routedFrom?.authorKind)))
       throw new SessionOwnerError('A routed message needs its exact source and original words.');
@@ -1087,7 +1096,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1129,7 +1138,7 @@ export class SessionPeers {
     const files=payload.attachments?.length
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
-    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
@@ -1173,7 +1182,7 @@ export class SessionPeers {
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;notify?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -1184,12 +1193,16 @@ export class SessionPeers {
     if(input.final&&input.replyBody===''&&!input.attachments?.length&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(row.request_id))
       throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
     if(input.notify&&(!input.text.trim()||input.final&&input.replyBody===''))throw new Error('--notify requires a new reply message with words.');
+    if(input.alsoMainThread&&!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.messageThreadRootId)
+      throw new Error('--also-main-thread belongs to a reply inside one agent message thread.');
+    if(input.alsoMainThread&&input.final&&input.replyBody===''&&!input.attachments?.length)
+      throw new Error('--also-main-thread needs new answer words or a file to copy into the main thread.');
     const target=getAcceptedSessionInput(row.target_input_id);
     if(!target?.turn_id)throw new Error('This request has not been delivered to this session yet.');
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
       ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-      ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),
+      ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
       // Custody on this instance; the forward reads these exact bytes for the origin.
       ...(input.attachments?.length?{attachments:input.attachments}:{}),
       ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),

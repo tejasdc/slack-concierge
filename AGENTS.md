@@ -77,6 +77,8 @@ see [filing before stopping](docs/contracts/native-inbox.md#filing-before-stoppi
 Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
 answer in that thread, with a two-minute reminder and three-minute overdue thread notice;
 see [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
+Replies under one agent message keep that exact message and request as their nested conversation;
+the main-thread recipient rule remains unchanged. See the same prompt-answer contract.
 Requests naming an Inbox thread deliver answers and terminal notices to that thread without
 waking the requester, unless the ask explicitly chooses a requester return; see
 [requests and returns](docs/architecture/SESSION-OWNER.md#requests-and-returns).

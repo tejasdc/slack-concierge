@@ -1875,8 +1875,12 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
+    if(input.messageThreadRootId!==undefined&&(typeof input.messageThreadRootId!=='string'||!input.messageThreadRootId.trim()))
+      throw new SessionOwnerError('messageThreadRootId names one exact agent message.');
+    if(input.messageThreadRootId!==undefined&&(!sessionMetadata(session).inbox||typeof input.replyToMessage?.messageId!=='string'||typeof input.deliverTo!=='string'))
+      throw new SessionOwnerError('A message reply thread needs its Inbox parent and fixed recipient.',409,'MESSAGE_THREAD_CONTEXT_REQUIRED');
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const agent=agentTestSource(input.agentSource);
     // A reply may pin the exact questions it answers; the owner proves they belong to the
@@ -2012,18 +2016,38 @@ export class SessionOwner {
     if(['queue','live'].includes(receipt?.admissionIntent)&&this.canSend(getSessionById(input.session_id)!))this.dispatch(input);
   }
   /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
-  private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string}|null {
+  private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string;messageThreadRootId?:string;messageThreadRequestId?:string}|null {
     if(!sessionMetadata(session).inbox)return null;
     const messageId=input.replyToMessage?.messageId;
-    if(typeof messageId!=='string'||input.deliverTo==='router')return null;
+    const hasMessageThread=typeof input.messageThreadRootId==='string';
+    if(typeof messageId!=='string'||input.deliverTo==='router'&&!hasMessageThread)return null;
     const root=inboxThreadRoot(session.id,messageId);
     const topicId=root?topicOfRoot(root):null;
     if(!root||!topicId) {
       if(typeof input.deliverTo==='string')throw new SessionOwnerError('That message is not in a thread yet, so only the router can take this reply.',409,'REPLY_TARGET_UNKNOWN');
       return null;
     }
+    const nestedRoot=hasMessageThread?input.messageThreadRootId as string:null;
+    let nestedAuthor:{sessionId:string;requestId:string|null}|null=null;
+    if(nestedRoot){
+      const rootMessage=inboxMessageById(session.id,nestedRoot) as any;
+      const rootSession=rootMessage?.author?.session?.id;
+      if(rootMessage?.role!=='assistant'||rootMessage?.author?.kind!=='agent'||typeof rootSession!=='string')
+        throw new SessionOwnerError('A message reply thread starts from one exact agent message.',409,'MESSAGE_THREAD_ROOT_INVALID');
+      const rootTopic=inboxThreadRoot(session.id,nestedRoot),parentTopic=inboxThreadRoot(session.id,messageId),parent=inboxMessageById(session.id,messageId) as any;
+      if(!rootTopic||topicOfRoot(rootTopic)!==topicId)
+        throw new SessionOwnerError('That agent message is not in this thread.',409,'MESSAGE_THREAD_ROOT_INVALID');
+      if(!parentTopic||topicOfRoot(parentTopic)!==topicId)
+        throw new SessionOwnerError('The replied-to message is not in this thread.',409,'MESSAGE_THREAD_PARENT_INVALID');
+      if(messageId!==nestedRoot&&parent?.messageThreadRootId!==nestedRoot)
+        throw new SessionOwnerError('The replied-to message is not inside that message reply thread.',409,'MESSAGE_THREAD_PARENT_INVALID');
+      const addressed=input.deliverTo==='router'?`concierge:${session.id}`:input.deliverTo;
+      if(addressed!==rootSession)
+        throw new SessionOwnerError('This reply must go to the agent that wrote the message.',409,'MESSAGE_THREAD_TARGET_MISMATCH');
+      nestedAuthor={sessionId:rootSession,requestId:typeof rootMessage.author.requestId==='string'?rootMessage.author.requestId:null};
+    }
     const targets=replyTargets(topicId,messageId,candidate=>this.canSend(candidate));
-    const chosen=typeof input.deliverTo==='string'?input.deliverTo:targets.default;
+    const chosen=nestedAuthor?.sessionId??(typeof input.deliverTo==='string'?input.deliverTo:targets.default);
     if(chosen===targets.router)return null;
     const choice=targets.choices.find(item=>item.sessionId===chosen);
     if(!choice)throw new SessionOwnerError('That session is not working on this thread, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
@@ -2032,7 +2056,8 @@ export class SessionOwner {
     // carries [decision: mac-sessions-have-parity].
     const remote=local===null?this.peers?.splitAddress(peerSessionView(chosen)?.address??'')??null:null;
     if(local===null&&!remote)throw new SessionOwnerError('That session is on a machine this owner cannot address, so the reply was not sent to it.',409,'REPLY_TARGET_UNKNOWN');
-    return {sessionId:chosen,local,peer:remote,title:choice.title,topicId,root};
+    return {sessionId:chosen,local,peer:remote,title:choice.title,topicId,root,
+      ...(nestedRoot?{messageThreadRootId:nestedRoot}:{}),...(nestedAuthor?.requestId?{messageThreadRequestId:nestedAuthor.requestId}:{})};
   }
   admit(input:OwnerAdmission) {
     // A returned answer can carry the files it answered with. They are retained custody the

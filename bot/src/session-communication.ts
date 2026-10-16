@@ -1238,7 +1238,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
      * (`postForwardedReply`). Design: thinkering docs/plans/2026-10-07-reply-to-who-asked.md;
      * review by concierge:3756, which ruled out inferring the answer from the agent's closing text.
      */
-    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string};text:string;attachments?:string[]}):string {
+    forwardReply(input:{inbox:SessionRow;inputId:string;target:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string;messageThreadRootId?:string;messageThreadRequestId?:string};text:string;attachments?:string[]}):string {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const origin=getAcceptedSessionInput(input.inputId)?.origin==='agent'?'agent':'human';
         const actionId=`forward:${input.inputId}`;
@@ -1259,7 +1259,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             if(this.forwarding.has(id))return id;
             this.forwarding.add(id);
             void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'work',
-                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin,input.target.topicId,input.inputId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin}})
+                ...(attachments.length?{attachments}:{}),threadRoot:input.target.root,framing:requestId=>forwardedReplyFraming(requestId,input.text,origin,input.target.topicId,input.inputId,input.target.messageThreadRootId,input.target.messageThreadRequestId),forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,authorKind:origin,
+                  ...(input.target.messageThreadRootId?{messageThreadRootId:input.target.messageThreadRootId}:{}),...(input.target.messageThreadRequestId?{messageThreadRequestId:input.target.messageThreadRequestId}:{})}})
               .then(receipt=>{
                 if(receipt.status==='queued_offline')db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.statusDetail',json(?)),updated_at=CURRENT_TIMESTAMP WHERE id=?")
                     .run(JSON.stringify({code:'PEER_ASLEEP',message:`Queued until ${peer} wakes; the agent gets it the moment the Mac is back.`,clearsAt:null,automaticRetry:true}),input.inputId);
@@ -1280,8 +1281,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
-        const firstInput={text:forwardedReplyFraming(id,input.text,origin,input.target.topicId,input.inputId),...(attachments.length?{attachments}:{})};
-        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId},promptAnswer:true,...(attachments.length?{attachments}:{})});
+        const firstInput={text:forwardedReplyFraming(id,input.text,origin,input.target.topicId,input.inputId,input.target.messageThreadRootId,input.target.messageThreadRequestId),...(attachments.length?{attachments}:{})};
+        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'work',thread:input.target.root,forwardedReply:{inboxInputId:input.inputId,topicId:input.target.topicId,
+          ...(input.target.messageThreadRootId?{messageThreadRootId:input.target.messageThreadRootId}:{}),...(input.target.messageThreadRequestId?{messageThreadRequestId:input.target.messageThreadRequestId}:{})},promptAnswer:true,...(attachments.length?{attachments}:{})});
         db.transaction(()=>{
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -1331,7 +1333,8 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root,
             inboxInputId:forwarded?.inboxInputId??root,respondingSessionId:`concierge:${request.target_session_id}`,respondingTitle:title,
             text:`You stopped ${title?`“${title}”`:'this agent'} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
-            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas'});
+            attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
+            messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
         if(forwarded?.inboxInputId)db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
             .run(JSON.stringify({state:'canceled',forwardedTo:{sessionId:`concierge:${request.target_session_id}`,requestId:request.request_id},stoppedBy:'tejas'}),forwarded.inboxInputId);
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
@@ -1339,6 +1342,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
     }
     private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
         const responder=getSessionById(request.target_session_id);
+        const forwarded=JSON.parse(request.payload_json).forwardedReply;
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
             respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),
@@ -1347,7 +1351,9 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
             answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
             answerGroup:declared.answerGroup??null,
             hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
-            informational:JSON.parse(request.payload_json).requestedEffect==='informational'});
+            informational:JSON.parse(request.payload_json).requestedEffect==='informational',
+            messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
+            alsoMainThread:declared.alsoMainThread===true});
     }
     reply(input: {
         source: CommunicationSource;
@@ -1378,6 +1384,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
         /** Why Tejas need not read this completed answer: it is posted in his thread but filed for nobody. */
         quiet_because?:string;
         notify?:boolean;
+        also_main_thread?:boolean;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -1431,7 +1438,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 closingLine:input.final&&input.workDisposition?(input.workDisposition==='completed'
                     ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
                     :input.workDisposition==='failed'?'Failed':'Needs your decision'):undefined,
-                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{})});
+                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1451,6 +1458,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
                     || payload.answerGroup !== input.answer_group
                     || payload.notify !== (input.notify||undefined)
+                    || payload.alsoMainThread !== (input.also_main_thread||undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || !attachments
                     || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
@@ -1474,7 +1482,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 throw new Error('--notify requires a reply that posts into an Inbox thread.');
         }
         const requestedEffect = requestPayload.requestedEffect;
+        if(input.also_main_thread&&!requestPayload.forwardedReply?.messageThreadRootId)
+            throw new Error('--also-main-thread belongs to a reply inside one agent message thread.');
         const bodylessFinal=input.final&&!input.reply_body?.trim()&&!attached;
+        if(input.also_main_thread&&bodylessFinal)
+            throw new Error('--also-main-thread needs new answer words or a file to copy into the main thread.');
         if(input.notify&&(!input.text.trim()||bodylessFinal))throw new Error('--notify requires a new reply message with words.');
         if(bodylessFinal&&(!requestPayload.promptAnswer||!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id)))
             throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
@@ -1511,6 +1523,7 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 :input.workDisposition==='failed'?'Failed':'Needs your decision'}:{}),
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.notify?{notify:true}:{}),
+            ...(input.also_main_thread?{alsoMainThread:true}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
