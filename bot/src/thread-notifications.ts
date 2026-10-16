@@ -33,7 +33,8 @@ function agentMessage(sessionId:number,root:string,messageId:string):{text:strin
 
 export function messageAlreadyNotified(sessionId:number,messageId:string):boolean {
   return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='needs_you'
-    AND json_extract(payload_json,'$.postId')=? AND json_extract(payload_json,'$.requestedNotification')=1 LIMIT 1`)
+    AND json_extract(payload_json,'$.postId')=?
+    AND (json_extract(payload_json,'$.requestedNotification')=1 OR json_extract(payload_json,'$.blockingNotification')=1) LIMIT 1`)
     .get(sessionId,messageId);
 }
 

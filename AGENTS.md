@@ -45,6 +45,8 @@ Explicit phone requests arm one notification on the Inbox topic, consumed by the
 agent answer. An agent may explicitly notify one posted message. Old session promises
 and their watchers are inert;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+Blocking questions to Tejas notify by default through that same path; see the
+[requested phone delivery](docs/contracts/requested-phone-notifications.md) contract.
 Mac agent actions that can surface a permission prompt, background item, browser debugger,
 screen capture or install publish one retained activity event per action kind and turn;
 see [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
