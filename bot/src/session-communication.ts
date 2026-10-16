@@ -1097,6 +1097,14 @@ export class SessionCommunicationCoordinator {
             if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         }
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
+        // ChatGPT runs in the server's signed-in Chrome; a machine without that connection (the
+        // Mac) starts the chat there, and the answer returns here like any peer reply. Every Mac
+        // ChatGPT ask failed at once with "chatgpt start unavailable" until 2026-10-15.
+        if(input.provider==='chatgpt'&&input.peer===undefined&&!this.dependencies.owner.runtime.available('chatgpt')) {
+            const host=this.dependencies.peers?.chatGptHost();
+            if(!host)throw new Error('ChatGPT is not connected on this machine and no peer runs it.');
+            input={...input,peer:host};
+        }
         if(input.peer!==undefined) {
             if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
             if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');

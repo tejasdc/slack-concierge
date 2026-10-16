@@ -276,6 +276,13 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+ChatGPT runs only where thnkr.ing's signed-in Chrome is: the server, the one instance with
+`CONCIERGE_SESSION_CAPABILITY_SOCKET`. A `sessions ask --provider chatgpt` on the Mac therefore
+becomes a peer ask to the server (`chatGptHost` in `session-peers.ts`); the chat is created there and
+its answer returns to the Mac agent like any peer reply, queued if the server is briefly unreachable.
+Before 2026-10-15 the Mac created the chat locally and every one failed at once with "chatgpt start
+unavailable".
+
 ### Opening a link on his Mac without a session
 
 `router-actions.sh sessions open <link> <source-flags> --action-id A` (optionally
