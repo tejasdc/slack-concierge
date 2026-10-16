@@ -647,6 +647,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
+        if (event.type === 'mac_surface_activity' && input.presentation === 'native' && process.platform === 'darwin') {
+          try {
+            recordSessionEvent({eventId:`mac-surface:${input.turnId}:${event.activity.key}`,sessionId:input.session.id,
+              inputId:input.inputId,turnId:input.turnId,kind:'mac_surface_activity',
+              payload:{action:event.activity.action,key:event.activity.key}});
+          } catch (error) {log('warn','mac_surface_activity_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
         if(event.type==='tool_started')input.cancellationController?.toolStarted(event.itemId??event.toolName??'tool');
         if(event.type==='tool_finished')input.cancellationController?.toolFinished(event.itemId??event.toolName??'tool');
         if(event.type==='started'&&runningClaudeAccount&&!accountRecorded){
