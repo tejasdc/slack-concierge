@@ -1,0 +1,1 @@
+Mac agents now send a phone notice naming their session and action when they start an install, background item, browser debugging, screen capture or app control. TL;DR: You can see which agent is doing visible work on your Mac and open its session to Stop it. Notifications are automatic, without asking you to approve each action.
