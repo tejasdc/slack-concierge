@@ -922,6 +922,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `board cards --design … --inbox-session … --inbox-message … --json-file F`, and read with
   `board read --address lab:<design>` (the record's review: sections, states, his posts, replies, what is owed); see
   [router actions](docs/runbooks/ROUTER-ACTIONS.md) and agent-ecology docs/plans/2026-10-13-codiak-participation-interfaces.md.
+  Blind committee threads pass their group key through `board thread --blind`; thnkr.ing enforces the read boundary.
   The server launcher uses the current board command contract for running sessions, so a newly
   installed reply option is available to experts whose session predates the update.
 - **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session

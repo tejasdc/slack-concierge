@@ -13,10 +13,12 @@ import {peerSessionView} from './session-topics';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {log} from './log';
 
-export class BoardError extends Error {}
+export class BoardError extends Error {
+  constructor(message:string,readonly status=400) {super(message);}
+}
 export type BoardVerb='read'|'thread'|'post'|'claim'|'reveal'|'close'|'product'|'cite'|'link'|'verdict'|'cards'|'status'|'sweep';
 export type BoardInput={
-  verb:BoardVerb; board?:string; thread?:string; reply_to?:string; action_id?:string; kind?:string; title?:string; text?:string;
+  verb:BoardVerb; board?:string; thread?:string; reply_to?:string; action_id?:string; kind?:string; title?:string; blind?:string; text?:string;
   members?:string[]; decider?:string; mentions?:string[]; sealed?:boolean; end?:string; outcome?:string; all?:boolean;
   /** product: finding|decision|skill|design; from: "<address> :: <reason>" each; supersedes: "<address> :: <reason>". */
   product?:string; from?:string[]; supersedes?:string;
@@ -75,7 +77,7 @@ async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknow
     const sections=Array.isArray(answer.sections)&&answer.sections.length
       ? ` Sections: ${answer.sections.map((section:{title?:string;address?:string;why?:string})=>`${section.title??section.address} (${section.address}): ${section.why}`).join('; ')}.`
       : '';
-    throw new BoardError(`${answer.error??answer.code??response.status}: ${answer.reason??answer.message??`the lab record refused this (HTTP ${response.status} from ${method} /api/lab${path})`}${sections}`);
+    throw new BoardError(`${answer.error??answer.code??response.status}: ${answer.reason??answer.message??`the lab record refused this (HTTP ${response.status} from ${method} /api/lab${path})`}${sections}`,response.status);
   }
   return answer;
 }
@@ -169,7 +171,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   let written:{id:string;address:string;duplicate:boolean;notify:Notice[]};
   if(input.verb==='thread') {
     if(!text.trim())throw new BoardError('Open a thread with its first words after --.');
-    written=await lab('POST','/threads',actor,{actionId,kind:input.kind,title:input.title,text,...(input.board?{board:input.board}:{}),
+    written=await lab('POST','/threads',actor,{actionId,kind:input.kind,title:input.title,text,...(input.board?{board:input.board}:{}),...(input.blind?{blind:input.blind}:{}),
       ...(input.members?.length?{members:input.members.map(identityOf)}:{}),...(input.decider?{decider:identityOf(input.decider)}:{}),...(mentions?.length?{mentions}:{})});
   } else if(input.verb==='product') {
     if(!input.from?.length)throw new BoardError('A finding, decision, skill or design names where it came from: --from "<lab address> :: <reason>" (a design links to the open Lab thread whose sessions answer him).');

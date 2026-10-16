@@ -12,6 +12,7 @@ import {log,logSinkCounters} from './log';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
 import {isTransientDatabaseError} from './database-retry';
+import {BoardError} from './commons-board-service';
 import {getAcceptedSessionInput} from './session-inputs';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
@@ -31,7 +32,8 @@ function requestFailure(request:Request,error:unknown):Response {
     const stack=error instanceof Error?error.stack?.split('\n').filter(line=>/^\s+at /.test(line)).slice(0,5).map(line=>line.trim().slice(0,300)):undefined;
     log('error','native_command_database_failed',{operation,code:/^SQLITE_[A-Z_]+$/.test(code)?code:'SQLITE_BUSY',transient,stack});
   }
-  return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:transient?503:400});
+  const boardStatus=error instanceof BoardError&&error.status>=400&&error.status<500?error.status:400;
+  return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:transient?503:boardStatus});
 }
 
 /** Routes shared by the root-only owner socket and the authenticated peer listener. */

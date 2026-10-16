@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRouterSessionsArgs } from "../scripts/router-sessions";
+import { BoardError } from "../src/commons-board-service";
+import { requestApiHandler } from "../src/routed-request-api";
+import type { SessionCommunicationCoordinator } from "../src/session-communication";
 
 const source = { channel_id: "C123ABC", message_ts: "1756000002.000003" };
 const sourceFlags = ["--source-channel", source.channel_id, "--source-ts", source.message_ts];
@@ -324,4 +327,29 @@ test("existing work client keeps its success and error behavior after transport 
 test('board reply preserves the exact entry address', () => {
   expect(parseRouterSessionsArgs(['board','post','--thread','discussion','--reply-to','lab:discussion/3',...nativeSourceFlags,'--action-id','reply-three','--','My reply'])).toEqual({operation:'board',body:{verb:'post',thread:'discussion',reply_to:'lab:discussion/3',source:nativeSource,action_id:'reply-three',text:'My reply'}});
   expect(() => parseRouterSessionsArgs(['board','read','--reply-to','lab:discussion/3',...nativeSourceFlags])).toThrow('only for board post');
+});
+
+test('board thread passes an optional blind key only on thread creation', () => {
+  const args=['board','thread','lab','--kind','proposal','--title','Twin committee','--member','concierge:11',
+    ...nativeSourceFlags,'--action-id','twin-one','--','Opening words'];
+  const ordinary=parseRouterSessionsArgs(args);
+  expect(ordinary).toEqual({operation:'board',body:{verb:'thread',board:'lab',kind:'proposal',title:'Twin committee',
+    members:['concierge:11'],source:nativeSource,action_id:'twin-one',text:'Opening words'}});
+  const withBlind=parseRouterSessionsArgs([...args.slice(0,5),'--blind','twin-group',...args.slice(5)]);
+  expect(withBlind).toEqual({operation:'board',body:{...ordinary.body,blind:'twin-group'}});
+  expect(()=>parseRouterSessionsArgs(['board','read','--blind','twin-group',...nativeSourceFlags]))
+    .toThrow('--blind is only for board thread');
+});
+
+test('a Lab blind read refusal keeps its status and reaches the command without retry', async () => {
+  const handler=requestApiHandler(null,null,{board:async()=>{throw new BoardError('LAB_BLIND_PRIVATE: This discussion is private until the group closes.',403);}} as unknown as SessionCommunicationCoordinator);
+  const refusal=await handler(new Request('http://localhost/session-communication/board',
+    {method:'POST',body:JSON.stringify({verb:'read'})}));
+  expect(refusal.status).toBe(403);
+  expect(await refusal.json()).toEqual({error:'LAB_BLIND_PRIVATE: This discussion is private until the group closes.'});
+  const fixture=socketFixture(()=>Response.json({error:'LAB_BLIND_PRIVATE: This discussion is private until the group closes.'},{status:403}));
+  const result=await fixture.run(['board','read','--thread','other-arm',...nativeSourceFlags]);
+  expect(result.exitCode).toBe(1);
+  expect(JSON.parse(result.stderr)).toEqual({error:'LAB_BLIND_PRIVATE: This discussion is private until the group closes.'});
+  expect(fixture.calls).toHaveLength(1);
 });
