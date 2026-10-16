@@ -11,7 +11,7 @@ export type NativeReadRoute=Readonly<{
 }>;
 
 const liveOwner=new Set([
-  '/status','/pause-all','/projects/:id/status','/peers','/peers/operations/:id',
+  '/status','/pause-all','/focus-hold','/projects/:id/status','/peers','/peers/operations/:id',
   '/peers/requests/:id','/peers/requests/:id/replies/:id','/requests/:id','/sources/refresh',
 ]);
 const provider=new Set(['/sessions/:id/history','/sessions/:id/history/messages/:id/detail',

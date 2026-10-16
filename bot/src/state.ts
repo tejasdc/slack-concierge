@@ -73,6 +73,20 @@ CREATE TABLE IF NOT EXISTS global_pause_exceptions (
   session_id INTEGER NOT NULL,
   PRIMARY KEY(generation,machine,session_id)
 )`);
+if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS focus_hold (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  until_ms INTEGER,
+  label TEXT,
+  since_ms INTEGER,
+  action_id TEXT
+);
+INSERT OR IGNORE INTO focus_hold(singleton) VALUES(1);
+CREATE TABLE IF NOT EXISTS focus_hold_actions (
+  action_id TEXT PRIMARY KEY,
+  held INTEGER NOT NULL CHECK(held IN (0,1)),
+  until_ms INTEGER,
+  label TEXT
+)`);
 
 const localPauseMachine=process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud';
 
@@ -85,6 +99,12 @@ export function globalPauseHoldsSession(sessionId:number):boolean {
   const pause=globalPauseState();
   return pause.paused&&!db.query('SELECT 1 FROM global_pause_exceptions WHERE generation=? AND machine=? AND session_id=?')
     .get(pause.generation,localPauseMachine,sessionId);
+}
+export function focusHoldState(nowMs=Date.now()):{held:boolean;untilMs:number|null;label:string|null;since:number|null} {
+  const row=db.query('SELECT until_ms,label,since_ms FROM focus_hold WHERE singleton=1').get() as
+    {until_ms:number|null;label:string|null;since_ms:number|null};
+  const held=row.until_ms!==null&&nowMs<row.until_ms;
+  return {held,untilMs:held?row.until_ms:null,label:held?row.label:null,since:held?row.since_ms:null};
 }
 
 const executionChangeListeners = new Set<() => void>();
@@ -5039,7 +5059,10 @@ export function acquireSessionTurn(
     const pauseHolds=db.query(`SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
       AND COALESCE((SELECT json_extract(native_metadata_json,'$.inboxRole') FROM sessions WHERE id=?),'')<>'project-router'
       AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine=? AND allowed.session_id=?)`).get(sessionId,localPauseMachine,sessionId);
-    if (metadata.deferProvider || hasUnsettledTurnDependencies(id) || pauseHolds || db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
+    const focusHolds=db.query(`SELECT 1 FROM focus_hold hold JOIN sessions session ON session.id=?
+      WHERE hold.singleton=1 AND hold.until_ms>? AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router'`)
+      .get(sessionId,Date.now());
+    if (metadata.deferProvider || hasUnsettledTurnDependencies(id) || pauseHolds || focusHolds || db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
       requestTurnWaitingReaction(id, true);
       if ((metadata.projectionMode || "legacy") === "legacy") {
         db.query(`
@@ -5061,6 +5084,8 @@ export function acquireSessionTurn(
         AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
           AND COALESCE(json_extract(sessions.native_metadata_json,'$.inboxRole'),'')<>'project-router'
           AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=sessions.id))
+        AND NOT EXISTS (SELECT 1 FROM focus_hold hold WHERE hold.singleton=1 AND hold.until_ms>?
+          AND json_extract(sessions.native_metadata_json,'$.inboxRole')='project-router')
         AND NOT EXISTS (
           SELECT 1 FROM turns live
           WHERE live.session_id=sessions.id AND live.id<>?
@@ -5077,7 +5102,7 @@ export function acquireSessionTurn(
           WHERE artifact_turn.session_id=sessions.id
             AND artifact.status IN ('pending', 'sending')
         )
-    `).run(sessionId, id, id);
+    `).run(sessionId, Date.now(), id, id);
     if (lock.changes === 0) {
       requestTurnWaitingReaction(id, true);
       if ((metadata.projectionMode || "legacy") === "legacy") {
@@ -5125,8 +5150,10 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
     SELECT dispatch_next_attempt_ms AS at FROM turns WHERE status='queued' AND dispatch_next_attempt_ms>?
     UNION ALL
     SELECT saved_expires_at_ms AS at FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_expires_at_ms>?
+    UNION ALL
+    SELECT until_ms AS at FROM focus_hold WHERE singleton=1 AND until_ms>?
   )`)
-    .get(nowMs,nowMs) as { at: number | null };
+    .get(nowMs,nowMs,nowMs) as { at: number | null };
   return row.at ?? null;
 }
 
@@ -5197,6 +5224,8 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
     AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=session.id))
+  AND NOT EXISTS (SELECT 1 FROM focus_hold hold WHERE hold.singleton=1 AND hold.until_ms>?
+    AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router')
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
     AND json_extract(coalesce(input.receipt_json,'{}'),'$.state')='canceled')
   AND NOT EXISTS (SELECT 1 FROM session_communication_requests request
@@ -5248,7 +5277,7 @@ let codexAdmissionHeld=false;
 export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
-  return [nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
+  return [nowMs,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
     survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
 }
 

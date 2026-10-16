@@ -14,6 +14,7 @@ export type StatusContext={
   continuationRefusal:(turnId:number)=>string|null;
   session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean};
   deploymentHold:(providerId:string,inputKind:string)=>boolean;
+  focusHold:(sessionId:number)=>number|null;
   olderBlockingTurn:(sessionId:number,turnId:number)=>BlockingTurnFact;
   dependencyPending:(turnId:number)=>boolean;
   now:()=>number;
@@ -96,6 +97,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',message:'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='chosen_time')return turn.dispatch_next_attempt_ms?{code:'CHOSEN_TIME_HELD',message:`The agent picks this work up again at ${context.formatTime(turn.dispatch_next_attempt_ms)}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true}:null;
+  const focusUntil=context.focusHold(input.session_id);
+  if(focusUntil!==null)return {code:'FOCUS_HOLD',message:'Waiting for your focus session to end',clearsAt:new Date(focusUntil).toISOString(),automaticRetry:true};
   const session=context.session(input.session_id);
   if(context.deploymentHold(session.providerId,input.kind))return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   if(session.status==='archived'||session.suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};

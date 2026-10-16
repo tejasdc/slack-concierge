@@ -200,6 +200,12 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
       const survivable=survivableRunKinds(source);
       return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
     },
+    focusHold:(sessionId)=>{
+      const row=source.query(`SELECT hold.until_ms FROM focus_hold hold JOIN sessions session ON session.id=?
+        WHERE hold.singleton=1 AND hold.until_ms>?
+          AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router'`).get(sessionId,nowMs) as {until_ms:number}|null;
+      return row?.until_ms??null;
+    },
     olderBlockingTurn:(sessionId,turnId)=>source.query(`SELECT older.status,older.dispatch_failure_class,older.dispatch_next_attempt_ms,older.dispatch_hold,
       json_extract(blocked.payload_json,'$.continuation.reason.refusal') AS continuation_refusal
       FROM turns older LEFT JOIN session_inputs blocked ON blocked.id=older.accepted_input_id WHERE older.session_id=? AND older.id<? AND
