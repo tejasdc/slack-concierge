@@ -94,6 +94,12 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
   const hadAnswerClosures=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
     .some(column=>column.name==='answer_closures_version');
   if(!hadAnswerClosures)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN answer_closures_version INTEGER NOT NULL DEFAULT 0');
+  const hadMarkedReplyRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='marked_reply_roots_version');
+  if(!hadMarkedReplyRoots){
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN marked_reply_roots_version INTEGER NOT NULL DEFAULT 0');
+    prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
+  }
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
@@ -420,7 +426,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1,marked_reply_roots_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);

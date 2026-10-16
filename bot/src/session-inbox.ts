@@ -6,6 +6,7 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
+import {retainedReplyTarget} from './inbox-reply-lineage';
 
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue'|'outside-agent';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -230,7 +231,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   // answered open in Needs attention (2026-09-21).
   // His own reply in a thread belongs to the thread it replies in.
   const own=getAcceptedSessionInput(row.input_id);
-  const replyTo=own?.origin==='human'?JSON.parse(own.payload_json).replyToMessage:null;
+  const replyTo=retainedReplyTarget(own);
   if(typeof replyTo?.messageId==='string'&&replyTo.messageId!==row.input_id)
     return inboxThreadRoot(sessionId,replyTo.messageId,seen)??row.input_id;
   const sent=returnedRequestSource(sessionId,row.input_id);
