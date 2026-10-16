@@ -238,9 +238,12 @@ export function prepareHumanCommand(actionId:string,claimId:string,prepared:unkn
   }).immediate();
 }
 
-export function retryHumanCommand(actionId:string,claimId:string,nextAttemptMs:number):boolean {
-  return captureDb.query("UPDATE human_commands SET status='pending',claim_id=NULL,next_attempt_ms=?,updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='delivering' AND claim_id=?")
-    .run(nextAttemptMs,actionId,claimId).changes===1;
+export function retryHumanCommand(actionId:string,claimId:string,nextAttemptMs:number,restartWindow=false):boolean {
+  return captureDb.query(`UPDATE human_commands SET status='pending',claim_id=NULL,claim_owner_json=NULL,claim_worker_id=NULL,
+    next_attempt_ms=?,attempts=CASE WHEN ? THEN 0 ELSE attempts END,
+    retry_window_started_ms=CASE WHEN ? THEN ? ELSE retry_window_started_ms END,
+    updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='delivering' AND claim_id=?`)
+    .run(nextAttemptMs,restartWindow?1:0,restartWindow?1:0,Date.now(),actionId,claimId).changes===1;
 }
 
 /** Stop automatic attempts without claiming the owner refused or accepted the effect.

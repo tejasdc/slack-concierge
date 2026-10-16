@@ -4148,11 +4148,11 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             payload:{actionId:command.actionId,sessionId:command.sessionId,inputId:command.body.inputId??null}});
           fileServiceNotices();
         },
-        stopped:(command,reason,stage)=>{
+        retryBudgetReached:(command,reason,stage)=>{
           recordRepairNotice(db,{key:`human-command:${command.actionId}`,kind:'retry_stopped',
             text:stage==='preparation'
-              ?`A retained human command could not be prepared; no owner delivery was attempted. Action ${command.actionId}; stream ${command.sessionId}; ${reason} The preparation path needs repair. Other sessions continue.`
-              :`A retained human command stopped retrying without a confirmed owner answer. Action ${command.actionId}; stream ${command.sessionId}; ${reason} Check its exact owner effect before resuming it. Other sessions continue.`});
+              ?`A retained human command has not reached preparation after its first retry window. Action ${command.actionId}; stream ${command.sessionId}; ${reason} Automatic delivery continues; investigate the gateway while other sessions continue.`
+              :`A retained human command has no confirmed owner answer after its first retry window. Action ${command.actionId}; stream ${command.sessionId}; ${reason} Automatic delivery continues with the same action identity; investigate the owner while other sessions continue.`});
         },
         queueStopped:reason=>{
           recordRepairNotice(db,{key:`human-command-queue:${Date.now()}`,kind:'retry_stopped',text:reason});

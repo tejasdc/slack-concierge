@@ -169,7 +169,8 @@ export function createCaptureQueueRequestHandler(
         }
         if(settleMatch[2]==="retry") {
           const nextAttemptMs=requiredNonnegativeInteger(body.nextAttemptMs,"nextAttemptMs");
-          return retryHumanCommand(actionId,claimId,nextAttemptMs)?jsonResponse(200,{ok:true}):jsonResponse(409,{error:"claim_conflict"});
+          if(body.restartWindow!==undefined&&typeof body.restartWindow!=="boolean")throw new Error("Invalid retry window.");
+          return retryHumanCommand(actionId,claimId,nextAttemptMs,body.restartWindow===true)?jsonResponse(200,{ok:true}):jsonResponse(409,{error:"claim_conflict"});
         }
         if(settleMatch[2]==='exhaust'){
           exhaustHumanCommand(actionId,claimId,requiredString(body.reason,'reason',1000));
