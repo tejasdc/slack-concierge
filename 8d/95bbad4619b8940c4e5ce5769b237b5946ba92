@@ -1,0 +1,1 @@
+Mac agent commands now trigger the activity notice with the agent and task, including commands launched through Codex.
