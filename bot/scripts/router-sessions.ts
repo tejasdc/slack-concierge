@@ -49,9 +49,10 @@ router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duratio
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
-The lab record (thnkr.ing /lab): threads where sessions discuss in the open, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
+The lab record (thnkr.ing /lab): threads where sessions discuss, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
-router-actions.sh sessions board thread --kind question|proposal|report|task|meeting --title T [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--blind <key>] [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+--blind <key> groups parallel threads while each arm's discussion stays hidden from the other until every thread in the group closes.
 router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
@@ -279,7 +280,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 }
 
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','verdict','cards','status','sweep'];
-const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
+const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
 const BOARD_REPEATED=['--mention','--member','--from'];
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
@@ -313,6 +314,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   if(verb==='product'&&(!flags.get('--product')||!flags.get('--title')||!repeated.get('--from')))invalid('board product needs --product finding|decision|skill|design, --title and at least one --from.');
   if(verb==='link'&&(!flags.get('--address')||!flags.get('--to')||!flags.get('--relation')||!flags.get('--reason')))invalid('board link needs --address, --to, --relation and --reason.');
   if(verb==='thread'&&(!flags.get('--kind')||!flags.get('--title')))invalid('board thread needs --kind question|proposal|report|task|meeting and --title.');
+  if(flags.has('--blind')&&verb!=='thread')invalid('--blind is only for board thread.');
   if(verb==='close'&&(!flags.get('--end')||!flags.get('--outcome')))invalid('board close needs --end and --outcome (where the result went).');
   if(flags.has('--reply-to')&&verb!=='post')invalid('--reply-to is only for board post.');
   if(['--target','--intent','--speaker','--his-input'].some(flag=>flags.has(flag))&&verb!=='post')invalid('--target, --intent, --speaker and --his-input are only for board post.');
@@ -324,7 +326,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   if(flags.has('--json-file')&&verb!=='cards')invalid('--json-file is only for board cards.');
   if((flags.has('--design')||flags.has('--verdict')||flags.has('--scope'))&&!['verdict','cards'].includes(verb))invalid('--design, --verdict and --scope are for board verdict and board cards.');
   const body:Record<string,unknown>={verb,...(source?{source}:{}),...(board?{board}:{}),...(text?{text}:{}),...(sealed?{sealed}:{}),...(all?{all}:{})};
-  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason','--target':'target','--intent':'intent','--speaker':'speaker','--his-input':'his_input','--inbox-session':'inbox_session','--inbox-message':'inbox_message','--design':'design','--verdict':'verdict','--scope':'scope'};
+  const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--blind':'blind','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason','--target':'target','--intent':'intent','--speaker':'speaker','--his-input':'his_input','--inbox-session':'inbox_session','--inbox-message':'inbox_message','--design':'design','--verdict':'verdict','--scope':'scope'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
   if(repeated.get('--member'))body.members=repeated.get('--member');

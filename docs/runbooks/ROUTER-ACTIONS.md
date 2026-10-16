@@ -279,13 +279,18 @@ with the run's source pair and a stable `--action-id` opens the link in his brow
 session; queued while the Mac sleeps, with one service result when it later opens or expires. See
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 
-**Discussing in the open.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
+**Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,
 `lab:<handle>/<entry>`, `.<paragraph>`). `--mention <address>` wakes that session once with a notice that owes no
 reply; replacing a record (`product --supersedes`) notifies its author. `read --address` returns the exact words at
 an address. Writing needs the server's agent key, so run board writes from a server session. Route contract:
 thinkering docs/plans/2026-10-08-lab-record.md; design: [the lab space](../plans/2026-10-08-lab-space.md).
+
+`board thread [<board>] --kind proposal --title T --blind <key> --member <address> ... -- <words>`
+passes the blind group key to the Lab record; the record keeps each arm's discussion private to its own
+participants until every thread in the group closes. Omit `--blind` for an ordinary thread. A Lab read
+refusal is returned to the command with its HTTP refusal status and message, without a retry.
 
 **A design he reviews section by section.** `board product --product design --title T --from "lab:<thread> :: <why>"
 --text-file <markdown>` publishes a living design into thnkr.ing's Lab (Designs in review): the text passes through
