@@ -427,6 +427,11 @@ export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
     if (!input) throw new Error('Unknown accepted input.');
+    if (input.steering_id!==null) return input;
+    // A failed, unsent steering attempt can be detached for queue recovery, but
+    // its row remains the permanent record for this accepted identity.
+    if(db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=?').get(input.id))
+      return input;
     if (input.turn_id!==null) {
       // An explicit Inbox "work together" action can move a never-received
       // queued capture into this run without replacing its accepted identity.
@@ -486,6 +491,7 @@ export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string
         AND turn.owner_instance_id IS NULL AND turn.provider_started_at IS NULL
         AND turn.provider_admission_intended_at IS NULL AND turn.provider_turn_id IS NULL
         AND turn.provider_input_acknowledged_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages prior WHERE prior.accepted_input_id=input.id)
         AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id)
         AND input.rowid<(SELECT rowid FROM session_inputs WHERE id=?)
       ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
@@ -528,7 +534,22 @@ export function withdrawUnstartedServiceInput(inputId:string,reason:string):bool
 export function recoverUnsentSteeredInput(inputId:string) {
   return db.transaction(()=>{
     const input=getAcceptedSessionInput(inputId);
-    if(!input||input.steering_id===null)return input;
+    if(!input)return input;
+    const prior=db.query(`SELECT id,turn_id,status,provider_sent_at FROM turn_steering_messages
+      WHERE accepted_input_id=?`).get(input.id) as {id:number;turn_id:number;status:string;provider_sent_at:string|null}|null;
+    if(input.steering_id===null){
+      // A previous recovery may have detached the failed attempt before it could
+      // put the same accepted input in the queue. Finish that durable next step.
+      if(prior?.status==='failed'&&!prior.provider_sent_at&&input.turn_id===null
+        &&!(input.receipt_json&&JSON.parse(input.receipt_json).state)
+        &&!(input.origin==='service'&&JSON.parse(input.payload_json).delivery==='steer'))return enqueueSessionInput(input.id);
+      if(prior&&!(prior.status==='failed'&&!prior.provider_sent_at)&&input.turn_id===null){
+        db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL')
+          .run(prior.turn_id,prior.id,input.id);
+        return getAcceptedSessionInput(input.id)!;
+      }
+      return input;
+    }
     // A settled receipt is immutable history, and an input the queue would
     // refuse must stay attached to its evidence rather than become orphaned.
     if(input.receipt_json&&JSON.parse(input.receipt_json).state)return input;
@@ -541,8 +562,8 @@ export function recoverUnsentSteeredInput(inputId:string) {
     const session=getSessionById(input.session_id);
     if(!session||session.status==='archived'||sessionMetadata(session).suspended)return input;
     db.query('UPDATE session_inputs SET turn_id=NULL,steering_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id=?').run(input.id,input.steering_id);
-    // The failed steering row remains evidence; this placement has its own
-    // observation identity while the accepted input keeps its event identity.
+    // Queue in the same transaction as detaching. Dispatch must not see the
+    // unattached input and attempt another steering insert with this identity.
     return enqueueSessionInput(input.id);
   })();
 }
