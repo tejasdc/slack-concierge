@@ -11,6 +11,7 @@ import { WriteOutcomeUnknownError } from "./execution-host-client";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
+import { macSurfaceActivity } from "./mac-surface-activity";
 import { claudeUsageFallbackModels } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
@@ -1069,6 +1070,10 @@ export async function runClaudeCodeTurn(input: {
       for (const block of event.message.content) {
         if (block?.type !== "tool_use") continue;
         const toolName = String(block.name || "tool");
+        if (process.platform === 'darwin' && typeof block.id === 'string') {
+          const activity = macSurfaceActivity(toolName, block.input);
+          if (activity) input.onProgress?.({type:'mac_surface_activity',itemId:block.id,activity});
+        }
         input.onProgress?.({type:'tool_started',toolName,
           ...(typeof block.id==='string'?{itemId:block.id}:{})});
         const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
