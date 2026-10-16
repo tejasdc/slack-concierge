@@ -112,6 +112,8 @@ const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;
 function price(provider:string,model:string|null){return pricing[model??'']??(provider==='claude-code'?pricing['claude-opus-5-5']!:pricing['gpt-6.1-sol']!);}
 type RecordRow={path:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;input:number;cache_write:number;cache_write_1h:number;cache_read:number;output:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
+type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
+  provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 const codexLabels=new Map<string,string>();
 for(const accountHome of [join(home,'.codex'),...existsSync(join(home,'.codex-accounts'))
   ?readdirSync(join(home,'.codex-accounts'),{withFileTypes:true}).filter(x=>x.isDirectory()).map(x=>join(home,'.codex-accounts',x.name)):[]]){
@@ -146,6 +148,14 @@ function report(period:'today'|'week',since:number,zone:string){
   const accounts=new Map<number,{at:number;name:string}[]>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);}
   const groups=new Map<string,any>();
+  const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
+    provider_started_at,provider_duration_ms,ended_at FROM turns
+    WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
+      AND saved_fire_at_ms>=? ORDER BY saved_fire_at_ms,id`).all(since) as ScheduledFiring[])
+    .map(t=>({...t,providerStartMs:t.provider_started_at?Date.parse(`${t.provider_started_at}Z`):null,
+      endedMs:t.ended_at?Date.parse(`${t.ended_at}Z`):null,raw:empty(),weighted:0,usageRecords:0}));
+  const scheduledBySession=new Map<number,typeof scheduled>();
+  for(const firing of scheduled){const list=scheduledBySession.get(firing.session_id)??[];list.push(firing);scheduledBySession.set(firing.session_id,list);}
   const fallbackModels=new Set<string>();
   const rows=cache.query('SELECT path,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output FROM records WHERE at_ms>=?').all(since) as RecordRow[];
   for(const r of rows){
@@ -159,6 +169,13 @@ function report(period:'today'|'week',since:number,zone:string){
     const weights=price(r.provider,r.model);
     if(!pricing[r.model??'']&&r.input+r.cache_write+r.cache_write_1h+r.cache_read+r.output>0)fallbackModels.add(r.model??'unreported');
     const weighted=(r.input*weights.input+r.cache_write*weights.cacheWrite+r.cache_write_1h*weights.cacheWrite1h+r.cache_read*weights.cacheRead+r.output*weights.output)/1e6;
+    if(s){
+      const firing=scheduledBySession.get(s.id)?.find(t=>t.providerStartMs!==null&&t.endedMs!==null
+        &&r.at_ms>=t.providerStartMs&&r.at_ms<=t.endedMs);
+      if(firing){firing.weighted+=weighted;firing.usageRecords++;
+        firing.raw.input+=r.input;firing.raw.cacheWrite+=r.cache_write;firing.raw.cacheWrite1h+=r.cache_write_1h;
+        firing.raw.cacheRead+=r.cache_read;firing.raw.output+=r.output;}
+    }
     const key=`${r.provider}:${account}`;
     let g=groups.get(key);
     if(!g){g={provider:r.provider,account,total:0,raw:empty(),bySession:new Map(),byKind:new Map()};groups.set(key,g);}
@@ -177,6 +194,12 @@ function report(period:'today'|'week',since:number,zone:string){
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
+    scheduledFirings:scheduled.map(t=>({turnId:t.id,sessionId:t.session_id,rootId:t.saved_root_id,
+      sequence:t.saved_sequence,scheduledAt:new Date(t.saved_fire_at_ms).toISOString(),status:t.status,
+      providerStartedAt:t.provider_started_at?`${t.provider_started_at}Z`:null,
+      completedAt:t.ended_at?`${t.ended_at}Z`:null,wallMs:t.provider_duration_ms,
+      cpuMs:null,peakMemoryBytes:null,usageObserved:t.usageRecords>0,
+      apiPriceEquivalentUsd:t.usageRecords?t.weighted:null,rawTokens:t.usageRecords?t.raw:null})),
     weighting:pricing,pricingSources:['https://platform.claude.com/docs/en/about-claude/pricing','https://platform.openai.com/pricing'],
     accounts:[...groups.values()].map(g=>({provider:g.provider,account:g.account,totalWeighted:g.total,raw:g.raw,
       bySession:[...g.bySession.values()].map((x:any)=>({...x,share:g.total?x.weighted/g.total:0})).sort((a:any,b:any)=>b.weighted-a.weighted),
