@@ -1,0 +1,1 @@
+The Concierge release gate now checks dispatch using its normal database writer, avoiding extra disk work before admitting agent jobs.
