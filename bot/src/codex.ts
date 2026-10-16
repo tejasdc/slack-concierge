@@ -89,7 +89,7 @@ export class CodexControlRequestError extends Error {
 }
 
 function toolNameFromItem(item: any): string | null {
-  if (["command_execution", "commandExecution"].includes(item.type)) {
+  if (["command_execution", "commandExecution", "CommandExecution"].includes(item.type)) {
     return String(item.command || "").split(/\s+/)[0] || "cmd";
   }
   if ([
