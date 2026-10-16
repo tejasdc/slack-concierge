@@ -68,7 +68,7 @@ try {
     const filing = unfiled.flatMap(input => [
       `- Unfiled input ${input.input_id} (${input.at}): ${JSON.stringify(input.text)}`,
       `  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`,
-      `  Or create its topic: ${tool} sessions topics create --title '<topic title>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`create-${input.root_id}`)}`,
+      `  Or find its area with ${tool} sessions areas suggest --title '<topic title>' ${identity}, then create its topic: ${tool} sessions topics create --title '<topic title>' --area '<area-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`create-${input.root_id}`)}`,
       `  If it is noise, create its own topic above, then explicitly close the returned topic: ${tool} sessions topics close '<returned-topic-id>' --scope ${quote(input.input_id)} ${identity} --action-id ${quote(`noise-${input.root_id}`)} -- 'Noise: <specific reason no work is needed>'`,
     ]);
     const lines = owed.map(request => `- request ${request.request_id} from ${request.requester}: ${tool} sessions reply ${request.request_id} --source-input '${source.input_id}' --source-run '${source.run_id}' --action-id 'final-${request.request_id.slice(0, 8)}'${request.requested_effect === 'work' ? ' --work-disposition completed|failed|needs_decision' : ''} --summary '<one line saying what your answer is>' -- '<your result>'`);

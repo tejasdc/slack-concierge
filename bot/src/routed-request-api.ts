@@ -60,7 +60,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           ||operation==='pause'&&input.verb==='status'
           ||operation==='get'||operation==='context'||operation==='obligations'
           ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
-          ||operation==='saved'&&input.verb==='list'||operation==='topics'&&['read','list','questions'].includes(input.verb);
+          ||operation==='saved'&&input.verb==='list'||operation==='topics'&&['read','list','questions','area.list','area.suggest'].includes(input.verb);
         if(successor&&operation!=='outcome'&&!readOnly)
           return Response.json({error:`This session is superseded by ${successor}; use ${supersededAddress(sourceInput!.session_id)} for owner writes.`,successor,successorAddress:supersededAddress(sourceInput!.session_id),code:'SESSION_SUPERSEDED'},{status:409});
         if(withdrawn&&operation!=='outcome'&&!readOnly)

@@ -2,6 +2,12 @@
  * The release harness runs these descriptors against retained-cardinality fixtures; adding
  * a route here without a fixture is a build failure, not a performance waiver. */
 export const PRESENTATION_READERS={
+  areaWindow:{route:'GET /sessions/v1/presentation/areas',collection:'areas of interest',
+    growth:'older areas and unrelated Inbox threads',maxRows:20,maxStorageRows:100,maxResponseBytes:65_536,
+    sourceTables:['presentation_areas','presentation_area_threads'],fixture:'areas-window-growth'},
+  areaDetail:{route:'GET /sessions/v1/presentation/areas/:area',collection:'one area and its threads',
+    growth:'threads in one area and unrelated areas',maxRows:20,maxStorageRows:160,maxResponseBytes:131_072,
+    sourceTables:['presentation_areas','presentation_area_threads','presentation_area_neighbors','presentation_topics'],fixture:'areas-detail-growth'},
   inboxQueue:{route:'GET /sessions/v1/presentation/inbox-queue',collection:'waiting Inbox inputs',
     growth:'queued inputs and retained Inbox history',maxRows:50,maxStorageRows:60,maxResponseBytes:65_536,
     sourceTables:['turns','session_inputs'],fixture:'inbox-queue-growth'},

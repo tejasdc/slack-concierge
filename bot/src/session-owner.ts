@@ -22,7 +22,8 @@ import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-c
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
 import {preparedTopics,preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuestions,preparedTopicChanges,
-  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
+  preparedTopicResolution,preparedTopicDetail,preparedTopicsReady,preparedAreas,preparedArea} from './presentation-topic-reader';
+import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
 import {meaningIndex} from './meaning-index';
@@ -3320,6 +3321,9 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='actions'&&parts.length===4)
         result=topicHumanAction(parts[2]!,body);
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='areas'&&parts.length===2)result=createAreaByHuman(body);
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='areas'&&parts[3]==='actions'&&parts.length===4)
+        result=areaHumanAction(parts[2]!,body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='sessions'&&parts[2]==='window'&&parts.length===3){
         const space=sessionSpaceParam(url.searchParams.get('space'));
@@ -3384,6 +3388,12 @@ export class SessionOwner {
         const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
         result=preparedTopicsReady()?preparedTopics(options):directTopicList(options);
       }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===2){
+        const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Area search is too long.');
+        result=preparedAreas(query,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
+      }
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='areas'&&parts.length===3)
+        result=preparedArea(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='incoming'&&parts.length===2)
         result=preparedIncoming({cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20});
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts[2]==='changes'&&parts.length===3){
@@ -3594,7 +3604,7 @@ export class SessionOwner {
       return ownerJson(result,{status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError)return ownerJson({error:{code:error.code,message:error.message}},{status:503});
-      if(error instanceof TopicError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
+      if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
       // A busy ledger is a moment, not a refusal: a 4xx made the Mac drop a finished answer after one try (2026-10-04, 2026-10-08).
       if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
       return ownerJson({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});

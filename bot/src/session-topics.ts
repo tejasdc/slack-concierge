@@ -18,6 +18,7 @@ import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTIO
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
+import {areasCommand,checkedAreaIds,applyAreaChange,ensureSystemNoticeArea} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -34,7 +35,7 @@ export class TopicError extends Error {
   constructor(message:string,readonly status=400,readonly code='TOPIC_ERROR'){super(message);}
 }
 
-export const TOPIC_EVENT_KINDS=['topic','topic_route','topic_request','topic_question','topic_answer','topic_reading','topic_focus','topics_migration'] as const;
+export const TOPIC_EVENT_KINDS=['topic','topic_route','topic_request','topic_question','topic_answer','topic_reading','topic_focus','topics_migration','area'] as const;
 const MANAGEMENT_KINDS=['topic','topic_route','topic_request','topic_question','topic_answer'];
 
 export type TopicBy={kind:'agent'|'human'|'owner';sessionId?:string;inputId?:string;runId?:string};
@@ -392,11 +393,15 @@ export function topicOfRoot(rootInputId:string):string|null {
  */
 export function applyTopicChange(kind:string,payload:any) {
   projectTopicChange(kind,payload);
-  keepThreadOpenOrClosed(payload);
+  if(kind!=='area')keepThreadOpenOrClosed(payload);
 }
 /** The projection alone, for replay: a replayed event never records anything new. */
 function projectTopicChange(kind:string,payload:any) {
+  if(kind==='area'){applyAreaChange(payload);return;}
   for(const topic of [payload.topic,payload.mergedTopic,...(payload.topics??[])])if(topic)upsertTopic(topic);
+  for(const link of payload.removedAreaLinks??[])db.query('DELETE FROM inbox_area_threads WHERE area_id=? AND topic_id=?').run(link.areaId,link.topicId);
+  for(const link of payload.areaLinks??[])db.query(`INSERT INTO inbox_area_threads(area_id,topic_id,origin,reason,created_at)
+    VALUES(?,?,?,?,?) ON CONFLICT(area_id,topic_id) DO NOTHING`).run(link.areaId,link.topicId,link.origin,link.reason??'',link.at);
   for(const root of payload.removedRoots??[])db.query('DELETE FROM inbox_topic_roots WHERE root_input_id=?').run(root.rootInputId);
   for(const root of payload.roots??[])
     db.query(`INSERT INTO inbox_topic_roots(root_input_id,topic_id,placed_at,placed_by_json,reason) VALUES(?,?,?,?,?)
@@ -418,7 +423,7 @@ function projectTopicChange(kind:string,payload:any) {
 /** Replays every topic event into the tables. Used by migration/repair; safe to run twice. */
 export function rebuildTopicProjections() {
   return db.transaction(()=>{
-    for(const table of ['inbox_topic_roots','inbox_requests','inbox_questions','inbox_topic_reading','inbox_focus','inbox_topics'])db.exec(`DELETE FROM ${table}`);
+    for(const table of ['inbox_area_neighbors','inbox_area_threads','inbox_areas','inbox_topic_roots','inbox_requests','inbox_questions','inbox_topic_reading','inbox_focus','inbox_topics'])db.exec(`DELETE FROM ${table}`);
     const rows=db.query(`SELECT kind,payload_json FROM session_owner_events WHERE kind IN (${TOPIC_EVENT_KINDS.map(()=>'?').join(',')}) ORDER BY sequence`).all(...[...TOPIC_EVENT_KINDS]) as {kind:string;payload_json:string}[];
     for(const row of rows) {
       if(row.kind==='topics_migration')continue;
@@ -1226,12 +1231,14 @@ function parseSources(values:unknown):{inputId:string;passage?:string}[] {
   });
 }
 
-function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null}) {
+function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null;areaIds?:string[]}) {
   const at=nowIso();
   const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:session.id,title:fields.title,summary:fields.summary??'',state:'open',
     setAside:null,aliases:[],revision:1,recovered:!!fields.recovered,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
   return {topic,change:{kind:'topic',payload:{change:'created',topicId:topic.topicId,topic,
-    roots:rootRecords(topic.topicId,fields.roots,by,fields.reason??null),by,reason:fields.reason??null,revision:topic.revision,
+    roots:rootRecords(topic.topicId,fields.roots,by,fields.reason??null),
+    areaLinks:(fields.areaIds??[]).map(areaId=>({areaId,topicId:topic.topicId,origin:by.kind==='human'?'human':'agent',reason:fields.reason??'',at})),
+    by,reason:fields.reason??null,revision:topic.revision,
     ...(fields.splitFrom?{splitFrom:fields.splitFrom}:{})}} as Change};
 }
 
@@ -1249,8 +1256,11 @@ function mergeChange(from:StoredTopic,into:StoredTopic,by:TopicBy,reason:string|
   const roots=topicRoots(from.topicId).map(rootInputId=>({rootInputId,topicId:into.topicId,placedAt:at,placedBy:by,reason}));
   const requests=topicRequests(from.topicId).map(request=>({...request,topicId:into.topicId,updatedAt:at}));
   const questions=topicQuestions(from.topicId).map(question=>({...question,topicId:into.topicId,updatedAt:at}));
+  const areaLinks=(db.query('SELECT area_id AS areaId,origin,reason FROM inbox_area_threads WHERE topic_id=?').all(from.topicId) as
+    {areaId:string;origin:string;reason:string}[]).map(link=>({...link,topicId:into.topicId,at}));
   return {change:{kind:'topic',payload:{change:'merged',topicId:into.topicId,topic:destination,mergedTopic:source,fromTopicId:from.topicId,
-    roots,requests,questions,by,reason,revision:destination.revision}} as Change,destination,source};
+    roots,requests,questions,areaLinks,removedAreaLinks:areaLinks.map(link=>({areaId:link.areaId,topicId:from.topicId})),
+    by,reason,revision:destination.revision}} as Change,destination,source};
 }
 
 function lastRenameBy(topicId:string):TopicBy|null {
@@ -1462,6 +1472,7 @@ function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:
  * the caller is an admitted live run; this decides what that run is allowed to do.
  */
 export function topicsCommand(actor:TopicActor,body:any) {
+  if(typeof body?.verb==='string'&&body.verb.startsWith('area.'))return areasCommand(actor,{...body,verb:body.verb.slice(5)});
   const session=getSessionById(actor.sessionId);
   if(!session)throw new TopicError('Unknown session.',404);
   const verb=String(body?.verb??'');
@@ -1499,9 +1510,10 @@ export function topicsCommand(actor:TopicActor,body:any) {
       assertInbox(session);
       const roots=body?.roots===undefined?[]:placementRoots(session,body.roots);
       const title=text(body?.title,'--title',200),summary=optionalText(body?.summary,'--summary',2000);
-      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,reason:reason()},()=>{
+      const areaIds=checkedAreaIds(body?.area_ids);
+      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,areaIds,reason:reason()},()=>{
         for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}; use topics place to move it.`,409,'ROOT_PLACED');}
-        const created=createTopic(session,by,{title,summary,roots,reason:reason()});
+        const created=createTopic(session,by,{title,summary,roots,areaIds,reason:reason()});
         return {change:created.change,result:{topic:created.topic}};
       });
     }
@@ -1834,10 +1846,11 @@ export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
   const title=text(body?.title,'title',200);
   const roots=placementRoots(session,body?.roots);
+  const areaIds=checkedAreaIds(body?.areaIds);
   const by:TopicBy={kind:'human'};
-  return humanMutation(session.id,body?.clientActionId,{kind:'topic-create',title,roots},()=>{
+  return humanMutation(session.id,body?.clientActionId,{kind:'topic-create',title,roots,areaIds},()=>{
     for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}.`,409,'ROOT_PLACED');}
-    const created=createTopic(session,by,{title,roots});
+    const created=createTopic(session,by,{title,roots,areaIds});
     return {change:created.change,result:{topic:created.topic}};
   });
 }
@@ -1909,7 +1922,8 @@ export function topicHumanAction(topicId:string,body:any) {
       }
       case 'split':{
         const roots=placementRoots(session,action.roots);
-        const created=createTopic(session,by,{title:text(action.title,'title',200),roots,splitFrom:topicId});
+        const areaIds=(db.query('SELECT area_id FROM inbox_area_threads WHERE topic_id=?').all(topicId) as {area_id:string}[]).map(row=>row.area_id);
+        const created=createTopic(session,by,{title:text(action.title,'title',200),roots,splitFrom:topicId,areaIds});
         return {change:created.change,result:{topic:created.topic}};
       }
       case 'merge':{
@@ -2837,7 +2851,8 @@ export function fileServiceNotices():{filed:number} {
         let topicId=topicOfRoot(root);
         if(!topicId) {
           const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
-          const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):createTopic(session,by,{title,roots:[root],reason});
+          const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):
+            createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)]});
           recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});
           applyTopicChange(placed.change.kind,placed.change.payload);
           topicId=placed.topic.topicId;

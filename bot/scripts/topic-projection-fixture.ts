@@ -110,7 +110,8 @@ async function lifecycle(root:string){
  try{
   start();phase('initial-checkpoint');await checkpoint();phase('initial-ready');
   const capture=owner.acceptInboxCapture({source:{kind:'thinkering',id:'projection-root',recordedAt:'2026-10-08T00:00:00Z'},text:'Synthetic topic root',importOnly:true});
-  const created=await mutate('/inbox/topics',{clientActionId:'projection-create',title:'Before rename',roots:[capture.operation.id]});
+  const area=await mutate('/inbox/areas',{clientActionId:'projection-area-create',name:'Projection fixture area'});
+  const created=await mutate('/inbox/topics',{clientActionId:'projection-create',title:'Before rename',areaIds:[area.area.id],roots:[capture.operation.id]});
   const topicId=created.topic.topicId;assert.ok(topicId);
   phase('created-checkpoint');const initial=await checkpoint(),first=snapshot(topicId,initial.generation);assert.equal(first.summary.title,'Before rename');phase('created-ready');
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-rename',action:{kind:'rename',title:'After rename'}});

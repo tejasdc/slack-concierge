@@ -455,6 +455,36 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_by_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS inbox_topics_session ON inbox_topics(session_id,state);
+        -- Areas of interest are stable, named groups above Inbox threads. A thread may
+        -- belong to several areas; neighbors are explicit undirected links.
+        CREATE TABLE IF NOT EXISTS inbox_areas (
+          area_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          name_key TEXT NOT NULL UNIQUE,
+          summary TEXT NOT NULL DEFAULT '',
+          revision INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS inbox_area_threads (
+          area_id TEXT NOT NULL REFERENCES inbox_areas(area_id),
+          topic_id TEXT NOT NULL REFERENCES inbox_topics(topic_id),
+          origin TEXT NOT NULL CHECK(origin IN ('human','agent','backfill')),
+          reason TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(area_id,topic_id)
+        );
+        CREATE INDEX IF NOT EXISTS inbox_area_threads_topic ON inbox_area_threads(topic_id,area_id);
+        CREATE TABLE IF NOT EXISTS inbox_area_neighbors (
+          left_area_id TEXT NOT NULL REFERENCES inbox_areas(area_id),
+          right_area_id TEXT NOT NULL REFERENCES inbox_areas(area_id),
+          origin TEXT NOT NULL CHECK(origin IN ('human','agent','backfill')),
+          reason TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(left_area_id,right_area_id),
+          CHECK(left_area_id<right_area_id)
+        );
+        CREATE INDEX IF NOT EXISTS inbox_area_neighbors_right ON inbox_area_neighbors(right_area_id,left_area_id);
         -- One thread root belongs to at most one topic; the latest placement wins.
         CREATE TABLE IF NOT EXISTS inbox_topic_roots (
           root_input_id TEXT PRIMARY KEY,

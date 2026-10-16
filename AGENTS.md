@@ -13,6 +13,11 @@ metadata separated from bytes. The owner contract and query are in
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+
+Areas of interest are named groups above Inbox threads. A thread can belong to several
+areas; neighboring areas are explicit links. New Inbox threads name an area at creation;
+the router can list or suggest areas before filing. Concierge owns the associations and
+Thinkering reads bounded prepared pages. See [areas of interest](docs/architecture/AREAS-OF-INTEREST.md).
 Routing one message out of an Inbox conversation keeps its original root and records
 linked source and destination views; whole-conversation placement requires the root.
 See [one-message routing](docs/plans/2026-10-15-route-one-inbox-message.md).
