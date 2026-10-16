@@ -309,6 +309,47 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
   }
   return changedRoots;
 }
+/** Reproject only marked surface replies and their descendants after their trusted lineage rule changes. */
+function upgradeMarkedReplyRoots(generation:number){
+  const version=(prepared.query('SELECT marked_reply_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=1)return;
+  const inputs=source.query(`SELECT id FROM session_inputs
+    WHERE origin='agent' AND scope='surface:thinkering'
+      AND source_input_id IS NOT NULL AND source_run_id IS NOT NULL AND json_valid(payload_json)
+      AND json_extract(payload_json,'$.agentSource.inputId')=source_input_id
+      AND json_extract(payload_json,'$.agentSource.runId')=source_run_id
+      AND json_type(payload_json,'$.replyToMessage.messageId')='text'
+    ORDER BY rowid`).all() as {id:string}[];
+  const resolveRoot=inboxRootResolver(source);
+  prepared.transaction(()=>{
+    keepLease();
+    const changedRoots=new Set<string>(),roots=new Set<string>(),inputIds=new Set(inputs.map(input=>input.id));
+    for(const input of inputs){
+      roots.add(input.id);
+      for(const row of prepared.query(`SELECT DISTINCT root_input_id AS root FROM presentation_messages
+        WHERE generation=? AND input_id=?`).all(generation,input.id) as {root:string}[])roots.add(row.root);
+    }
+    for(const root of roots){
+      changedRoots.add(root);
+      const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId,input_id AS inputId
+        FROM presentation_messages WHERE generation=? AND root_input_id=? ORDER BY event_sequence`).all(generation,root) as
+        {sequence:number;sessionId:number;messageId:string;inputId:string}[];
+      for(const row of rows){
+        const nextRoot=resolveRoot(row.sessionId,row.messageId);
+        if(nextRoot&&nextRoot!==root){
+          changedRoots.add(nextRoot);
+          prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+            WHERE generation=? AND event_sequence=?`).run(nextRoot,topicOf(nextRoot),generation,row.sequence);
+        }
+        if(nextRoot!==root||inputIds.has(row.inputId))writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+      }
+    }
+    topics.apply(generation,[],changedRoots);
+    while(topics.drain(generation,20).hasMore)keepLease();
+    prepared.query('UPDATE presentation_message_meta SET marked_reply_roots_version=1 WHERE singleton=1').run();
+  })();
+}
 async function relocateRoot(generation:number,root:string){
   const topic=topicOf(root);
   let after=0;
@@ -451,9 +492,7 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
-  const markedReplyRootsVersion=(prepared.query(`SELECT marked_reply_roots_version AS version
-    FROM presentation_message_meta WHERE singleton=1`).get() as {version:number}).version;
-  if(markedReplyRootsVersion<1){await rebuild();return;}
+  upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
