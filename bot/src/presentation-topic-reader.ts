@@ -26,11 +26,11 @@ export function preparedTopics(options:Omit<Parameters<typeof readPreparedTopics
   {topics:[],nextCursor:null,asOf:'',sorting:{count:0,captures:[]},coverage:indexing()};
 }
 export function preparedAreas(query:string|null,cursor:string|null,limit:number){
- const reader=prepared();return reader?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):
+ const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedAreas(reader,presentationHead(db),query,cursor,limit):
   {areas:[],nextCursor:null,coverage:indexing()};
 }
 export function preparedArea(id:string,cursor:string|null,limit:number){
- const reader=prepared();return reader?readPreparedArea(reader,presentationHead(db),id,cursor,limit):
+ const reader=prepared();return reader&&reader.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_areas'").get()?readPreparedArea(reader,presentationHead(db),id,cursor,limit):
   {area:null,coverage:indexing()};
 }
 export function preparedIncoming(options:Omit<Parameters<typeof readPreparedIncoming>[1],'canonicalHead'>){
