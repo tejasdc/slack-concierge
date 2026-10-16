@@ -38,7 +38,7 @@ export function macSurfaceActivity(toolName: string, input: unknown): MacSurface
   const sshMac = /\bssh\b[\s\S]{0,600}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i;
   const remoteInvocation = tool.includes('functions.exec')
     ? /\bexec_command\s*\(\s*\{[\s\S]{0,120}?\bcmd\s*:\s*['"`]\s*ssh\b[\s\S]{0,600}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(code)
-    : /exec|bash|shell|command/i.test(tool) && /^\s*ssh\b/i.test(code) && sshMac.test(code);
+    : /exec|bash|shell|command|(?:^|\/)zsh$|(?:^|\/)sh$/i.test(tool) && /^\s*ssh\b/i.test(code) && sshMac.test(code);
   if (remoteInvocation) {
     if (/\bosascript\b|\bSystem Events\b/i.test(code))
       return {key:'ssh-app-control',action:'Using AppleScript on the Mac over SSH',remoteMac:true};

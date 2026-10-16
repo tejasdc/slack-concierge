@@ -16,6 +16,12 @@ The SSH observation recognizes the Mac peer's registered SSH address. Tool activ
 outside the observed provider stream is not covered. macOS remains
 the source of truth for its own permission and login-item records.
 
+Codex reports shell commands under the shell executable's name, including
+`/usr/bin/zsh`; the SSH observer accepts that tool identity. The first marked
+server SSH check on October 16 ran successfully but created no activity event
+because this identity was missing. A later check must observe both the retained
+event and phone delivery.
+
 On October 16, a server Codex agent investigating thnkr.ing Capture ran a
 read-only AppleScript login-item query through SSH. macOS showed Tejas an
 `sshd-keygen-wrapper` request to control System Events, while the existing
