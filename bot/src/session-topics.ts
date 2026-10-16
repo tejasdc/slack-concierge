@@ -440,29 +440,32 @@ const emptyRetainTiming=():RetainInputTiming=>({serializeMs:0,existingMs:0,cance
 const roundedRetainTiming=(timing:RetainInputTiming)=>Object.fromEntries(Object.entries(timing).map(([key,value])=>[key,Math.round(value)]));
 function record(sessionId:number,inputId:string,turnId:number|null,change:Change) {
   change=reopenedForNewWork(change);
+  const actorSession=getSessionById(sessionId);
+  const actorIsInbox=!!actorSession&&!!sessionMetadata(actorSession).inbox;
   const newlyWaiting=change.kind==='topic_question'&&change.payload?.change==='reconciled'
     ?(change.payload.questions as StoredQuestion[]).filter(question=>{
-      if(!awaitingHim(question)||question.legacyNeedEventId)return false;
+      if(!awaitingHim(question)||question.legacyNeedEventId&&actorIsInbox)return false;
       const row=db.query('SELECT * FROM inbox_questions WHERE question_id=?').get(question.questionId) as any|null;
       return !row||!awaitingHim(toStoredQuestion(row));
     }):[];
   recordSessionEvent({eventId:`topic-change:${inputId}`,sessionId,inputId,turnId:turnId??null,kind:change.kind,payload:change.payload});
   applyTopicChange(change.kind,change.payload);
   if(newlyWaiting.length) {
-    const session=getSessionById(sessionId);
+    const session=inboxSession();
     if(!session)return;
     refreshRootMemo();
     for(const question of newlyWaiting) {
-      const source=question.sources.find(id=>rootOf(sessionId,id));
-      const root=(source?rootOf(sessionId,source):null)??topicRoots(question.topicId).at(-1)??null;
+      const source=question.sources.find(id=>rootOf(session.id,id));
+      const root=(source?rootOf(session.id,source):null)??topicRoots(question.topicId).at(-1)??null;
       if(!root)continue;
-      const postId=question.sources.find(id=>db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind IN ('post','result')").get(id,sessionId))??null;
-      if(postId&&messageAlreadyNotified(sessionId,postId))continue;
+      const postId=question.sources.find(id=>db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind IN ('post','result')").get(id,session.id))??null;
+      if(postId&&messageAlreadyNotified(session.id,postId))continue;
       const author=typeof question.owner?.sessionId==='string'?sessionAuthor(question.owner.sessionId):null;
-      const notificationInputId=postId?consumeThreadNotification(sessionId,root,postId):null;
-      recordSessionEvent({eventId:`needs_you:question:${question.questionId}`,sessionId,inputId:root,kind:'needs_you',
+      const notificationInputId=postId?consumeThreadNotification(session.id,root,postId):null;
+      const generation=session.id===sessionId?question.generation:raiseGeneration(session);
+      recordSessionEvent({eventId:`needs_you:question:${question.questionId}`,sessionId:session.id,inputId:root,kind:'needs_you',
         payload:{outcome:notificationInputId?'response':'needs_you',question:String(question.brief.decision).slice(0,2000),inputId:root,
-          generation:question.generation,topicId:question.topicId,questionId:question.questionId,
+          generation,topicId:question.topicId,questionId:question.questionId,
           runId:change.payload.by?.runId??null,blockingNotification:true,
           ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
           ...(notificationInputId?{notificationInputId,requestedNotification:true}:{}),
