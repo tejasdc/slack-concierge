@@ -318,6 +318,23 @@ async function relocateRoot(generation:number,root:string){
 }
 let rebuilding=false;
 
+async function rebuildAreaPages(generation:number){
+  for(const kind of ['areas','threads','neighbors'] as const){
+    let after=0;
+    while(true){
+      const page=prepared.transaction(()=>{keepLease();return areas.rebuildPage(generation,kind,after,50);})();
+      after=page.last;if(!page.hasMore)break;
+      await yieldProgress();
+    }
+  }
+}
+
+async function refreshAreaProjection(generation:number){
+  prepared.transaction(()=>{keepLease();areas.beginRebuild(generation);})();
+  await rebuildAreaPages(generation);
+  prepared.transaction(()=>{keepLease();areas.activate(generation);})();
+}
+
 /** Full re-rooting occurs off the interactive owner. The old generation stays readable until commit. */
 async function rebuild() {
   if(rebuilding)return;
@@ -400,14 +417,7 @@ async function rebuild() {
       prepared.transaction(()=>{keepLease();topics.updateSorting(topics.context(generation,inbox.id));})();
       await yieldProgress();
     }
-    for(const kind of ['areas','threads','neighbors'] as const){
-      let after=0;
-      while(true){
-        const page=prepared.transaction(()=>{keepLease();return areas.rebuildPage(generation,kind,after,50);})();
-        after=page.last;if(!page.hasMore)break;
-        await yieldProgress();
-      }
-    }
+    await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1 WHERE singleton=1')
@@ -415,6 +425,7 @@ async function rebuild() {
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
       topics.activate(generation,startHead);
+      areas.activate(generation);
       labRequests.activate(generation,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
@@ -430,6 +441,7 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log

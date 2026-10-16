@@ -4,6 +4,7 @@ type Change={source_table:string;row_key:string};
 const PAGE=20;
 const encode=(value:unknown)=>Buffer.from(JSON.stringify(value)).toString('base64url');
 const decode=(value:string)=>{try{return JSON.parse(Buffer.from(value,'base64url').toString());}catch{return null;}};
+const edgeKey=(value:string)=>{try{return JSON.parse(value);}catch{return null;}};
 const areaSummary=(row:any)=>({id:row.area_id,name:row.name,summary:row.summary,updatedAt:row.updated_at});
 
 /** A disposable, bounded projection of the canonical area graph. Every changed edge is
@@ -21,7 +22,18 @@ export class PreparedAreas {
       CREATE TABLE IF NOT EXISTS presentation_area_neighbors(
         generation INTEGER NOT NULL,left_area_id TEXT NOT NULL,right_area_id TEXT NOT NULL,
         PRIMARY KEY(generation,left_area_id,right_area_id));
-      CREATE INDEX IF NOT EXISTS presentation_area_neighbors_right ON presentation_area_neighbors(generation,right_area_id,left_area_id);`);
+      CREATE INDEX IF NOT EXISTS presentation_area_neighbors_right ON presentation_area_neighbors(generation,right_area_id,left_area_id);
+      CREATE TABLE IF NOT EXISTS presentation_area_projection_meta(
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,version INTEGER NOT NULL);`);
+  }
+  isReady(generation:number){
+    const row=this.prepared.query('SELECT generation,version FROM presentation_area_projection_meta WHERE singleton=1')
+      .get() as {generation:number;version:number}|null;
+    return row?.generation===generation&&row.version===2;
+  }
+  activate(generation:number){
+    this.prepared.query(`INSERT INTO presentation_area_projection_meta VALUES(1,?,2)
+      ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,version=excluded.version`).run(generation);
   }
   beginRebuild(generation:number){
     for(const table of ['presentation_areas','presentation_area_threads','presentation_area_neighbors'])
@@ -41,9 +53,9 @@ export class PreparedAreas {
     for(const change of changes){
       if(change.source_table==='inbox_areas')this.area(generation,change.row_key);
       else if(change.source_table==='inbox_area_threads'){
-        const key=decode(change.row_key);if(Array.isArray(key)&&key.length===2)this.thread(generation,key[0],key[1]);
+        const key=edgeKey(change.row_key);if(Array.isArray(key)&&key.length===2)this.thread(generation,key[0],key[1]);
       } else if(change.source_table==='inbox_area_neighbors'){
-        const key=decode(change.row_key);if(Array.isArray(key)&&key.length===2)this.neighbor(generation,key[0],key[1]);
+        const key=edgeKey(change.row_key);if(Array.isArray(key)&&key.length===2)this.neighbor(generation,key[0],key[1]);
       }
     }
   }
@@ -74,8 +86,12 @@ export class PreparedAreas {
 const status=(db:Database,head:number)=>{
   const row=db.query('SELECT generation,source_head,ready FROM presentation_topics_meta WHERE singleton=1').get() as
     {generation:number;source_head:number;ready:number};
-  return {generation:row.generation,coverage:{complete:!!row.ready&&row.source_head>=head,
-    code:!row.ready||row.source_head<head?'presentation_indexing':null,appliedSequence:row.source_head}};
+  let areaMeta:{generation:number;version:number}|null=null;
+  try{areaMeta=db.query('SELECT generation,version FROM presentation_area_projection_meta WHERE singleton=1')
+    .get() as {generation:number;version:number}|null;}catch{ /* The worker has not installed its disposable schema yet. */ }
+  const complete=!!row.ready&&row.source_head>=head&&areaMeta?.generation===row.generation&&areaMeta.version===2;
+  return {generation:row.generation,coverage:{complete,
+    code:complete?null:'presentation_indexing',appliedSequence:row.source_head}};
 };
 export function readPreparedAreas(db:Database,head:number,query:string|null,cursor:string|null,limit=20){
   const {generation,coverage}=status(db,head),size=Math.max(1,Math.min(PAGE,limit));

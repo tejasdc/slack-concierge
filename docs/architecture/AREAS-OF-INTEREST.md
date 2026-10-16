@@ -18,4 +18,6 @@ The authenticated human surface creates areas at `POST /sessions/v1/inbox/areas`
 
 Create or remove one membership touches one indexed edge. Rename touches one area row. Read an area page touches at most 20 thread cards and 20 neighbors. Rebuild runs off the accepting owner loop in bounded pages; each changed edge projects by its exact stable key. A name search uses the area name index. The growth fixture exercises 100, 1,000 and 10,000 areas and a 10,000-thread area. An interrupted worker resumes from the presentation change journal or rebuilds its disposable generation without losing canonical memberships.
 
+The area projection keeps its own format version. When that version changes, the worker refreshes only area rows and edges in bounded pages before declaring area reads complete. This recovers previously consumed changes without rebuilding unrelated session or message history.
+
 The first backfill starts with Sleep cycle and the scattered threads Tejas identified. Existing threads outside that area are left intact; their associations can be added through the same exact-ID command. A broad inferred backfill would invent interests and should be reviewed from his actual words and thread contents.
