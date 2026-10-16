@@ -22,6 +22,11 @@ export const GRAFANA_CONDITIONS: Readonly<Record<string, string>> = {
   AX41LoggingOverBudget: "Logging outgrew its budget: short journal history, too much disk, one writer flooding, or lines discarded.",
   AX41LoggingSlowsRequests: "Logging is in the apps' way: lines wait for the journal or the log-upload endpoint is slow.",
   WorkspaceSkillsSyncStale: "Agent skills have stopped synchronizing; new and changed skills are not reaching that machine.",
+  RecurringSystemdJobFailed: "A scheduled server service last exited unsuccessfully.",
+  RecurringSystemdInventoryUnavailable: "The server cannot enumerate its scheduled services.",
+  RecurringMacJobFailedWhileAwake: "A stopped Mac scheduled job last exited unsuccessfully while awake observations were current.",
+  RecurringMacJobStaleWhileAwake: "A Mac interval job missed repeated starts while awake observations were current.",
+  RecurringMacObservationMissing: "The Mac recurring-job report has not reached the server for more than a day; sleep and connectivity must be distinguished.",
   TestAlert: "Grafana contact test.",
   ConciergeWebhookAcceptance: "Grafana firing and recovery acceptance test.",
 };

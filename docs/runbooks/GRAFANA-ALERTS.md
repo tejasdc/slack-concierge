@@ -39,6 +39,11 @@ comes from `/etc/concierge/grafana-alerts.token`; never expose it in argv, URLs 
 `bun bot/scripts/grafana-credential.ts` verifies the existing derived credential.
 Ingress allows at most 64 alerts and 256 KiB. `GRAFANA_CONDITIONS` is the condition
 allowlist and must agree with remote-box’s rules; unknown-only batches return 422.
+The recurring-job conditions cover server native failures and inventory loss,
+Mac native failures and missed starts while an awake report is fresh, and a
+Mac report absent for a day. The repair agent checks the owner receipt before
+calling a native exit a successful product effect; an absent Mac report alone
+does not prove the laptop slept.
 
 Fingerprint plus start timestamp defines an episode. Duplicate delivery and stale firing
 after recovery are fenced by the retained ledger. Repair publication is idempotent by
