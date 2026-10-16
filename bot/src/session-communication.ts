@@ -11,7 +11,8 @@ import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
-import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
+import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
+import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
@@ -2022,6 +2023,11 @@ ${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${act
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
                 ...(alreadyPostedInThread?{alreadyPostedInThread:true}:{})});
+            if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
+                const author=sessionAuthor(`concierge:${coveredResponder}`);
+                recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:request.request_id,
+                    question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
+            }
             for(const joined of group.joining)db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
             const observed = readInputExecution(accepted);
             const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;

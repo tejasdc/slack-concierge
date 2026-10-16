@@ -21,6 +21,8 @@ import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
 import {noticeTime} from './provider-free-notice';
 import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
+import {recordRequesterDecisionReturn} from './session-turn-outcome';
+import {sessionAuthor} from './session-message-author';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 
@@ -860,6 +862,11 @@ export class SessionPeers {
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
       ...(directPost?{alreadyPostedInThread:true}:{})});
+    if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
+      const author=sessionAuthor(receiveSessionFromPeer(row.remote_session_id,row.peer,this.self));
+      recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:row.request_id,
+        question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
+    }
     for(const joined of group.joining)db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
     const observed=readInputExecution(accepted);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;

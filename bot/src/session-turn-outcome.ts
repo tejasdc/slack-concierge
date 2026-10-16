@@ -1,5 +1,5 @@
 import {db,executionChanged,getSessionById} from './state';
-import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunId} from './session-inputs';
+import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunId,recordSessionEvent} from './session-inputs';
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
@@ -24,6 +24,8 @@ export type TurnOutcome=DeclaredTurnOutcome|'finished_without_saying';
 export type TurnOutcomeView={outcome:TurnOutcome;question:string|null;inputId:string;at:string};
 /** One open question to Tejas. Its generation is compared with his dismiss, exactly like unread. */
 export type OpenNeed={inputId:string;outcome?:'needs_you'|'response';question:string;generation:number;at:string;runId:string;eventId:string;
+  /** A decision returned to this requester stays open until Tejas answers here. */
+  requesterDecision?:boolean;
   /** A reading item's actual content: the messages its turn wrote into the thread, in full (`readsFor`). */
   reads?:ReadingText[]};
 
@@ -45,6 +47,30 @@ export function turnDeclared(turnId:number):boolean {
 
 export function turnDeclaredByAction(turnId:number):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' AND substr(event_id,1,20)='turn_outcome:action:' LIMIT 1").get(turnId);
+}
+
+/** A worker's decision becomes the requester's own attention when its exact return is admitted. */
+export function recordRequesterDecisionReturn(input:{sessionId:number;returnInputId:string;requestId:string;
+  question:string;agentName?:string|null;taskTitle?:string|null}) {
+  const eventId=`needs_you:requester-return:${input.returnInputId}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
+  return db.transaction(()=>{
+    const session=getSessionById(input.sessionId),accepted=getAcceptedSessionInput(input.returnInputId);
+    if(!session||!accepted||accepted.session_id!==input.sessionId||accepted.origin!=='service'||accepted.request_id!==input.requestId)
+      throw new Error('A decision return must belong to the exact requester and request.');
+    const meta=sessionMetadata(session);
+    if(meta.inbox)return false; // Its thread answer owns the notification.
+    const question=input.question.trim().slice(0,2000);
+    if(!question)throw new Error('A decision return needs the question for Tejas.');
+    const generation=(meta.generation??0)+1,at=new Date().toISOString();
+    const needs=[...(meta.needs??[]),{inputId:input.returnInputId,outcome:'needs_you' as const,question,generation,at,runId:'',eventId,requesterDecision:true}];
+    recordSessionEvent({eventId,sessionId:input.sessionId,inputId:input.returnInputId,kind:'needs_you',payload:{outcome:'needs_you',question,
+      inputId:input.returnInputId,generation,blockingNotification:true,requesterDecision:true,requestId:input.requestId,
+      agentName:input.agentName??null,taskTitle:input.taskTitle??null,postId:input.returnInputId}});
+    updateSessionMetadata(input.sessionId,{generation,needs});
+    executionChanged();
+    return true;
+  })();
 }
 
 /**
@@ -96,6 +122,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const runId=nativeRunId(input.turnId);
   const needs=(meta.needs??[]).filter(need=>{
     if(input.outcome==='finished_without_saying')return true;
+    if(need.requesterDecision)return true;
     // A later declaration settles what this turn answered. Outside the Inbox the session
     // is one conversation, so any declared turn settles its earlier questions.
     return meta.inbox?need.inputId!==inputId:false;
@@ -104,7 +131,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // second, unfiled copy. An entry the run did not declare stays unfiled, in no thread, until
   // the router files it (docs/plans/2026-09-23-attention-that-ends.md).
   const declared=!!question&&!!meta.inbox&&!!runId&&questionsDeclaredByRun(input.sessionId,runId);
-  if(question&&!declared)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
+  const returnedDecision=needs.some(need=>need.requesterDecision&&need.inputId===inputId);
+  if(question&&!declared&&!returnedDecision)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
   const quiet=outcome==='done'?input.quiet?.trim().slice(0,2000)||null:null;
   const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,...(quiet?{quiet}:{})};
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
@@ -114,7 +142,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
     const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
       ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
-    const alreadyNotified=!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
+    const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
       ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='needs_you'
         AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId);
     const author=sessionAuthor(`concierge:${input.sessionId}`);
