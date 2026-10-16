@@ -70,6 +70,7 @@ import {sessionExecution,sessionPresence} from './session-presence';
 import {inboxAttribution} from './inbox-attribution-read';
 import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
+import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
 import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
@@ -2614,7 +2615,9 @@ export class SessionOwner {
     if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
     coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
     const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
-    const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null}})})),
+    const anchors=[...results.keys()].sort((a,b)=>fused(b)-fused(a)).slice(0,3);
+    const mutuals=sessionMutuals([...results.keys()]);
+    const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id)+mutualLift(entry.session.id,anchors,mutuals),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null},mutuals:(mutuals.get(entry.session.id)??[]).slice(0,8)})})),
       ...peerHits.map(hit=>({score:1/(60+hit.rank),result:()=>({session:hit.view,evidence:hit.evidence,match:{words:false,meaning:hit.score}})}))].sort((a,b)=>b.score-a.score);
     const response=boundSearchResponse({results:ranked.slice(0,limit).map(entry=>entry.result()),coverage});
     const durationMs=Math.round(performance.now()-started);
