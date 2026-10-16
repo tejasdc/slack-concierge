@@ -495,16 +495,25 @@ export class SessionCapabilityClient {
     }
   }
 
-  private async observeAcrossRestart(run: CapabilityRunRef, after: string | null, signal?: AbortSignal) {
+  /**
+   * A read of a run Thinkering already holds, asked again while Thinkering restarts (up to 20
+   * minutes). Reads only: the run's receipt or its events, never a send. While Thinkering starts it
+   * answers a bare 503, which counts as restarting too.
+   */
+  private async readAcrossRestart<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const until = Date.now() + 20 * 60_000;
     for (let pause = 2_000; ; pause = Math.min(pause * 2, 30_000)) {
-      const outcome = await this.observe(run, after, signal).then(value => ({ value }), (error: unknown) => ({ error }));
+      const outcome = await read().then(value => ({ value }), (error: unknown) => ({ error }));
       if ("value" in outcome) return outcome.value;
       const restarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
         && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE" || outcome.error.status === 503);
       if (!restarting || Date.now() + pause > until) throw outcome.error;
       await new Promise(resolve => setTimeout(resolve, pause));
     }
+  }
+
+  private observeAcrossRestart(run: CapabilityRunRef, after: string | null, signal?: AbortSignal) {
+    return this.readAcrossRestart(() => this.observe(run, after, signal), signal);
   }
 
   async stop(run: CapabilityRunRef): Promise<never> {
@@ -625,8 +634,11 @@ export class SessionCapabilityClient {
       // send was never made, and Thinkering keeps at most one per run id (it re-checks the run, the
       // admitted prompt digest and the files before typing), so it is made now, once. Any other answer
       // is the run's own state and is followed (ChatGPT Pro second opinion, 2026-10-10).
+      // Taking a run back after Concierge's own restart reads its receipt; Thinkering may be
+      // restarting in that same moment (both updated at 00:52 on 2026-10-16, and the one read that
+      // failed parked a live ChatGPT run), so the read waits that restart out like observation does.
       const receipt = context.follow
-        ? await this.reconcile(run, context.signal).catch(error => {
+        ? await this.readAcrossRestart(() => this.reconcile(run, context.signal), context.signal).catch(error => {
           if (error instanceof SessionCapabilityError && error.code === "CHATGPT_EFFECT_NOT_FOUND") return send();
           throw error;
         })
