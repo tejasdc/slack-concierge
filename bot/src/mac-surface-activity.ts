@@ -1,5 +1,5 @@
 /** Actions likely to put an agent in front of the Mac's user, observed from provider tool calls. */
-export type MacSurfaceActivity = Readonly<{ key: string; action: string }>;
+export type MacSurfaceActivity = Readonly<{ key: string; action: string; remoteMac?: boolean }>;
 
 function commandText(value: unknown): string {
   if (typeof value === 'string') {
@@ -19,8 +19,10 @@ function safeName(value: string): string {
 
 export function macSurfaceActivity(toolName: string, input: unknown): MacSurfaceActivity | null {
   const details = input && typeof input === 'object' ? input as Record<string, unknown> : {};
-  const argumentsValue = details.arguments && typeof details.arguments === 'object'
-    ? details.arguments as Record<string, unknown> : {};
+  const argumentsValue = typeof details.arguments === 'string'
+    ? (() => { try { const parsed: unknown = JSON.parse(details.arguments); return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}; } catch { return {}; } })()
+    : details.arguments && typeof details.arguments === 'object'
+      ? details.arguments as Record<string, unknown> : {};
   const inputValue = details.input && typeof details.input === 'object'
     ? details.input as Record<string, unknown> : {};
   const parsedCommand = Array.isArray(details.parsed_cmd)
@@ -30,6 +32,24 @@ export function macSurfaceActivity(toolName: string, input: unknown): MacSurface
   const code = command || commandText(details.code ?? argumentsValue.code ?? inputValue.code
     ?? argumentsValue.command ?? inputValue.command ?? details.input);
   const tool = toolName.toLowerCase();
+  // Server agents can surface a macOS prompt through SSH without starting a Mac
+  // Concierge turn. Observe the outgoing tool call before it runs, using the same
+  // session event and phone notice as an action made by a Mac agent.
+  const sshMac = /\bssh\b[\s\S]{0,600}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i;
+  const remoteInvocation = tool.includes('functions.exec')
+    ? /\bexec_command\s*\(\s*\{[\s\S]{0,120}?\bcmd\s*:\s*['"`]\s*ssh\b[\s\S]{0,600}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(code)
+    : /exec|bash|shell|command/i.test(tool) && /^\s*ssh\b/i.test(code) && sshMac.test(code);
+  if (remoteInvocation) {
+    if (/\bosascript\b|\bSystem Events\b/i.test(code))
+      return {key:'ssh-app-control',action:'Using AppleScript on the Mac over SSH',remoteMac:true};
+    if (/\b(?:mac-screenshot|mac-capture|screencapture)\b/i.test(code))
+      return {key:'ssh-screen-capture',action:'Capturing the Mac screen over SSH',remoteMac:true};
+    if (/\b(?:brew|mas|pip3?|npm|uv)\s+install\b/i.test(code))
+      return {key:'ssh-install',action:'Installing software on the Mac over SSH',remoteMac:true};
+    if (/\blaunchctl\s+(?:bootstrap|load|enable)\b/i.test(code))
+      return {key:'ssh-background-item',action:'Adding a Mac background item over SSH',remoteMac:true};
+    return {key:'ssh-command',action:'Running a command on the Mac over SSH',remoteMac:true};
+  }
   const start = '(?:^|[;&|]\\s*|\\n\\s*)(?:sudo\\s+)?';
   const install = new RegExp(start+'(?:/opt/homebrew/bin/)?(?:brew\\s+install(?:\\s+--cask)?|mas\\s+install|uv\\s+tool\\s+install|pip(?:3)?\\s+install|npm\\s+install\\s+-g)\\s+([\\w./-]+)','i').exec(code);
   if (install) {
