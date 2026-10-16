@@ -52,10 +52,13 @@ pending and eligible for automatic delivery; the operator supplies a stable reco
 and reason. The marker is audited
 separately from commands and makes no claim about the missing command's contents or owner
 effect. It releases later retained commands with their original bytes and action IDs. If the
-device later uploads the missing sequence, ingress accepts it into the original slot and
-the worker delivers it once under its original identity, even though later commands may
-have been accepted first. This operation is for a proven historical gap, not a normal
-browser retry or a synthetic refusal.
+device later uploads the missing sequence, ingress saves its original bytes and identity
+but holds it before preparation or owner delivery. This includes Stop and cancel actions:
+neither may bypass the hold to affect work that followed the gap. An ordinary Retry cannot
+release it. A separate private recovery operation can release that exact retained action
+under a stable action ID and recorded reason once its content is reviewed; duplicate calls
+return the same decision. The gap and late-release records remain for auditing. This
+operation is for a proven historical gap, not a normal browser retry or a synthetic refusal.
 Exact-run Stop and cancel-by-action bypass predecessor order. When cancellation arrives
 while its exact session/action target is still pending in ingress,
 one transaction freezes the target transport row and retains the cancellation command. The owner

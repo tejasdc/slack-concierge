@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -91,7 +91,7 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
 function commandReply(actionId:string) {
   const row=commandStatus(actionId);
   if(!row)return null;
-  return {custody:"server",actionId:row.action_id,status:row.exhausted_at_ms!==null?'unconfirmed':row.status,
+  return {custody:"server",actionId:row.action_id,status:row.exhausted_reason==='held_after_gap'?'held':row.exhausted_at_ms!==null?'unconfirmed':row.status,
     decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null,
     ...(row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{})};
 }
@@ -144,6 +144,19 @@ export function createCaptureQueueRequestHandler(
       }catch(error){
         log('warn','human_command_missing_slot_release_refused',errorFields(error));
         return jsonResponse(409,{error:'missing_slot_release_refused'});
+      }
+    }
+    if(url.pathname==='/commands/release-held-late'&&request.method==='POST'){
+      try{
+        const body=await requestBody(request);
+        const actionId=requiredString(body.actionId,'actionId',200);
+        const recoveryActionId=requiredString(body.recoveryActionId,'recoveryActionId',200);
+        const reason=requiredString(body.reason,'reason',1000);
+        const released=releaseHeldLateHumanCommand({actionId,recoveryActionId,reason});
+        return jsonResponse(200,commandReply(released.action_id)!);
+      }catch(error){
+        log('warn','human_command_late_release_refused',errorFields(error));
+        return jsonResponse(409,{error:'late_release_refused'});
       }
     }
     if(url.pathname==='/commands/refuse-before-custody'&&request.method==='POST'){

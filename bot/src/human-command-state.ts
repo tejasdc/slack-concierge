@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS human_command_missing_slots(
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(client_id,session_id,sequence)
 );
+CREATE TABLE IF NOT EXISTS human_command_late_releases(
+  action_id TEXT PRIMARY KEY,
+  recovery_action_id TEXT NOT NULL UNIQUE,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `);
 const commandColumns=captureDb.query("PRAGMA table_info(human_commands)").all() as {name:string}[];
 if(!commandColumns.some(column=>column.name==='decision_stage'))captureDb.exec("ALTER TABLE human_commands ADD COLUMN decision_stage TEXT CHECK(decision_stage IN ('preparation','owner'))");
@@ -115,7 +121,7 @@ function row(actionId: string): HumanCommandRow | null {
 export function commandStatus(actionId: string): HumanCommandRow | null { return row(actionId); }
 
 /** An audited missing arrival can release later retained commands without occupying its slot.
- * If its original bytes arrive later, the ordinary identity check still accepts them. */
+ * A late original is retained but cannot execute until a separate recovery decision. */
 export function releaseMissingHumanCommandSlot(input:Readonly<{clientId:string;sessionId:string;sequence:number;recoveryActionId:string;reason:string}>):number {
  return captureDb.transaction(()=>{
   const existing=captureDb.query('SELECT client_id,session_id,sequence,reason FROM human_command_missing_slots WHERE recovery_action_id=?')
@@ -170,8 +176,10 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
     const bySequence = captureDb.query("SELECT action_id FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?")
       .get(command.clientId, command.sessionId, command.sequence) as {action_id:string}|null;
     if (bySequence) throw new CommandIdentityConflict();
+    const arrivedAfterGap=!!captureDb.query('SELECT 1 FROM human_command_missing_slots WHERE client_id=? AND session_id=? AND sequence=?')
+      .get(command.clientId,command.sessionId,command.sequence);
     const targetId=canceledAction(command.path);
-    if(targetId){
+    if(targetId&&!arrivedAfterGap){
       const target=row(targetId);
       // Transport custody may still hold the target. Freeze it here, in the same transaction
       // that retains the owner's cancellation intent, so a worker cannot import it afterward.
@@ -183,9 +191,10 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
       // when that target has not arrived; the owner records cancellation before admission.
     }
     captureDb.query(`INSERT INTO human_commands
-      (action_id,door,client_id,session_id,sequence,method,path,body_json,digest)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(command.actionId,command.door,command.clientId,command.sessionId,
-        command.sequence,command.method,command.path,bodyJson,digest);
+      (action_id,door,client_id,session_id,sequence,method,path,body_json,digest,exhausted_at_ms,exhausted_reason)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(command.actionId,command.door,command.clientId,command.sessionId,
+        command.sequence,command.method,command.path,bodyJson,digest,
+        arrivedAfterGap?Date.now():null,arrivedAfterGap?'held_after_gap':null);
     advanceStream(command.clientId,command.sessionId);
     return row(command.actionId)!;
   }).immediate();
@@ -244,10 +253,12 @@ export function claimHumanCommand(claimId:string,owner:ProcessIdentity,workerId:
     recoverHumanCommands(workerId);
     const candidate = captureDb.query(`SELECT * FROM human_commands AS command
       WHERE command.status='pending' AND command.exhausted_at_ms IS NULL AND (command.next_attempt_ms IS NULL OR command.next_attempt_ms<=?)
+      AND NOT EXISTS(SELECT 1 FROM human_command_missing_slots slot WHERE slot.client_id=command.client_id
+        AND slot.session_id=command.session_id AND slot.sequence=command.sequence
+        AND NOT EXISTS(SELECT 1 FROM human_command_late_releases late_release WHERE late_release.action_id=command.action_id))
       AND (command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' OR command.sequence=(
         SELECT next_sequence FROM human_command_streams stream WHERE stream.client_id=command.client_id AND stream.session_id=command.session_id)
-        OR EXISTS(SELECT 1 FROM human_command_missing_slots slot WHERE slot.client_id=command.client_id
-          AND slot.session_id=command.session_id AND slot.sequence=command.sequence))
+        OR EXISTS(SELECT 1 FROM human_command_late_releases late_release WHERE late_release.action_id=command.action_id))
       ORDER BY CASE WHEN command.path LIKE '%/stop' OR command.path LIKE '%/actions/%/cancel' THEN 0 ELSE 1 END,
         command.created_at,command.sequence LIMIT 1`).get(now) as HumanCommandRow|null;
     if (!candidate) return null;
@@ -307,12 +318,35 @@ export function exhaustHumanCommand(actionId:string,claimId:string,reason:string
  * The owner remains the only authority that can deduplicate an earlier acceptance. */
 export function resumeExhaustedHumanCommand(actionId:string):HumanCommandRow|null {
   return captureDb.transaction(()=>{
-    const current=row(actionId);if(!current||current.status!=='pending'||current.exhausted_at_ms===null)return null;
+    const current=row(actionId);if(!current||current.status!=='pending'||current.exhausted_at_ms===null||current.exhausted_reason==='held_after_gap')return null;
     captureDb.query(`UPDATE human_commands SET exhausted_at_ms=NULL,exhausted_reason=NULL,retry_window_started_ms=?,
       attempts=0,next_attempt_ms=NULL,updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending' AND exhausted_at_ms IS NOT NULL`)
       .run(Date.now(),actionId);
     return row(actionId);
   }).immediate();
+}
+
+/** A separate decision may execute a recovered original after later commands already ran. */
+export function releaseHeldLateHumanCommand(input:Readonly<{actionId:string;recoveryActionId:string;reason:string}>):HumanCommandRow {
+ return captureDb.transaction(()=>{
+  const prior=captureDb.query('SELECT action_id,reason FROM human_command_late_releases WHERE recovery_action_id=?')
+   .get(input.recoveryActionId) as {action_id:string;reason:string}|null;
+  if(prior){
+   if(prior.action_id!==input.actionId||prior.reason!==input.reason)throw new CommandIdentityConflict();
+   return row(input.actionId)!;
+  }
+  const current=row(input.actionId);
+  if(!current||current.status!=='pending'||current.exhausted_reason!=='held_after_gap')
+   throw new Error('The original command is not held after a gap.');
+  const slot=captureDb.query('SELECT 1 FROM human_command_missing_slots WHERE client_id=? AND session_id=? AND sequence=?')
+   .get(current.client_id,current.session_id,current.sequence);
+  if(!slot)throw new Error('The original command has no bypassed gap.');
+  captureDb.query('INSERT INTO human_command_late_releases(action_id,recovery_action_id,reason) VALUES(?,?,?)')
+   .run(input.actionId,input.recoveryActionId,input.reason);
+  captureDb.query("UPDATE human_commands SET exhausted_at_ms=NULL,exhausted_reason=NULL,updated_at=CURRENT_TIMESTAMP WHERE action_id=?")
+   .run(input.actionId);
+  return row(input.actionId)!;
+ }).immediate();
 }
 
 /** A pending action is canceled locally, before the canonical owner has ever seen it. */
