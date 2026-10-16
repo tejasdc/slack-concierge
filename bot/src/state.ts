@@ -19,14 +19,17 @@ import { log } from "./log";
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
-if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
+// These early control tables precede the base schema batch below. Commit their schema and
+// seed rows together too, rather than paying eleven disk syncs on a fresh ledger.
+if (initializeLedgerSchema) db.transaction(() => {
+db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
   limits_json TEXT NOT NULL DEFAULT '{}'
 )`);
 // Google joins through an additive table: deployment never rebuilds the live provider cache.
-if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
+db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider = 'antigravity'),
   generation INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 0,
@@ -34,7 +37,7 @@ if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS antigravity_usag
 )`);
 // A human control has one durable gate, independent of any agent's execution or the
 // coordinator process. Both native and adapter claim paths consult this row.
-if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS global_pause (
+db.exec(`CREATE TABLE IF NOT EXISTS global_pause (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
   generation INTEGER NOT NULL DEFAULT 0,
@@ -73,7 +76,7 @@ CREATE TABLE IF NOT EXISTS global_pause_exceptions (
   session_id INTEGER NOT NULL,
   PRIMARY KEY(generation,machine,session_id)
 )`);
-if (initializeLedgerSchema) db.exec(`CREATE TABLE IF NOT EXISTS focus_hold (
+db.exec(`CREATE TABLE IF NOT EXISTS focus_hold (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   until_ms INTEGER,
   label TEXT,
@@ -87,6 +90,8 @@ CREATE TABLE IF NOT EXISTS focus_hold_actions (
   until_ms INTEGER,
   label TEXT
 )`);
+
+}).immediate();
 
 const localPauseMachine=process.env.CONCIERGE_PEER_NAME==='mac'?'mac':'cloud';
 

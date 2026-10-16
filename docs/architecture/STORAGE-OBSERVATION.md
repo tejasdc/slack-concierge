@@ -10,12 +10,13 @@ identify a competing writer; compare the phase with owner loop lag and ledger wo
 
 ## Startup transaction ownership
 
-`state.ts` creates the base ledger schema in one immediate transaction and applies
-legacy column/index upgrades in a second immediate transaction. Multi-statement
+`state.ts` first creates the early provider-usage, pause and focus-control tables and
+their seed rows in one immediate transaction. It then creates the base ledger schema
+in another immediate transaction and batches legacy column/index upgrades separately. Multi-statement
 `db.exec` alone does not group SQLite commits: without these boundaries, a fresh
 ledger pays a durable commit for each schema mutation. Nested migration transactions
 remain savepoints, including when the deployment migrator already owns the writer.
-Read executors skip both batches. No journal or synchronous setting is weakened.
+Read executors skip all schema batches. No journal or synchronous setting is weakened.
 
 The legacy batch ends before `initializeSessionOwnerSchema`, which switches foreign
 keys before entering its own transaction for table rebuilds. Wrapping that call in
@@ -33,6 +34,24 @@ without extending deadlines, changing scratch isolation, or skipping lifecycle w
 This repair was committed without tests or reviews under the incident's explicit
 policy; the external supervisor and detached controller own subsequent validation
 and activation evidence.
+
+The October 16 candidate `2bdcdfbe1b9263351c591d3fb415c906bcb8fd69` exhausted
+the accepted-input admission child's 30-second deadline after `owner-loaded` and
+before `queue-verified`. Its successful queue claim at 04:45:34.575 UTC took 582 ms,
+580 ms outside the measured claim work. During the same preparation, the serving
+owner reported disk syncs of 1,001–2,040 ms; subsequent deployment transactions
+reported 1,385 ms and 2,994 ms in commit with zero writer-acquisition wait. This is
+evidence of slow durable storage, not a failed request-custody assertion.
+
+The early control schema had remained outside the existing startup batches: nine
+table creations and two seed inserts each committed independently on a fresh ledger.
+Its new immediate transaction reduces those eleven durable commits to one. The
+defect predates this candidate's request-routing changes. Exact import and individual
+schema timings were not retained, so its share of the deadline and completion under
+the corrected batching remain unmeasured. The existing admission fixture, scratch
+configuration, deadline and foreign-key migration boundary are unchanged. This
+incident's repair runs no tests or reviews; the supervisor and detached controller
+own validation, integration and installed health proof.
 
 ### Presentation worker startup
 

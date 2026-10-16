@@ -286,7 +286,7 @@ authorization or a change to the default rapid-iteration policy.
   Update status and wait notices read their waiting start from the run row rather than scanning event history;
   the same durability document owns the 2026-10-13 disk-contention evidence and acceptance check.
   Slow Inbox topic mutations break input retention into bounded, content-free storage phases there.
-  Ledger startup batches base schema and legacy upgrades; presentation worker schema setup
+  Ledger startup batches early control tables, base schema and legacy upgrades; presentation worker schema setup
   is one atomic transaction with startup timing, without weakening durability;
   see [startup transaction ownership](docs/architecture/STORAGE-OBSERVATION.md#startup-transaction-ownership).
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
