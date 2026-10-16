@@ -1,0 +1,1 @@
+While a focus session runs in thnkr.ing, new captures and requests wait in the Inbox instead of starting agent work, and start by themselves when the session ends. TL;DR: Captures still arrive and are kept. The Inbox agent picks them up once you stop focusing; work already running is never stopped.
