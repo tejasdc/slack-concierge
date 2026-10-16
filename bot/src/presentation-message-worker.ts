@@ -11,6 +11,7 @@ import {preparedInboxDisplay} from './presentation-inbox-display';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
+import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
@@ -23,7 +24,7 @@ prepared.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL');
 const schemaStarted=performance.now();
 writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'starting',worker_pid:process.pid}));
 // One atomic schema install avoids a durable commit per DDL statement on cold starts.
-const {search,cards,receipts,topics,labRequests}=prepared.transaction(()=>{
+const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>{
   prepared.exec(`
     CREATE TABLE IF NOT EXISTS presentation_message_meta(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,
@@ -100,8 +101,9 @@ const {search,cards,receipts,topics,labRequests}=prepared.transaction(()=>{
     {...row,native_metadata_json:row.native_metadata_json??'{}'}));
   const receipts=new PreparedReceipts(source,prepared);
   const topics=new PreparedTopics(source,prepared);
+  const areas=new PreparedAreas(source,prepared);
   const labRequests=new PreparedLabRequests(source,prepared);
-  return {search,cards,receipts,topics,labRequests};
+  return {search,cards,receipts,topics,areas,labRequests};
 }).immediate();
 writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'ready',worker_pid:process.pid,
   elapsed_ms:Math.round(performance.now()-schemaStarted)}));
@@ -334,6 +336,7 @@ async function rebuild() {
       cards.beginRebuild(generation);
       receipts.beginRebuild(generation);
       topics.beginRebuild(generation);
+      areas.beginRebuild(generation);
       labRequests.beginRebuild(generation);
     })();
     let after=0,more=true;
@@ -397,6 +400,14 @@ async function rebuild() {
       prepared.transaction(()=>{keepLease();topics.updateSorting(topics.context(generation,inbox.id));})();
       await yieldProgress();
     }
+    for(const kind of ['areas','threads','neighbors'] as const){
+      let after=0;
+      while(true){
+        const page=prepared.transaction(()=>{keepLease();return areas.rebuildPage(generation,kind,after,50);})();
+        after=page.last;if(!page.hasMore)break;
+        await yieldProgress();
+      }
+    }
     prepared.transaction(()=>{
       keepLease();
       prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=1,answer_closures_version=1 WHERE singleton=1')
@@ -428,7 +439,7 @@ async function catchUp() {
         target_input_id:string|null}[];
   if(!changes.length){
     prepared.transaction(()=>{keepLease();receipts.refreshDue(current.generation);
-      if(Date.now()-lastTopicCollection>60_000){topics.collectPage();lastTopicCollection=Date.now();}})();
+      if(Date.now()-lastTopicCollection>60_000){topics.collectPage();areas.collectPage(meta().generation);lastTopicCollection=Date.now();}})();
     return;
   }
   const resolveRoot=inboxRootResolver(source);
@@ -568,6 +579,7 @@ async function catchUp() {
     receipts.apply(current.generation,changes);
     receipts.refreshDue(current.generation);
     topics.apply(current.generation,changes,changedRoots);
+    areas.apply(current.generation,changes);
     labRequests.apply(current.generation,changes);
     // A legacy channel name/path is a fallback label for every session in that channel.
     // Process only affected sessions, in fixed pages; the worker remains off the owner loop.

@@ -73,7 +73,7 @@ router-actions.sh sessions topics items <topicId> <source-flags> --kind question
 router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
 router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
-router-actions.sh sessions topics create <source-flags> --action-id A --title T [--summary S] [--root <inputId> ...] [--reason R]
+router-actions.sh sessions topics create <source-flags> --action-id A --title T --area <areaId> [--area <areaId> ...] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
 router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R]
 router-actions.sh sessions topics rename <topicId> <source-flags> --action-id A --reason R -- <title>
@@ -93,6 +93,12 @@ router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-
 router-actions.sh sessions topics file <topicId> <source-flags> --action-id A --need <attention entry id> [--reason R]
 router-actions.sh sessions topics focus <topicId> <source-flags> --action-id A [--input <inputId> ...] -- <what the router is doing>
 router-actions.sh sessions topics release <source-flags> --action-id A [--input <inputId> ...]
+router-actions.sh sessions areas list <source-flags> [--query Q] [--limit N] [--cursor C]
+router-actions.sh sessions areas suggest <source-flags> --title "New thread title"
+router-actions.sh sessions areas create <source-flags> --action-id A --title "Area name" [--summary S]
+router-actions.sh sessions areas link|unlink <areaId> <source-flags> --action-id A --thread <topicId> [--reason R]
+router-actions.sh sessions areas neighbor|unneighbor <areaId> <source-flags> --action-id A --into <otherAreaId> [--reason R]
+router-actions.sh sessions areas rename|summary <areaId> <source-flags> --action-id A --title NAME | --summary TEXT
 
 A topic owns thread roots, the human requests inside them, the questions waiting on Tejas and the router's declared focus. Place a capture before routing or answering it. topics questions takes the reconciliation JSON array (--json-file); topics answer takes {"mappings":[…],"unresolved":[…],"acknowledged":[…]}. Only this Inbox may change topics; a worker session may call topics questions/read for a topic it holds a linked dispatch for. sessions post releases focus for the inputs it covers unless --keep-working.
 
@@ -167,10 +173,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file"];
-const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence"];
+const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
-  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
+  "--into","--thread","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -189,7 +195,13 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     if (sub !== "settle") invalid("topics question takes settle.");
     verb = "question.settle";
   }
-  const identified = !["list","create","release","questions-read"].includes(verb);
+  if(head==='area'){
+    const sub=options.shift();
+    if(!sub||!["list","suggest","create","rename","summary","link","unlink","neighbor","unneighbor"].includes(sub))
+      invalid('areas takes list, suggest, create, rename, summary, link, unlink, neighbor or unneighbor.');
+    verb=`area.${sub}`;
+  }
+  const identified = !["list","create","release","questions-read","area.list","area.suggest","area.create"].includes(verb);
   let identity: string | undefined;
   if (identified) {
     identity = options.shift();
@@ -209,7 +221,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","read","items","detail","resolve","questions-read"].includes(verb);
+  const mutating = !["list","read","items","detail","resolve","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
@@ -218,6 +230,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
   const copy = (flag: string, field: string) => { if (flags.has(flag)) body[field] = flags.get(flag); };
   copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
+  copy("--thread", "topic_id");
   copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
   copy("--kind","kind");
@@ -237,6 +250,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     body.expected_revision = Number(flags.get("--expected-revision"));
   }
   if (repeated.has("--root")) body.roots = repeated.get("--root");
+  if (repeated.has("--area")) body.area_ids = repeated.get("--area");
   if (repeated.has("--source")) body.sources = repeated.get("--source");
   if (repeated.has("--item")) body.items = repeated.get("--item");
   if (repeated.has("--input")) body.inputs = repeated.get("--input");
@@ -267,7 +281,13 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
     else if (verb === "question.settle") body.question_id = identity;
     else if (verb === "answer") body.input_id = identity;
+    else if(verb.startsWith('area.'))body.area_id=identity;
     else body.topic_id = identity;
+  }
+  if(verb.startsWith('area.')){
+    if(flags.has('--title'))body.name=flags.get('--title');
+    if(verb==='area.suggest')body.title=flags.get('--title');
+    if(verb==='area.neighbor'||verb==='area.unneighbor')body.other_area_id=flags.get('--into');
   }
   if (takesText) {
     const value = content[0]!;
@@ -480,6 +500,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const outcome = operation === 'outcome' ? args.shift() : undefined;
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
+  if (operation === "areas") return parseTopicsArgs(['area',...args]);
   if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }
