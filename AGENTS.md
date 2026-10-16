@@ -84,6 +84,9 @@ the main-thread recipient rule remains unchanged. See the same prompt-answer con
 Requests naming an Inbox thread deliver answers and terminal notices to that thread without
 waking the requester, unless the ask explicitly chooses a requester return; see
 [requests and returns](docs/architecture/SESSION-OWNER.md#requests-and-returns).
+Decision replies returned to an ordinary requester create one requester-owned blocking
+attention item at return admission, for local and peer workers; the same contract owns
+its notification identity and human-answer settlement.
 After a prompt-answer partial, a bodyless final closes that exact request and attaches its
 closing facts beneath the existing answer; a final body is new visible text. The same contract
 holds for Mac peers. See [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
