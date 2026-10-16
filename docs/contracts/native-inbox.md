@@ -359,6 +359,10 @@ named an older topic. The Conversation shows the original request text as its ro
 the answer keeps its exact source and author. Linking a dispatch to a topic refuses a mismatch
 unless that topic contains the dispatch root or the named thread. This rule also projects
 already retained answers under their request's placed root without changing their bytes.
+Moving a root to another topic is refused once a human reply from that root has been
+forwarded to an agent for its current topic. The move would silently relocate that
+reply's later answers and requested notifications. Route the exact human message
+instead; its source remains visible in the original conversation.
 Both server and Mac startup reconcile requests placed after their answers arrived: they close
 the answered request and move its existing reading item without notifying twice.
 

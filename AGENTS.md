@@ -27,6 +27,8 @@ the router can list or suggest areas before filing. Concierge owns the associati
 Thinkering reads bounded prepared pages. See [areas of interest](docs/architecture/AREAS-OF-INTEREST.md).
 Routing one message out of an Inbox conversation keeps its original root and records
 linked source and destination views; whole-conversation placement requires the root.
+Placement refuses moving a root with a forwarded human reply bound to its current topic;
+route that exact message instead so its answers and notices stay with it.
 See [one-message routing](docs/plans/2026-10-15-route-one-inbox-message.md).
 
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
@@ -270,6 +272,8 @@ authorization or a change to the default rapid-iteration policy.
   detail; source, message and accepted-input identity remain attached to the preview.
   See the [history wire contract](docs/contracts/session-owner-v1.md).
 - The interactive session catalogue is a prepared, bounded read over the owner's ledger;
+  its message worker upgrades agent-request visibility in bounded batches so fresh thread
+  replies do not wait behind a complete history rebuild.
   new card fields need canonical change-journal coverage and a growth fixture. The worker,
   cursor and exact-detail boundary are in [prepared session catalogue](docs/architecture/PREPARED-SESSION-CATALOGUE.md).
   Catalogue startup locks report indexing until its readonly schema entrance is ready.
