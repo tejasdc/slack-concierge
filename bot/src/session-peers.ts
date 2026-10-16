@@ -64,7 +64,10 @@ export class PeerError extends Error {
 class PeerReplyContractError extends Error {}
 /** Bun names a refused connection `ConnectionRefused`; Node names it `ECONNREFUSED`. */
 const peerAnsweredRefused=(error:unknown)=>['ConnectionRefused','ECONNREFUSED'].includes(String((error as {code?:unknown})?.code??''));
+/** Longer than an update's restart and start-up, shorter than an outage worth a repair agent's turn. */
+const PEER_DOWN_ANNOUNCE_AFTER_MS=3*60_000;
 export class PeerClient {
+  private refusedSince:number|null=null;
   constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
   async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=OWNER_READ_RESPONSE_MS,trackAvailability=true,signal?:AbortSignal):Promise<T> {
     let response:Response;
@@ -82,12 +85,20 @@ export class PeerClient {
       // That is a real outage and is announced (to the repair agent first): on 2026-10-10 the
       // Mac's Concierge failed to restart for two hours while he used the Mac, and was treated
       // as asleep the whole time.
+      // An update restarts the peer's Concierge in seconds, and every request in flight is refused
+      // at once: fifteen refusals in under four seconds tripped this breaker and filed a "not
+      // running" notice for a routine update twice in one night (2026-10-16, 11:54 PM and 1:16 AM).
+      // So a refusal is announced only after the peer has kept refusing for a few minutes.
       const awake=peerAnsweredRefused(error);
-      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,announce:awake,
+      const now=Date.now();
+      this.refusedSince=awake?this.refusedSince??now:null;
+      const downLongEnough=awake&&now-this.refusedSince!>=PEER_DOWN_ANNOUNCE_AFTER_MS;
+      if(trackAvailability)recordRetryFailure({key:`peer:${this.name}`,site:'peer',what:`Requests to ${this.name}`,announce:downLongEnough,
         failure:{kind:'unknown',reason:awake?`${this.name} is awake and answering, but its Concierge is not running, so work sent to it is waiting.`:`Peer ${this.name} is unreachable.`,
           waitForSignal:`${this.name} next contacts this instance`,restartSignal:`${this.name} next contacts this instance`}});
       throw new PeerError(`Peer ${this.name} is unreachable.`,'unreachable',null,'PEER_UNREACHABLE');
     }
+    this.refusedSince=null;
     let value:any=null;
     try {value=await response.json();} catch {value=null;}
     if(response.status===401||response.status===403)throw new PeerError(`Peer ${this.name} refused this instance's token.`,'unauthorized',response.status,'PEER_UNAUTHORIZED');

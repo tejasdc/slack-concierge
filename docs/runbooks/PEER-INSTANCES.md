@@ -513,8 +513,9 @@ by one of the functions above, never by a second, peer-only projection.
   stays recorded and resumes by itself.
 - A peer that is awake but whose Concierge is down is not asleep, and is announced. A sleeping
   machine never answers, so the connection times out; a refused connection is the machine
-  itself saying nothing listens on the port. Only a refusal sets `announce` on the peer breaker,
-  so when the breaker stops retrying the notice goes to the repair agent (its kind is
+  itself saying nothing listens on the port. Only a refusal that has lasted three minutes sets
+  `announce` on the peer breaker (an update's restart refuses for seconds, and its burst of
+  in-flight refusals used to trip the breaker and file a notice for every routine update), so when the breaker stops retrying the notice goes to the repair agent (its kind is
   `retry_stopped`), which reaches Tejas only if it cannot fix it. To fix it from the server:
   `/root/workspace/agent-scripts/mac-ssh.sh 'launchctl print gui/$(id -u)/com.tejasdc.concierge'`
   (a large `runs` count with `last exit code = 1` is a crash loop) and the end of
