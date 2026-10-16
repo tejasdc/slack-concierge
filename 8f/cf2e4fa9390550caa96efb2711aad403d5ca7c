@@ -1,0 +1,1 @@
+Inbox threads stay visible while a reply update rebuilds their prepared view in the background.
