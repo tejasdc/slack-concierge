@@ -96,10 +96,14 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
   if(!hadAnswerClosures)prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN answer_closures_version INTEGER NOT NULL DEFAULT 0');
   const hadMarkedReplyRoots=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
     .some(column=>column.name==='marked_reply_roots_version');
-  if(!hadMarkedReplyRoots){
+  if(!hadMarkedReplyRoots)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN marked_reply_roots_version INTEGER NOT NULL DEFAULT 0');
-    prepared.query('UPDATE presentation_message_meta SET ready=0 WHERE singleton=1').run();
-  }
+  // A lineage upgrade builds into the next generation. Keep the complete active generation readable
+  // until that shadow generation is atomically activated, including after an interrupted upgrade.
+  const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
+    FROM presentation_message_meta WHERE singleton=1`).get() as {generation:number;ready:number;version:number};
+  if(markedReplyState.generation>0&&!markedReplyState.ready&&markedReplyState.version===0)
+    prepared.query('UPDATE presentation_message_meta SET ready=1 WHERE singleton=1').run();
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
@@ -447,6 +451,9 @@ async function rebuild() {
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
+  const markedReplyRootsVersion=(prepared.query(`SELECT marked_reply_roots_version AS version
+    FROM presentation_message_meta WHERE singleton=1`).get() as {version:number}).version;
+  if(markedReplyRootsVersion<1){await rebuild();return;}
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
