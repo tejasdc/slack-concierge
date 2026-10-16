@@ -20,13 +20,14 @@ validation happens after custody, so an invalid command occupies its terminal st
 instead of leaving a missing predecessor. Browser cards
 distinguish device custody, server custody, and owner acceptance.
 
-The worker uses named attempt and age limits for delivery and for reaching the custody queue.
-A malformed route or invalid prepared body settles as a preparation refusal before any owner
+The worker uses named attempt and age limits for each delivery window and for reaching the custody
+queue. A malformed route or invalid prepared body settles as a preparation refusal before any owner
 exchange. A lost owner answer, timeout or owner 5xx does not establish whether the effect happened:
-after the delivery budget it stops automatic attempts, preserves the command and its ordered
-stream position, reports `unconfirmed`, and files one repair notice. Other streams keep moving.
-An explicit Retry reopens the same action ID and prepared bytes; the owner still deduplicates it.
-The browser also bounds status polling and retains its local command when the status budget ends.
+after the first bounded window the worker files one repair notice, then starts another window and
+keeps the same command, ordered position and prepared bytes. A later answer from the owner settles
+the original action; its idempotency key makes an ambiguous retry safe. Other streams keep moving.
+The browser keeps checking a pending command without making the person press Retry. An older
+`unconfirmed` command can still be resumed explicitly with the same identity.
 If the browser receives a confirmed HTTP 404 or 413 before ingress custody, its authenticated gateway
 records a small terminal refusal under that same action and stream sequence. The full original
 body stays on the device for correction; no owner delivery is claimed. An existing ingress row
@@ -42,7 +43,9 @@ owner-route allowlist; it accepts no arbitrary URL or provider command. Duplicat
 different bytes, or duplicate stream sequence slots, are refused. Predecessor commands in one
 client/session stream must settle before the next is delivered; a terminal refusal releases that
 stream. Sequence slots start at one; a missing earlier network arrival holds later ordinary
-commands. Exact-run Stop and cancel-by-action bypass predecessor order. When cancellation arrives
+commands. The browser retains that earlier command and retries it while the page is open and after
+reload; the queue must not invent a terminal slot without its bytes or a confirmed refusal.
+Exact-run Stop and cancel-by-action bypass predecessor order. When cancellation arrives
 while its exact session/action target is still pending in ingress,
 one transaction freezes the target transport row and retains the cancellation command. The owner
 records the cancellation intent under the exact session/action identity; it does not fabricate a

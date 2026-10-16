@@ -51,7 +51,7 @@ export class HumanCommandWorker {
     prepare:(command:HumanCommand)=>Promise<CommandDelivery>;
     deliver:(command:HumanCommand,prepared:unknown)=>Promise<CommandDelivery>;
     refused?:(command:HumanCommand,result:CommandDelivery)=>Promise<void>|void;
-    stopped?:(command:HumanCommand,reason:string,stage:"preparation"|"owner")=>Promise<void>|void;
+    retryBudgetReached?:(command:HumanCommand,reason:string,stage:"preparation"|"owner")=>Promise<void>|void;
     queueStopped?:(reason:string)=>Promise<void>|void;
     fetch?:typeof fetch;
   }>){ }
@@ -163,17 +163,12 @@ export class HumanCommandWorker {
       await this.queue(address+'/retry',{claimId,nextAttemptMs:next.atMs});
       return;
     }
-    await this.options.stopped?.(command,reason,stage);
-    if(stage==='preparation'){
-      // No owner exchange was attempted; this can settle as a preparation refusal.
-      const refused={status:503,value:{error:{code:'COMMAND_PREPARATION_UNAVAILABLE',message:reason}}};
-      await this.options.refused?.(command,refused);
-      await this.queue(address+'/settle',{claimId,ownerStatus:503,ownerResponse:refused.value,decisionStage:'preparation'});
-      return;
-    }
-    // A 5xx or lost acknowledgement does not prove the owner refused or skipped it.
-    // Keep the exact command, halt this ordered stream, and let other streams proceed.
-    await this.queue(address+'/exhaust',{claimId,reason});
-    log('error','human_command_delivery_unconfirmed',{action_id:command.actionId,attempts,reason});
+    // An outage gives no terminal answer. Report the exceeded window once, then start another
+    // bounded window with the same retained bytes and action identity. The owner deduplicates an
+    // earlier acceptance whose acknowledgement was lost.
+    await this.options.retryBudgetReached?.(command,reason,stage);
+    await this.queue(address+'/retry',{claimId,nextAttemptMs:Date.now()+RETRY_POLICIES.humanCommandDelivery.capDelayMs,
+      restartWindow:true});
+    log('warn','human_command_delivery_waiting',{action_id:command.actionId,attempts,stage,reason});
   }
 }
