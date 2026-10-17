@@ -29,7 +29,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex} from './meaning-index';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
-import {providerDisplayName,CHATGPT_THINKING_LEVELS,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
+import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
@@ -2600,10 +2600,22 @@ export class SessionOwner {
       if(prior?.version===source.version&&JSON.stringify(prior)===JSON.stringify(retained)
         &&metadata.title===source.title&&(metadata.project??null)===(source.project??null))return existing;
       if(prior?.version!==source.version)db.query('UPDATE sessions SET binding_generation=binding_generation+1 WHERE id=?').run(existing.id);
-      updateSessionMetadata(existing.id,{source:retained,title:source.title,project:source.project??null});
+      updateSessionMetadata(existing.id,{source:retained,title:source.title,project:source.project??null,
+        ...(existing.provider_id==='chatgpt'&&source.scope&&source.nativeId?{nativeBinding:{accountScope:source.scope,sessionId:source.nativeId}}:{} )});
+      if(existing.provider_id==='chatgpt'&&!existing.agent_session_uuid&&source.nativeId) {
+        db.query("UPDATE sessions SET agent_session_uuid=? WHERE id=? AND (agent_session_uuid IS NULL OR agent_session_uuid='')").run(source.nativeId,existing.id);
+      }
       return getSessionById(existing.id)!;
     }
-    return createNativeSession(source.provider,{origin:'imported',title:source.title,summary:purposeFromFirstWords(source.title),project:source.project??null,source:retained,...(source.provider==='chatgpt'?{}:{interactionPolicy:'consultation-only' as const})});
+    const session=createNativeSession(source.provider,{origin:'imported',title:source.title,summary:purposeFromFirstWords(source.title),project:source.project??null,source:retained,
+      ...(source.provider==='chatgpt'?{
+        nativeBinding:source.scope&&source.nativeId?{accountScope:source.scope,sessionId:source.nativeId}:undefined,
+        model:`${HIS_CHATGPT_PREFIX}${DEFAULT_HIS_CHATGPT_THINKING}`
+      }:{interactionPolicy:'consultation-only' as const})});
+    if(source.provider==='chatgpt'&&source.nativeId) {
+      db.query("UPDATE sessions SET agent_session_uuid=? WHERE id=?").run(source.nativeId,session.id);
+    }
+    return session;
   }
   async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
     const started=performance.now();

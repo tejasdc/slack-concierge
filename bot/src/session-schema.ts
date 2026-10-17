@@ -643,6 +643,12 @@ export function initializeSessionOwnerSchema(db: Database) {
       // When a question he set aside comes back in front of him (ISO instant); null for one set aside with no time.
       add('inbox_questions','defer_until','defer_until TEXT');
       add('session_peer_requests','thread_root_input_id','thread_root_input_id TEXT');
+      db.exec(`UPDATE sessions
+        SET agent_session_uuid = json_extract(native_metadata_json, '$.source.nativeId')
+        WHERE provider_id = 'chatgpt'
+          AND json_extract(native_metadata_json, '$.origin') = 'imported'
+          AND (agent_session_uuid IS NULL OR agent_session_uuid = '')
+          AND json_extract(native_metadata_json, '$.source.nativeId') IS NOT NULL;`);
       initializePresentationChanges(db);
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);

@@ -22,6 +22,7 @@ import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
+import { isHisChatGpt } from './aliases';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, questionForTejas } from './answers-to-tejas';
@@ -982,6 +983,7 @@ export class SessionCommunicationCoordinator {
         address?: string;
         provider?: string;
         smallTask?: boolean;
+        hisChat?: boolean;
         /** Run the new Codex session's turns outside Concierge (outside-codex.ts); otherwise an ordinary request. */
         outside?: boolean;
         effort?: string;
@@ -1194,9 +1196,14 @@ export class SessionCommunicationCoordinator {
             // ChatGPT has no session tools and answers with its turn, so it gets only the asker's
             // words: given the request protocol it tried to run router-actions.sh (2026-10-09).
             const toChatgpt=input.provider==='chatgpt'||targetSession?.provider_id==='chatgpt';
-            const firstInput={text:toChatgpt?(input.provider==='chatgpt'&&!input.effort?.startsWith('tejas:')?`${input.text}
-
-${chatgptRequestLine()}`:input.text):`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const isHisChat = isHisChatGpt({
+                origin: targetSession ? sessionMetadata(targetSession).origin : undefined,
+                model: targetSession ? sessionMetadata(targetSession).model : undefined,
+                effort: input.effort,
+                hisChat: input.hisChat,
+            });
+            const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
+            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,firstInput,saved:input.saved});

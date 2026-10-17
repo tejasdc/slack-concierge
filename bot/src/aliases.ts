@@ -239,6 +239,19 @@ export function chatgptThinkingLevel(input: string | null | undefined): ChatgptT
   return (CHATGPT_THINKING_LEVELS as readonly string[]).includes(level ?? "") ? level as ChatgptThinkingLevel : null;
 }
 
+export function isHisChatGpt(options: {
+  origin?: string | null;
+  model?: string | null;
+  effort?: string | null;
+  hisChat?: boolean | null;
+}): boolean {
+  if (options.hisChat) return true;
+  if (options.origin === "imported") return true;
+  if (options.model?.startsWith(HIS_CHATGPT_PREFIX)) return true;
+  if (options.effort?.startsWith(HIS_CHATGPT_PREFIX)) return true;
+  return false;
+}
+
 // Effort is an axis of its own, not a property of the model choice. An alias
 // that names no effort takes its provider's default, which is configured here
 // rather than inherited from the host CLI's `model_reasoning_effort`, so

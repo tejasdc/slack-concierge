@@ -613,7 +613,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       interactionPolicy: input.interactionPolicy,
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
-      sessionUUID: input.session.agent_session_uuid,
+      sessionUUID: input.session.agent_session_uuid || (input.session.provider_id === 'chatgpt' ? sessionMetadata(input.session).nativeBinding?.sessionId : null) || null,
       systemPrompt: [preparedTurn.systemPrompt,actualClaudeBrief].filter(Boolean).join('\n\n')||undefined,
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),

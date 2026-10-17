@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, finishTurn, settleTurnDependencies, getSessionById, type ProviderId, type SessionRow } from './state';
-import {resolveProviderAlias,resolveProviderDefault} from './aliases';
+import {DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,isHisChatGpt,resolveProviderAlias,resolveProviderDefault} from './aliases';
 import {purposeLine} from './session-purpose';
 import {receiveSessionFromPeer} from './peer-identity';
 import {notificationRequest} from './session-notification-request';
@@ -66,7 +66,16 @@ export function stablePayload(value:unknown):string {
   return JSON.stringify(order(value));
 }
 export function sessionMetadata(session:SessionRow): NativeSessionMetadata {
-  return JSON.parse(session.native_metadata_json || '{}');
+  const meta: NativeSessionMetadata = JSON.parse(session.native_metadata_json || '{}');
+  if (session.provider_id === 'chatgpt' && meta.origin === 'imported') {
+    if (!meta.nativeBinding && meta.source?.nativeId && meta.source?.scope) {
+      meta.nativeBinding = { accountScope: meta.source.scope, sessionId: meta.source.nativeId };
+    }
+    if (!meta.model) {
+      meta.model = `${HIS_CHATGPT_PREFIX}${DEFAULT_HIS_CHATGPT_THINKING}`;
+    }
+  }
+  return meta;
 }
 export function updateSessionMetadata(sessionId:number, change:Partial<NativeSessionMetadata>) {
   const session = getSessionById(sessionId);
@@ -300,8 +309,12 @@ export function enqueueSessionInput(inputId:string) {
     if (input.kind!=='fork' && (typeof text!=='string' || (!text.trim()&&(!Array.isArray(attachments)||!attachments.length)))) throw new Error('An executable input needs text or an attachment.');
     if(input.origin==='human'||input.origin==='agent')discardQueuedTurnContinuations(session.id,'new_input');
     const metadata=sessionMetadata(session);
+    const defaultChatGptModel = isHisChatGpt({ origin: metadata.origin, model: metadata.model, effort: metadata.reasoningEffort })
+      ? `${HIS_CHATGPT_PREFIX}${DEFAULT_HIS_CHATGPT_THINKING}`
+      : DEFAULT_CHATGPT_THINKING;
     const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):
-      session.provider_id==='antigravity'?resolveProviderAlias('google'):null;
+      session.provider_id==='antigravity'?resolveProviderAlias('google'):
+      session.provider_id==='chatgpt'?{model:defaultChatGptModel,reasoning_effort:null}:null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
       requested_by_user_id,provider_model,reasoning_effort,replay_text)
       VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,
