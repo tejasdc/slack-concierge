@@ -52,6 +52,13 @@ export const VIEWABLE_EXTENSIONS: Readonly<Record<string, WorkspaceFileKind>> = 
 };
 const MAX_BYTES = 8 * 1024 * 1024;
 
+const SENSITIVE_NAMES = /^(?:credentials?|secrets?|tokens?|service[-_.]?account|client[-_.]?secret|api[-_.]?key|private[-_.]?key|google-services|id_(?:rsa|dsa|ecdsa|ed25519))(?:[-_.]|$)/i;
+
+/** Filesystem reads are a human browsing surface, never a way to inspect hidden configuration. */
+export function isSensitiveWorkspacePath(path: string): boolean {
+  return path.split(/[\\/]+/).some(part => part.startsWith('.') || SENSITIVE_NAMES.test(part));
+}
+
 /** `~` is this machine's home. Every other path is taken as written. */
 export function expandHome(path: string): string {
   return path === '~' ? homedir() : path.startsWith('~/') ? resolve(homedir(), path.slice(2)) : path;
@@ -68,7 +75,7 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   // A dotfile is configuration and credentials rather than something an agent asks him to
   // read: `.env` would otherwise arrive as ordinary text.
   const extension = name.toLowerCase().slice(name.toLowerCase().lastIndexOf('.'));
-  const kind = name.startsWith('.') ? undefined : VIEWABLE_EXTENSIONS[extension];
+  const kind = isSensitiveWorkspacePath(relative(input.workspaceRoot,path)) ? undefined : VIEWABLE_EXTENSIONS[extension];
   if (!kind) throw new WorkspaceFileError('That kind of file cannot be opened here.', 415, 'FILE_TYPE_UNSUPPORTED');
   let root: string;
   try { root = realpathSync(input.workspaceRoot); } catch { throw new WorkspaceFileError('This machine has no readable workspace root.', 503, 'WORKSPACE_ROOT_UNAVAILABLE'); }

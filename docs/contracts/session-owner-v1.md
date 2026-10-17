@@ -545,6 +545,7 @@ additive to everything above, carry a request between two instances' ledgers:
 | --- | --- |
 | `GET /sessions/v1/peers` | `{self, peers:[{name,url,lastUnreachableAt}]}`: this instance's name and its configured peers. |
 | `GET /sessions/v1/status` | Includes `operations:["project.setup"]` when this owner accepts the durable named operation. Missing support parks a sender order as `needs_update`. |
+| `GET /sessions/v1/projects/:name/files?path=…&machine=…` | Lists at most 400 direct children of one relative folder under a registered project root as `{project:{name,cwd},path,entries:[{name,path,kind}],truncated}`. The named machine answers through the existing peer channel. Absolute paths, traversal, symlinks, hidden paths and credential-like names are never returned. File content remains on the separately bounded `GET /sessions/v1/files` read. |
 | `POST /sessions/v1/projects/new` | Owner socket only: `{name,purpose,hereOnly?,source?:{input,run}}`. Creates and pushes one private GitHub project before recording orders. Agent source is an exact retained input/run pair; terminal callers omit it. |
 | `POST /sessions/v1/projects/share` | Owner socket only: `{name,to,source?:{input,run}}`. Requires a registered local Git project with matching `tejasdc` origin and pushed branch. Records one durable order for the named peer. |
 | `GET /sessions/v1/projects/status/:name?peer=…` | Reads local retained orders with peer, state, result and creation time; no peer connection is needed. |

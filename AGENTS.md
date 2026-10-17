@@ -343,6 +343,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the
   other. See [peer instances](docs/runbooks/PEER-INSTANCES.md#durable-project-setup).
+- Project file browsing lists one bounded directory under a registered local or peer project;
+  individual file reads enforce the same hidden, credential and symlink boundary. See
+  [session owner v1](docs/contracts/session-owner-v1.md).
 - Capture ingress owns only its capture database. Its executable may import the storage-neutral
   retry and database-retry primitives, but never the application notice worker, retry adapter or
   Concierge ledger; the service user is deliberately not given that production state path.
