@@ -16,7 +16,7 @@ const liveOwner=new Set([
 ]);
 const provider=new Set(['/sessions/:id/history','/sessions/:id/history/messages/:id/detail',
   '/sessions/:id/details/:id','/sessions/:id/artifacts/:id']);
-const filesystem=new Set(['/files','/projects/:id/instructions','/projects/:id/todos',
+const filesystem=new Set(['/files','/projects/:id/instructions','/projects/:id/todos','/projects/:id/files',
   '/attachments/:id','/attachments/:id/transcription','/inbox/:id']);
 const account=new Set(['/auth/providers']);
 

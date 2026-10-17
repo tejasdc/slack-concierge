@@ -20,6 +20,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/projects/:id/status',purpose:'one project setup status',maxResponseBytes:MiB,kind:'control'},
  {path:'/projects/:id/instructions',purpose:'one exact project instructions file',maxResponseBytes:8*MiB,kind:'control'},
  {path:'/projects/:id/todos',purpose:'one exact project task file',maxResponseBytes:8*MiB,kind:'control'},
+ {path:'/projects/:id/files',purpose:'one bounded folder inside a registered project',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/files',purpose:'one explicitly named workspace file; size still capped',maxResponseBytes:32*MiB,kind:'control'},
  {path:'/saved-work/settings',purpose:'one saved-work settings record',maxResponseBytes:MiB,kind:'control'},
  {path:'/attachments/:id',purpose:'one retained attachment; size still capped',maxResponseBytes:64*MiB,kind:'control'},

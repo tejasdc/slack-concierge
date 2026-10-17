@@ -218,6 +218,8 @@ export class SessionPeers {
   instanceForPath(path:string):string|null{return this.peerForPath(path);}
   /** Read a Markdown file from the machine that holds it. The peer applies its own workspace boundary. */
   async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}
+  /** List one registered project folder on the peer that owns it. */
+  async projectFiles(peer:string,project:string,path:string){return this.client(peer).request('GET','/sessions/v1/projects/'+encodeURIComponent(project)+'/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}
   /** Configured peers in the order they were given, for surfaces that show every machine. */
   names():string[]{return [...this.dependencies.clients.keys()];}
   /**

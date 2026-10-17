@@ -144,6 +144,14 @@ async function remoteFile(url:URL):Promise<Response|null>{
   const answer=await peerGet(remote,'/sessions/v1/files?'+new URLSearchParams({path,machine:remote}),20_000);
   return Response.json(answer);
 }
+async function remoteProjectFiles(url:URL):Promise<Response|null>{
+  const machine=url.searchParams.get('machine');
+  if(machine!==null&&!/^[a-z][a-z0-9-]{0,31}$/.test(machine))
+    throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
+  if(!machine||machine===self)return null;
+  const answer=await peerGet(machine,url.pathname+'?'+new URLSearchParams({path:url.searchParams.get('path')??'',machine}),20_000);
+  return Response.json(answer);
+}
 
 await removeUnboundSocket(socket);
 const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
@@ -180,6 +188,7 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
     response=await observeStorageOperation(route.pattern,async()=>{
       if(route.source==='account')return authProviders(url);
       if(route.pattern==='/files')return await remoteFile(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
+      if(route.pattern==='/projects/:id/files')return await remoteProjectFiles(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
       return await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
     },measured=>{work=measured;});
   }catch(error){

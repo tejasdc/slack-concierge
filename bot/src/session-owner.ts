@@ -3,8 +3,8 @@ import {ownerRequestLabel} from './owner-request-label';
 import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
-import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
-import {basename,dirname,join,relative,sep} from 'node:path';
+import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
+import {basename,dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
@@ -75,7 +75,7 @@ import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
 import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
-import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
+import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
@@ -362,6 +362,7 @@ function pagePosition(path:HistoryPath,head:number,generation:number,messages:re
  * all its messages (the latest 400 checked, none without one).
  */
 export type EventFilter={kind?:string|null;limit?:number|null};
+type ProjectFilesView={project:{name:string;cwd:string};path:string;entries:Array<{name:string;path:string;kind:'directory'|'file'}>;truncated:boolean};
 /** A comma-separated query value is a set; an absent or empty value filters nothing. */
 const list=(value?:string|null)=>{const values=(value??'').split(',').map(item=>item.trim()).filter(Boolean);return values.length?values:null;};
 function sessionSpaceParam(value:string|null):SessionSpace|undefined {
@@ -1402,6 +1403,52 @@ export class SessionOwner {
     }
     try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
     catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
+  }
+  /**
+   * One bounded folder in a registered project. The project name, rather than a caller supplied
+   * root, chooses the authority boundary. Relative paths cannot cross it; hidden/sensitive names
+   * and every symlink are omitted, so entries returned here remain safe inputs to `file()`.
+   */
+  async projectFiles(id:string,path:unknown,machine:string|null):Promise<ProjectFilesView> {
+    const peers=this.peers;
+    const remote=machine!==null?this.remoteMachine(machine):null;
+    if(remote){
+      if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
+      try {return await peers.projectFiles(remote,id,typeof path==='string'?path:'') as ProjectFilesView;}
+      catch(error) {
+        if(error instanceof PeerError)throw new SessionOwnerError(error.kind==='unreachable'?`${remote} is not answering, so its project files cannot be listed right now.`:error.message,
+          error.kind==='unreachable'?424:error.status??502,error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
+        throw error;
+      }
+    }
+    const project=this.project(id);
+    const requested=path===null||path===undefined?'':typeof path==='string'?path.trim():'';
+    if(requested.length>4096||requested.includes('\0')||requested.includes('\\')||isAbsolute(requested)||requested.split('/').some(part=>part==='..')||isSensitiveWorkspacePath(requested))
+      throw new SessionOwnerError('Choose a folder inside this project.',400,'PROJECT_PATH_INVALID');
+    const relativePath=requested.split('/').filter(part=>part&&part!=='.').join('/');
+    const folder=join(project.cwd,...(relativePath?relativePath.split('/'):[]));
+    let real:string;
+    try {real=realpathSync(folder);}
+    catch {throw new SessionOwnerError('That project folder is unavailable.',404,'PROJECT_FOLDER_UNAVAILABLE');}
+    if(real!==folder||real!==project.cwd&&!real.startsWith(project.cwd+sep))
+      throw new SessionOwnerError('Choose a folder inside this project.',403,'PROJECT_PATH_OUTSIDE_ROOT');
+    try {if(!lstatSync(real).isDirectory())throw new SessionOwnerError('Choose a project folder.',400,'PROJECT_PATH_NOT_FOLDER');}
+    catch(error) {if(error instanceof SessionOwnerError)throw error;throw new SessionOwnerError('That project folder is unavailable.',404,'PROJECT_FOLDER_UNAVAILABLE');}
+    const entries:Array<{name:string;path:string;kind:'directory'|'file'}>=[];
+    let truncated=false;
+    let directory:ReturnType<typeof opendirSync>;
+    try {directory=opendirSync(real);}
+    catch {throw new SessionOwnerError('That project folder cannot be read.',403,'PROJECT_FOLDER_UNREADABLE');}
+    try {
+      for(;;){
+        const entry=directory.readSync();if(!entry)break;
+        if(entry.isSymbolicLink()||isSensitiveWorkspacePath(entry.name)||!entry.isDirectory()&&!entry.isFile())continue;
+        if(entries.length===400){truncated=true;break;}
+        entries.push({name:entry.name,path:relativePath?`${relativePath}/${entry.name}`:entry.name,kind:entry.isDirectory()?'directory':'file'});
+      }
+    } finally {directory.closeSync();}
+    entries.sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==='directory'?-1:1);
+    return {project:{name:project.name,cwd:project.cwd},path:relativePath,entries,truncated};
   }
   projectInstructions(id:string) {
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
@@ -3388,6 +3435,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='files'&&parts.length===3) result=await this.projectFiles(parts[1]!,url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
