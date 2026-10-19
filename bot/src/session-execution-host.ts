@@ -958,7 +958,14 @@ export class SessionExecutionHost {
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
               ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
                 log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
-              .then(result=>{noteChatgptModel(result.text);return result;},error=>{noteChatgptChannelFailure(error,session.id);throw error;});
+              .then(result=>{
+                noteChatgptModel(result.text);
+                const body=result.text.replace(/^Answered by ChatGPT model[^\n]*\n*/,'').trim();
+                if(!body){
+                  throw new ProviderDispatchError({message:'ChatGPT returned a proof line without an answer body.',terminalConfirmed:false,toolsUsed:[],failureClass:'retryable'});
+                }
+                return result;
+              },error=>{noteChatgptChannelFailure(error,session.id);throw error;});
           }
           if(outside)return runOutsideCodexTurn(actual as OutsideRun);
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
