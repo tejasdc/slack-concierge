@@ -164,7 +164,7 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
       const capacityOnStderr = failure === null && isModelCapacityRefusal(stderrTail)
         ? "Selected model is at capacity. Please try a different model." : null;
       throw new ProviderDispatchError({
-        message: (threadWriterConflict ? "This Codex conversation is already held by another writer."
+        message: (threadWriterConflict ? "This Codex conversation is already held by another writer; retry after that process releases it."
           : failure ?? capacityOnStderr ?? (signedOut ? "Codex is signed out on this machine."
           : `Codex ended ${exit.signal ? `on signal ${exit.signal}` : `with code ${exit.code}`} before finishing its turn.`)).slice(0, MAX_ERROR_TEXT),
         // The process has exited, so the turn is over. It is known to have done nothing when it

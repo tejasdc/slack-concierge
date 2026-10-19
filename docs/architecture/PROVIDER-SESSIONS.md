@@ -447,8 +447,9 @@ On October 19 the shared daemon held the writer lock for an outside conversation
 the observer had resumed it; the CLI follow-up failed before starting a turn. A CLI
 refusal saying the thread already has an active writer is now a typed conversation
 ownership failure. It fails that request without spending or tripping the account-wide
-Codex retry budget. A previously loaded outside conversation may remain locked until
-the App Server releases its idle thread; a release must check the actual writer lock
+Codex retry budget. Old App Server lifecycle observations for outside sessions are ignored
+by session presence and App Server repair gating. A previously loaded outside conversation
+may remain locked until the App Server releases its idle thread; a release must check the actual writer lock
 before retrying that conversation.
 
 **Capacity is one typed fact, wherever it comes from.** `isModelCapacityRefusal` in
