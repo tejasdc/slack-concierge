@@ -2160,7 +2160,12 @@ export class SessionOwner {
       } else if(action.kind==='read'||action.kind==='dismiss') {
         if(!Number.isSafeInteger(action.generation)||action.generation<0)throw new SessionOwnerError('Exact observed generation required.');
         const key=action.kind==='read'?'readGeneration':'dismissedGeneration';
-        const ceiling=attentionCeiling(meta,openAttention(session));
+        // The session's own counter already proves the ceiling for an ordinary mark.
+        // Only a generation inherited from an older session can exceed it; that case
+        // still needs the exact open-attention check. Building the Inbox's open list
+        // for every phone read or dismiss walked every question and its thread history.
+        const ceiling=action.generation<=(meta.generation??0)
+          ?meta.generation??0:attentionCeiling(meta,openAttention(session));
         updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,ceiling))});
         // Marking the Inbox seen ends the reading items up to that point, and only those: a
         // decision stays until it is answered or settled (the panel says so when nothing cleared).
