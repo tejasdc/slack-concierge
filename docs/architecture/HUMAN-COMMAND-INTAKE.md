@@ -28,6 +28,16 @@ keeps the same command, ordered position and prepared bytes. A later answer from
 the original action; its idempotency key makes an ambiguous retry safe. Other streams keep moving.
 The browser keeps checking a pending command without making the person press Retry. An older
 `unconfirmed` command can still be resumed explicitly with the same identity.
+
+The capture store also reports ordered streams with a retained human message waiting at least one
+minute behind an absent or exhausted predecessor. The command worker checks this every thirty
+seconds without delaying delivery and files one durable notice to the standing repair agent per
+stream head. The notice names the client, session, sequence, blocker and waiting count, without
+message text. Its repair path checks exact custody and uses the existing resume or audited
+missing-slot operation; it never creates a replacement message. Ingress logs each newly retained
+human message and each explicit recovery decision by action identity, so the custody and recovery
+steps can be correlated after an incident. The agent owner already monitors claimable turns and
+returned answers; this check covers the earlier independent ingress boundary they cannot see.
 If the browser receives a confirmed HTTP 404 or 413 before ingress custody, its authenticated gateway
 records a small terminal refusal under that same action and stream sequence. The full original
 body stays on the device for correction; no owner delivery is claimed. An existing ingress row

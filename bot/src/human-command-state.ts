@@ -120,6 +120,30 @@ function row(actionId: string): HumanCommandRow | null {
 
 export function commandStatus(actionId: string): HumanCommandRow | null { return row(actionId); }
 
+/** Browser messages waiting behind an absent or stopped stream head. The capture store owns this ordering. */
+export function blockedHumanMessageStreams(nowMs=Date.now(),minimumAgeMs=60_000): Array<{
+  clientId:string;sessionId:string;headSequence:number;headActionId:string|null;
+  headReason:string;waitingMessages:number;oldestWaitingAt:string;
+}> {
+  return (captureDb.query(`SELECT stream.client_id AS clientId,stream.session_id AS sessionId,
+      stream.next_sequence AS headSequence,head.action_id AS headActionId,
+      CASE WHEN head.action_id IS NULL THEN 'missing' ELSE 'exhausted' END AS headReason,
+      count(*) AS waitingMessages,min(waiting.created_at) AS oldestWaitingAt
+    FROM human_command_streams stream
+    LEFT JOIN human_commands head ON head.client_id=stream.client_id
+      AND head.session_id=stream.session_id AND head.sequence=stream.next_sequence
+    JOIN human_commands waiting ON waiting.client_id=stream.client_id
+      AND waiting.session_id=stream.session_id AND waiting.sequence>stream.next_sequence
+      AND waiting.status='pending' AND waiting.path LIKE '%/inputs'
+    WHERE head.action_id IS NULL OR (head.status='pending' AND head.exhausted_at_ms IS NOT NULL)
+    GROUP BY stream.client_id,stream.session_id,stream.next_sequence,head.action_id
+    HAVING min(waiting.created_at)<=datetime(? / 1000,'unixepoch')
+    ORDER BY oldestWaitingAt LIMIT 20`).all(nowMs-minimumAgeMs) as Array<{
+      clientId:string;sessionId:string;headSequence:number;headActionId:string|null;
+      headReason:string;waitingMessages:number;oldestWaitingAt:string;
+    }>);
+}
+
 /** An audited missing arrival can release later retained commands without occupying its slot.
  * A late original is retained but cannot execute until a separate recovery decision. */
 export function releaseMissingHumanCommandSlot(input:Readonly<{clientId:string;sessionId:string;sequence:number;recoveryActionId:string;reason:string}>):number {

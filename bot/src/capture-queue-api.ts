@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -123,6 +123,9 @@ export function createCaptureQueueRequestHandler(
       try {
         const command=humanCommand(await requestBody(request));
         const retained=retainHumanCommand(command);
+        if(command.path.endsWith('/inputs'))log('info','human_message_retained',{
+          action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
+          sequence:retained.sequence,status:retained.status});
         dependencies.afterCommit?.("claim",retained.action_id);
         return jsonResponse(202,commandReply(retained.action_id)!);
       } catch(error) {
@@ -141,12 +144,16 @@ export function createCaptureQueueRequestHandler(
         const recoveryActionId=requiredString(body.recoveryActionId,'recoveryActionId',200);
         const reason=requiredString(body.reason,'reason',1000);
         const nextSequence=releaseMissingHumanCommandSlot({clientId,sessionId,sequence,recoveryActionId,reason});
+        log('warn','human_command_missing_slot_released',{client_id:clientId,session_id:sessionId,
+          sequence,recovery_action_id:recoveryActionId,next_sequence:nextSequence});
         return jsonResponse(200,{ok:true,nextSequence});
       }catch(error){
         log('warn','human_command_missing_slot_release_refused',errorFields(error));
         return jsonResponse(409,{error:'missing_slot_release_refused'});
       }
     }
+    if(url.pathname==='/commands/blocked'&&request.method==='GET')
+      return jsonResponse(200,{streams:blockedHumanMessageStreams()});
     if(url.pathname==='/commands/release-held-late'&&request.method==='POST'){
       try{
         const body=await requestBody(request);
@@ -225,6 +232,8 @@ export function createCaptureQueueRequestHandler(
     const resumeMatch=url.pathname.match(/^\/commands\/([^/]+)\/resume$/);
     if(resumeMatch&&request.method==='POST'){
       const resumed=resumeExhaustedHumanCommand(decodeURIComponent(resumeMatch[1]));
+      if(resumed)log('warn','human_command_resumed',{action_id:resumed.action_id,
+        client_id:resumed.client_id,session_id:resumed.session_id,sequence:resumed.sequence});
       return resumed?jsonResponse(200,commandReply(resumed.action_id)!):jsonResponse(409,{error:'command_not_stopped'});
     }
     const withdrawMatch=url.pathname.match(/^\/commands\/([^/]+)\/withdraw$/);

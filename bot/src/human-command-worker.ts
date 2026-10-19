@@ -44,6 +44,7 @@ export class HumanCommandWorker {
   private queueFailures=0;
   private queueFailureSince=0;
   private queueNotified=false;
+  private nextBlockedCheckMs=0;
   private readonly workerId=randomUUID();
   private readonly owner=currentProcessIdentity();
   constructor(private readonly options:Readonly<{
@@ -53,6 +54,8 @@ export class HumanCommandWorker {
     refused?:(command:HumanCommand,result:CommandDelivery)=>Promise<void>|void;
     retryBudgetReached?:(command:HumanCommand,reason:string,stage:"preparation"|"owner")=>Promise<void>|void;
     queueStopped?:(reason:string)=>Promise<void>|void;
+    blocked?:(stream:{clientId:string;sessionId:string;headSequence:number;headActionId:string|null;
+      headReason:string;waitingMessages:number;oldestWaitingAt:string})=>Promise<void>|void;
     fetch?:typeof fetch;
   }>){ }
 
@@ -73,6 +76,7 @@ export class HumanCommandWorker {
   }
   private async drain(){
     while(this.running){
+      void this.checkBlockedStreams();
       const claimId=randomUUID();
       let claimed:Response;
       try{claimed=await this.queue("/commands/claim",{claimId,
@@ -152,6 +156,18 @@ export class HumanCommandWorker {
         delivery_ms:Math.round(performance.now()-deliveryStarted),
       });
     }
+  }
+  private async checkBlockedStreams(){
+    if(Date.now()<this.nextBlockedCheckMs)return;
+    this.nextBlockedCheckMs=Date.now()+30_000;
+    try{
+      const response=await (this.options.fetch??fetch)(`${this.options.queueUrl}/commands/blocked`,{
+        headers:{authorization:`Bearer ${this.options.queueToken}`},signal:AbortSignal.timeout(10_000)});
+      if(!response.ok)throw new Error(`Blocked command check answered ${response.status}`);
+      const body=await response.json() as {streams:Array<{clientId:string;sessionId:string;headSequence:number;
+        headActionId:string|null;headReason:string;waitingMessages:number;oldestWaitingAt:string}>};
+      for(const stream of body.streams)await this.options.blocked?.(stream);
+    }catch(error){log('warn','human_command_blocked_check_failed',errorFields(error));}
   }
   private async retryOrStop(command:HumanCommand,claimId:string,attempts:number,retryWindowStartedMs:number|null,createdAt:string,reason:string,
     stage:"preparation"|"owner"="owner"){
