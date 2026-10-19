@@ -4157,6 +4157,14 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         queueStopped:reason=>{
           recordRepairNotice(db,{key:`human-command-queue:${Date.now()}`,kind:'retry_stopped',text:reason});
         },
+        blocked:stream=>{
+          const key=`human-command-blocked:${stream.clientId}:${stream.sessionId}:${stream.headSequence}`;
+          if(recordRepairNotice(db,{key,kind:'stuck_work',
+            text:`Human messages are retained but cannot reach their conversation. Stream ${stream.sessionId} on client ${stream.clientId} is stopped at sequence ${stream.headSequence} (${stream.headReason}${stream.headActionId?`, action ${stream.headActionId}`:''}); ${stream.waitingMessages} later message(s) have waited since ${stream.oldestWaitingAt}. Inspect capture custody and use the recorded recovery controls without replacing any message identity.`}))
+            log('error','human_command_stream_blocked',{client_id:stream.clientId,session_id:stream.sessionId,
+              head_sequence:stream.headSequence,head_reason:stream.headReason,
+              waiting_messages:stream.waitingMessages,oldest_waiting_at:stream.oldestWaitingAt});
+        },
       });
       humanCommandWorker.start();
     }
