@@ -2468,6 +2468,7 @@ export function listUniqueCodexSessionBindings(): CodexSessionBinding[] {
     FROM sessions s
     WHERE s.provider_id='codex'
       AND s.status<>'archived'
+      AND COALESCE(json_extract(s.native_metadata_json,'$.outside'),0)=0
       AND s.agent_session_uuid IS NOT NULL
       AND s.agent_session_uuid IN (
         SELECT agent_session_uuid
@@ -2489,6 +2490,7 @@ export function getUniqueCodexSessionBinding(providerThreadUuid: string): CodexS
     FROM sessions s
     WHERE s.provider_id='codex'
       AND s.status<>'archived'
+      AND COALESCE(json_extract(s.native_metadata_json,'$.outside'),0)=0
       AND s.agent_session_uuid=?
       AND (
         SELECT COUNT(*)

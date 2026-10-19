@@ -216,6 +216,7 @@ async function codexServerUnmanaged(): Promise<boolean> {
 function externallyRunningCodexTurns(): number {
   try {
     return (db.query(`SELECT COUNT(*) AS count FROM sessions WHERE provider_id='codex'
+      AND COALESCE(json_extract(native_metadata_json,'$.outside'),0)=0
       AND json_extract(native_metadata_json,'$.codexLifecycle.state') IN ('running','uncertain')`).get() as { count: number }).count;
   } catch { return -1; }
 }

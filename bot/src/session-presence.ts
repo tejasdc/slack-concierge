@@ -29,7 +29,7 @@ export type SessionTiming=Readonly<{startedAt:string|null;endedAt:string|null;wo
 export type SessionPresence=AgentIdentity&Readonly<{execution:string;timing:SessionTiming|null;presenceRevision:number}>;
 
 type PresenceSession={id:number;provider_id:string|null;agent_session_uuid:string|null};
-type PresenceMeta={model?:unknown;reasoningEffort?:unknown;codexLifecycle?:any};
+type PresenceMeta={model?:unknown;reasoningEffort?:unknown;codexLifecycle?:any;outside?:boolean};
 type TurnFacts={id:number;status:string;native_run_id:string|null;provider_turn_id:string|null;started_at:string|null;ended_at:string|null;
   provider_input_acknowledged_at:string|null;provider_duration_ms:number|null};
 
@@ -50,7 +50,8 @@ export function sessionExecution(source:Database,session:PresenceSession,meta:Pr
   const latest=source.query(`SELECT ${fields} FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
   const active=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
   const queued=(source.query("SELECT count(*) AS count FROM turns WHERE session_id=? AND status='queued'").get(session.id) as {count:number}).count;
-  const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
+  const observed=session.provider_id==='codex'&&meta.outside!==true
+    &&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
   const lastStarted=source.query("SELECT started_at FROM turns WHERE session_id=? AND status<>'queued' AND started_at IS NOT NULL ORDER BY id DESC LIMIT 1")
     .get(session.id) as {started_at:string}|null;
   // External provider work has no owner input/run. Project its evidence without manufacturing one.
