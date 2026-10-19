@@ -666,8 +666,9 @@ that started it, nested helpers included (a nested `task_started` carries
 `owned_by_subagent`, and its completion restarts the helper), and Anthropic's sub-agents
 documentation says not to write polling or sleep loops. A pre-command refusal of wait-only jobs
 existed briefly on 2026-10-07 and was removed the same day: guessing from command text refused real
-work. Concierge tracks report obligations only for jobs whose `task_started` identifies this
-session as their owner; the ownerless `background_tasks_changed` level set can end a known job
+work. Concierge keeps the CLI alive for every active job, including jobs found only in the
+ownerless `background_tasks_changed` level set. It tracks report obligations only for jobs
+whose `task_started` identifies this session as their owner; that level set can end a known job
 but cannot assign an unknown job to the parent. A `task_notification` system event or its
 trusted user row in the parent transcript cancels the missing-report deadline. If a subagent
 resumes under the same task ID, its new start supersedes its old end.
