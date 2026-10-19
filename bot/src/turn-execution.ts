@@ -1186,7 +1186,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // Sign-in and allowance holds have their own release signals, so they do not
       // consume a timed provider-request retry budget.
       if (replaySafe && !authWait && !googleUsageWait && heldUntilMs === null && !switchClaudeAccount &&
-        !invalidGoogleModel && !chatgptPlaceLost) {
+        !invalidGoogleModel && !chatgptPlaceLost && !structuredFailure?.threadWriterConflict) {
         const failure = retryable
           ? { kind: 'transient' as const, reason: message, retryAtMs: heldUntilMs,
               restartSignal: 'the account answers or a retry is requested' }

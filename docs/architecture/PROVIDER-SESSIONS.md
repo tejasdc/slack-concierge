@@ -433,6 +433,24 @@ changed." while the moved turn was running and answering it. `dispatch` in
 retained (`target_input_id` in `target_session_id`) and decodes the address only when that
 input is gone.
 
+### Outside Codex conversation ownership
+
+An outside request runs each turn with `codex exec` in its own execution host. That
+process is the conversation's sole writer while it runs; a follow-up launches another
+CLI process against the same rollout after the prior one exits. The shared App Server
+observer selects only sessions without `outside` metadata. Its startup sweep, new-binding
+subscription and notification path therefore never call `thread/resume` for an outside
+conversation. Its history remains in the CLI's own stored rollout.
+
+This boundary matters because `thread/resume` loads a writer, even with `excludeTurns`.
+On October 19 the shared daemon held the writer lock for an outside conversation after
+the observer had resumed it; the CLI follow-up failed before starting a turn. A CLI
+refusal saying the thread already has an active writer is now a typed conversation
+ownership failure. It fails that request without spending or tripping the account-wide
+Codex retry budget. A previously loaded outside conversation may remain locked until
+the App Server releases its idle thread; a release must check the actual writer lock
+before retrying that conversation.
+
 **Capacity is one typed fact, wherever it comes from.** `isModelCapacityRefusal` in
 `provider-failures.ts` matches OpenAI's words ("Selected model is at capacity", the App
 Server's `server_overloaded`), and `ProviderDispatchError` derives `modelAtCapacity` from

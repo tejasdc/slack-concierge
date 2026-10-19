@@ -24,7 +24,7 @@ import type { AgentProvider } from "./providers";
 import type { ClaudeCodeTransport } from "./claude-code";
 import type { RunResult } from "./codex";
 import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
-import { ProviderDispatchError, ProviderTurnCancelledError, isModelCapacityRefusal } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError, isCodexThreadWriterConflict, isModelCapacityRefusal } from "./provider-failures";
 import { ProviderCapabilityUnavailableError } from "./provider-policy";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 
@@ -158,17 +158,20 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
     if (cancelRequested && !completed) throw new ProviderTurnCancelledError("The outside Codex run was stopped.");
     if (!completed) {
       const signedOut = /401 Unauthorized|token_expired|refresh_token_reused|sign in again|not logged in/i.test(`${failure ?? ""} ${stderrTail}`);
+      const threadWriterConflict = isCodexThreadWriterConflict(`${failure ?? ""} ${stderrTail}`);
       // A capacity refusal the CLI printed only on stderr (a resumed run's remote compaction died
       // on one on 2026-10-16 with no error event, so the run read as "ended with code 1").
       const capacityOnStderr = failure === null && isModelCapacityRefusal(stderrTail)
         ? "Selected model is at capacity. Please try a different model." : null;
       throw new ProviderDispatchError({
-        message: (failure ?? capacityOnStderr ?? (signedOut ? "Codex is signed out on this machine."
+        message: (threadWriterConflict ? "This Codex conversation is already held by another writer."
+          : failure ?? capacityOnStderr ?? (signedOut ? "Codex is signed out on this machine."
           : `Codex ended ${exit.signal ? `on signal ${exit.signal}` : `with code ${exit.code}`} before finishing its turn.`)).slice(0, MAX_ERROR_TEXT),
         // The process has exited, so the turn is over. It is known to have done nothing when it
         // never began a turn, or when the CLI itself reported the failure (turn.failed, an error
         // event, or a capacity refusal on stderr) and no output or tool item ever appeared.
-        terminalConfirmed: (!acknowledged || failure !== null || capacityOnStderr !== null) && !observedOutput && toolsUsed.size === 0,
+        terminalConfirmed: (!acknowledged || failure !== null || capacityOnStderr !== null || threadWriterConflict) && !observedOutput && toolsUsed.size === 0,
+        threadWriterConflict,
         assistantOutput: observedOutput, providerSessionId: threadId, toolsUsed: [...toolsUsed] });
     }
     if (!threadId)

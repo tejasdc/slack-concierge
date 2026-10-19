@@ -19,6 +19,11 @@ export function isContextOverflowRefusal(message: string) {
 import { isModelCapacityRefusal } from './model-capacity-refusal';
 export { isModelCapacityRefusal };
 
+/** A local conversation ownership refusal says nothing about the account's health. */
+export function isCodexThreadWriterConflict(message: string): boolean {
+  return /thread(?:-store conflict|\/resume failed): thread [0-9a-f-]+ already has an active writer/i.test(message);
+}
+
 export class ProviderTurnCancelledError extends Error {
   constructor(message = "Turn stopped from Slack.") {
     super(message);
@@ -38,6 +43,7 @@ export class ProviderDispatchError extends Error {
   readonly immediateRetry: boolean;
   /** The provider's typed refusal says this model has no serving capacity. */
   readonly modelAtCapacity: boolean;
+  readonly threadWriterConflict: boolean;
   /**
    * The instant this refusal's own condition is known to clear, when the provider stated
    * one — a usage allowance reset. Set it only where nothing was sent or the provider
@@ -57,6 +63,7 @@ export class ProviderDispatchError extends Error {
     providerTurnId?: string | null;
     immediateRetry?: boolean;
     modelAtCapacity?: boolean;
+    threadWriterConflict?: boolean;
     clearsAtMs?: number | null;
   }) {
     super(input.message);
@@ -69,6 +76,7 @@ export class ProviderDispatchError extends Error {
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;
     this.modelAtCapacity = input.modelAtCapacity === true || isModelCapacityRefusal(input.message);
+    this.threadWriterConflict = input.threadWriterConflict === true || isCodexThreadWriterConflict(input.message);
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
   }
