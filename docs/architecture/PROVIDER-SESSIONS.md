@@ -564,9 +564,10 @@ because it governs every project and both providers; project AGENTS.md files
 point to it rather than restating it. In short: work whose acceptance criterion is
 already fixed goes **down** to a provider-native subagent when its result only
 returns to the parent; nested helpers stay inside that subagent. The parent
-reviews the result. A new Concierge session is reserved for independently
-followable or steerable work, such as another project or separately shipped
-change [decision: native-helpers-before-new-sessions];
+reviews the result. A new Concierge session is for work that is its own job,
+such as another project or repository, a separately shipped change, or work
+that must run apart from or outlive the parent. Tejas need not follow or steer
+that session [decision: native-helpers-before-new-sessions];
 a problem that is stuck — unknown cause after a failed fix, a regression from the
 agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
 shipping guesses, research the platform, and get a second opinion without asking;

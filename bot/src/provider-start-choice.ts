@@ -92,7 +92,7 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
   const name = (key: 'claude-code' | 'codex') => providerDisplayName(key) ?? key;
   const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now, pressure.account) : null;
   const action = codex
-    ? 'Continue the accepted work. Provider-native subagents inherit this session\'s provider. If separate work owns a surface Tejas could follow or steer, a new session without --provider lets the owner use current Codex room. Review its result before you finish; this running session keeps its provider.'
+    ? 'Continue the accepted work. Provider-native subagents inherit this session\'s provider. If other work is its own job, a new session without --provider lets the owner use current Codex room, whether or not Tejas follows it. Review its result before you finish; this running session keeps its provider.'
     : 'Continue the accepted work. Provider-native subagents inherit this session\'s provider; no other provider has been established as the roomier choice for separate work.';
   const machine = process.platform === 'darwin' ? 'your Mac' : 'the server';
   return [`Budget: Accounts on ${machine} measured ${name(provider)} account ${pressure.account}, ${pressure.window}: ${pressure.usedPercent}% used at ${pressure.observedAt}.`,
