@@ -50,8 +50,10 @@ from its Git checkout before starting the updated owner. Both slots survive a re
 or checkout rollback. Installation preserves the CLI's other settings and refuses
 to replace an unrelated status-line command.
 
-The `google` alias selects Gemini 3.8 Flash (High) through Antigravity, the highest
-Gemini mode Google's CLI listed for this account on 2026-10-13. The earlier Gemini
+The `google` alias selects Gemini 4 Argon (High) through Antigravity, the strongest
+Gemini mode Google's CLI listed for this paid Google AI Pro account on 2026-10-18.
+`google-flash` explicitly selects Gemini 3.8 Flash (High); Automatic never names it.
+The earlier Gemini
 3.1 Pro choice was removed from that live list, so its headless start returned a
 structured zero-turn model refusal before `init`; the provider now carries that
 confirmed refusal to the common failed-turn path, which closes an addressed request
@@ -128,7 +130,8 @@ Model aliases:
 | `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
-| `google` | Antigravity | `gemini-3.8-flash-high` |
+| `google` | Antigravity | `gemini-4-argon-high` |
+| `google-flash` | Antigravity | `gemini-3.8-flash-high` |
 
 `cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
 for models that also have a model-name alias. They keep their historical
@@ -320,6 +323,13 @@ Agents can still name `--provider google` for a specific task. Google currently 
 sequential turns and queues follow-ups until a running turn finishes, so work needing
 live steering is not marked small. An explicitly chosen provider, model or effort is never
 replaced; an existing session keeps its provider.
+
+The October 17 manifesto request was marked small by the Inbox router even though it
+asked for diagnosis and a change to a deliberate publishing rule. That mark admitted
+Google under the intended allowance rule; the request's retained payload previously
+omitted the mark, making its recorded dispatch misleading. New request receipts retain
+the mark for audit. A task that changes an established rule or repairs production does
+not qualify as small merely because one agent could finish it in one session.
 
 Each candidate needs a fresh, complete allowance reading, a launchable account and an
 offered model. Claude may use a verified account home; Codex and Google use only the
