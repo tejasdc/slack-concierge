@@ -562,7 +562,11 @@ The rule lives in one place, the global agent instruction file's **Model
 selection** section (`~/.codex/AGENTS.md`, linked from `~/.claude/CLAUDE.md`),
 because it governs every project and both providers; project AGENTS.md files
 point to it rather than restating it. In short: work whose acceptance criterion is
-already fixed goes **down** to a cheaper model and the parent reviews the result;
+already fixed goes **down** to a provider-native subagent when its result only
+returns to the parent; nested helpers stay inside that subagent. The parent
+reviews the result. A new Concierge session is reserved for independently
+followable or steerable work, such as another project or separately shipped
+change [decision: native-helpers-before-new-sessions];
 a problem that is stuck — unknown cause after a failed fix, a regression from the
 agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
 shipping guesses, research the platform, and get a second opinion without asking;
@@ -594,7 +598,8 @@ and receives Concierge's per-turn prompt (`SESSION_INPUT_INSTRUCTIONS`, passed a
 `--append-system-prompt`) each time a run starts, including a `--resume`; Codex
 receives that prompt as per-turn context, while it reads AGENTS.md only when its
 thread starts. So the per-turn prompt carries a short summary of both directions
-and names the `codex` CLI by full path, which a provider child's PATH lacks. A
+and names the `codex` CLI by full path for a cross-provider consultation, which a
+provider child's PATH lacks. A
 message that steers into a Claude run already in progress gets neither, which is
 why the Inbox router states the escalation directive in the forwarded request
 itself when a trigger applies. `scripts/model-use-audit.py` counts delegation and
@@ -634,6 +639,8 @@ contract; otherwise every turn carries the fallback. Generated managed-project
 messages, passes turn instructions through `--append-system-prompt`, and keeps
 stdin open while steering remains possible.
 
+### Claude Code streaming and background work
+
 Claude's background shells and background agents live inside its CLI process, and
 Claude delivers their completion only while stdin is open: once input closes, its
 print-mode wind-down kills background shells after five seconds and background agents
@@ -659,12 +666,14 @@ that started it, nested helpers included (a nested `task_started` carries
 `owned_by_subagent`, and its completion restarts the helper), and Anthropic's sub-agents
 documentation says not to write polling or sleep loops. A pre-command refusal of wait-only jobs
 existed briefly on 2026-10-07 and was removed the same day: guessing from command text refused real
-work. Concierge does not rely
-on the notification alone: when Claude marks a job ended (a terminal `task_updated`, or the
-job leaving `background_tasks_changed`) and its report has not reached the agent two minutes
-later, the owner steers a service notice into the run and stops holding the job
-(`noticeMissingBackgroundReport`). The 15- and 60-minute prompts remain the check on jobs
-that are still running.
+work. Concierge tracks report obligations only for jobs whose `task_started` identifies this
+session as their owner; the ownerless `background_tasks_changed` level set can end a known job
+but cannot assign an unknown job to the parent. A `task_notification` system event or its
+trusted user row in the parent transcript cancels the missing-report deadline. If a subagent
+resumes under the same task ID, its new start supersedes its old end.
+When a parent-owned job ends without its report for two minutes, the owner steers a service
+notice into the run and stops holding that job (`noticeMissingBackgroundReport`). The 15- and
+60-minute prompts remain the check on jobs that are still running.
 
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. Supported `thread/read(includeTurns=true)` history replays completed items idempotently and proves whether the turn is still in progress or terminal. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 

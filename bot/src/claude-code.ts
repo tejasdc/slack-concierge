@@ -767,34 +767,37 @@ export async function runClaudeCodeTurn(input: {
       input.onRetryRestartReady?.(null);
     }
   };
-  const endingBackgroundTasks = new Set<string>();
-  // Jobs whose report was taken (or declared lost): never readmitted by a later list that still names them.
-  const reportedBackgroundTasks = new Set<string>();
+  const endingBackgroundTasks = new Map<string, ReturnType<typeof setTimeout>>();
   // A job's end seen in the replay starts its grace only when the replay is over: grace is
   // measured in the live run, not in how long the history took to read back.
   const endedDuringReplay = new Map<string, string>();
   const backgroundTaskEnded = (taskId: string, status: string) => {
     if (replaying) { if (backgroundTasks.has(taskId)) endedDuringReplay.set(taskId, status); return; }
     if (!backgroundTasks.has(taskId) || endingBackgroundTasks.has(taskId)) return;
-    endingBackgroundTasks.add(taskId);
-    setTimeout(() => {
+    endingBackgroundTasks.set(taskId, setTimeout(() => {
       endingBackgroundTasks.delete(taskId);
       const task = backgroundTasks.get(taskId);
       if (!task || inputClosed) return;
       log("warn", "claude_code_background_report_missing", { session_uuid: observedSessionUuid, task_id: taskId, status });
       input.onBackgroundReportMissing?.({ id: taskId, description: task.description, status });
       recordBackgroundTaskEvent({ type: "system", subtype: "task_notification", task_id: taskId });
-    }, BACKGROUND_REPORT_GRACE_MS);
+    }, BACKGROUND_REPORT_GRACE_MS));
   };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
+    if (event.type === "user" && event.origin?.kind === "task-notification"
+        && typeof event.message?.content === "string") {
+      // The parent transcript is the final evidence that a report arrived. Claude also emits
+      // a system edge, but either observation must settle the same obligation.
+      const taskId = /^<task-notification>\s*<task-id>([a-zA-Z0-9_-]+)<\/task-id>/.exec(event.message.content)?.[1];
+      if (taskId) recordBackgroundTaskEvent({ type: "system", subtype: "task_notification", task_id: taskId });
+      return;
+    }
     if (event.type === "system" && event.subtype === "background_tasks_changed" && Array.isArray(event.tasks)) {
-      // The level set is authoritative both ways: a job it lists is running even when its start
-      // edge was never seen (design §5, step 8), and a job it no longer lists has ended.
-      const listed = (event.tasks as JsonValue[]).filter(task => typeof task?.task_id === "string" && task.ambient !== true);
-      const active = new Set(listed.map(task => task.task_id));
+      // This level set includes subagents' own jobs and carries no owner. It can establish
+      // when a known parent-owned job ended, but cannot establish that an unknown job is ours.
+      const active = new Set((event.tasks as JsonValue[]).filter(task => typeof task?.task_id === "string")
+        .map(task => task.task_id));
       for (const taskId of backgroundTasks.keys()) if (!active.has(taskId)) backgroundTaskEnded(taskId, "ended");
-      const missedStarts = listed.filter(task => !backgroundTasks.has(task.task_id) && !reportedBackgroundTasks.has(task.task_id));
-      for (const task of missedStarts) recordBackgroundTaskEvent({ ...task, type: "system", subtype: "task_started" });
       return;
     }
     if (event.type !== "system" || typeof event.task_id !== "string") return;
@@ -806,7 +809,17 @@ export async function runClaudeCodeTurn(input: {
       backgroundTaskEnded(event.task_id, String(event.patch.status));
       return;
     }
-    if (event.subtype === "task_started" && event.ambient !== true) {
+    if (event.subtype === "task_started") {
+      const priorEnding = endingBackgroundTasks.get(event.task_id);
+      if (priorEnding) clearTimeout(priorEnding);
+      endingBackgroundTasks.delete(event.task_id);
+      endedDuringReplay.delete(event.task_id);
+      // Claude reuses the same task ID when an agent is resumed. A new start supersedes the
+      // previous end; a subagent's own work is reported to that subagent, not this session.
+      if (event.ambient === true || event.owned_by_subagent === true) {
+        backgroundTasks.delete(event.task_id);
+        return;
+      }
       backgroundTasks.set(event.task_id, {
         description: typeof event.description === "string" && event.description.trim()
           ? event.description.trim() : String(event.task_type || "background task"),
@@ -815,7 +828,12 @@ export async function runClaudeCodeTurn(input: {
       input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait?.since ?? Math.min(...[...backgroundTasks.values()].map(task => task.startedAt))));
       return;
     }
-    if (event.subtype === "task_notification") reportedBackgroundTasks.add(event.task_id);
+    if (event.subtype === "task_notification") {
+      const priorEnding = endingBackgroundTasks.get(event.task_id);
+      if (priorEnding) clearTimeout(priorEnding);
+      endingBackgroundTasks.delete(event.task_id);
+      endedDuringReplay.delete(event.task_id);
+    }
     if (event.subtype !== "task_notification" || !backgroundTasks.delete(event.task_id)) return;
     if (backgroundWait && backgroundTasks.size > 0) {
       input.onBackgroundWait?.(backgroundWaitSnapshot(backgroundWait.since));
@@ -845,6 +863,8 @@ export async function runClaudeCodeTurn(input: {
     if (replaying && !now) { if (owedClose === undefined) owedClose = reason; return; }
     if (inputClosed) return;
     inputClosed = true;
+    for (const timer of endingBackgroundTasks.values()) clearTimeout(timer);
+    endingBackgroundTasks.clear();
     endBackgroundWait();
     if (modelSwitch) {
       clearTimeout(modelSwitch.deadline);
