@@ -1,0 +1,1 @@
+Background helpers continue running until their work finishes, while only missing reports owed to your session can interrupt it.
