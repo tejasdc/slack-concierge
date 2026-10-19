@@ -181,9 +181,12 @@ Trusted local producer `POST /sessions/v1/inbox` accepts:
 }
 ```
 
-Kinds are `pebble`, `thinkering`, `monologue`, and `outside-agent`. Source IDs remain exact producer
-identities: the public capture worker uses its immutable event ID; Monologue uses
-note_id; an outside agent uses the ID minted by the installed helper. An `outside-agent`
+Kinds are `pebble`, `thinkering`, `monologue`, `alexa`, and `outside-agent`, one closed list in
+`bot/src/inbox-producer-sources.ts` that validation, capture state and attribution all read.
+Source IDs remain exact producer identities: the public capture worker uses its immutable event
+ID; Monologue uses note_id; Alexa (remote-box's private skill service, which verifies Amazon's
+request signature) uses the Alexa request ID, so a retried request stays one capture and is shown
+as his, through the door "Alexa"; an outside agent uses the ID minted by the installed helper. An `outside-agent`
 source requires `metadata.outsideAgent` matching the outside-agent name contract, and every
 other kind refuses that field, including `monologue`. An outside-agent source cannot cite a
 Concierge run or request `importOnly`; it always queues the Inbox router. The endpoint uses the existing private `requests.sock` and root filesystem

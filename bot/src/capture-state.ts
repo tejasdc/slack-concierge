@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { isProcessIdentityAlive, processIdentity, type ProcessIdentity } from "./runtime-identity";
 import { captureAttachmentSnapshot, type CaptureAttachment } from "./capture-attachments";
+import type { InboxProducerKind } from "./inbox-producer-sources";
 
 const configuredCaptureStateDir = process.env.CONCIERGE_CAPTURE_STATE_DIR;
 if (!configuredCaptureStateDir) {
@@ -179,7 +180,7 @@ export type CaptureEventStatus = "pending" | "sending" | "delivered" | "parked";
 export type CaptureDeliveryKind = "slack" | "journal" | "session";
 
 export interface CaptureSource {
-  kind: "pebble" | "thinkering" | "monologue" | "outside-agent";
+  kind: InboxProducerKind;
   id: string;
   recordedAt: string;
   title?: string;
