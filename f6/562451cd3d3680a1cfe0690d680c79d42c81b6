@@ -1,0 +1,1 @@
+Agents can start a separate Concierge session for work that stands on its own, even when you do not plan to follow it; helpers that only report to their parent stay inside that agent.
