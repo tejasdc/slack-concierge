@@ -2,6 +2,7 @@ import type {Database} from 'bun:sqlite';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {authorSessionOf} from './session-presence';
+import {FIXED_PRODUCER_DOORS,type InboxProducerKind} from './inbox-producer-sources';
 
 type Input={id:string;session_id:number;scope:string;action_id:string;kind:string;origin:'human'|'agent'|'service';
   payload_json:string;turn_id:number|null;source_input_id:string|null;source_run_id:string|null;request_id:string|null;created_at:string};
@@ -124,7 +125,8 @@ export function inboxAttribution(db:Database){
       const wait=pebbleWait(capture,input.created_at);
       return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(capture.recordedAt))}, reached the server ${minutesText(wait)} later`;
     }
-    if(capture?.kind==='monologue')return 'Monologue';
+    const fixedDoor=FIXED_PRODUCER_DOORS[capture?.kind as InboxProducerKind];
+    if(fixedDoor)return fixedDoor;
     if(capture?.kind==='outside-agent'&&typeof capture.metadata?.outsideAgent==='string')return `Outside agent · ${capture.metadata.outsideAgent}`;
     if(capture?.kind==='session-message')return 'saved from a conversation';
     if(capture?.kind==='thinkering'){

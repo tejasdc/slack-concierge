@@ -61,6 +61,7 @@ import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {isInboxProducerKind} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
@@ -1760,7 +1761,7 @@ export class SessionOwner {
   acceptInboxCapture(body:unknown) {
     const input=object(body);only(input,['source','text','files','importOnly']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
-    if(!['pebble','thinkering','monologue','outside-agent'].includes(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
+    if(!isInboxProducerKind(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
     if(source.title!==undefined&&typeof source.title!=='string')throw new SessionOwnerError('Capture title must be text.');
     if(source.metadata!==undefined)object(source.metadata);
     const outsideAgent=(source.metadata as Record<string,unknown>|undefined)?.outsideAgent;

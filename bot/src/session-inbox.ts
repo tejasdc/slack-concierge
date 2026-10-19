@@ -7,9 +7,10 @@ import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
+import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
-  source:{kind:'pebble'|'thinkering'|'monologue'|'outside-agent';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
+  source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
   text:string;
   // transcript: words the capturing phone already made for this audio; kept with it so nothing
   // transcribes it again.

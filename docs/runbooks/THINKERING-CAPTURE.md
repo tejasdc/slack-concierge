@@ -41,7 +41,7 @@ router-actions.sh test-capture --path <path> --source-input <id> --source-run <i
 Paths: `send-to-inbox`, `bug-report`, `pebble` (this drop-off), `iphone-share`,
 `action-button`, `watch`, `mac` (thnkr.ing's device route, with the agent test device key
 thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnkr.ing, into
-`--reply-to`), and `monologue` (the owner socket). The agent's own accepted input and run travel
+`--reply-to`), and `monologue` or `alexa` (the owner socket; `--source-id` repeats an exact producer ID). The agent's own accepted input and run travel
 as `X-Concierge-Agent-Source: <input> <run>` on the drop-off and thnkr.ing, and as
 `source.metadata.agentSource` or `agentSource` at the owner. The owner (`agentTestSource`)
 records the capture with origin agent and that source, shows it in the Inbox under the agent's
@@ -110,6 +110,13 @@ canonical input ID. Exact source/content retries retain that receipt; changed
 bytes conflict. The session-owner contract owns importOnly and source-bound note
 saving. Monologue preserves its existing seen/order and uncertain Slack records,
 rather than resending those records into the Inbox.
+
+Alexa uses the same door from remote-box's private Alexa skill service (remote-box
+`docs/alexa-meditation.md`), which verifies Amazon's request signature before handing on his
+spoken words: `{"source":{"kind":"alexa","id":"<Alexa request ID>","recordedAt":"<request
+timestamp>"},"text":"<his words>"}`. The request ID is the retry identity. It is recorded as
+his and shown as "You · Alexa"; `test-capture --path alexa` (with optional `--source-id` to
+repeat an ID) exercises it as an agent.
 
 ## Configuration and recovery
 

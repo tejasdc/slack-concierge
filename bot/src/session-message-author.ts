@@ -5,6 +5,7 @@ import type {MessageAuthor} from './provider-history';
 import {peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
+import {FIXED_PRODUCER_DOORS,type InboxProducerKind} from './inbox-producer-sources';
 
 /** Who wrote a message, by the one author-session rule in session-presence.ts. */
 export function authorSession(id:number):MessageAuthor['session'] {
@@ -141,7 +142,8 @@ export function doorOf(input:AcceptedSessionInput):string|null {
     const wait=pebbleArrivalWaitMs(source,input.created_at);
     return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(source.recordedAt))}, reached the server ${minutesText(wait)} later`;
   }
-  if(source?.kind==='monologue')return 'Monologue';
+  const fixedDoor=FIXED_PRODUCER_DOORS[source?.kind as InboxProducerKind];
+  if(fixedDoor)return fixedDoor;
   if(source?.kind==='outside-agent'&&typeof source.metadata?.outsideAgent==='string')return `Outside agent · ${source.metadata.outsideAgent}`;
   if(source?.kind==='session-message')return 'saved from a conversation';
   if(source?.kind==='thinkering'){
