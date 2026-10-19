@@ -1,0 +1,1 @@
+If a message reaches the server but cannot reach its conversation, a repair agent now hears about the blockage and can recover its original delivery.
