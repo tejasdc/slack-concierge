@@ -22,7 +22,8 @@ export type ProviderAliasKey =
   | "cx-sol"
   | "cx-terra"
   | "cx-luna"
-  | "google";
+  | "google"
+  | "google-flash";
 
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
@@ -53,10 +54,10 @@ const CODEX_MODELS = {
   luna: "gpt-6-luna",
 } as const;
 
-// Google changes the subscription's offered models. This is the strongest Gemini
-// mode returned by `agy models` on the server on 2026-10-13; a rejected choice
+// Google's current paid AI Pro CLI offers Argon High as its strongest Gemini mode.
+// Keep Flash selectable only by an explicit model choice. A withdrawn choice
 // must close the request as a failed start rather than wait for an answer.
-const GOOGLE_MODELS = { high: "gemini-3.8-flash-high" } as const;
+const GOOGLE_MODELS = { high: "gemini-4-argon-high", flash: "gemini-3.8-flash-high" } as const;
 
 /**
  * Every model this system can select, and what it is called in front of Tejas.
@@ -99,6 +100,7 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-6-astra": "GPT-6 Astra",
   "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
+  "gemini-4-argon-high": "Gemini 4 Argon (High)",
 };
 
 /**
@@ -284,6 +286,7 @@ export const PROVIDER_ALIASES = {
   "cx-terra": { provider: "codex", model: CODEX_MODELS.terra },
   "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
   google: { provider: "antigravity", model: GOOGLE_MODELS.high },
+  "google-flash": { provider: "antigravity", model: GOOGLE_MODELS.flash },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
 /** Models chosen for a new Automatic session; all model IDs still come from the alias table. */
