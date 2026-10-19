@@ -4142,6 +4142,13 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         },process.env.THINKERING_SESSION_CAPABILITY_SOCKET || "/run/thinkering/session-capabilities.sock"),
         refused:command=>{
           if(!command.path.endsWith('/notification-replies'))return;
+          // An agent testing the reply path through its own marked entrance is told by its own
+          // answer; filing the refusal into his thread made a test read as his reply failing
+          // (2026-10-19, two Watch-reply tests filed as things for him to read).
+          if(command.body.agentSource){
+            log("info","agent_notification_reply_refused",{action_id:command.actionId,session_id:command.sessionId});
+            return;
+          }
           const path='/agents?'+new URLSearchParams({conversation:command.sessionId});
           publishProviderFreeNotice(db,{key:`notification-reply-refused:${command.actionId}`,kind:'notification_reply_refused',
             text:`Your notification reply was refused. [Open the conversation](https://thnkr.ing${path}) to retry with the words kept below.\n\n${String(command.body.text??'')}`,
