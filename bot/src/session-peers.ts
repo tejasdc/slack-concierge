@@ -620,13 +620,22 @@ export class SessionPeers {
         throw new SessionOwnerError('--notify requires a reply that posts into an Inbox thread.');
     }
     const promptAnswer=!!requestPayload.promptAnswer;
-    if(final&&input.replyBody===''&&!input.files?.length&&!db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(requestId))
-      throw new SessionOwnerError('A final reply without a body needs an earlier prompt answer to this request.');
+    if(final&&input.replyBody===''&&!input.files?.length){
+      const answer=db.query(`SELECT json_extract(payload_json,'$.answersQuestion') AS marked,json_extract(payload_json,'$.text') AS text FROM session_peer_events
+        WHERE request_id=? AND kind='progress' AND (json_extract(payload_json,'$.answersQuestion')=1 OR json_extract(payload_json,'$.answerMarkDropped')=1)
+        ORDER BY rowid DESC LIMIT 1`).get(requestId) as {marked:number|null;text:string|null}|null;
+      if(!answer)throw new SessionOwnerError('A final reply without a body needs an earlier prompt answer to this request.');
+      // The Mac accepted this bodyless final because its own copy of the answer kept the mark this
+      // origin dropped; the answer's words become the final's body so the requester still reads them.
+      if(answer.marked!==1)input={...input,replyBody:String(answer.text??'')};
+    }
     // An answer is never refused for its mark: one that has no thread to answer in is kept as
     // ordinary progress. Refusing it here would lose the Mac agent's reply altogether.
+    let answerMarkDropped=false;
     if(input.answersQuestion&&(final||!input.text.trim()||!promptAnswer&&!this.answersInThread(row))){
       log('info','session_peer_answer_mark_dropped',{request_id:requestId,peer:row.peer,event_id:input.eventId});
       input={...input,answersQuestion:false};
+      answerMarkDropped=!final;
     }
     if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
@@ -644,7 +653,7 @@ export class SessionPeers {
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-        ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
+        ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
