@@ -460,8 +460,9 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
             ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
     }
-    if(answer.final&&carriedBy&&answer.closingLine)recordSessionEvent({eventId:`post:closure:${carriedBy}`,sessionId:answer.inboxSessionId,inputId:answer.root,
-      kind:'answer_closure',payload:{postId:carriedBy,closingLine:answer.closingLine}});
+    if(answer.final&&carriedBy&&answer.closingLine&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:closure:${carriedBy}`))
+      recordSessionEvent({eventId:`post:closure:${carriedBy}`,sessionId:answer.inboxSessionId,inputId:answer.root,
+        kind:'answer_closure',payload:{postId:carriedBy,closingLine:answer.closingLine}});
     if(answer.messageThreadRootId&&answer.alsoMainThread&&(text||answer.attachments.length)){
       const mainPostId=`${postId}:main`;
       if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(mainPostId))

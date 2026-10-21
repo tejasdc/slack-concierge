@@ -30,6 +30,10 @@ receipt intact and giving the topic one reading item. Explicit multi-request ret
 their existing command identity. One time repair validates the six recorded posts and their
 answered requests, then appends five collapse events and supersedes five redundant reading
 items. Read projections omit collapsed posts; the originals remain available as ledger evidence.
+The installed two-request trial found that the second request tried to write the first post's
+closing facts again under its own root and hit an event identity conflict. Reusing a post now
+also reuses its already retained closure, so the second request can settle without creating a
+second post or changing the first closure's identity.
 
 ## Acceptance scenario
 
