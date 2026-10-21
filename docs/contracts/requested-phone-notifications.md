@@ -7,7 +7,7 @@ let Tejas know when work finishes select `result`; “remind me” selects
 text, a negated request, and a routine request for explanation do not arm delivery.
 
 A `result` input arms its Inbox topic. The owner retains the exact human input
-that armed it. The first agent answer in that topic consumes every pending arm
+that armed it. The first final agent answer in that topic consumes every pending arm
 and emits one requested notification whose `postId` names that answer. The push
 body is the agent's posted words, carried as the event's `question`; it cannot
 be fabricated from Tejas's request. A later answer is quiet. A later marked
@@ -17,6 +17,9 @@ filed by a local or Mac worker uses the same path. A router response counts only
 when its turn did not dispatch work from that asking input; the router's post or
 result must supply the actual message ID and words. An acknowledgement of work
 in progress leaves the arm for the dispatched answer.
+An interim reply, including one marked as answering a direct question, remains quiet
+unless the agent explicitly uses `--notify`. It does not consume a result arm for
+work still in progress. A later final answer or explicit notification can consume it.
 If an answer also asks for Tejas's decision, its topic question remains a
 decision; the requested phone event uses the `response` outcome required by
 thnkr.ing's one-shot requested-result path.

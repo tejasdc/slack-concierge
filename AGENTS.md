@@ -49,7 +49,8 @@ and [router commands](docs/runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 Session location is hidden behind the shared owner and peer composition; the candidate check
 refuses divergent server/Mac peer wiring. See [session location and parity](docs/architecture/SESSION-LOCATION-PARITY.md).
 Explicit phone requests arm one notification on the Inbox topic, consumed by the next
-agent answer. An agent may explicitly notify one posted message. Old session promises
+final agent answer; interim replies are quiet unless explicitly notified. An agent
+may explicitly notify one posted message. Old session promises
 and their watchers are inert;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 Blocking questions to Tejas notify by default through that same path; see the

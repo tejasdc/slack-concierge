@@ -2200,7 +2200,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
 export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean}):string|null {
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
-  if(post&&!answer.final&&(answer.notify||answer.answersQuestion&&hasPendingThreadNotification(answer.inboxSessionId,answer.root))){
+  if(post&&!answer.final&&answer.notify){
     const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
     notifyAgentPost(answer.inboxSessionId,answer.root,post,String(row?JSON.parse(row.payload_json).text??'':answer.text),answer.notify===true);
   }
