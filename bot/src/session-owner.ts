@@ -2127,6 +2127,25 @@ export class SessionOwner {
     const accepted=this.admit({sessionId:session.id,inputId:id,origin:'service',sourceInputId:id,sourceRunId:id,requestId:id,text});
     return {operation:this.receipt(accepted)};
   }
+  /**
+   * A thnkr.ing feature (the writing partner, the Reader) asks an agent session for work it
+   * composed itself. It arrives with service origin, never as Tejas: the ordinary inputs route
+   * records him as the author, and he read server-made messages in his name as lies (Sept 17-23).
+   * Where his own words ride along (a %% note, a question he typed) the feature quotes them in
+   * the text; he is never the sender. Same action ID, same admitted input.
+   */
+  submitFeatureRequest(id:string,body:unknown) {
+    const input=object(body);only(input,['clientActionId','feature','text']);
+    if(typeof input.clientActionId!=='string'||!/^feature:[a-z][a-z0-9-]{1,39}:[A-Za-z0-9:._@,-]{1,200}$/.test(input.clientActionId)
+      ||typeof input.feature!=='string'||!/^[a-z][a-z0-9-]{1,39}$/.test(input.feature)||!input.clientActionId.startsWith(`feature:${input.feature}:`)
+      ||typeof input.text!=='string'||!input.text.trim()||input.text.length>40_000)
+      throw new SessionOwnerError('A feature request needs its feature name, an action ID under it and its text.',400,'FEATURE_REQUEST_INVALID');
+    const session=this.session(id);
+    const inputId=input.clientActionId;
+    const text=`thnkr.ing's ${input.feature} feature sent this. It is a service request composed by thnkr.ing, not a message Tejas typed; anything he wrote is quoted inside it.\n\n${input.text}`;
+    const accepted=this.admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,text});
+    return {operation:this.receipt(accepted)};
+  }
   notifySupersededSession(predecessor:string,successor:string,handoffId:string) {
     const sessionId=parseSessionId(predecessor);
     const active=db.query("SELECT id,accepted_input_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL LIMIT 1").get(sessionId) as {id:number;accepted_input_id:string|null}|null;
@@ -3579,6 +3598,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=this.submit(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='feature-requests') result=this.submitFeatureRequest(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===5&&parts[2]==='actions'&&parts[4]==='cancel') result=this.cancelAction(parts[1]!,parts[3]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=await this.messageAction(parts[1]!,body);
