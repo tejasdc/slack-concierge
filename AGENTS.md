@@ -559,9 +559,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `--his-words` (verified against his messages when they are in this ledger) and
   `--why-not-answered` [decision: questions-carry-his-words], plus `--only-he-can`
   sign-in|secret|device|ambiguous|approval. Approval requires `--decision-id` and
-  `--approval-action`; the owner checks the installed permanent record and the action's
-  scope. The current supported rule covers machine resource sharing; other permission and
-  design questions are refused [decision: act-then-tell]
+  `--approval-action`; the owner checks the installed permanent record lists that exact action
+  under its `Needs his approval` section, so any permanent decision can reserve an action
+  without a code change; other permission and design questions are refused [decision: act-then-tell]
   [decision: machine-wide-resource-changes-need-his-approval]. See
   [question approvals](docs/runbooks/ROUTER-ACTIONS.md#approval-required-by-a-permanent-decision).
   A `completed` work reply needs `--all-done` and `--checked` or
