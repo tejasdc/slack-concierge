@@ -787,8 +787,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
   if(also.length&&paths.length)invalid('--also sends one answer to several requests; attach files already retained with --attachment, or send the files with one request.');
   if(also.length&&partial)invalid('--also closes other requests with this one final answer; a partial reply names one request.');
-  if(answersQuestion&&!partial)invalid('--answers-question belongs to a partial reply; a final reply already answers the question.');
-  if(answersQuestion&&!message?.trim())invalid('--answers-question requires answer text.');
+  // A misplaced answer mark never stops the answer itself from being sent; the owner applies the
+  // same rule and says in its receipt why a mark was dropped.
+  if(answersQuestion&&(!partial||!message?.trim())){
+    console.error(!partial?'Note: --answers-question was ignored; a final reply already answers the question. Sending the reply.'
+      :'Note: --answers-question was ignored because the reply has no words. Sending it as ordinary progress.');
+    answersQuestion=false;
+  }
   if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');

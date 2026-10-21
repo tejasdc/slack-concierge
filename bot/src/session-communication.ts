@@ -1307,6 +1307,13 @@ export class SessionCommunicationCoordinator {
     }
     /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
+        const thread=this.answerThread(request);
+        // Pending old returns use the same post identity when custody moves to the thread.
+        const agentReply=((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
+        return thread&&(thread.forwarded||agentReply)?thread:null;
+    }
+    /** The Inbox thread this request's agent replies are posted into, if any. */
+    private answerThread(request:RequestRow):{root:string;forwarded:{inboxInputId:string}|null}|null {
         if(!request.source_input_id)return null;
         const payload=JSON.parse(request.payload_json);
         if(payload.routedMessage)return null;
@@ -1316,11 +1323,9 @@ export class SessionCommunicationCoordinator {
             if(route&&'sessionId' in route)return null;
             return {root:route&&'topicId' in route?route.messageId:request.thread_root_input_id??request.source_input_id,forwarded};
         }
-        // Pending old returns use the same post identity when custody moves to the thread.
-        const agentReply=((event.kind==='progress'&&!!declared.source)||event.kind==='final'||event.kind==='overdue');
         const inbox=getSessionById(request.source_session_id);
         const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id);
-        if(!agentReply||!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
+        if(!root||!inbox||!sessionMetadata(inbox).inbox||!topicOfRoot(root))return null;
         return {root,forwarded:null};
     }
     /**
@@ -1405,6 +1410,16 @@ export class SessionCommunicationCoordinator {
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
         if(input.final)input={...input,reply_body:input.text};
+        // An answer is never refused for how it was marked: a flag that does not fit is dropped,
+        // the reply is recorded as written, and the worker is told why in its receipt. Refusing
+        // it left an urgent answer to his question unmarked for hours (2026-10-21, request 39914136).
+        let answerNotice:string|null=null;
+        const dropAnswerMark=(why:string)=>{answerNotice=why;input={...input,answers_question:false};};
+        if(input.answers_question&&input.final)
+            dropAnswerMark('--answers-question was ignored: a final reply already answers the request. Your reply was recorded.');
+        else if(input.answers_question&&!input.text.trim())
+            dropAnswerMark('--answers-question was ignored because the reply has no words. It was recorded as ordinary progress.');
+        const noted=<T extends object>(receipt:T):T=>answerNotice?{...receipt,notice:answerNotice}:receipt;
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
         // confirmation if it was sent? Just let me know if it was not sent")
         // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
@@ -1442,11 +1457,19 @@ export class SessionCommunicationCoordinator {
             // bytes to the origin, which admits them into its own custody.
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
-            return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
+            return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
                 closingLine:input.final&&input.workDisposition?(input.workDisposition==='completed'
                     ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
                     :input.workDisposition==='failed'?'Failed':'Needs your decision'):undefined,
-                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})});
+                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
+        }
+        // Any request whose replies post into an Inbox thread can carry the answer to his question
+        // there: a forwarded reply of his, and equally work the router sent for a question it
+        // recorded in that thread. Elsewhere there is no thread to answer in.
+        if(input.answers_question){
+            const candidate=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(input.request_id) as RequestRow|null;
+            if(candidate&&!JSON.parse(candidate.payload_json).promptAnswer&&!this.answerThread(candidate))
+                dropAnswerMark('--answers-question was ignored: this request does not post into an Inbox thread, so there is no question of his to answer there. Your reply was recorded as ordinary progress for the requester.');
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -1473,7 +1496,7 @@ export class SessionCommunicationCoordinator {
                     || payload.source?.input_id !== input.source.input_id || payload.source?.run_id !== input.source.run_id
                     || !sourceInput || payload.responding_session_id !== `concierge:${sourceInput.session_id}`)
                     throw new Error('Idempotency conflict: reply action has a different payload or source.');
-                return this.receipt(this.row(input.request_id));
+                return noted(this.receipt(this.row(input.request_id)));
             }
         }
         const actor = this.fenced(this.actor(input.source));
@@ -1496,10 +1519,8 @@ export class SessionCommunicationCoordinator {
         if(input.also_main_thread&&bodylessFinal)
             throw new Error('--also-main-thread needs new answer words or a file to copy into the main thread.');
         if(input.notify&&(!input.text.trim()||bodylessFinal))throw new Error('--notify requires a new reply message with words.');
-        if(bodylessFinal&&(!requestPayload.promptAnswer||!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id)))
+        if(bodylessFinal&&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id))
             throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
-        if(input.answers_question && (input.final || !requestPayload.promptAnswer || !input.text.trim()))
-            throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
         if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
             || !['completed','failed','needs_decision'].includes(input.workDisposition)))
             throw new Error('A work disposition requires a final reply to a work request.');
@@ -1540,7 +1561,7 @@ export class SessionCommunicationCoordinator {
         if (prior) {
             if (prior.request_id !== request.request_id || prior.payload_json !== JSON.stringify(payload))
                 throw new Error('Idempotency conflict: reply action has a different payload.');
-            return this.receipt(this.row(request.request_id));
+            return noted(this.receipt(this.row(request.request_id)));
         }
         db.transaction(() => {
             // The owner's own inference from a finished turn is not the recipient's word, so a
@@ -1583,7 +1604,7 @@ export class SessionCommunicationCoordinator {
             }
         })();
         this.wake();
-        return this.receipt(this.row(request.request_id));
+        return noted(this.receipt(this.row(request.request_id)));
     }
     /**
      * The worker's turn ended with this request still open. It was held to the protocol by its
