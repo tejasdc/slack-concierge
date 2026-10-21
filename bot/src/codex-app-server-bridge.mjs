@@ -8,7 +8,8 @@ let ready = false;
 let disconnectReported = false;
 
 function write(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  // U+2028/U+2029 end a line for some readers (Bun's readline); escaped, the record stays one line.
+  process.stdout.write(`${JSON.stringify(message).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")}\n`);
 }
 
 function disconnect(error) {

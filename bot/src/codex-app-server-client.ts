@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
+import { jsonLine, onJsonLines } from "./json-lines";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {releaseCodexBridgePath} from "./release-worker";
@@ -218,8 +218,7 @@ export class CodexAppServerClient {
       rejectReady,
       stderr: "",
     };
-    const output = createInterface({ input: child.stdout });
-    output.on("line", (line) => this.receive(connection, line));
+    onJsonLines(child.stdout, (line) => this.receive(connection, line));
     child.stderr.on("data", (chunk) => {
       connection.stderr = `${connection.stderr}${String(chunk)}`.slice(-4_000);
     });
@@ -274,7 +273,7 @@ export class CodexAppServerClient {
       ));
     }
     return new Promise((resolve, reject) => {
-      connection.process.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+      connection.process.stdin.write(jsonLine(message), (error) => {
         if (error) {
           reject(new CodexAppServerClientError(error.message, "ambiguous"));
         } else {

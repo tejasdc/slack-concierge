@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { createInterface } from 'node:readline';
+import { jsonLines } from './json-lines';
 
 type Request=(method:string,params:Record<string,unknown>)=>Promise<any>;
 type Timestamps=Map<string,string|null>;
@@ -10,7 +10,7 @@ const files=new Map<string,{version:string;pending:Promise<Timestamps>}>();
 
 async function read(path:string,thread:string):Promise<Timestamps> {
   const timestamps:Timestamps=new Map();
-  const lines=createInterface({input:createReadStream(path),crlfDelay:Infinity});
+  const lines=jsonLines(createReadStream(path));
   for await(const line of lines) {
     let row:any;try{row=JSON.parse(line);}catch{continue;}
     const event=row.type==='event_msg'?row.payload:null;

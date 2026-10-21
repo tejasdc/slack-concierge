@@ -3,7 +3,7 @@ import {Database} from 'bun:sqlite';
 import {closeSync,createReadStream,existsSync,mkdirSync,openSync,readFileSync,readSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename,dirname,join,resolve} from 'node:path';
-import {createInterface} from 'node:readline';
+import {jsonLines} from '../src/json-lines';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -54,7 +54,7 @@ async function scan(path:string,provider:'claude-code'|'codex'){
   let total:Counts=previous?.counts??empty(),model:string|null=previous?.model??null;
   // A partial trailing line is revisited on the next scan.
   const stream=createReadStream(path,{start:offset,highWaterMark:256*1024});
-  const lines=createInterface({input:stream,crlfDelay:Infinity});
+  const lines=jsonLines(stream);
   const conversation=provider==='claude-code'?(path.includes('/subagents/')?basename(dirname(dirname(path))):basename(path,'.jsonl'))
     :basename(path,'.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/)?.[1]??basename(path,'.jsonl');
   const helper=provider==='claude-code'&&path.includes('/subagents/');

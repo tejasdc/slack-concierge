@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
+import { onJsonLines } from "./json-lines";
 
 export interface RepairAgentInput {
   kind: "repair";
@@ -101,8 +101,7 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
     deadlineTimer = setTimeout(() => fail(new RepairAttemptStoppedError(
       "The autonomous repair time budget expired; only this repair process group was stopped. Operator help is required.",
     )), Math.max(1, input.deadlineMs - Date.now()));
-    const stdout = createInterface({ input: child.stdout! });
-    stdout.on("line", (line) => {
+    const linesRead = onJsonLines(child.stdout!, (line) => {
       try {
         writeSync(output, `${line}\n`);
         const session = repairSessionFromEvent(line);
@@ -122,7 +121,8 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
       fail(new RepairAttemptIntegrityError(`Repair process bookkeeping failed: ${String(error)}`));
     }
     const code = await closed;
-    stdout.close();
+    // An unterminated last line is handled at stream end; let it land before the log closes.
+    await linesRead;
     if (failure) throw failure;
     return code;
   } finally {
