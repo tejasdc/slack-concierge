@@ -88,29 +88,25 @@ case "${1:-}" in
       sleep 1
     done
     ;;
-  sessions)
+  sessions|external|projects|work)
+    command=$1
     shift
-    # Server sessions always use the installed owner contract. A running agent's
-    # pinned copy can outlive an update and reject a newly added reply option.
+    case "$command" in
+      sessions) script=router-sessions ;;
+      external) script=router-external ;;
+      projects) script=router-projects ;;
+      work) script=router-request-client ;;
+    esac
+    # Commands that talk to the owner always use the installed release's client on the server.
+    # A running agent's pinned copy can outlive an update and reject an option the owner now
+    # accepts or requires (a reply flag on 2026-10-12, project new's --owner on 2026-10-21).
     if [ "$(uname -s)" != Darwin ]; then
       CURRENT_BOT_DIR=/var/lib/slack-concierge-deployment/current/control/bot
-      if [ -f "$CURRENT_BOT_DIR/scripts/router-sessions.js" ]; then
-        exec bun run "$CURRENT_BOT_DIR/scripts/router-sessions.js" "$@"
+      if [ -f "$CURRENT_BOT_DIR/scripts/$script.js" ]; then
+        exec bun run "$CURRENT_BOT_DIR/scripts/$script.js" "$@"
       fi
     fi
-    exec bun run "$BOT_DIR/scripts/router-sessions.$ROUTER_SUFFIX" "$@"
-    ;;
-  external)
-    shift
-    exec bun run "$BOT_DIR/scripts/router-external.$ROUTER_SUFFIX" "$@"
-    ;;
-  projects)
-    shift
-    exec bun run "$BOT_DIR/scripts/router-projects.$ROUTER_SUFFIX" "$@"
-    ;;
-  work)
-    shift
-    exec bun run "$BOT_DIR/scripts/router-request-client.$ROUTER_SUFFIX" "$@"
+    exec bun run "$BOT_DIR/scripts/$script.$ROUTER_SUFFIX" "$@"
     ;;
   threads)
     shift
