@@ -191,8 +191,11 @@ private GitHub project on the current machine and retains an order for the other
 mirrors the whole workspace. `projects status` reads the retained order locally.
 
 `project.setup` is a typed durable operation beside session requests on the authenticated
-peer listener. Its body contains only order ID, operation kind, project name and origin
-identity. The receiver builds the fixed `tejasdc` HTTPS URL and local workspace destination.
+peer listener. Its body contains only order ID, operation kind, project name, origin
+identity and, for an agent project, `folder: "agents"`. An order naming that folder waits as
+needing an update until the peer advertises `project.setup.folders`, so an older peer never
+places an agent project at the top of its workspace. A project the receiver already holds
+in the other placement is reported present and left where it is. The receiver builds the fixed `tejasdc` HTTPS URL and local workspace destination.
 It clones with an argument list, disabled hooks, submodules, non-HTTPS transports, LFS
 smudge and fsmonitor, into hidden `.project-setup` storage and moves the completed checkout
 into place last. The clone runs outside the owner's event loop, one at a time per order. The

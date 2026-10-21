@@ -347,7 +347,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   Concierges, never a new Mac session; queued while the Mac sleeps. See
   [peer instances](docs/runbooks/PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 - Project folders are machine-local. `projects new` creates the canonical scaffold and a
-  private `tejasdc` repository before retaining a peer setup order; `projects share` requests
+  private `tejasdc` repository before retaining a peer setup order; its required `--owner`
+  puts his projects at the top of the workspace and agents' own or maintenance projects in
+  `workspace/agents/` ([router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing)); `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the
   other. See [peer instances](docs/runbooks/PEER-INSTANCES.md#durable-project-setup).

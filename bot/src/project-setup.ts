@@ -19,7 +19,30 @@ const VAGUE=new Set(['commands','tools','scripts','utils','misc','stuff','test',
 const TERMINAL=new Set(['done','already_present','refused','failed','cancelled']);
 const CLONE_OPTIONS=['-c','core.hooksPath=/dev/null','-c','protocol.file.allow=never','-c','protocol.ssh.allow=never','-c','protocol.git.allow=never','-c','protocol.ext.allow=never','-c','submodule.recurse=false','-c','filter.lfs.smudge=','-c','core.fsmonitor=false'];
 type Origin={peer:string;session:string;input:string;run:string;originatingHuman:unknown}|{terminal:true};
-type Order={orderId:string;kind:'project.setup';origin:Origin;project:string};
+type Order={orderId:string;kind:'project.setup';origin:Origin;project:string;folder?:typeof AGENTS_FOLDER};
+// Projects agents make for their own work or maintenance live in workspace/agents/, so the top of
+// the workspace holds only the projects Tejas made, follows or asked for (Tejas, 2026-10-21:
+// "the top level holds projects I create, am interested in or ask you to create, and all the
+// maintenance agents sit in their own folders"). The session project list already finds a project
+// one level inside a folder that is not itself a repository, so agents/ needs no registration.
+export const AGENTS_FOLDER='agents';
+// A peer that predates this folder would put an agents project at the top of its workspace, so an
+// order naming the folder waits for a peer that advertises it.
+export const PROJECT_FOLDERS_OPERATION='project.setup.folders';
+type Owner='tejas'|'agents';
+function projectOwner(value:unknown):Owner {
+  if(value!=='tejas'&&value!=='agents')throw new Error('Say who the project is for: --owner tejas for his own projects and ones he asked for (top of the workspace), or --owner agents for an agent\'s own or maintenance work (workspace/agents/).');
+  return value;
+}
+function projectFolder(workspace:string,project:string,folder?:typeof AGENTS_FOLDER){return folder?join(workspace,folder,project):join(workspace,project);}
+// The agents folder groups projects; it must stay a plain folder, or the project list would read it as one project.
+function ensureAgentsFolder(workspace:string){
+  const folder=join(workspace,AGENTS_FOLDER);
+  if(!pathExists(folder))mkdirSync(folder);
+  if(!lstatSync(folder).isDirectory()||pathExists(join(folder,'.git')))throw new Error(`${folder} must be a plain folder, not a link or a repository.`);
+  const readme=join(folder,'README.md');
+  if(!pathExists(readme))writeFileSync(readme,'# Agent projects\n\nProjects agents created for their own work or for maintenance. Tejas\'s own projects, and ones he asked for, sit one level up. `project new <name> --owner agents` puts new ones here.\n',{flag:'wx'});
+}
 type Outcome={state:'done'|'already_present'|'refused'|'failed'|'cancelled';reason?:string;failureClass?:'transient'|'permanent';commit?:string};
 type Outgoing={order_id:string;peer:string;project:string;body_json:string;state:string;result_json:string|null;created_at_ms:number;last_attempt_at_ms:number|null;notice_kind:string|null;notice_text:string|null;source_session_id:number|null;source_input_id:string|null;source_run_id:string|null;return_input_id:string|null};
 const gitEnv=()=>({...process.env,GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',GIT_LFS_SKIP_SMUDGE:'1',GIT_ALLOW_PROTOCOL:'https'});
@@ -104,19 +127,19 @@ export class ProjectSetup {
     return {session:session.id,input:source.input,run:source.run,originatingHuman:sessionInputProvenance(accepted)};
   }
   private peer(value:unknown){if(typeof value!=='string'||!this.clients.has(value)||value===this.self)throw new Error('Choose a configured peer machine.');return value;}
-  private record(project:string,peer:string,source:ReturnType<ProjectSetup['source']>){
+  private record(project:string,peer:string,source:ReturnType<ProjectSetup['source']>,folder?:typeof AGENTS_FOLDER){
     const prior=db.query('SELECT state FROM project_setup_orders WHERE peer=? AND project=? ORDER BY created_at_ms DESC,rowid DESC').all(peer,project) as {state:string}[];
     if(prior.length&&!['refused','failed','cancelled'].includes(prior[0]!.state))return this.status(project,peer);
     const id=orderId(peer,project,prior.length+1);
     const origin:Origin=source?{peer:this.self,session:`concierge:${source.session}`,input:source.input,run:source.run,originatingHuman:source.originatingHuman}:{terminal:true};
-    const body:Order={orderId:id,kind:'project.setup',origin,project};
+    const body:Order={orderId:id,kind:'project.setup',origin,project,...(folder?{folder}:{})};
     db.query(`INSERT OR IGNORE INTO project_setup_orders(order_id,peer,project,body_json,state,created_at_ms,source_session_id,source_input_id,source_run_id)
       VALUES(?,?,?,?,'recorded',?,?,?,?)`).run(id,peer,project,JSON.stringify(body),Date.now(),source?.session??null,source?.input??null,source?.run??null);
     log('info','project_setup_order_recorded',{order_id:id,peer,project});
     this.wake();this.onRecorded?.();return this.status(project,peer);
   }
   async new(input:unknown){
-    const data=exactKeys(input,['name','purpose','hereOnly','source']);const project=newName(data.name);
+    const data=exactKeys(input,['name','purpose','hereOnly','source','owner']);const project=newName(data.name);projectOwner(data.owner);
     return this.serialProject(project,()=>this.createLocal(data,project));
   }
   private async serialProject<T>(project:string,operation:()=>Promise<T>):Promise<T>{
@@ -130,9 +153,13 @@ export class ProjectSetup {
     if(/[.!?]\s+\S/.test(data.purpose.trim()))throw new Error('--purpose must be one sentence.');
     if(data.hereOnly!==undefined&&typeof data.hereOnly!=='boolean')throw new Error('hereOnly must be true or false.');
     if(!data.hereOnly&&!this.clients.size)throw new Error('No peer is configured; use --here-only for a local project.');
-    const source=this.source(data.source);const destination=join(this.workspace,project);
+    const folder=projectOwner(data.owner)==='agents'?AGENTS_FOLDER:undefined;
+    const source=this.source(data.source);const destination=projectFolder(this.workspace,project,folder);
     const intent=join(destination,'tmp','project-setup-intent.json');
+    const elsewhere=projectFolder(this.workspace,project,folder?undefined:AGENTS_FOLDER);
+    if(pathExists(elsewhere))throw new Error(`${elsewhere} already uses this name; one name is one project, wherever it sits.`);
     if(pathExists(destination)&&!pathExists(intent))throw new Error('A local folder already uses this name; use projects share for an existing project.');
+    if(folder)ensureAgentsFolder(this.workspace);
     if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project))throw new Error('The unfinished project has a different GitHub origin.');
     if(!pathExists(destination))mkdirSync(destination);
     if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace);
@@ -163,20 +190,23 @@ export class ProjectSetup {
       const prior=db.query('SELECT purpose FROM project_creations WHERE project=?').get(project) as {purpose:string}|null;
       if(prior&&prior.purpose!==data.purpose.trim())throw new Error('This project was created with a different purpose.');
       db.query('INSERT OR IGNORE INTO project_creations(project,purpose,commit_sha,here_only,created_at_ms) VALUES(?,?,?,?,?)').run(project,data.purpose.trim(),commit,data.hereOnly?1:0,Date.now());
-      return data.hereOnly?[]:[...this.clients.keys()].map(peer=>this.record(project,peer,source));
+      return data.hereOnly?[]:[...this.clients.keys()].map(peer=>this.record(project,peer,source,folder));
     })();
-    log('info','project_created',{project,commit,here_only:!!data.hereOnly});
-    return {project,local:'done',commit,orders};
+    log('info','project_created',{project,commit,here_only:!!data.hereOnly,folder:folder??null});
+    return {project,local:'done',path:destination,commit,orders};
   }
   async share(input:unknown){const data=exactKeys(input,['name','to','source']);const project=existingName(data.name),peer=this.peer(data.to),source=this.source(data.source);
     return this.serialProject(project,async()=>{
-    const destination=join(this.workspace,project);
-    if(!projectPredicate(destination)||!sessionProject(this.workspace,project))throw new Error('The local project must be a registered Git project with AGENTS.md.');
+    const registered=sessionProject(this.workspace,project);
+    const destination=registered?.cwd??join(this.workspace,project);
+    const folder=dirname(destination)===join(this.workspace,AGENTS_FOLDER)?AGENTS_FOLDER:undefined;
+    if(!folder&&dirname(destination)!==this.workspace)throw new Error('Only projects at the top of the workspace or in its agents folder can be shared.');
+    if(!projectPredicate(destination)||!registered)throw new Error('The local project must be a registered Git project with AGENTS.md.');
     if(await originOf(destination)!==expectedOrigin(project))throw new Error('This project is not from github.com/tejasdc under the same name.');
     const branch=await git(destination,'branch','--show-current');if(!branch)throw new Error('Push the project branch before sharing.');
     const local=await head(destination),remote=(await git(destination,'ls-remote','--heads','origin',branch)).split(/\s+/)[0];
     if(local!==remote)throw new Error('The local branch is ahead of its origin; push first.');
-    return this.record(project,peer,source);
+    return this.record(project,peer,source,folder);
     });
   }
   status(projectValue:unknown,peerValue?:unknown){const project=existingName(projectValue);const peer=peerValue===undefined?null:this.peer(peerValue);
@@ -242,7 +272,7 @@ export class ProjectSetup {
     this.sending.add(row.order_id);
     try{
       const status=await client.request<{operations?:string[]}>('GET','/sessions/v1/status',undefined,5000);
-      if(!status.operations?.includes('project.setup')){
+      if(!status.operations?.includes('project.setup')||JSON.parse(row.body_json).folder&&!status.operations.includes(PROJECT_FOLDERS_OPERATION)){
         db.query("UPDATE project_setup_orders SET state='needs_update' WHERE order_id=?").run(row.order_id);
         this.notice(row,'needs_update',needsUpdateText(row));return;
       }
@@ -269,7 +299,7 @@ export class ProjectSetup {
     await this.send(row);
   }}catch(error){log('error','project_setup_wake_failed',errorFields(error));}finally{this.running=false;}});}
   async receive(value:unknown){let raw:Record<string,any>;
-    try{raw=exactKeys(value,['orderId','kind','origin','project']);}
+    try{raw=exactKeys(value,['orderId','kind','origin','project','folder']);}
     catch{const id=(value as any)?.orderId;if(typeof id==='string'&&/^[a-f0-9]{32}$/.test(id))return {state:'refused',outcome:{state:'refused',reason:'unknown_field'}};throw new Error('Invalid project setup order.');}
     if(typeof raw.orderId!=='string'||!/^[a-f0-9]{32}$/.test(raw.orderId))throw new Error('Invalid setup order ID.');
     const existing=db.query('SELECT * FROM project_setup_receipts WHERE order_id=?').get(raw.orderId) as {body_json:string;result_json:string|null}|null;
@@ -286,15 +316,19 @@ export class ProjectSetup {
     };
     if(raw.kind!=='project.setup')return fail({state:'refused',reason:'unknown_kind'});
     let project:string;try{project=existingName(raw.project);}catch{return fail({state:'refused',reason:'invalid_name'});}
+    if(raw.folder!==undefined&&raw.folder!==AGENTS_FOLDER)return fail({state:'refused',reason:'unknown_field'});
+    const folder=raw.folder as typeof AGENTS_FOLDER|undefined;
     if(!raw.origin||typeof raw.origin!=='object'||Array.isArray(raw.origin)||Object.keys(raw.origin).some(key=>!['peer','session','input','run','originatingHuman','terminal'].includes(key)))return fail({state:'refused',reason:'invalid_repository'});
     if(raw.origin.terminal!==true&&(!this.clients.has(raw.origin.peer)||typeof raw.origin.session!=='string'||typeof raw.origin.input!=='string'||typeof raw.origin.run!=='string'))return fail({state:'refused',reason:'invalid_repository'});
     return this.serialProject(project,async()=>{
     const latest=db.query('SELECT result_json FROM project_setup_receipts WHERE order_id=?').get(raw.orderId) as {result_json:string|null}|null;
     if(latest?.result_json){const outcome=JSON.parse(latest.result_json) as Outcome;
       if(outcome.state!=='failed'||outcome.failureClass==='permanent')return {state:outcome.state,outcome};}
-    const destination=join(this.workspace,project);
-    if(pathExists(destination)){
-      if(await originOf(destination)===expectedOrigin(project)&&projectPredicate(destination)){notesLink(this.workspace,project,destination,false);return fail({state:'already_present',commit:await head(destination)});}
+    const destination=projectFolder(this.workspace,project,folder);
+    // A project this machine already holds under the other placement stays where it is: moving a
+    // folder would strand the sessions and transcripts recorded against its path.
+    for(const existing of [destination,projectFolder(this.workspace,project,folder?undefined:AGENTS_FOLDER)])if(pathExists(existing)){
+      if(await originOf(existing)===expectedOrigin(project)&&projectPredicate(existing)){notesLink(this.workspace,project,existing,false);return fail({state:'already_present',commit:await head(existing)});}
       return fail({state:'refused',reason:'destination_conflict'});
     }
     const temporary=join(this.workspace,'.project-setup',raw.orderId,project);
@@ -309,6 +343,7 @@ export class ProjectSetup {
       if(await originOf(temporary)!==expectedOrigin(project))return fail({state:'refused',reason:'invalid_repository'});
       if(!projectPredicate(temporary))return fail({state:'failed',failureClass:'permanent',reason:'The GitHub repository is not a project on this machine.'});
       if(pathExists(destination))return fail({state:'refused',reason:'destination_conflict'});
+      if(folder)ensureAgentsFolder(this.workspace);
       renameSync(temporary,destination);try{rmSync(dirname(temporary),{recursive:true,force:true});}catch{}
       notesLink(this.workspace,project,destination,false);
       if(!projectPredicate(destination))return fail({state:'failed',failureClass:'permanent',reason:'project predicate failed'});

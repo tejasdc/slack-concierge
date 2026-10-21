@@ -112,12 +112,20 @@ long numbers and codes he forwarded), which errs toward hiding.
 Project setup uses the same local owner socket on either machine:
 
 ```bash
-router-actions.sh projects new command-line-tools --purpose "Shared commands for Tejas's machines."
-router-actions.sh projects new local-experiment --purpose "A local experiment workspace." --here-only
+router-actions.sh projects new command-line-tools --owner tejas --purpose "Shared commands for Tejas's machines."
+router-actions.sh projects new disk-usage-watch --owner agents --purpose "A maintenance agent's disk checks." --here-only
 router-actions.sh projects share life-logistics --to mac
 router-actions.sh projects status life-logistics --to mac
 router-actions.sh projects cancel life-logistics --to mac  # only while still recorded
 ```
+
+`--owner` is required on `new` and decides where the folder goes. `tejas` is for his own
+projects, ones he follows and ones he asked for: they sit at the top of the workspace.
+`agents` is for a project an agent makes for its own work or for maintenance: it sits in
+`workspace/agents/<name>`, so the top level stays the list he navigates (Tejas, 2026-10-21).
+The session project list finds both by the same name, a name is one project wherever it sits,
+and the other machine's setup puts it in the same place. Existing projects are not moved,
+because sessions and transcripts are recorded against their folder path.
 
 An agent appends its exact `--source-input` and `--source-run` pair to `new` or `share`;
 a terminal user omits it. A new project gets the canonical instruction file, its Claude
