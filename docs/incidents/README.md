@@ -22,8 +22,9 @@ Failure-record: none
 A commit that fixes a failure names its record, written in the same commit or an earlier one.
 Everything else says `none`. `.githooks/commit-msg` refuses a commit without the line, and the
 GitHub release check refuses a branch whose commits lack it, so nothing reaches `main` undeclared
-(`bot/scripts/failure-record-check.ts`). A pushed fix that was declared `none` or missed is
-recorded afterwards by listing its hash in a record's `fix_commits`; never rewrite the commit.
+(`bot/scripts/failure-record-check.ts`). A pushed commit that missed its line is declared
+afterwards, never by rewriting it: a later commit on the branch carries
+`Failure-record-for: <hash> <record path | none>`, or the hash goes in a record's `fix_commits`.
 A `none` whose message reads like a fix is flagged in the check's output, not refused: the author
 knows whether the change fixed something, and a word list does not.
 

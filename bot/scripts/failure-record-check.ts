@@ -29,9 +29,11 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 
 /** Commits before the check existed are not asked to declare; they predate the rule. */
-const CHECK_SINCE_MS=Date.parse('2026-10-21T20:00:00Z');
+const CHECK_SINCE_MS=Date.parse('2026-10-21T17:00:00Z');
 const RECORD_DIRS=['docs/incidents/','docs/retrospectives/'];
 const TRAILER=/^Failure-record:[ \t]*(.*)$/gim;
+/** A later commit on the branch declares for an earlier pushed one, since pushed history is never rewritten. */
+const LATE_TRAILER=/^Failure-record-for:[ \t]*([0-9a-f]{7,40})[ \t]+(.+)$/gim;
 const SOUNDS_LIKE_A_FIX=/\b(fix(es|ed)?|crash(es|ed)?|regression|froze|freez\w*|stall(s|ed)?|hang(s)?|lost|dropped|broke(n)?|outage|incident|bug)\b/i;
 const REQUIRED_FIELDS=['failure','date','fix_commits'];
 const REQUIRED_SECTIONS=['## What was seen','## Cause','## Fix','## Acceptance scenario'];
@@ -90,7 +92,10 @@ const HOW=`
 
   A fix names its record: what was seen, the cause, the fix, and a replayable acceptance
   scenario (seed, action, expected). The format is in docs/incidents/README.md; write the record
-  in the same commit or an earlier one. Use "none" for work that fixes no failure.`;
+  in the same commit or an earlier one. Use "none" for work that fixes no failure.
+  For a commit already pushed, add a later commit carrying
+    Failure-record-for: <hash> <record path | none>
+  or list the hash in its record's fix_commits. Never rewrite the pushed commit.`;
 
 function commitMsg(messageFile:string){
   const message=readFileSync(messageFile,'utf8');
@@ -135,6 +140,10 @@ function range(spec:string){
     if(path.endsWith('.md')&&!path.endsWith('README.md')&&gitOk('cat-file','-e',`${head}:${path}`)&&!git('show',`${head}:${path}`).startsWith('---\n'))problems.push(`${path} is a new record without the record front matter.`);
   }
   const commits=git('rev-list','--no-merges',spec).split('\n').filter(Boolean);
+  const late=new Map<string,string>();
+  for(const commit of commits){
+    for(const match of git('show','-s','--format=%B',commit).matchAll(LATE_TRAILER))late.set(match[1].toLowerCase(),match[2].trim());
+  }
   let flagged=0;
   for(const commit of commits){
     if(Number(git('show','-s','--format=%ct',commit))*1000<CHECK_SINCE_MS)continue;
@@ -143,7 +152,9 @@ function range(spec:string){
     if(/^(Merge |Revert ")/.test(subject))continue;
     const short=commit.slice(0,8);
     const listed=[...recorded].some(hash=>commit.startsWith(hash));
-    const found=declaration(message);
+    const lateValue=[...late].find(([hash])=>commit.startsWith(hash))?.[1];
+    const own=declaration(message);
+    const found=own.kind==='missing'&&lateValue?declaration(`Failure-record: ${lateValue}`):own;
     if(found.kind==='missing'&&!listed)problems.push(`${short} "${subject}" has no Failure-record: line and no record lists it in fix_commits.`);
     if(found.kind==='records'){
       for(const path of found.paths){
