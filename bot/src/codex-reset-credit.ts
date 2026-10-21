@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createInterface } from "node:readline";
+import { jsonLine, onJsonLines } from "./json-lines";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -142,14 +142,14 @@ async function withAppServer<T>(home: string, action: (call: (method: string, pa
   child.on("error", error => failPending(error));
   child.on("close", code => failPending(new Error(`Codex App Server closed before replying (${code ?? "unknown"}).`)));
   let id = 0;
-  const send = (message: unknown) => child.stdin.write(JSON.stringify(message) + "\n");
+  const send = (message: unknown) => child.stdin.write(jsonLine(message));
   const call = (name: string, body: unknown) => new Promise<any>((resolve, reject) => {
     const requestId = ++id;
     pending.set(requestId, { resolve, reject });
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method: name, params: body ?? {} }) + "\n",
+    child.stdin.write(jsonLine({ jsonrpc: "2.0", id: requestId, method: name, params: body ?? {} }),
       error => { if (error) { pending.delete(requestId); reject(error); } });
   });
-  createInterface({ input: child.stdout }).on("line", line => {
+  onJsonLines(child.stdout, line => {
     let message: any; try { message = JSON.parse(line); } catch { return; }
     const waiting = message?.id && pending.get(message.id);
     if (!waiting) return;

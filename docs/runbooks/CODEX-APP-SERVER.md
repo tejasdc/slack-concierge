@@ -244,25 +244,23 @@ prlimit --pid <daemon-pid> --nofile=1048576:1048576
 The 2026-09-16 incident documents both stderr classes and the `prlimit`
 recovery.
 
-## A Thread The Shared Connection Never Answers
+## Answers Containing U+2028 Or U+2029
 
-Concierge drives every Codex turn over one long-lived App Server connection. On 2026-10-21 one
-thread's full `thread/resume` went unanswered on that connection eight times in a row, while the
-same connection resumed other threads and a fresh connection resumed this one in about 150 ms
-([failure record](../incidents/2026-10-21-codex-thread-resume-unanswered-on-shared-connection.md)).
-Where the answer was lost (server enqueue, WebSocket, bridge) was not established. Two rules
-now contain it, both in Concierge and neither touching the App Server:
+The bridge between Concierge and the App Server speaks JSON Lines. Bun's `node:readline` also
+ends a line at U+2028 (line separator) and U+2029 (paragraph separator), which JSON leaves
+unescaped inside strings, so any App Server message holding one reached Concierge as broken
+pieces and was skipped. On 2026-10-21 one conversation whose history held two U+2029 characters
+never received a `thread/resume` answer and refused every input, while Node clients resumed it
+in 150 ms ([failure record](../incidents/2026-10-21-codex-thread-resume-unanswered-on-shared-connection.md)).
+Now every JSON Lines reader runs through `src/json-lines.ts` (split on `\n` only), our writers
+escape both characters, and the release lint refuses `node:readline` in Bun code. A resume
+timeout also spends that conversation's retry budget rather than the Codex account's.
 
-- A thread whose resume times out on the shared connection runs its later turns on a connection
-  of its own until Concierge restarts (`threadsUnansweredOnSharedConnection` in `codex.ts`).
-- A resume or open failure spends that conversation's retry budget, not the Codex account's, so
-  one stuck thread cannot make other turns' transient failures stop retrying.
-
-To check a suspect thread by hand without the App Server restart, resume it from a fresh
-connection through the release's bridge (read-only probe):
+To check a suspect thread by hand without restarting the App Server, resume it from a fresh
+connection through the release's bridge:
 `node ~/workspace/agent-scripts/codex-thread-probe.mjs <release>/bot/src/codex-app-server-bridge.mjs <thread-id> 'thread/resume'`.
-The App Server's own debug line `composing running thread resume response` in
-`~/.codex/logs_2.sqlite` is written before the answer is assembled, so it does not prove delivery.
+The App Server's debug line `composing running thread resume response` in
+`~/.codex/logs_2.sqlite` is written before the answer is sent, so it does not prove delivery.
 
 ## Clearing Concierge's Cached Usage Refusal
 
