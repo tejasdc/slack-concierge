@@ -382,15 +382,18 @@ session in a writing project (the messaging agent) cannot send `--requested-effe
 
 An approval question uses the existing `needs_you` outcome or final `needs_decision` reply.
 It carries `--only-he-can approval`, the decision ID, a named action, his exact words, and why
-those words do not themselves approve the proposed action. For example, a change to disk
-priority uses `--decision-id machine-wide-resource-changes-need-his-approval` and
-`--approval-action disk-priority`. An action combines `processor`, `memory`, or `disk`
-with `priority`, `throttling`, `slots`, `limit`, or `quota`.
-The owner reads the installed decision record, requires it to be permanent and unsuperseded,
-and checks that its scope covers the named action. It also accepts his words from that record.
-An unsupported decision or action is refused; adding another permanent approval rule requires
-an owner-side scope check. Other permission, approval, and design questions stay refused
-[decision: act-then-tell] [decision: machine-wide-resource-changes-need-his-approval].
+those words do not themselves approve the proposed action. The owner reads the installed
+decision record (`~/workspace/decision-record`), requires it to be permanent and unsuperseded,
+and requires the named action to appear, word for word apart from case and spacing, in the
+record's `Needs his approval` section. It also accepts his words from that record. For
+example, a change to disk priority uses `--decision-id machine-wide-resource-changes-need-his-approval`
+and `--approval-action disk-priority`; signing off the agent-native protocols experiments uses
+`--decision-id anp-experiments-wait-for-his-signoff` and `--approval-action 'run the agent-native
+protocols evolution experiments'`. A refusal lists the actions the cited record reserves.
+A permanent decision whose words reserve a new action gets that action in its record
+(`decision new --needs-approval`, or an added section); no Concierge change is needed. Other
+permission, approval, and design questions stay refused [decision: act-then-tell]
+[decision: machine-wide-resource-changes-need-his-approval] [decision: anp-experiments-wait-for-his-signoff].
 
 To answer a thread of your own Inbox, post into it deliberately:
 
