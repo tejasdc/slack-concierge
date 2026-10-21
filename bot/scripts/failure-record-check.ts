@@ -82,7 +82,7 @@ export function fixCommits(text:string):string[]{
 }
 
 const isRecordPath=(path:string)=>RECORD_DIRS.some(dir=>path.startsWith(dir));
-const soundsLikeAFix=(message:string)=>SOUNDS_LIKE_A_FIX.test(message.split(/^Failure-record:/im)[0]);
+const soundsLikeAFix=(message:string)=>SOUNDS_LIKE_A_FIX.test(message.split('\n')[0]);
 
 const HOW=`
   Every commit declares whether it fixes a failure, with one trailer line:
