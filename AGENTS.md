@@ -98,6 +98,8 @@ its notification identity and human-answer settlement.
 After a prompt-answer partial, a bodyless final closes that exact request and attaches its
 closing facts beneath the existing answer; a final body is new visible text. The same contract
 holds for Mac peers. See [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
+Identical finals from one agent run into several roots of one Inbox topic share one visible
+answer while every request retains its own closure; see the same prompt-answer contract.
 
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).

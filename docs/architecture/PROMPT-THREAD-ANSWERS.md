@@ -63,11 +63,14 @@ recorded questions showed no answer and an urgent safety answer read as unseen f
 (request 39914136). For a peer reply, the signal travels with the retained reply event; the
 origin, which holds the thread, drops it with a log line where it does not apply.
 The Mac sends the original final body and closing facts separately; the origin checks the same
-earlier signal before accepting a bodyless final. Posts are never collapsed by comparing answer
-text, attachments, or hashes. Earlier duplicate posts stay in the retained thread history.
-When one explicit `--also` command closes several requests, its stable command identity is
-retained on each reply so one post or return carries that named group. Separate commands with
-identical words stay separate and visible.
+earlier signal before accepting a bodyless final. A final from one agent run can close several
+requests in one Inbox topic with one visible post when its text, attachments, disposition,
+quiet status and nested conversation match exactly. The owner retains each request's reply,
+outcome and topic closure separately. An explicit `--also` still groups requester returns;
+the post rule also works when the agent closes the requests with separate commands. Answers
+from different runs remain separately visible, as do new words after a prompt-answer partial.
+The October 21 retained duplicate posts are hidden by append-only collapse events; their
+original posts and six request outcomes remain in the ledger.
 On the server, the installed command wrapper always uses the current release's session command
 parser. A running agent can retain an older bundled parser across a deployment; using it for a
 reply would reject `--answers-question` before the owner could record the answer.

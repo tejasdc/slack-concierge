@@ -89,6 +89,8 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     .all(after,head,limit) as SourceRow[];
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox||row.agent_request)return [];
+    if(row.kind==='post'&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
+      .get(`post:collapse:${row.event_id}`))return [];
     if(!(['result','inbox_capture','post','request','topic_route'].includes(row.kind)
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='request'){
