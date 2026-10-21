@@ -620,9 +620,23 @@ export class SessionPeers {
         throw new SessionOwnerError('--notify requires a reply that posts into an Inbox thread.');
     }
     const promptAnswer=!!requestPayload.promptAnswer;
-    if(final&&input.replyBody===''&&!input.files?.length&&(!promptAnswer||!db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(requestId)))
-      throw new SessionOwnerError('A final reply without a body needs an earlier prompt answer to this request.');
-    if(input.answersQuestion&&(final||!promptAnswer||!input.text.trim()))throw new SessionOwnerError('A prompt answer must be a partial reply with answer text for a human thread question.');
+    if(final&&input.replyBody===''&&!input.files?.length){
+      const answer=db.query(`SELECT json_extract(payload_json,'$.answersQuestion') AS marked,json_extract(payload_json,'$.text') AS text FROM session_peer_events
+        WHERE request_id=? AND kind='progress' AND (json_extract(payload_json,'$.answersQuestion')=1 OR json_extract(payload_json,'$.answerMarkDropped')=1)
+        ORDER BY rowid DESC LIMIT 1`).get(requestId) as {marked:number|null;text:string|null}|null;
+      if(!answer)throw new SessionOwnerError('A final reply without a body needs an earlier prompt answer to this request.');
+      // The Mac accepted this bodyless final because its own copy of the answer kept the mark this
+      // origin dropped; the answer's words become the final's body so the requester still reads them.
+      if(answer.marked!==1)input={...input,replyBody:String(answer.text??'')};
+    }
+    // An answer is never refused for its mark: one that has no thread to answer in is kept as
+    // ordinary progress. Refusing it here would lose the Mac agent's reply altogether.
+    let answerMarkDropped=false;
+    if(input.answersQuestion&&(final||!input.text.trim()||!promptAnswer&&!this.answersInThread(row))){
+      log('info','session_peer_answer_mark_dropped',{request_id:requestId,peer:row.peer,event_id:input.eventId});
+      input={...input,answersQuestion:false};
+      answerMarkDropped=!final;
+    }
     if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
@@ -639,7 +653,7 @@ export class SessionPeers {
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-        ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
+        ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
@@ -877,6 +891,17 @@ export class SessionPeers {
     const error=unacknowledged?'The provider did not acknowledge this specific return; its linked turn outcome does not prove receipt.':observed.steering?.error??null;
     db.query('UPDATE session_peer_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:error,accepted.id);
     db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:error,event.event_id);
+  }
+  /** Whether this request's agent replies post into an Inbox thread, by the rule postThreadEvent applies. */
+  private answersInThread(row:PeerRequestRow):boolean {
+    const requestPayload=JSON.parse(row.payload_json);
+    const forwarded=requestPayload.forwardedReply;
+    const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
+    if(requestPayload.routedMessage||(route&&'sessionId' in route))return false;
+    if(forwarded&&typeof forwarded.inboxInputId==='string')return true;
+    const inbox=getSessionById(row.source_session_id);
+    const root=inboxRequestRoot(db,row.request_id,row.thread_root_input_id);
+    return !!root&&!!inbox&&!!sessionMetadata(inbox).inbox&&!!topicOfRoot(root);
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
     // A named thread receives the peer's own reply; requester delivery needs its own choice.
@@ -1208,8 +1233,7 @@ export class SessionPeers {
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
     if(input.workDisposition!==undefined&&(!input.final||row.requested_effect!=='work'||!['completed','failed','needs_decision'].includes(input.workDisposition)))throw new Error('A work disposition requires a final reply to a work request.');
     if(input.final&&row.requested_effect==='work'&&input.workDisposition===undefined)throw new Error('A final reply to a work request needs --work-disposition completed, failed or needs_decision.');
-    if(input.answersQuestion&&(input.final||!input.text.trim()||!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.promptAnswer))
-      throw new Error('--answers-question needs an answer in a partial reply to a human thread question.');
+    // Whether there is a thread question to answer is the origin's to judge: it holds the thread.
     if(input.final&&input.replyBody===''&&!input.attachments?.length&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(row.request_id))
       throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
     if(input.notify&&(!input.text.trim()||input.final&&input.replyBody===''))throw new Error('--notify requires a new reply message with words.');

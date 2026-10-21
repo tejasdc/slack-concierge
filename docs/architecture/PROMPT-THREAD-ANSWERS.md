@@ -51,9 +51,17 @@ The same signal is retained on the Inbox post as `answersQuestion:true`, includi
 message projection. A non-stalled final carries that marker too, whether the request was directly
 forwarded from a human thread reply or dispatched by the Inbox router. Progress and stalled notices
 do not. Existing unmarked posts stay available for separate backfill judgment.
-The request owner checks this signal, not the reply's prose. The CLI and owner both reject the flag
-outside a nonempty partial reply to a human thread request. For a peer reply, the signal travels
-with the retained reply event and is checked again by the origin.
+The request owner checks this signal, not the reply's prose. The flag is accepted on a nonempty
+partial reply to any request whose replies post into an Inbox thread: a forwarded human reply, and
+equally work the router dispatched for a question it recorded in that thread (`kind:'asked'`, owned
+by that dispatch), whose answer view reads exactly these marked posts. The flag never refuses a
+reply. On a final, on an empty reply, or on a request with no thread, the CLI and owner drop the
+mark, record the reply as written, and say why in the command's output and the reply receipt's
+`notice`. Before 2026-10-21 they refused it instead: 118 answers in a week were refused, 112 of them
+router dispatches into his threads, and the workers re-sent them as unmarked progress, so his
+recorded questions showed no answer and an urgent safety answer read as unseen for hours
+(request 39914136). For a peer reply, the signal travels with the retained reply event; the
+origin, which holds the thread, drops it with a log line where it does not apply.
 The Mac sends the original final body and closing facts separately; the origin checks the same
 earlier signal before accepting a bodyless final. Posts are never collapsed by comparing answer
 text, attachments, or hashes. Earlier duplicate posts stay in the retained thread history.
