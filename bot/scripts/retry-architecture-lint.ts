@@ -82,6 +82,18 @@ for (const path of files) {
   if (name !== 'src/ledger-rows.ts' && /\.iterate\s*\(/.test(source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')))
     errors.push(`${name}: statement.iterate(); use ledgerRows() so an early exit closes the statement`);
 }
+// Same boundary: Bun's node:readline also ends lines at U+2028/U+2029, which JSON allows inside
+// strings, so a record holding one arrived broken and was skipped. Every resume answer for one
+// Codex conversation was lost that way (2026-10-21). JSON Lines are read through json-lines.ts.
+{
+  const scripts: string[] = [];
+  walk(join(root, 'scripts'), scripts);
+  for (const path of [...files, ...scripts]) {
+    const source = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    if (/from\s+['"](?:node:)?readline['"]/.test(source))
+      errors.push(`${relative(root, path)}: node:readline splits at U+2028/U+2029 under Bun; use jsonLines()/onJsonLines() from src/json-lines.ts`);
+  }
+}
 for (const [name, policy] of Object.entries(RETRY_POLICIES)) {
   if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1
     || !Number.isFinite(policy.maxAgeMs) || policy.maxAgeMs <= 0
