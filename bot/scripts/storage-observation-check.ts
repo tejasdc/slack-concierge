@@ -99,6 +99,14 @@ try {
   assert.ok(occupied.occupied_ms >= 30 && occupied.occupied_ms <= wall + 1);
   assert.equal(occupied.slowest?.kind, 'transaction');
   assert.ok(occupied.slowest!.stack.length <= 8);
+  assert.ok(occupied.slowest!.phases!.callback_ms >= 30);
+  assert.ok(occupied.slowest!.phases!.slowest_statement_ms >= 30);
+  assert.equal(occupied.slowest!.phases!.slowest_statement_fingerprint, '0123456789abcdef');
+  assert.ok(occupied.slowest!.phases!.before_callback_ms >= 0);
+  assert.ok(occupied.slowest!.phases!.after_callback_ms >= 0);
+  db.transaction(() => db.transaction(() =>
+    observeSynchronousStorage('statement', () => 'fedcba9876543210', () => Bun.sleepSync(30)))())();
+  assert.equal(takeStorageInterval().slowest?.phases?.slowest_statement_fingerprint, 'fedcba9876543210');
   assert.equal(takeStorageInterval().calls, 0);
   db.query('SELECT id FROM facts WHERE id=1').get();
   assert.ok(takeStorageInterval().calls >= 1);

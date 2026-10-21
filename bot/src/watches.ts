@@ -521,10 +521,12 @@ function deliverPending(deps: WatchWorkerDeps, now: number) {
       }
       // Admission is idempotent on this input id and the words are fixed in the row, so a retry
       // after a lost answer reaches the same input. A paused or archived session holds it.
+      const admissionStarted = performance.now();
       deps.admit({ sessionId: row.session_id, inputId: row.delivery_input_id!, origin: "service", sourceInputId: row.origin_input_id,
         sourceRunId: row.origin_run_id, requestId: row.delivery_input_id!, text: row.message_text! });
+      const admissionMs = performance.now() - admissionStarted;
       update(row.watch_id, "delivery_state='accepted', delivery_next_ms=NULL");
-      log("info", "watch_delivered", { watch_id: row.watch_id, event: row.terminal_event });
+      log("info", "watch_delivered", { watch_id: row.watch_id, event: row.terminal_event, admission_ms: Math.round(admissionMs) });
     } catch (error) {
       const attempts = row.delivery_attempts + 1;
       const next = nextRetry({ policy: RETRY_POLICIES.watchDelivery, attempt: attempts, startedAtMs: row.terminal_at_ms ?? now, nowMs: now, classification: "transient" });

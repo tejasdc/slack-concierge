@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { Database } from 'bun:sqlite';
-import { observeSynchronousStorage } from './storage-interval';
+import { observeSynchronousStorage, transactionPhaseTiming } from './storage-interval';
 
 /** Result bytes are measured from values, without making a second JSON copy. They exclude
  * object overhead and wire encoding: response bytes and RSS are separate observations. */
@@ -118,11 +118,15 @@ export function observedDatabase(database: Database): Database {
   const statements = new WeakMap<object, object>();
   const transactions = new WeakMap<Function, Function>();
   const fingerprintOf = (sql: string) => createHash('sha256').update(sql).digest('hex').slice(0, 16);
-  function transaction(raw: Function): Function {
+  function transaction(raw: Function, phases: ReturnType<typeof transactionPhaseTiming>): Function {
     const prior = transactions.get(raw);
     if (prior) return prior;
     const wrapped = function(this: unknown, ...args: any[]) {
-      return observeSynchronousStorage('transaction', null, () => Reflect.apply(raw, this, args));
+      phases.callbackEntered = undefined;
+      phases.callbackLeft = undefined;
+      phases.slowestStatementMs = 0;
+      phases.slowestStatementFingerprint = null;
+      return observeSynchronousStorage('transaction', null, () => Reflect.apply(raw, this, args), phases);
     };
     transactions.set(raw, wrapped);
     // Bun's variants are non-configurable properties: proxying those to different values
@@ -131,7 +135,7 @@ export function observedDatabase(database: Database): Database {
       if (['arguments', 'caller', 'prototype'].includes(String(key))) continue;
       const descriptor = Object.getOwnPropertyDescriptor(raw, key)!;
       if (['default', 'deferred', 'immediate', 'exclusive'].includes(String(key)) && typeof descriptor.value === 'function')
-        descriptor.value = transaction(descriptor.value);
+        descriptor.value = transaction(descriptor.value, phases);
       Object.defineProperty(wrapped, key, descriptor);
     }
     return wrapped;
@@ -208,7 +212,15 @@ export function observedDatabase(database: Database): Database {
     if (property === 'query' || property === 'prepare')
       return (sql: string, ...args: any[]) => statement(observeSynchronousStorage('statement', () => fingerprintOf(sql), () => Reflect.apply(value, target, [sql, ...args])), sql);
     if (property === 'transaction')
-      return (...args: any[]) => transaction(Reflect.apply(value, target, args));
+      return (callback: Function, ...args: any[]) => {
+        const phases = transactionPhaseTiming();
+        const timedCallback = function(this: unknown, ...callbackArgs: any[]) {
+          phases.callbackEntered = performance.now();
+          try { return Reflect.apply(callback, this, callbackArgs); }
+          finally { phases.callbackLeft = performance.now(); }
+        };
+        return transaction(Reflect.apply(value, target, [timedCallback, ...args]), phases);
+      };
     if (property === 'exec' || property === 'run') return (...args: any[]) => {
       const scope = scopes.getStore();
       const measured = () => observeSynchronousStorage('statement', () => fingerprintOf(String(args[0])), () => Reflect.apply(value, target, args));

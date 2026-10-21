@@ -150,6 +150,16 @@ fields. Compare occupancy with lag and process CPU, then use the exact installed
 to locate the operation. A high occupancy does not distinguish disk contention from expensive
 query execution by itself; the outside process/I/O evidence supplies that distinction.
 
+For a slow transaction, `phases` splits time before its callback, in the callback, and after
+the callback. It also records the longest observed statement inside that transaction with a
+SQL fingerprint. This separates waiting before work from a slow statement and commit or
+rollback work; a deferred transaction can acquire the writer during its first statement, so
+writer-lock attribution still needs lock evidence. The index's own derived database is not
+part of this ledger timing. On 2026-10-21 a watch delivery spent 13,860 ms in admission, but
+the older single-duration record cannot establish which phase waited or name a lock holder.
+The watch worker's `watch_delivered` record also reports `admission_ms` for the exact
+watch, including successful fast admissions that do not create a loop-lag record.
+
 This closes the October 8 attribution gap where 37 seconds of low-CPU blocking occurred with no slow
 completed requests. Request timers begin after dispatch and cannot measure waiting before a
 handler enters the loop. A read-only diagnostic copy also consumed live disk resources; see
