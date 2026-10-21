@@ -1,0 +1,15 @@
+#!/bin/sh
+# Every commit declares whether it fixes a failure (Failure-record: <record path> | none), and a
+# fix names its failure record, so failures are captured when they are fixed rather than by habit
+# (bot/scripts/failure-record-check.ts; format in docs/incidents/README.md). GitHub's release check
+# runs the same rule over a branch, so a machine without bun is told here and checked there.
+root=$(git rev-parse --show-toplevel) || exit 1
+check="$root/bot/scripts/failure-record-check.ts"
+[ -f "$check" ] || exit 0
+bun=$(command -v bun 2>/dev/null || true)
+[ -n "$bun" ] || { [ -x "$HOME/.bun/bin/bun" ] && bun="$HOME/.bun/bin/bun"; }
+if [ -z "$bun" ]; then
+  echo "failure-record: bun is not installed here; the release check will ask for the Failure-record: line." >&2
+  exit 0
+fi
+exec "$bun" "$check" commit-msg "$1"

@@ -18,9 +18,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Every fix names its failure record
+        run: bun bot/scripts/failure-record-check.ts range origin/main..HEAD
       - name: Install frozen dependencies
         working-directory: bot
         run: bun install --frozen-lockfile

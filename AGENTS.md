@@ -914,6 +914,12 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
   an editor wraps a long sentence at the commit margin, and reading only its first line published
   half a sentence to him three times in one evening.
+- **Every commit carries a `Failure-record:` line**: the failure record it fixes
+  (`docs/incidents/…`, with a replayable acceptance scenario) or `none`. `.githooks/commit-msg`
+  and the GitHub release check refuse a commit without it (`bot/scripts/failure-record-check.ts`),
+  because on 2026-10-21 only about a quarter of two weeks' fixed failures had a record and the
+  agent-native engineering experiment replays them. Format and the after-the-fact path (list the
+  hash in a record's `fix_commits`) are in [failure records](docs/incidents/README.md).
 - **Failed updates are retained and assigned to agents.** `status.deploymentStuck` still
   reports every failed run since the last success for investigation; the autonomous repair
   owns it first, and parked, unowned or never-started updates go to the standing repair
