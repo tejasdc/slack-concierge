@@ -1,0 +1,1 @@
+Concierge can now show which part of a slow conversation save held it up, so a future freeze can be traced to the operation that waited.
