@@ -101,7 +101,7 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
     deadlineTimer = setTimeout(() => fail(new RepairAttemptStoppedError(
       "The autonomous repair time budget expired; only this repair process group was stopped. Operator help is required.",
     )), Math.max(1, input.deadlineMs - Date.now()));
-    onJsonLines(child.stdout!, (line) => {
+    const linesRead = onJsonLines(child.stdout!, (line) => {
       try {
         writeSync(output, `${line}\n`);
         const session = repairSessionFromEvent(line);
@@ -121,6 +121,8 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
       fail(new RepairAttemptIntegrityError(`Repair process bookkeeping failed: ${String(error)}`));
     }
     const code = await closed;
+    // An unterminated last line is handled at stream end; let it land before the log closes.
+    await linesRead;
     if (failure) throw failure;
     return code;
   } finally {

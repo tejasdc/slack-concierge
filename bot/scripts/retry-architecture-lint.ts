@@ -90,7 +90,7 @@ for (const path of files) {
   walk(join(root, 'scripts'), scripts);
   for (const path of [...files, ...scripts]) {
     const source = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
-    if (/from\s+['"](?:node:)?readline['"]/.test(source))
+    if (/(?:\bfrom\s+|\brequire\s*\(\s*|\bimport\s*\(\s*)['"](?:node:)?readline(?:\/promises)?['"]/.test(source))
       errors.push(`${relative(root, path)}: node:readline splits at U+2028/U+2029 under Bun; use jsonLines()/onJsonLines() from src/json-lines.ts`);
   }
 }
