@@ -6,13 +6,21 @@ type Termination =
  | {kind:'deadline'};
 
 function tail(previous:string,chunk:unknown){return (previous+String(chunk)).slice(-8192);}
+function head(previous:string,chunk:unknown){return previous.length>=65_536?previous:(previous+String(chunk)).slice(0,65_536);}
+
+// Structured log lines carry stacks too; the child's own failure is its first plain error line.
+function failureLine(text:string){
+ const lines=text.split('\n').map(line=>line.trim()).filter(line=>line&&!line.startsWith('{')&&!line.startsWith('at '));
+ return (lines.find(line=>/^(error:|[A-Z][A-Za-z]*Error\b)/.test(line))
+  ??lines.find(line=>/\b(assert|failed|did not)\b/i.test(line)))?.slice(0,1000)??null;
+}
 
 /** Own one scratch fixture's process group and settle without waiting forever for inherited pipes. */
 export async function runFixtureChild(options:{
  command:string;args:string[];env:NodeJS.ProcessEnv;deadlineMs:number;fixture:string;
 }):Promise<Record<string,unknown>>{
  const started=performance.now();
- let stdout='',stderr='',exit:{code:number|null;signal:NodeJS.Signals|null}|null=null;
+ let stdout='',stderr='',stderrHead='',exit:{code:number|null;signal:NodeJS.Signals|null}|null=null;
  let groupStopped=false;
  let child:ReturnType<typeof spawn>;
  try{child=spawn(options.command,options.args,{env:options.env,stdio:['ignore','pipe','pipe'],detached:true});}
@@ -23,7 +31,7 @@ export async function runFixtureChild(options:{
   catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')stderr=tail(stderr,`\nprocess-group stop failed: ${String(error)}`);}
  };
  child.stdout?.on('data',chunk=>{stdout=tail(stdout,chunk);});
- child.stderr?.on('data',chunk=>{stderr=tail(stderr,chunk);});
+ child.stderr?.on('data',chunk=>{stderrHead=head(stderrHead,chunk);stderr=tail(stderr,chunk);});
  let deadlineTimer:ReturnType<typeof setTimeout>|undefined;
  let drainTimer:ReturnType<typeof setTimeout>|undefined;
  const termination=await new Promise<Termination>(resolve=>{
@@ -49,7 +57,8 @@ export async function runFixtureChild(options:{
  child.stdout?.destroy();child.stderr?.destroy();
  const elapsedMs=Math.round(performance.now()-started);
  const phases=stderr.split('\n').flatMap(line=>{try{const row=JSON.parse(line);return typeof row.phase==='string'?[row.phase]:[];}catch{return [];}}).slice(-12);
- const diagnostics=`termination=${termination.kind} code=${termination.kind==='exit'?termination.code:'n/a'} signal=${termination.kind==='exit'?termination.signal:'n/a'} elapsedMs=${elapsedMs} phases=${JSON.stringify(phases)} stderr=${stderr} stdout=${stdout}`;
+ const failure=failureLine(stderr)??failureLine(stderrHead);
+ const diagnostics=`${failure?`failure=${JSON.stringify(failure)} `:''}termination=${termination.kind} code=${termination.kind==='exit'?termination.code:'n/a'} signal=${termination.kind==='exit'?termination.signal:'n/a'} elapsedMs=${elapsedMs} phases=${JSON.stringify(phases)} stderr=${stderr} stdout=${stdout}`;
  if(termination.kind==='spawn-failure')throw new Error(`${options.fixture} spawn failure: ${termination.error}; ${diagnostics}`);
  if(termination.kind==='deadline')throw new Error(`${options.fixture} deadline after ${options.deadlineMs}ms; ${diagnostics}`);
  if(termination.code!==0)throw new Error(`${options.fixture} child failed; ${diagnostics}`);

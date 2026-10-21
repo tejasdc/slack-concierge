@@ -504,8 +504,15 @@ The candidate's isolated checks run inside the detached runner, which starts at 
 IO weight (1000, like `concierge-bot.service`), because they time the candidate owner's own startup
 and reads: at an equal share beside a dozen agent runs (load 70-140 on 12 cores) they missed their
 deadlines three times on 2026-10-09/10 with nothing wrong in the candidate. A failed check records
-its exit status or signal, an explicit timeout after its bound, and the final 2,000 bytes of
-each output stream in the release error and deploy journal. Preparation and preactivation
+its exit status or signal, an explicit timeout after its bound, its first failure line, and the final
+2,000 bytes of each output stream in the release error and deploy journal. A failed presentation
+check during preparation also keeps its complete stdout and stderr (the first 256 KB and last
+768 KB of a larger stream) in `/var/lib/slack-concierge-deployment/candidate-check-failures/<attempt>-presentation/`,
+written before staging is removed and named in the error as `complete output:`; the newest 20
+are kept. The tail alone lost the failing assertion of run b264626d on 2026-10-21 and its repair
+parked for lack of evidence. The check prints each lifecycle failure on its own
+`presentation-check: lifecycle failure:` line, and a fixture child's error leads with the child's
+own `failure=` line. Preparation and preactivation
 presentation checks allow 180 seconds: successful preparation took about 47 seconds, and
 the same candidate passed in 52 seconds under load after a 90-second timeout. This gives
 ordinary disk contention room while retaining a finite hang guard. The candidate's

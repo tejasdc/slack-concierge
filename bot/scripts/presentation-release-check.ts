@@ -98,6 +98,9 @@ try {for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
 phase('lifecycle-wait');
 const lifecycleResults=await lifecycleChecks;
 const failures=lifecycleResults.filter(result=>result.status==='rejected');
+// Name each failure on its own line first: an uncaught AggregateError's printout is not
+// guaranteed to include its inner messages, and the controller keeps only a bounded tail.
+for(const failure of failures)process.stderr.write(`presentation-check: lifecycle failure: ${String((failure.reason as Error)?.message??failure.reason).slice(0,4000)}\n`);
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);

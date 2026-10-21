@@ -30,6 +30,7 @@ export function failedCandidateCheck(result: {
   stderr?: string | Uint8Array | null;
   error?: Error | null;
   timeoutSeconds?: number;
+  evidencePath?: string | null;
 }): string {
   const timeout = result.timeoutSeconds &&
     (result.exitCode === 124 || (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT');
@@ -38,7 +39,55 @@ export function failedCandidateCheck(result: {
     : `exit status ${result.exitCode ?? 'none'}`;
   const tail = (value?: string | Uint8Array | null) =>
     Buffer.from(value ?? '').subarray(-2000).toString('utf8') || '(empty)';
-  return `${status}${result.error ? `; process error: ${result.error.message.slice(-500)}` : ''}\nstdout tail:\n${tail(result.stdout)}\nstderr tail:\n${tail(result.stderr)}`;
+  const firstFailure = firstFailureLine(Buffer.from(result.stderr ?? '').toString('utf8'))
+    ?? firstFailureLine(Buffer.from(result.stdout ?? '').toString('utf8'));
+  return `${status}${result.error ? `; process error: ${result.error.message.slice(-500)}` : ''}`
+    + `${firstFailure ? `\nfirst failure: ${firstFailure}` : ''}`
+    + `${result.evidencePath ? `\ncomplete output: ${result.evidencePath}` : ''}`
+    + `\nstdout tail:\n${tail(result.stdout)}\nstderr tail:\n${tail(result.stderr)}`;
+}
+
+// The tail alone lost the assertion of run b264626d (2026-10-21): the failing line sat
+// before kilobytes of fixture diagnostics, so the repair agent parked for lack of evidence.
+// The check names each lifecycle failure on its own line; otherwise prefer the printed error
+// over Bun's source excerpt, whose lines also mention assert.
+export function firstFailureLine(text: string): string | null {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('at '));
+  const named = lines.find(line => line.startsWith('presentation-check: lifecycle failure: '));
+  const plain = lines.filter(line => !line.startsWith('{') && !line.startsWith('presentation-check: '));
+  const found = named ?? plain.find(line => /^(error:|[A-Z][A-Za-z]*Error\b)/.test(line))
+    ?? plain.find(line => /\b(assert|failed|deadline|did not)\b/i.test(line));
+  return found?.slice(0, 1000) ?? null;
+}
+
+const EVIDENCE_HEAD_BYTES = 256 * 1024;
+const EVIDENCE_TAIL_BYTES = 768 * 1024;
+const RETAINED_EVIDENCE_RUNS = 20;
+
+function boundedEvidence(value?: string | Uint8Array | null) {
+  const bytes = Buffer.from(value ?? '');
+  if (bytes.length <= EVIDENCE_HEAD_BYTES + EVIDENCE_TAIL_BYTES) return bytes;
+  return Buffer.concat([bytes.subarray(0, EVIDENCE_HEAD_BYTES),
+    Buffer.from(`\n… ${bytes.length - EVIDENCE_HEAD_BYTES - EVIDENCE_TAIL_BYTES} bytes omitted …\n`),
+    bytes.subarray(-EVIDENCE_TAIL_BYTES)]);
+}
+
+/** Keep a failed candidate check's output outside staging, which is removed after the attempt. */
+export function retainCandidateCheckEvidence(releaseRoot: string, attemptId: string, check: string,
+  result: { stdout?: string | Uint8Array | null; stderr?: string | Uint8Array | null }): string | null {
+  try {
+    const root = join(releaseRoot, 'candidate-check-failures');
+    const directory = join(root, `${attemptId}-${check}`);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, 'stdout.log'), boundedEvidence(result.stdout), { mode: 0o600 });
+    writeFileSync(join(directory, 'stderr.log'), boundedEvidence(result.stderr), { mode: 0o600 });
+    const retained = readdirSync(root).map(name => ({ name, at: lstatSync(join(root, name)).mtimeMs }))
+      .sort((left, right) => right.at - left.at);
+    for (const old of retained.slice(RETAINED_EVIDENCE_RUNS)) rmSync(join(root, old.name), { recursive: true, force: true });
+    return directory;
+  } catch {
+    return null;
+  }
 }
 
 export interface ReleaseManifest {
@@ -319,7 +368,8 @@ export class TrustedRootReleaseManager {
       ]),{cwd:join(sourceRoot,'bot')}):null;
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${failedCandidateCheck({...presentationCheck,
-          timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS})}`);
+          timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,
+          evidencePath:retainCandidateCheckEvidence(this.environment.releaseRoot,attemptId,'presentation',presentationCheck)})}`);
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
