@@ -546,6 +546,7 @@ async function catchUp() {
   const changedReturnEvents=new Set<string>();
   const changedRoots=new Set<string>();
   const closedPosts=new Set<string>();
+  const collapsedPosts=new Set<string>();
   const routedSources=new Set<string>();
   for(const change of changes){
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
@@ -570,6 +571,10 @@ async function catchUp() {
       if(row?.kind==='answer_closure'){
         const postId=JSON.parse(row.payload_json).postId;
         if(typeof postId==='string')closedPosts.add(postId);
+      }
+      if(row?.kind==='post_collapse'){
+        const postId=JSON.parse(row.payload_json).postId;
+        if(typeof postId==='string')collapsedPosts.add(postId);
       }
       if(row?.turn_id&&['post','turn_outcome'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
@@ -622,6 +627,15 @@ async function catchUp() {
       }
     }
     for(const postId of closedPosts)refreshClosedAnswer(current.generation,postId,changedRoots);
+    for(const postId of collapsedPosts){
+      const prior=prepared.query('SELECT event_sequence AS sequence,root_input_id AS root FROM presentation_messages WHERE generation=? AND message_id=?')
+        .get(current.generation,postId) as {sequence:number;root:string}|null;
+      if(!prior)continue;
+      changedRoots.add(prior.root);
+      prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(current.generation,prior.sequence);
+      prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(current.generation,prior.sequence);
+      prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(current.generation,prior.sequence);
+    }
     const dispatchesToReassign=new Set<string>();
     for(const root of movedRoots)if(root.startsWith('request:'))dispatchesToReassign.add(root.slice('request:'.length));
     for(const change of changes.filter(change=>change.source_table==='inbox_requests')){

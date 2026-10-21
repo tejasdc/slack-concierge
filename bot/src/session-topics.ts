@@ -2272,6 +2272,77 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   }
   return reconciled;
 }
+
+/** Retire duplicate presentation entries while keeping every request, reply and original post as evidence. */
+export function collapseDuplicateAnswerPosts(topicId:string,postIds:readonly string[]):number {
+  if(postIds.length<2||new Set(postIds).size!==postIds.length)throw new Error('Name distinct answer posts.');
+  const posts=postIds.map(id=>db.query("SELECT sequence,event_id,input_id,session_id,kind,payload_json FROM session_owner_events WHERE event_id=?").get(id) as
+    {sequence:number;event_id:string;input_id:string;session_id:number;kind:string;payload_json:string}|null);
+  if(posts.every(post=>!post))return 0;
+  if(posts.some(post=>!post))throw new Error('The duplicate answer set is incomplete.');
+  const ordered=posts.map(post=>post!).sort((left,right)=>left.sequence-right.sequence);
+  const first=ordered[0]!,original=JSON.parse(first.payload_json);
+  const closingLine=(id:string)=>{
+    const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${id}`) as {payload_json:string}|null;
+    return row?JSON.parse(row.payload_json).closingLine??null:null;
+  };
+  const sameAnswer=(post:typeof first)=>{
+    const payload=JSON.parse(post.payload_json);
+    const request=db.query('SELECT outcome,source_session_id,target_session_id FROM session_communication_requests WHERE request_id=?')
+      .get(payload.requestId) as {outcome:string|null;source_session_id:number;target_session_id:number}|null;
+    return post.kind==='post'&&post.session_id===first.session_id&&topicOfRoot(post.input_id)===topicId
+      &&payload.replyKind==='final'&&payload.workDisposition==='completed'&&payload.postedBySession===original.postedBySession
+      &&payload.answerGroup&&payload.answerGroup===original.answerGroup&&payload.text===original.text
+      &&JSON.stringify(payload.attachments??[])===JSON.stringify(original.attachments??[])
+      &&(payload.quiet??null)===(original.quiet??null)
+      &&(payload.messageThreadRootId??null)===(original.messageThreadRootId??null)
+      &&closingLine(post.event_id)===closingLine(first.event_id)
+      &&request?.outcome==='answered'&&request.source_session_id===first.session_id
+      &&`concierge:${request.target_session_id}`===payload.postedBySession;
+  };
+  if(!ordered.every(sameAnswer))throw new Error('The named posts are not one completed answer in this topic.');
+  const session=getSessionById(first.session_id);
+  if(!session||!sessionMetadata(session).inbox)throw new Error('The answer topic has no Inbox owner.');
+  return db.transaction(()=>{
+    let collapsed=0;
+    for(const post of ordered.slice(1)){
+      const eventId=`post:collapse:${post.event_id}`;
+      if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
+      recordSessionEvent({eventId,sessionId:session.id,inputId:post.input_id,kind:'post_collapse',
+        payload:{postId:post.event_id,keptPostId:first.event_id,topicId,reason:'One identical final answer closed several requests.'}});
+      collapsed++;
+    }
+    const duplicates=new Set(ordered.slice(1).map(post=>post.event_id));
+    const keptQuestion=topicQuestions(topicId).find(question=>question.kind==='reading'&&question.brief?.reads?.includes(first.event_id));
+    const questions=topicQuestions(topicId).filter(question=>question.kind==='reading'&&question.state==='open'
+      &&question.brief?.reads?.some((postId:string)=>duplicates.has(postId)))
+      .map(question=>({...question,state:'superseded' as QuestionState,replacedBy:keptQuestion?.questionId??null,
+        revision:question.revision+1,updatedAt:nowIso(),brief:{...question.brief,endedBecause:'The identical answer remains in this topic once.'}}));
+    if(questions.length){
+      const topic=bumped(topicRow(topicId));
+      const payload={change:'duplicate_answers_collapsed',topicId,topic,questions,by:{kind:'owner' as const},
+        reason:'One identical answer is visible; all request closures remain.',revision:topic.revision};
+      const eventId=`topic-collapse:answers:${first.event_id}`;
+      if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId)){
+        recordSessionEvent({eventId,sessionId:session.id,kind:'topic_question',payload});
+        applyTopicChange('topic_question',payload);
+      }
+    }
+    return collapsed;
+  })();
+}
+
+/** The six October 21 replies were byte-identical finals in six roots of one topic. */
+export function repairOctober21RepeatedAnswer():number {
+  return collapseDuplicateAnswerPosts('topic:c96e9f47-03f1-472b-b6ed-5f16dc7682d5',[
+    'post:forward:c9f50f17-8b9f-40d6-a16e-9a1b583f1b90',
+    'post:forward:f3eb3816-6ffc-4871-af3c-5c787c43ca39',
+    'post:forward:9e67ca1d-ad70-4e13-870a-1ef561edb9be',
+    'post:forward:7aa10aae-08c4-4d10-9c41-9530c9047309',
+    'post:forward:8e6c6a98-205b-4ebf-bace-91ef93fd798f',
+    'post:forward:9ade95ec-e8ed-4302-87c8-6257ee8c8574',
+  ]);
+}
 const headline=(value:string)=>answerLine(value);
 function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean}) {
   const session=getSessionById(answer.inboxSessionId);

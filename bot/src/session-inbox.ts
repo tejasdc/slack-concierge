@@ -84,7 +84,10 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     AND NOT (event.kind IN ('accepted','result') AND COALESCE(input.origin='agent' AND input.request_id IS NOT NULL,0))
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
-    AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
+    AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
+    AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed
+      WHERE collapsed.event_id='post:collapse:' || CASE WHEN event.kind='answer_closure'
+        THEN json_extract(event.payload_json,'$.postId') ELSE event.event_id END)`;
 export const inboxRows=`${inboxRowsFrom}${inboxRowsWhere(false)}`;
 const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
 const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(closures,true)}`;
@@ -401,7 +404,7 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * nothing here wakes the router. A bodyless final refers to this request's earlier prompt-answer
  * post by request identity. Its closing facts are an append-only event projected beneath that post.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;answerSource?:{inputId:string;runId:string}|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
@@ -415,17 +418,35 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         .get(answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
       if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
       carriedBy=earlier.event_id;
-    } else if(answer.final&&answer.answerGroup&&!answer.stalled) {
-      const grouped=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id)=? AND kind='post'
-        AND json_extract(payload_json,'$.answerGroup')=?
-        AND coalesce(json_extract(payload_json,'$.messageThreadRootId'),'')=? ORDER BY sequence LIMIT 1`)
-        .get(answer.inboxSessionId,answer.root,answer.answerGroup,answer.messageThreadRootId??'') as {event_id:string}|null;
+    } else if(answer.final&&!answer.stalled&&(answer.answerGroup||answer.answerSource)&&(text||answer.attachments.length)) {
+      const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
+      const grouped=db.query(`SELECT post.event_id FROM session_owner_events post
+        LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
+        WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
+          AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
+          AND json_extract(post.payload_json,'$.replyKind')='final'
+          AND json_extract(post.payload_json,'$.postedBySession')=?
+          AND json_extract(post.payload_json,'$.text')=?
+          AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
+          AND coalesce(json_extract(post.payload_json,'$.workDisposition'),'')=?
+          AND coalesce(json_extract(post.payload_json,'$.quiet'),'')=?
+          AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
+          AND coalesce((SELECT json_extract(closure.payload_json,'$.closingLine') FROM session_owner_events closure
+            WHERE closure.event_id='post:closure:' || post.event_id),'')=?
+          AND (json_extract(post.payload_json,'$.answerGroup')=? OR
+            json_extract(post.payload_json,'$.answerSource.runId')=?)
+        ORDER BY post.sequence LIMIT 1`)
+        .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,text,
+          JSON.stringify(answer.attachments),answer.workDisposition??'',answer.quiet??'',answer.messageThreadRootId??'',answer.closingLine??'',
+          answer.answerGroup??'',answer.answerSource?.runId??'') as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;
       else if(text||answer.attachments.length){
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
-            answerGroup:answer.answerGroup,replyKind:'final',answersQuestion:true,workDisposition:answer.workDisposition,
+            ...(answer.answerGroup?{answerGroup:answer.answerGroup}:{}),
+            ...(answer.answerSource?{answerSource:answer.answerSource}:{}),
+            replyKind:'final',answersQuestion:true,workDisposition:answer.workDisposition,
             ...(answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),postedBy:'owner-forward',postedBySession:answer.respondingSessionId,
             ...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;

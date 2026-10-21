@@ -1363,6 +1363,8 @@ export class SessionCommunicationCoordinator {
             stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
             answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
             answerGroup:declared.answerGroup??null,
+            answerSource:declared.source?.input_id&&declared.source?.run_id
+                ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
             hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
             informational:JSON.parse(request.payload_json).requestedEffect==='informational',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
