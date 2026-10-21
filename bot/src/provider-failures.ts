@@ -45,6 +45,13 @@ export class ProviderDispatchError extends Error {
   readonly modelAtCapacity: boolean;
   readonly threadWriterConflict: boolean;
   /**
+   * The failure belongs to one provider conversation (opening or resuming its thread), not
+   * to the account, so it spends that conversation's retry budget alone. On 2026-10-21 one
+   * thread's resume timeouts exhausted the account-wide budget and the next inputs were
+   * refused at once, while every other conversation on that account worked.
+   */
+  readonly threadScoped: boolean;
+  /**
    * The instant this refusal's own condition is known to clear, when the provider stated
    * one — a usage allowance reset. Set it only where nothing was sent or the provider
    * confirmed it did nothing, because it is what turns a refusal into a wait instead of a
@@ -64,6 +71,7 @@ export class ProviderDispatchError extends Error {
     immediateRetry?: boolean;
     modelAtCapacity?: boolean;
     threadWriterConflict?: boolean;
+    threadScoped?: boolean;
     clearsAtMs?: number | null;
   }) {
     super(input.message);
@@ -77,6 +85,7 @@ export class ProviderDispatchError extends Error {
     this.immediateRetry = input.immediateRetry === true;
     this.modelAtCapacity = input.modelAtCapacity === true || isModelCapacityRefusal(input.message);
     this.threadWriterConflict = input.threadWriterConflict === true || isCodexThreadWriterConflict(input.message);
+    this.threadScoped = input.threadScoped === true;
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
   }

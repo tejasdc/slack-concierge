@@ -4,7 +4,9 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
 import { codexHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import {
+  CodexAppServerClient,
   CodexAppServerClientError,
+  CodexAppServerUnansweredError,
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
@@ -1050,12 +1052,25 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   };
 }
 
+/**
+ * Threads whose resume the shared connection left unanswered. On 2026-10-21 one thread's
+ * full resume went unanswered on Concierge's long-lived connection eight times in a row
+ * while the same connection resumed other threads (one with a 19.8 MB history) and fresh
+ * connections resumed this one in 150 ms; where the answer was lost was not established.
+ * Such a thread is never resumed on that connection again: its turns open their own
+ * connection until this process ends, and the next process has a new shared connection.
+ */
+const threadsUnansweredOnSharedConnection = new Set<string>();
+
 async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
-  const client = input.appServerClient ?? sharedCodexAppServerClient();
+  const ownConnection = !input.appServerClient && !input.adoptTurn && sessionUUID
+    && threadsUnansweredOnSharedConnection.has(sessionUUID) ? new CodexAppServerClient() : null;
+  const client = input.appServerClient ?? ownConnection ?? sharedCodexAppServerClient();
+  if (ownConnection) log("info", "codex_turn_own_connection", { provider_thread_uuid: sessionUUID });
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
   const providerMessages = codexMessageObserver(input, submissionClientId,()=>model);
@@ -1527,8 +1542,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       // resumed a thread before the response was lost, a new dispatch cannot repeat
       // the requested work because turn/start has not been called yet.
       if (error instanceof CodexAppServerClientError && error.outcome === "ambiguous") {
+        if (sessionUUID && !input.appServerClient && !ownConnection && error instanceof CodexAppServerUnansweredError) {
+          threadsUnansweredOnSharedConnection.add(sessionUUID);
+        }
         throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
-          failureClass: "retryable", toolsUsed });
+          failureClass: "retryable", threadScoped: Boolean(sessionUUID), toolsUsed });
       }
       throw error;
     }
@@ -1614,6 +1632,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     unsubscribeNotifications();
     unsubscribeDisconnect();
     for (const clientId of recoveredSteering) input.onRecoveredSteering?.(clientId, "unacknowledged");
+    if (ownConnection) {
+      void Promise.resolve(recoveryPromise).catch(() => {}).finally(() => ownConnection.close().catch((error) =>
+        log("warn", "codex_turn_own_connection_close_failed", { ...errorFields(error), provider_thread_uuid: sessionUUID })));
+    }
   }
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());

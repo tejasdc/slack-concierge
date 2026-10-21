@@ -20,6 +20,14 @@ export class CodexAppServerClientError extends Error {
   }
 }
 
+/** The App Server never answered this request on this connection within its deadline. */
+export class CodexAppServerUnansweredError extends CodexAppServerClientError {
+  constructor(message: string) {
+    super(message, "ambiguous");
+    this.name = "CodexAppServerUnansweredError";
+  }
+}
+
 interface PendingRequest {
   connectionGeneration: number;
   method: string;
@@ -111,9 +119,8 @@ export class CodexAppServerClient {
     return new Promise<any>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new CodexAppServerClientError(
+        reject(new CodexAppServerUnansweredError(
           `Codex app-server ${method} timed out after ${requestTimeoutMs}ms.`,
-          "ambiguous",
         ));
       }, requestTimeoutMs);
       this.pending.set(id, {
