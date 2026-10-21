@@ -3,7 +3,12 @@
 export function notificationRequest(text:string):'result'|'scheduled'|null {
   // A bug report may carry diagnostic JSON after Tejas's description. That machine text is
   // custody, not his instruction to make a new phone promise.
-  const words=text.split('\nComplete diagnostics JSON')[0]??text;
+  // Help-needed alerts already belong to the blocking-question path. Do not turn
+  // that conditional request into a promise to push the next routine answer.
+  const words=(text.split('\nComplete diagnostics JSON')[0]??text).replace(
+    /\bif (?:you|we) (?:still )?need (?:my|any) help[.!?,]?\s*(?:please\s+)?(?:send me (?:a |an )?notification|notify me|ping me|alert me)\b/gi,
+    '',
+  );
   const reminder=/\bremind me\b/i.exec(words);
   if(reminder&&!negated(words,reminder.index))return 'scheduled';
   // A temporal clause is a request for a later interruption. "Let me know how" and
