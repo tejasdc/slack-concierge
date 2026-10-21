@@ -1546,7 +1546,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
           threadsUnansweredOnSharedConnection.add(sessionUUID);
         }
         throw new ProviderDispatchError({ message: error.message, terminalConfirmed: true,
-          failureClass: "retryable", threadScoped: Boolean(sessionUUID), toolsUsed });
+          failureClass: "retryable", toolsUsed,
+          // A disconnect is the daemon's, not this thread's; only an unanswered resume is.
+          threadScoped: Boolean(sessionUUID) && error instanceof CodexAppServerUnansweredError });
       }
       throw error;
     }
