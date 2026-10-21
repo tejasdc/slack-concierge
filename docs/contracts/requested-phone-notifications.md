@@ -5,6 +5,8 @@ The owner classifies the retained words of a human Inbox input as `result`,
 let Tejas know when work finishes select `result`; “remind me” selects
 `scheduled`. The mark is derived only from his words. A quoted note, an agent's
 text, a negated request, and a routine request for explanation do not arm delivery.
+"If you still need my help, send me a notification" uses the blocking-question
+notification if help is needed; it does not arm the topic's next result.
 
 A `result` input arms its Inbox topic. The owner retains the exact human input
 that armed it. The first final agent answer in that topic consumes every pending arm

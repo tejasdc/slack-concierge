@@ -2193,8 +2193,9 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * one item in Needs you with its notification — a question when the agent needs his decision, a
  * reading item otherwise (its answer, or that it could not finish) — and, when it answered as done,
  * the thread's request it was linked to closes completed by the same rule the router is held to
- * (`refuseUnfinishedCompletion`). A partial answer is posted and notifies nobody: progress he learns
- * to swipe away is worse than none. Server and Mac agents both arrive here
+ * (`refuseUnfinishedCompletion`). A partial answer is posted without a phone alert
+ * unless the agent explicitly requests one: progress he learns to swipe away is worse
+ * than none. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
 export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean}):string|null {
