@@ -58,6 +58,13 @@ export function sessionInputInstructions(input: AcceptedSessionInput, runId: str
   return `${SESSION_INPUT_INSTRUCTIONS}${options.standing ? `\n\n${options.standing}` : ''}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.${options.budget ? `\n\n${options.budget}` : ''}${options.unnamed ? `\n\n${unnamedSessionStep(input, runId)}` : ''}`;
 }
 
+/**
+ * The bytes the agent receives, which are also the bytes kept as what was sent. Claude Code
+ * stores and echoes a message with its trailing whitespace removed, and attribution matches
+ * those bytes exactly, so a message sent with a trailing space ("let me know ") was taken by
+ * Claude but never shown as his: the page kept it below the answer, marked Queued (2026-10-22).
+ * Sending the same normal form keeps both sides identical.
+ */
 export function sessionInputEnvelope(input: AcceptedSessionInput, runId: string, content: string) {
-  return `${JSON.stringify({ type: 'concierge-session-input', input: identity(input, runId) })}\n\n${content}`;
+  return `${JSON.stringify({ type: 'concierge-session-input', input: identity(input, runId) })}\n\n${content}`.trimEnd();
 }
