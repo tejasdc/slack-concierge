@@ -671,6 +671,12 @@ credentials, deployment leaves ingress running and does not use its health as a 
 for the Concierge release. A changed ingress is restarted and must pass its authenticated
 health check before that release is verified.
 
+After a candidate is sealed, capture route configuration and credential provisioning come from
+that same candidate before capture ingress restarts. The running deployment controller may predate
+a route or credential introduced by the candidate; using its older capture files can install a new
+unit that cannot start or leave the candidate route absent. Systemd units, route configuration,
+credential installer and runtime therefore cross the capture restart boundary as one candidate set.
+
 Incident `2ef0a592-2f82-4f88-ab36-af8815159bf7` exposed the missing boundary evidence.
 Candidate `efa9fc09805e4619d338fa1030071afb397a9064` completed recovery at
 `2026-09-15T22:54:58.887Z` (PID 3173606), emitted no capture-worker or bot-online marker,

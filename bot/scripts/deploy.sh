@@ -741,7 +741,7 @@ capture_runtime_fingerprint() {
     "$CAPTURE_RUNTIME_DIR/capture-ingress.js" "$CAPTURE_RUNTIME_DIR/bun" \
     "$CAPTURE_CONFIG_DEST" "$SYSTEMD_DIR/agent-inbox.service" \
     /etc/agent-inbox.token /etc/concierge/pebble-index.token \
-    /etc/concierge/thinkering.token /etc/concierge/capture-queue.token \
+    /etc/concierge/thinkering.token /etc/concierge/home-assistant.token /etc/concierge/capture-queue.token \
     | sha256sum | awk '{print $1}'
 }
 
@@ -1040,6 +1040,10 @@ deploy() {
     DEPLOY_FAILURE_REASON="The candidate release's service units could not be installed."
     CONTROL_SYSTEMD_DIR="$CANDIDATE_ARTIFACT_PATH/control/systemd"
     install_systemd_units
+    # Capture configuration and credentials must come from the same candidate as its unit.
+    # The running control release may not know a credential introduced by this release.
+    CONTROL_CONFIG_DIR="$CANDIDATE_ARTIFACT_PATH/control/config"
+    CAPTURE_INSTALL_SCRIPT="$CANDIDATE_ARTIFACT_PATH/control/install-capture-ingress.js"
     DEPLOY_FAILURE_REASON="The installed release hooks could not be enabled."
     /usr/bin/bash "$CANDIDATE_ARTIFACT_PATH/control/install-codex-stop-hook.sh" \
       --bun "$BUN_BIN" --release "${CONCIERGE_DEPLOYMENT_RELEASE_ROOT:-/var/lib/slack-concierge-deployment}/current" --state "$STATE_DIR"
