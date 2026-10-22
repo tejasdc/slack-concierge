@@ -741,7 +741,7 @@ capture_runtime_fingerprint() {
     "$CAPTURE_RUNTIME_DIR/capture-ingress.js" "$CAPTURE_RUNTIME_DIR/bun" \
     "$CAPTURE_CONFIG_DEST" "$SYSTEMD_DIR/agent-inbox.service" \
     /etc/agent-inbox.token /etc/concierge/pebble-index.token \
-    /etc/concierge/thinkering.token /etc/concierge/home-assistant.token /etc/concierge/capture-queue.token \
+    /etc/concierge/thinkering.token /etc/concierge/capture-queue.token \
     | sha256sum | awk '{print $1}'
 }
 
