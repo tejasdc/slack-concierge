@@ -397,7 +397,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `bot/src/live-speech.ts`: loopback-only listeners on `127.0.0.1` (http 8790 for Chrome; https
   8791 for Safari, which blocks http loopback from an https page as mixed content), answering
   only the `CONCIERGE_SPEECH_ORIGINS` page (default `https://thnkr.ing`). They offer the iPhone
-  app's speech contract (begin/append/finish/cancel/transcribe), decode each piece with a
+  app's speech contract (begin/append/drain/finish/cancel/transcribe), decode each piece with a
   streaming ffmpeg and feed Apple's engine live, outside the one-at-a-time lane; the page keeps
   custody on the server and files the words as a device transcript. The https certificate names
   only 127.0.0.1/localhost, is created by `install-mac.sh` and trusted after one macOS password
@@ -408,10 +408,12 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   independent supervised speech worker, with the owner alone committing its result;
   [speech fallback jobs](docs/architecture/SPEECH-FALLBACK-JOBS.md) owns the protocol,
   recovery and live checks. `audio_transcribed` names the engine (and the peer) and never text.
+
   whisper.cpp remains only as a logged fallback on the box and is scheduled for removal.
   `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements
   and the wider voice design are in Thinkering's
   `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
+- Ambient canvas sessions retain finalized device-speech words and browser action outcomes as passive observations, without launching a second provider turn. Their admission and provenance are in [the session owner wire contract](docs/contracts/session-owner-v1.md#ambient-canvas-observations).
 - An agent on the Mac may photograph a window or a screen, which Tejas asked for on
   September 22, 2026. One command, `~/.local/bin/mac-screenshot` (absolute path: provider
   children have no `~/.local/bin` on PATH), built from `bot/native/mac-capture.swift`. It uses

@@ -328,6 +328,13 @@ page sends each two-second piece to this Mac's speech service on 127.0.0.1 as it
 engine transcribes it as it arrives, and stopping waits only for the last moments (about
 0.1–0.2 s after stop, even for a four-minute recording, measured September 21, 2026).
 
+Ambient canvas voice reads finalized words during recording with a retained-segment cursor.
+The Mac helper keeps final segments until the local recording ends; reading them does not
+consume them, so a browser retry starts from the last segment saved to its device command
+outbox. Finish returns every final segment for the caller to select the unsaved tail. The
+browser sends only saved words to the canvas agent on the server. This Mac listener streams
+through ffmpeg and Apple's engine without creating a recording file.
+
 - **Safari** uses `https://127.0.0.1:8791`. WebKit 26 blocks an https page's requests to plain
   http loopback, and no Safari setting changes that. `install-mac.sh` creates a certificate for
   127.0.0.1/localhost only (`speech/tls/` in the state directory, 800 days, renewed a month

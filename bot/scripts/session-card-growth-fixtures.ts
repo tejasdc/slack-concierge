@@ -16,6 +16,7 @@ function fixture(count:number){
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT);
+    CREATE TABLE session_owner_events(session_id INTEGER,kind TEXT,event_id TEXT,payload_json TEXT,created_at TEXT);
     CREATE INDEX session_inputs_session_kind ON session_inputs(session_id,kind);
     CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY AUTOINCREMENT,source_table TEXT,row_key TEXT,session_id INTEGER);
     CREATE INDEX presentation_changes_session ON presentation_change_log(session_id,sequence);
@@ -150,7 +151,7 @@ function visibleCardFacts(){
  const {source,prepared,cards}=fixture(100);
  try{
   source.query('UPDATE sessions SET native_metadata_json=? WHERE id=1').run(JSON.stringify({title:'Visible facts',
-    claudeAccount:'personal',interactionPolicy:'consultation-only',turnOutcome:{outcome:'needs_you',question:'界'.repeat(1000),
+    claudeAccount:'personal',interactionPolicy:'consultation-only',canvasObservation:true,canvasBoardId:'board-visible',turnOutcome:{outcome:'needs_you',question:'界'.repeat(1000),
       inputId:'input-1',at:'2026-10-08T00:00:00Z'}}));
   source.query("UPDATE turns SET status='running' WHERE id=1").run();
   source.query("UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=? WHERE id=7").run(Date.UTC(2026,9,9));
@@ -162,6 +163,7 @@ function visibleCardFacts(){
   assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',endedAt:null,workStartedAt:null,running:true,workMs:null});
   assert.equal(card.execution,'running');assert.equal(typeof card.presenceRevision,'number');assert.ok('agentName' in card);
   assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
+  assert.deepEqual(card.canvasObservation,{boardId:'board-visible'});
   assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
   assert.equal(card.savedWork.turnId,7,'the card must carry the exact control identity beyond the first saved-work page');
   assert.equal(card.savedWork.kind,'scheduled');assert.equal(card.savedWork.status,'queued');

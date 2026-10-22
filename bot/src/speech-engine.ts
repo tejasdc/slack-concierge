@@ -40,7 +40,7 @@ function platformEngine(): EngineSpec {
   return { name: "parakeet", server, files: [server, model], args: ["-m", model, "-t", THREADS], idleMs: IDLE_MS };
 }
 
-export type EngineResult = { text: string; audioMs: number; chunks: number; computeMs: number; warm: boolean };
+export type EngineResult = { text: string; audioMs: number; chunks: number; computeMs: number; warm: boolean; remainingSegments?: string[] };
 type Pending = { resolve: (value: EngineResult) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; warm: boolean };
 
 export class EngineUnavailable extends Error {}
@@ -150,6 +150,16 @@ class ResidentEngine {
   appendStream(id: string, pcm: Buffer): void {
     this.write(`${id}\tappend\t${pcm.toString("base64")}\n`);
   }
+  drainStream(id: string, cursor: number): Promise<string[]> {
+    const child = this.child;
+    if (!child) return Promise.reject(new EngineUnavailable(`${this.spec.name}_not_running`));
+    const requestId = `r${++this.sequence}`;
+    return new Promise<string[]>((resolve, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(requestId); reject(new EngineUnavailable(`${this.spec.name}_timeout`)); }, 10_000);
+      this.pending.set(requestId, { resolve: value => resolve(value.text ? JSON.parse(value.text) as string[] : []), reject, timer, warm: true });
+      child.stdin.write(`${requestId}\tdrain\t${id}\t${cursor}\n`);
+    });
+  }
   cancelStream(id: string): void {
     if (this.child) this.write(`${id}\tcancel\n`);
   }
@@ -186,6 +196,7 @@ class ResidentEngine {
       chunks: Number(message.chunks) || 0,
       computeMs: Number(message.computeMs) || 0,
       warm: waiting.warm,
+      ...(Array.isArray(message.remainingSegments)?{remainingSegments:message.remainingSegments.filter(value=>typeof value==='string') as string[]}:{}),
     });
     this.scheduleRelease();
   }

@@ -40,7 +40,7 @@ export type NativeSessionMetadata = {
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
-  origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
+  origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; canvasObservation?:boolean; canvasBoardId?:string; nativeBinding?:any;
   lineage?:{boundary:string;sourceVersion:string|null};
   recovery?:{sourceAddress:string;reason:'claude_usage_exhausted'};
   /** Native continuation stays on its owning machine; archive resurrection remains a distinct copy. */
@@ -254,6 +254,18 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
  try{return db.transaction(()=>{
   entered=performance.now();
   try {
+  const target=getSessionById(input.sessionId);
+  if(target&&sessionMetadata(target).canvasObservation){
+    const action=input.payload&&typeof input.payload==='object'&&'action' in input.payload
+      ?(input.payload as {action?:unknown}).action:null;
+    const control=action&&typeof action==='object'&&'kind' in action
+      ?(action as {kind?:unknown}).kind:null;
+    const ownCreate=input.scope==='surface:canvas-observation'&&input.kind==='create';
+    const safeControl=input.scope==='surface:thinkering'&&input.origin==='human'&&(
+      input.kind==='action'&&['title','summary','outcome','read','dismiss','archive','restore','pin','save'].includes(String(control))
+      ||input.kind==='message-action'&&['reaction','save','follow'].includes(String(control)));
+    if(!ownCreate&&!safeControl)throw new Error('CANVAS_OBSERVATION_ONLY');
+  }
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
   const rawPayload=timed('serializeMs',()=>stablePayload(input.payload));
   const value=JSON.parse(rawPayload);
@@ -301,6 +313,7 @@ export function enqueueSessionInput(inputId:string) {
     if (input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id);
     if (!session) throw new Error('Accepted session does not exist.');
+    if (sessionMetadata(session).canvasObservation) throw new Error('CANVAS_OBSERVATION_ONLY');
     if (session.status==='archived' || sessionMetadata(session).suspended) return input;
     const value=JSON.parse(input.payload_json);
     const payload=input.kind==='create'?value.firstInput:value;

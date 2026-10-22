@@ -17,7 +17,9 @@ function prefix(text:string,maxBytes:number):string {
 
 /** The digest covers both ordinary and structured words; source.text is the same full body. */
 export function historyContent(message:Pick<ProviderHistoryMessage,'content'|'richContent'>):string {
-  return JSON.stringify({content:message.content,...(message.richContent===undefined?{}:{richContent:message.richContent})});
+  const observed=message as typeof message&{canvasContext?:unknown;canvasAction?:unknown;author?:unknown};
+  return JSON.stringify({content:message.content,...(message.richContent===undefined?{}:{richContent:message.richContent}),
+    ...(observed.canvasContext===undefined?{}:{canvasContext:observed.canvasContext,canvasAction:observed.canvasAction??null,author:observed.author??null})});
 }
 
 export function historyContentDetail(message:Pick<ProviderHistoryMessage,'content'|'richContent'>):HistoryContentDetail {
@@ -63,6 +65,7 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
     createdAt:message.createdAt,timestampSource:message.timestampSource,author:message.author,
     detailKey:message.detailKey,contentDetail:detail,
+    ...('canvasContext' in message?{canvasContext:(message as any).canvasContext,canvasAction:(message as any).canvasAction}:{}),
     ...((source.source&&typeof source.source==='object')?{source:{sourceId:source.source.sourceId,
       sourceVersion:source.source.sourceVersion,eventId:source.source.eventId,
       ordinal:source.source.ordinal,role:source.source.role,locator:source.source.locator,
@@ -71,7 +74,7 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
   const minimal={id:message.id,role:message.role,content:prefix(message.content,256),tool:message.tool,
     ...(closingLine?{closingLine}:{}),
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
-    author:{kind:message.author?.kind??'unknown'},contentDetail:detail,
+    author:'canvasContext' in message?message.author:{kind:message.author?.kind??'unknown'},contentDetail:detail,
     ...((source.source&&typeof source.source==='object')?{source:{sourceId:source.source.sourceId,
       sourceVersion:source.source.sourceVersion,eventId:source.source.eventId}}:{})};
   if(byteLength(JSON.stringify(minimal))>MESSAGE_BYTES)throw new Error('HISTORY_MESSAGE_IDENTITY_TOO_LARGE');

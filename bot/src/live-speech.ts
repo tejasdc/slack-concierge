@@ -73,6 +73,15 @@ async function append(id: string, audio: Buffer) {
   recording.decoder.stdin.write(audio);
 }
 
+async function drain(id: string, cursor: number) {
+  const recording = recordings.get(id);
+  if (!recording) throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
+  if (!Number.isSafeInteger(cursor) || cursor < 0) throw new SpeechRefusal("SPEECH_INVALID_CURSOR", 400);
+  recording.touchedAt = Date.now();
+  await recording.started;
+  return { segments: await speechEngine.drainStream(recording.stream, cursor) };
+}
+
 async function finish(id: string) {
   const recording = recordings.get(id);
   if (!recording) throw new SpeechRefusal("SPEECH_UNKNOWN_RECORDING", 404);
@@ -89,7 +98,7 @@ async function finish(id: string) {
   const text = result.text.trim();
   const durationMs = Math.round(recording.frames / 16);
   log("info", "live_audio_transcribed", { engine: speechEngine.name, audio_ms: durationMs, pieces: result.chunks, after_stop_ms: Date.now() - stopped, engine_finish_ms: result.computeMs, text_chars: text.length });
-  return { text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs };
+  return { text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs, remainingSegments: result.remainingSegments ?? [] };
 }
 
 function cancel(id: string) {
@@ -132,13 +141,14 @@ async function handle(request: Request): Promise<Response> {
       if (!speechEngine.installed()) throw new SpeechRefusal("SPEECH_UNAVAILABLE", 503);
       result = { version: 1, engine: ENGINE, engineVersion: ENGINE_VERSION };
     } else if (request.method === "POST") {
-      const body = (await request.json().catch(() => ({}))) as { audio?: unknown; type?: unknown };
+      const body = (await request.json().catch(() => ({}))) as { audio?: unknown; type?: unknown; cursor?: unknown };
       const audio = () => { if (typeof body.audio !== "string" || !body.audio) throw new SpeechRefusal("SPEECH_BAD_REQUEST", 400); return Buffer.from(body.audio, "base64"); };
       if (parts[2] === "transcriptions" && parts.length === 3) result = await transcribeWhole(audio(), typeof body.type === "string" ? body.type : "");
       else if (parts[2] === "recordings" && parts.length === 5) {
         const id = recordingId(parts[3]);
         if (parts[4] === "begin") { await begin(id); result = { ok: true }; }
         else if (parts[4] === "append") { await append(id, audio()); result = { ok: true }; }
+        else if (parts[4] === "drain") result = await drain(id, Number(body.cursor ?? 0));
         else if (parts[4] === "finish") result = await finish(id);
         else if (parts[4] === "cancel") { cancel(id); result = { ok: true }; }
         else throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
