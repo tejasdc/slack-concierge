@@ -198,10 +198,6 @@ and mandatory review requirements in this repository and linked historical mater
   reports through normal Inbox intake with provider invocation, preserving prior
   assignment metadata; use import-only only when explicitly requested. The [capture contract](docs/runbooks/THINKERING-CAPTURE.md)
   and [native Inbox contract](docs/contracts/native-inbox.md) own this boundary.
-- Home Assistant voice transcripts use their authenticated public capture door, a stable event
-  identity and spoken time, then enter that same native Inbox custody and receipt path. Agent checks
-  use the marked test entrance and never count as a spoken-device check. The [capture contract](docs/runbooks/THINKERING-CAPTURE.md)
-  owns the wire shape, retry rule, label and acceptance boundary.
 - Input `1789496623.399079` requires discovery and addressed communication for top-level
   Thinkering sessions from both native and existing Slack callers. Both use the common
   session owner; provider subagents are outside scope. That input authorizes completing

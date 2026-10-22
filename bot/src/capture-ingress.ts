@@ -30,7 +30,7 @@ import {
 const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
 
-type CaptureAdapterName = "pebble-index" | "raw-body" | "thinkering" | "home-assistant";
+type CaptureAdapterName = "pebble-index" | "raw-body" | "thinkering";
 type CaptureDeliveryDestinationConfig = SlackCaptureDestinationConfig | JournalCaptureDestinationConfig | { type: "session" };
 type CaptureDestinationConfig = CaptureDeliveryDestinationConfig | DirectoryCaptureDestinationConfig;
 
@@ -96,8 +96,6 @@ export interface TextCapture {
   attachments?: CaptureAttachment[];
   sourceEventId?: string;
   recordedAtMs: number;
-  /** Exact producer timestamp when its wire representation is part of the retry snapshot. */
-  recordedAtText?: string;
   client: string;
   sourceTrigger: string | null;
   sourceWebhookVersion: string | null;
@@ -226,7 +224,7 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
   const configuredRoutes: CaptureRouteConfig[] = routes.map((route: any, index: number) => {
     const name = `routes[${index}]`;
     const adapter = requiredString(route.adapter, `${name}.adapter`) as CaptureAdapterName;
-    if (adapter !== "pebble-index" && adapter !== "raw-body" && adapter !== "thinkering" && adapter !== "home-assistant") {
+    if (adapter !== "pebble-index" && adapter !== "raw-body" && adapter !== "thinkering") {
       throw new Error(`Unsupported capture adapter: ${adapter}`);
     }
     const pathValue = requiredString(route.path, `${name}.path`);
@@ -300,9 +298,6 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     }
     if (route.adapter === "pebble-index" && !["slack", "session"].includes(route.destination.type)) {
       throw new Error(`Pebble Index route ${route.id} requires a default session destination.`);
-    }
-    if (route.adapter === "home-assistant" && route.destination.type !== "session") {
-      throw new Error(`Home Assistant route ${route.id} requires a session destination.`);
     }
     if (route.adapter === "raw-body" && route.destination.type !== "directory") {
       throw new Error(`Raw body route ${route.id} requires a directory destination.`);
@@ -557,62 +552,6 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
     ...(agentSourceFrom(request) ? { agentSource: agentSourceFrom(request) } : {}) };
 }
 
-function parseHomeAssistant(request: Request, route: CaptureRouteConfig, body: Uint8Array): TextCapture {
-  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    throw new CaptureRequestError(415, "Home Assistant requires application/json");
-  }
-  let payload: unknown;
-  try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
-  catch { throw new CaptureRequestError(400, "malformed JSON"); }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)
-      || Object.keys(payload).some(key => !["event_id", "recorded_at", "text", "audio"].includes(key))) {
-    throw new CaptureRequestError(422, "Home Assistant accepts event_id, recorded_at, text and optional audio");
-  }
-  const { event_id: eventId, recorded_at: recordedAt, text, audio } = payload as Record<string, unknown>;
-  if (typeof eventId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
-    throw new CaptureRequestError(422, "event_id must be a UUIDv4");
-  }
-  if (typeof recordedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(recordedAt)
-      || !Number.isFinite(Date.parse(recordedAt))) {
-    throw new CaptureRequestError(422, "recorded_at must be an RFC 3339 UTC timestamp");
-  }
-  if (typeof text !== "string" || !text.trim() || !text.isWellFormed()) {
-    throw new CaptureRequestError(422, "text must be nonempty, well-formed Unicode");
-  }
-  let attachments: CaptureAttachment[] | undefined;
-  if (audio !== undefined) {
-    if (!audio || typeof audio !== "object" || Array.isArray(audio)
-        || Object.keys(audio).some(key => !["filename", "content_type", "data_base64"].includes(key))) {
-      throw new CaptureRequestError(422, "audio must contain filename, content_type and data_base64");
-    }
-    const { filename, content_type: contentType, data_base64: dataBase64 } = audio as Record<string, unknown>;
-    const supportedAudio = new Set(["audio/wav", "audio/x-wav", "audio/flac", "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "audio/aac"]);
-    if (typeof filename !== "string" || !filename.trim() || !filename.isWellFormed()
-        || /[\\/\x00-\x1f\x7f]/.test(filename) || filename === "." || filename === ".."
-        || typeof contentType !== "string" || !supportedAudio.has(contentType)
-        || typeof dataBase64 !== "string" || !dataBase64 || dataBase64.length % 4 !== 0
-        || Buffer.from(dataBase64, "base64").toString("base64") !== dataBase64) {
-      throw new CaptureRequestError(422, "audio requires a safe filename, supported audio content type and canonical base64 bytes");
-    }
-    attachments = [{ filename, contentType, dataBase64 }];
-  }
-  const agentSource = agentSourceFrom(request);
-  return {
-    kind: "text",
-    eventId,
-    routeId: route.id,
-    label: route.label,
-    text,
-    ...(attachments ? { attachments } : {}),
-    recordedAtMs: Date.parse(recordedAt),
-    recordedAtText: recordedAt,
-    client: "home-assistant",
-    sourceTrigger: null,
-    sourceWebhookVersion: null,
-    ...(agentSource ? { agentSource } : {}),
-  };
-}
-
 function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCapture): CaptureDeliveryDestinationConfig {
   if (route.destination.type === "session") return route.destination;
   if (capture.sourceTrigger === null && capture.sourceWebhookVersion === null) {
@@ -717,7 +656,6 @@ async function parseCapture(
   if (route.adapter === "raw-body") return parseRawBody(request, route, dependencies.createRawBodyWriter || createWriteStream);
   const body = await readBodyWithinRouteLimit(request, route);
   if (route.adapter === "thinkering") return parseThinkering(request, route, body);
-  if (route.adapter === "home-assistant") return parseHomeAssistant(request, route, body);
   return parsePebbleIndex(request, route, body);
 }
 
@@ -980,26 +918,11 @@ export class ProductionCaptureServices implements CaptureServices {
 
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
-    const sessionSource = {
-      kind: route.adapter === "thinkering" ? "thinkering" as const
-        : route.adapter === "home-assistant" ? "home-assistant" as const : "pebble" as const,
-      id: capture.eventId,
-      recordedAt: capture.recordedAtText ?? new Date(capture.recordedAtMs).toISOString(),
-      metadata: {
-        routeId: capture.routeId,
-        client: capture.client,
-        trigger: capture.sourceTrigger,
-        webhookVersion: capture.sourceWebhookVersion,
-        ...(capture.sourceEventId ? { reportId: capture.sourceEventId } : {}),
-        ...(capture.agentSource ? { agentSource: capture.agentSource } : {}),
-      },
-    };
     const ensureSameSnapshot = (event: CaptureEventRow) => {
       if ((route.adapter === "thinkering" || event.delivery_kind === "session") && (event.message_text !== (event.delivery_kind === "session" ? capture.text : slackText(capture))
           || captureAttachmentSnapshot(retainedCaptureAttachments(event.attachment_snapshot_json))
-            !== captureAttachmentSnapshot(capture.attachments)
-          || (route.adapter === "home-assistant" && event.source_snapshot_json !== JSON.stringify(sessionSource)))) {
-        throw new CaptureRequestError(409, "event_id already identifies a different capture snapshot");
+            !== captureAttachmentSnapshot(capture.attachments))) {
+        throw new CaptureRequestError(409, "event_id already identifies different text or attachments");
       }
     };
     const canonicalEvent = getCaptureEvent(capture.eventId);
@@ -1007,7 +930,7 @@ export class ProductionCaptureServices implements CaptureServices {
       ensureSameSnapshot(canonicalEvent);
       return acceptedTextCapture(canonicalEvent, true);
     }
-    const destination = route.adapter === "thinkering" || route.adapter === "home-assistant"
+    const destination = route.adapter === "thinkering"
       ? route.destination as CaptureDeliveryDestinationConfig
       : resolvePebbleDestination(route, capture);
     const messageText = destination.type === "session" ? capture.text
@@ -1021,7 +944,19 @@ export class ProductionCaptureServices implements CaptureServices {
         destinationChannel: destination.type === "slack" ? destination.channelId : "",
         messageText,
         attachments: capture.attachments,
-        ...(destination.type === "session" ? { source: sessionSource } : {}),
+        ...(destination.type === "session" ? { source: {
+          kind: route.adapter === "thinkering" ? "thinkering" as const : "pebble" as const,
+          id: capture.eventId,
+          recordedAt: new Date(capture.recordedAtMs).toISOString(),
+          metadata: {
+            routeId: capture.routeId,
+            client: capture.client,
+            trigger: capture.sourceTrigger,
+            webhookVersion: capture.sourceWebhookVersion,
+            ...(capture.sourceEventId ? { reportId: capture.sourceEventId } : {}),
+            ...(capture.agentSource ? { agentSource: capture.agentSource } : {}),
+          },
+        } } : {}),
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
         sourceTrigger: capture.sourceTrigger,

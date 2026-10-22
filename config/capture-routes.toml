@@ -24,21 +24,6 @@ auth_token_credential = "thinkering"
 [routes.destination]
 type = "session"
 
-# Home Assistant voice satellites send the final transcript once per utterance.
-# The producer identity makes retries harmless and recorded_at preserves when Tejas spoke.
-[[routes]]
-id = "home-assistant"
-path = "/home-assistant"
-label = "Home Assistant"
-adapter = "home-assistant"
-max_body_bytes = 16777216
-auth_header = "Authorization"
-auth_scheme = "Bearer"
-auth_token_credential = "home_assistant"
-
-[routes.destination]
-type = "session"
-
 # Preserve the existing Apple Watch/iPhone Shortcut backup endpoint while the
 # legacy machine-local receiver is replaced by the versioned ingress service.
 [[routes]]

@@ -8,7 +8,6 @@ const secretFiles = [
   "/etc/agent-inbox.token",
   "/etc/concierge/pebble-index.token",
   "/etc/concierge/thinkering.token",
-  "/etc/concierge/home-assistant.token",
   "/etc/concierge/capture-queue.token",
 ];
 for (const directory of ["/etc/concierge", "/var/agent-inbox"]) {
