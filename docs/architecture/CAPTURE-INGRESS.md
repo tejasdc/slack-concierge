@@ -140,8 +140,8 @@ attempted a request or that it did not reach an earlier network hop.
 ## Request and delivery path
 
 ```text
-Pebble phone app
-  → capture.tejas.nyc Cloudflare Worker (exact /pebble, /thinkering and /health allowlist)
+Pebble, Thinkering or Home Assistant producer
+  → capture.tejas.nyc Cloudflare Worker (exact /pebble, /thinkering, /home-assistant and /health allowlist)
   → Caddy HTTPS origin
   → agent-inbox.service public listener on 127.0.0.1:8080
   → exact configured route + constant-time bearer check + body limit
@@ -282,7 +282,8 @@ and graceful completion of active uploads during restart.
 ## Readable edge hostname
 
 `cloudflare/capture-worker/` owns the `capture.tejas.nyc` Worker custom domain.
-The Worker proxies only exact `POST /pebble`, `POST /thinkering` and `GET /health` requests to the
+The Worker proxies only exact `POST /pebble`, `POST /thinkering`, `POST /home-assistant` and
+`GET /health` requests to the
 existing `sslip.io` Caddy origin. It rejects unknown paths, trailing paths,
 queries, and wrong methods before contacting the origin. It does not log,
 persist, authenticate, retry, or transform request bodies; ingress remains the

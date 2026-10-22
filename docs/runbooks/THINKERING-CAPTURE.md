@@ -17,6 +17,9 @@ Transport does not classify intent or create another router/session ledger.
   app, and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
   client. Every gesture and headerless request has the same destination. Trigger
   and version headers remain provenance, never intent or destination.
+- Home Assistant: POST https://capture.tejas.nyc/home-assistant with its dedicated Bearer key and
+  application/json. It accepts one stable event ID, the UTC time Tejas spoke, and the final
+  transcript, then uses the existing durable queue and native Inbox receipt.
 - The /audio binary receiver retains its directory-backed transport.
 
 Thinkering request:
@@ -38,7 +41,7 @@ uses its own entrance, which runs the same pipeline and records the agent:
 router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to concierge:N] -- <text>
 ```
 
-Paths: `send-to-inbox`, `bug-report`, `pebble` (this drop-off), `iphone-share`,
+Paths: `send-to-inbox`, `bug-report`, `pebble` or `home-assistant` (this drop-off), `iphone-share`,
 `action-button`, `watch`, `mac` (thnkr.ing's device route, with the agent test device key
 thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnkr.ing, into
 `--reply-to`), and `monologue` or `alexa` (the owner socket; `--source-id` repeats an exact producer ID). The agent's own accepted input and run travel
@@ -72,7 +75,7 @@ router turn, while changed content conflicts. Omitting it creates a fresh random
 New durable intake returns 202; an identical duplicate returns 200:
 
 ```json
-{"accepted":true,"event_id":"<internal capture ID>","duplicate":false,"status":"queued","destination_kind":"session","terminal_receipt":null,"session_id":null,"trigger":null,"webhook_version":null}
+{"accepted":true,"event_id":"<capture identity; Home Assistant receives its submitted UUID>","duplicate":false,"status":"queued","destination_kind":"session","terminal_receipt":null,"session_id":null,"trigger":null,"webhook_version":null}
 ```
 
 After delivery, terminal_receipt is the canonical accepted Inbox operation/input
@@ -118,9 +121,44 @@ timestamp>"},"text":"<his words>"}`. The request ID is the retry identity. It is
 his and shown as "You · Alexa"; `test-capture --path alexa` (with optional `--source-id` to
 repeat an ID) exercises it as an agent.
 
+Home Assistant voice capture uses the public drop-off with its own credential:
+
+```json
+{"event_id":"<UUIDv4 minted before local custody>","recorded_at":"<RFC 3339 UTC timestamp>","text":"<final transcript>","audio":{"filename":"utterance.wav","content_type":"audio/wav","data_base64":"<canonical base64 bytes>"}}
+```
+
+`audio` is optional at the wire boundary. The Home Assistant speech owner includes its raw post-wake
+WAV recording in the initial frozen event; a text-only agent probe may omit it. The whole request is
+bounded at 16 MiB and Concierge does no transcoding. Audio cannot be added on a later retry of the
+same event ID.
+
+Home Assistant freezes the event fields in its local outbox and replays the same request until
+Concierge answers. Concierge retains the body before acknowledging and preserves `event_id`
+through the public queue and native Inbox source. The first custody receipt is `202`; an identical
+retry is `200` with the same `event_id` and eventual canonical Inbox receipt. Reusing the ID with
+changed words, time, or audio returns `409`. A successful response proves server custody, not microphone
+recognition or completion by the Inbox agent.
+
+The native Inbox input owns ordering and Concierge is its one writer. The acceptance ladder is:
+Home Assistant has final words → its local outbox freezes them → the public drop-off retains them →
+native Inbox admission returns its input receipt → Thinkering displays `You · Home Assistant`.
+The existing delivery worker retries the same native operation after an ingress or Concierge restart. A lost response followed by the same
+request must return one retained capture and receipt. Agents exercise that sequence through
+`router-actions.sh test-capture --path home-assistant ...`; the owner validates their accepted input
+and run, labels the capture as the agent, and starts no Inbox turn. That check is not spoken-device
+verification. Provisioning creates the scoped server credential without committing it. Once the
+hub exists, its installer receives that value through the credential portal and stores it in Home
+Assistant's secret store, never in tracked YAML or chat.
+
+To repeat the exact public request after a lost response, pass both `--source-id <UUIDv4>` and
+`--recorded-at <RFC 3339 UTC ending Z>` to the agent test command. Omitting both creates a fresh
+event. Supplying only one is refused before network access so a retry cannot silently change time.
+`--audio-file <WAV path>` adds that file to the same marked event and replay; the helper never
+transcribes or changes it.
+
 ## Configuration and recovery
 
-config/capture-routes.toml declares session destinations for both text adapters
+config/capture-routes.toml declares session destinations for the text adapters
 and removes gesture destinations. Loading old controller configuration also
 normalizes new text-adapter destinations to session: the immutable deployment
 controller can install previous config during the first rollout. Accepted-row
