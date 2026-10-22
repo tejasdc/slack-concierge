@@ -181,17 +181,19 @@ Trusted local producer `POST /sessions/v1/inbox` accepts:
 }
 ```
 
-Kinds are `pebble`, `thinkering`, `monologue`, `alexa`, and `outside-agent`, one closed list in
+Kinds are `pebble`, `thinkering`, `monologue`, `alexa`, `home-assistant`, and `outside-agent`, one closed list in
 `bot/src/inbox-producer-sources.ts` that validation, capture state and attribution all read.
 Source IDs remain exact producer identities: the public capture worker uses its immutable event
 ID; Monologue uses note_id; Alexa (remote-box's private skill service, which verifies Amazon's
 request signature) uses the Alexa request ID, so a retried request stays one capture and is shown
-as his, through the door "Alexa"; an outside agent uses the ID minted by the installed helper. An `outside-agent`
+as his, through the door "Alexa"; Home Assistant uses the UUIDv4 its local outbox minted before
+recording custody, preserving that exact identity and spoken time through retries and the distinct
+"Home Assistant" door; an outside agent uses the ID minted by the installed helper. An `outside-agent`
 source requires `metadata.outsideAgent` matching the outside-agent name contract, and every
 other kind refuses that field, including `monologue`. An outside-agent source cannot cite a
 Concierge run or request `importOnly`; it always queues the Inbox router. The endpoint uses the existing private `requests.sock` and root filesystem
-authentication. It is not a browser/model author-selection route. Public capture
-keeps its existing credential and acceptance queue; no new credential or queue exists.
+authentication. It is not a browser/model author-selection route. Home Assistant has one dedicated
+capture credential; every public producer keeps the existing acceptance queue, with no new queue.
 
 The response is `{inbox:{sessionId,address},item,operation}`. Item contains
 `captureId,inputId,sessionId,source,text,attachments`; attachments contain

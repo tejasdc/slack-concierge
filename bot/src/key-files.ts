@@ -12,6 +12,7 @@ export const KEY_FILES: readonly KeyFile[] = [
   { path: '/etc/concierge/pebble-index.token', format: 'whole', service: 'the Pebble capture key', unit: 'agent-inbox.service' },
   { path: '/etc/agent-inbox.token', format: 'whole', service: 'the Watch audio capture key', unit: 'agent-inbox.service' },
   { path: '/etc/concierge/thinkering.token', format: 'whole', service: "thnkr.ing's capture key", unit: 'agent-inbox.service' },
+  { path: '/etc/concierge/home-assistant.token', format: 'whole', service: 'the Home Assistant voice capture key', unit: 'agent-inbox.service' },
   { path: '/etc/concierge/capture-queue.token', format: 'whole', service: 'the capture queue key', unit: 'agent-inbox.service' },
   { path: '/etc/concierge/peer.token', format: 'whole', service: 'the Mac link key', unit: 'concierge-bot.service' },
   { path: '/root/.config/concierge/slack.toml', format: 'env', service: 'the Slack connection', unit: 'concierge-bot.service' },

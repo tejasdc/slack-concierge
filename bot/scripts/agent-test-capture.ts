@@ -11,7 +11,8 @@
  *          [--reply-to <concierge:N>] [--source-id <producer id>] -- <text>
  * Paths: send-to-inbox, bug-report, pebble (the capture drop-off); iphone-share, action-button,
  * watch, mac (thnkr.ing's device route, with the agent test device key); notification-reply
- * (thnkr.ing, into --reply-to); monologue, alexa (Concierge's local door).
+ * (thnkr.ing, into --reply-to); home-assistant (the public Home Assistant door); monologue,
+ * alexa (Concierge's local door).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -56,6 +57,16 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
   const form = new FormData();
   form.set('transcription', text); form.set('recordedAt', String(Date.now())); form.set('client', 'agent-test');
   await send(`${DROP_OFF}/pebble`, { method: 'POST', body: form, headers: { ...agentHeader, authorization: `Bearer ${key('/etc/concierge/thinkering.token')}` } });
+} else if (path === 'home-assistant') {
+  const repeatedEventId = flags.get('--source-id');
+  const repeatedRecordedAt = flags.get('--recorded-at');
+  if ((repeatedEventId === undefined) !== (repeatedRecordedAt === undefined)) {
+    fail('home-assistant retry checks require --source-id <UUIDv4> and --recorded-at <RFC 3339 UTC> together.');
+  }
+  const eventId = repeatedEventId ?? randomUUID();
+  const recordedAt = repeatedRecordedAt ?? new Date().toISOString();
+  await send(`${DROP_OFF}/home-assistant`, { method: 'POST', body: JSON.stringify({ event_id: eventId, recorded_at: recordedAt, text }),
+    headers: { ...agentHeader, 'content-type': 'application/json', authorization: `Bearer ${key('/etc/concierge/home-assistant.token')}` } });
 } else if (DEVICE_APPS[path]) {
   const replyTo = flags.get('--reply-to');
   const body = { formatVersion: 1, captureId: randomUUID(), capturedAt: new Date().toISOString(),
@@ -80,5 +91,5 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
   console.log(JSON.stringify({ ok: result.status < 300, path, status: result.status, body: result.body.slice(0, 2000) }));
   process.exit(result.status < 300 ? 0 : 1);
 } else {
-  fail('Choose a path: send-to-inbox, bug-report, pebble, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa.');
+  fail('Choose a path: send-to-inbox, bug-report, pebble, home-assistant, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa.');
 }
