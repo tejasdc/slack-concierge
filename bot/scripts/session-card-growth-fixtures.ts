@@ -16,6 +16,7 @@ function fixture(count:number){
       saved_at_ms INTEGER,saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,
       saved_repeat_ms INTEGER,saved_sequence INTEGER);
     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,origin TEXT,created_at TEXT);
+    CREATE TABLE session_owner_events(session_id INTEGER,kind TEXT,event_id TEXT,payload_json TEXT,created_at TEXT);
     CREATE INDEX session_inputs_session_kind ON session_inputs(session_id,kind);
     CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY AUTOINCREMENT,source_table TEXT,row_key TEXT,session_id INTEGER);
     CREATE INDEX presentation_changes_session ON presentation_change_log(session_id,sequence);
