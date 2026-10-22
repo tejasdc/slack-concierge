@@ -504,14 +504,18 @@ export class SessionCapabilityClient {
 
   /**
    * A read of a run Thinkering already holds, asked again while Thinkering restarts (up to 20
-   * minutes). Reads only: the run's receipt or its events, never a send. While Thinkering starts it
-   * answers a bare 503, which counts as restarting too.
+   * minutes of failed reads). Reads only: the run's receipt or its events, never a send. While
+   * Thinkering starts it answers a bare 503, which counts as restarting too. The 20 minutes count
+   * from the first failure, not from the first ask: an observation is a long wait, and one held open
+   * 30 minutes while Pro thought was closed by a release and parked at once, its window already
+   * spent before anything had failed (session 3750, 2026-10-22 20:14 UTC).
    */
   private async readAcrossRestart<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const until = Date.now() + 20 * 60_000;
+    let until: number | null = null;
     for (let pause = 2_000; ; pause = Math.min(pause * 2, 30_000)) {
       const outcome = await read().then(value => ({ value }), (error: unknown) => ({ error }));
       if ("value" in outcome) return outcome.value;
+      until ??= Date.now() + 20 * 60_000;
       const restarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
         && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE" || outcome.error.status === 503);
       if (!restarting || Date.now() + pause > until) throw outcome.error;
