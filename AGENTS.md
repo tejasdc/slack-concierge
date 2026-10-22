@@ -830,7 +830,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   anything a person or another session said was submitted through the owner, so history
   drops a user row it cannot attribute and the live stream publishes one only when its
   text is exactly one the run wrote to Claude or a person typed it. Claude marks queued
-  notifications as replays too, so the replay flag proves nothing (2026-09-21). Imported and reconstructed sessions
+  notifications as replays too, so the replay flag proves nothing (2026-09-21). Claude records a
+  message without its trailing whitespace, so the input envelope sends that form; exact sent bytes
+  with a trailing space hid an answered reply as Queued (2026-10-22). Imported and reconstructed sessions
   keep their unattributable rows. Decide by that recorded author, never by wording: matching one
   interruption phrasing missed the next, and real messages can start with a bracket.
   A turn's opening input is proved the same way and must not wait for the provider to
