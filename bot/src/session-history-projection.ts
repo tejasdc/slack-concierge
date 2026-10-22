@@ -109,14 +109,16 @@ function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,me
   // owner message event for that item. The exact bytes prepared for this same
   // session identify a unique accepted input even when Claude assigns its own
   // row UUID rather than the steering ID. Never infer identity from the JSON
-  // header inside those bytes.
+  // header inside those bytes. Claude records them without trailing whitespace, which
+  // inputs sent before the envelope adopted that form still carry.
   const retainedSteering=db.query(`SELECT DISTINCT input.* FROM turn_steering_messages steering
     JOIN turns turn ON turn.id=steering.turn_id
     JOIN sessions session ON session.id=turn.session_id AND session.provider_id='claude-code'
     JOIN session_inputs input ON input.id=steering.accepted_input_id AND input.steering_id=steering.id
       AND input.turn_id=turn.id AND input.session_id=turn.session_id
-    WHERE turn.session_id=? AND steering.slack_user_msg_ts IS NULL AND steering.replay_text=?`)
-    .all(sessionId,message.content) as AcceptedSessionInput[];
+    WHERE turn.session_id=? AND steering.slack_user_msg_ts IS NULL
+      AND (steering.replay_text=? OR rtrim(steering.replay_text,' '||char(9,10,13))=?)`)
+    .all(sessionId,message.content,message.content) as AcceptedSessionInput[];
   if(retainedSteering.length===1)return {inputId:retainedSteering[0]!.id,message:projectAcceptedInput(message,retainedSteering[0]!)};
   if(retainedSteering.length>1)return {message};
   // The opening input of a native turn is proved the same way. Waiting for the
@@ -132,8 +134,9 @@ function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,me
       AND input.session_id=turn.session_id AND input.steering_id IS NULL
     WHERE turn.session_id=? AND turn.turn_kind='native'
       AND turn.replay_text LIKE '{"type":"concierge-session-input"%'
-      AND (turn.replay_text=? OR json_extract(input.receipt_json,'$.admission.promptHash')=?)`)
-    .all(sessionId,message.content,createHash('sha256').update(message.content).digest('hex')) as AcceptedSessionInput[];
+      AND (turn.replay_text=? OR rtrim(turn.replay_text,' '||char(9,10,13))=?
+        OR json_extract(input.receipt_json,'$.admission.promptHash')=?)`)
+    .all(sessionId,message.content,message.content,createHash('sha256').update(message.content).digest('hex')) as AcceptedSessionInput[];
   if(retainedOpening.length===1)return {inputId:retainedOpening[0]!.id,message:projectAcceptedInput(message,retainedOpening[0]!)};
   // Old history may predate the message observer. Exact retained provider turn and
   // prepared bytes identify it; an observed turn must use the stronger item join above.
