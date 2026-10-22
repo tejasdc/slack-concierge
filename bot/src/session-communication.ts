@@ -203,7 +203,7 @@ export class SessionCommunicationCoordinator {
         const session = getSessionById(this.address(input.address).session);
         if (!session) return true;
         const metadata = sessionMetadata(session);
-        return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only'
+        return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only' && !metadata.canvasObservation
             && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session));
     }
     /**
@@ -303,7 +303,7 @@ export class SessionCommunicationCoordinator {
         const effect=input.requestedEffect??'informational';
         if(effect!=='work'&&effect!=='informational')throw new Error('Invalid requested effect.');
         const target=this.address(input.address,true),session=getSessionById(target.session)!;
-        if(session.provider_id==='chatgpt'||sessionMetadata(session).interactionPolicy==='consultation-only'&&effect==='work')
+        if(sessionMetadata(session).canvasObservation||session.provider_id==='chatgpt'||sessionMetadata(session).interactionPolicy==='consultation-only'&&effect==='work')
             throw new Error('This recipient cannot take an outside work request.');
         const digest=hash(JSON.stringify([input.address,input.text,effect]));
         const prior=()=>db.query('SELECT * FROM session_external_requests WHERE agent_name=? AND action_id=?').get(input.name,input.action_id) as any;

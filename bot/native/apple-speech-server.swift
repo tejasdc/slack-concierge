@@ -10,6 +10,7 @@
 // to transcribe (bot/src/live-speech.ts):
 //   stdin:  <stream id>\tbegin\n
 //           <stream id>\tappend\t<base64 raw 16 kHz mono float32 PCM>\n   any number, in order
+//           <request id>\tdrain\t<stream id>\t<retained cursor>\n   final segments after cursor
 //           <stream id>\tfinish\n    answered like a request, computeMs counted from finish
 //           <stream id>\tcancel\n
 //
@@ -131,11 +132,16 @@ func samples(fromBase64 text: String) throws -> AVAudioPCMBuffer {
 
 // A recording being followed while it is made. Final results arrive as he speaks and are kept,
 // so finishing waits only for what was said since the last one.
+final class LiveSegments {
+    var final: [String] = []
+}
+
 final class LiveStream {
     let transcriber: SpeechTranscriber
     let analyzer: SpeechAnalyzer
     let continuation: AsyncStream<AnalyzerInput>.Continuation
     let collector: Task<String, Error>
+    let segments: LiveSegments
     var frames: AVAudioFrameCount = 0
     var pieces = 0
     var failure: String?
@@ -143,10 +149,14 @@ final class LiveStream {
     init(_ transcriber: SpeechTranscriber) async throws {
         self.transcriber = transcriber
         analyzer = SpeechAnalyzer(modules: [transcriber])
-        collector = Task {
+        let segments = LiveSegments()
+        self.segments = segments
+        collector = Task { @MainActor in
             var text = ""
             for try await result in transcriber.results where result.isFinal {
-                text += String(result.text.characters)
+                let segment = String(result.text.characters)
+                text += segment
+                segments.final.append(segment)
             }
             return text
         }
@@ -174,6 +184,13 @@ func errorCode(_ error: Error) -> String {
             stream.pieces += 1
             for slice in slices(piece) { stream.continuation.yield(AnalyzerInput(buffer: slice)) }
         } catch { stream.failure = errorCode(error) }
+    case "drain":
+        let parts = (payload ?? "").split(separator: "\t", omittingEmptySubsequences: false)
+        guard let stream = live[String(parts.first ?? "")] else { emit(["id": id, "error": "UNKNOWN_STREAM"]); return }
+        let cursor = max(0, Int(parts.count > 1 ? parts[1] : "0") ?? 0)
+        let next = Array(stream.segments.final.dropFirst(cursor))
+        let encoded = (try? JSONSerialization.data(withJSONObject: next)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        emit(["id": id, "text": encoded])
     case "finish":
         guard let stream = live.removeValue(forKey: id) else { emit(["id": id, "error": "UNKNOWN_STREAM"]); return }
         let began = Date()
@@ -182,8 +199,9 @@ func errorCode(_ error: Error) -> String {
             if let failure = stream.failure { throw NSError(domain: "apple-speech", code: 5, userInfo: [NSLocalizedDescriptionKey: failure]) }
             try await stream.analyzer.finalizeAndFinishThroughEndOfInput()
             let text = try await stream.collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let remaining = stream.segments.final
             emit(["id": id, "text": text, "audioMs": Int(Double(stream.frames) / analyzerFormat.sampleRate * 1000),
-                  "chunks": stream.pieces, "computeMs": Int(Date().timeIntervalSince(began) * 1000)])
+                  "chunks": stream.pieces, "computeMs": Int(Date().timeIntervalSince(began) * 1000), "remainingSegments": remaining])
         } catch { emit(["id": id, "error": errorCode(error)]) }
     case "cancel":
         guard let stream = live.removeValue(forKey: id) else { return }

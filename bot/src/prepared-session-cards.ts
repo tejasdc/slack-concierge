@@ -16,6 +16,7 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   outcome:string;space:SessionSpace;needsAttention:boolean|null;attentionCoverage:'complete'|'catching_up';
   unread:boolean;execution:string;pendingCount:number;model:string|null;reasoningEffort:string|null;
   interactionPolicy:'standard'|'consultation-only';account:string|null;accountTruncated:boolean;
+  canvasObservation:{boardId:string}|null;
   timing:SessionTiming|null;agentName:string|null;presenceRevision:number;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;startsAt:string|null;savedAt:string|null;
     expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;sequence:number|null}|null;
@@ -162,6 +163,7 @@ export class PreparedSessionCards {
       outcome:meta.outcome??'open',space:spaceForCwd(meta.cwd),needsAttention,attentionCoverage:needsAttention===null?'catching_up':'complete',
       unread:(meta.generation??0)>(meta.readGeneration??0),execution:presence.execution,pendingCount:queued,
       interactionPolicy:meta.interactionPolicy==='consultation-only'?'consultation-only':'standard',
+      canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,
       account:account?.text??null,accountTruncated:account?.truncated??false,
       timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       savedWork:saved?{turnId:saved.id,kind:saved.saved_kind,status:saved.status,startsAt:savedStartAt(saved),
@@ -297,7 +299,7 @@ const touchIso=(value:string|number|null|undefined)=>value===null||value===undef
  * agent envelope such as `<teammate-message …>`. Codex imports stay unmarked: agents run `codex exec`
  * as often as he does and the import does not say which.
  */
-function importedByHim(meta:{origin?:string;title?:string;source?:{provider?:string;id?:string;title?:string}}|null|undefined){
+function importedByHim(meta:{origin?:string;title?:string;canvasObservation?:boolean;source?:{provider?:string;id?:string;title?:string}}|null|undefined){
   if(meta?.origin!=='imported'||!meta.source)return false;
   if(meta.source.provider==='chatgpt')return true;
   if(meta.source.provider!=='claude-code')return false;
@@ -305,6 +307,12 @@ function importedByHim(meta:{origin?:string;title?:string;source?:{provider?:str
   return String(meta.source.id??'').startsWith('["native"')&&!!title&&!title.startsWith('<');
 }
 export function sessionTouch(source:Database,sessionId:number,meta?:Parameters<typeof importedByHim>[0],lastAt?:string|null):SessionTouch{
+  if(meta?.canvasObservation){
+    const speech=source.query(`SELECT MAX(created_at) AS at FROM session_owner_events
+      WHERE session_id=? AND kind='message' AND event_id LIKE 'canvas-observation:%'
+      AND json_extract(payload_json,'$.message.role')='user'`).get(sessionId) as {at:string|null};
+    return {spokeAt:touchIso(speech.at),requestedAt:null,rule:TOUCH_RULE};
+  }
   const spoke=source.query(`SELECT MAX(created_at) AS at FROM session_inputs input
     WHERE session_id=? AND kind IN ('input','create','request','fork') AND origin='human'
       AND NOT EXISTS(SELECT 1 FROM session_input_author_corrections fix WHERE fix.input_id=input.id)`).get(sessionId) as {at:string|null};

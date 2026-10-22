@@ -150,7 +150,7 @@ function visibleCardFacts(){
  const {source,prepared,cards}=fixture(100);
  try{
   source.query('UPDATE sessions SET native_metadata_json=? WHERE id=1').run(JSON.stringify({title:'Visible facts',
-    claudeAccount:'personal',interactionPolicy:'consultation-only',turnOutcome:{outcome:'needs_you',question:'界'.repeat(1000),
+    claudeAccount:'personal',interactionPolicy:'consultation-only',canvasObservation:true,canvasBoardId:'board-visible',turnOutcome:{outcome:'needs_you',question:'界'.repeat(1000),
       inputId:'input-1',at:'2026-10-08T00:00:00Z'}}));
   source.query("UPDATE turns SET status='running' WHERE id=1").run();
   source.query("UPDATE turns SET saved_kind='scheduled',dispatch_next_attempt_ms=? WHERE id=7").run(Date.UTC(2026,9,9));
@@ -162,6 +162,7 @@ function visibleCardFacts(){
   assert.deepEqual(card.timing,{startedAt:'2026-10-08T00:00:00.000Z',endedAt:null,workStartedAt:null,running:true,workMs:null});
   assert.equal(card.execution,'running');assert.equal(typeof card.presenceRevision,'number');assert.ok('agentName' in card);
   assert.equal(card.account,'personal');assert.equal(card.interactionPolicy,'consultation-only');
+  assert.deepEqual(card.canvasObservation,{boardId:'board-visible'});
   assert.equal(card.turnOutcome.questionTruncated,true);assert.ok(Buffer.byteLength(card.turnOutcome.question)<=512);
   assert.equal(card.savedWork.turnId,7,'the card must carry the exact control identity beyond the first saved-work page');
   assert.equal(card.savedWork.kind,'scheduled');assert.equal(card.savedWork.status,'queued');

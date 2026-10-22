@@ -1031,7 +1031,7 @@ export class SessionOwner {
    */
   canSend(session:SessionRow) {
     const meta=sessionMetadata(session);
-    return this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
+    return !meta.canvasObservation&&this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
   }
   /**
    * The view's execution state alone. A peer delivery's status asks only whether its recipient is
@@ -1086,8 +1086,8 @@ export class SessionOwner {
       resumeMachine:origin==='imported'&&['claude-code','codex'].includes(session.provider_id)?(typeof meta.project==='string'?this.peers?.instanceForPath(meta.project)??this.runtime.peerForPath?.(meta.project):null)??this.selfMachine:null,
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
-      interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:this.canSend(session),resume:origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
+      interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,policyLabel:meta.canvasObservation?'Canvas voice record — observed speech and action outcomes; no provider turns':consultationOnly?'Consultation only — information, no actions':null,
+      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
   /**
    * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
@@ -1921,8 +1921,64 @@ export class SessionOwner {
     if(input.firstInput&&this.runtime.available(getSessionById(saved.session_id)!.provider_id)&&!saved.receipt_json) this.dispatch(saved);
     return {session:this.view(getSessionById(saved.session_id)!),operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
   }
+  createCanvasObservation(body:unknown) {
+    const input=object(body);only(input,['clientActionId','title','boardId']);
+    const action=actionId(input),title=String(input.title??'').trim().slice(0,120);
+    if(!title||typeof input.boardId!=='string'||!input.boardId.trim()||input.boardId.length>200)
+      throw new SessionOwnerError('Canvas title and board identity are required.');
+    const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:canvas-observation' AND action_id=?").get(action) as AcceptedSessionInput|null;
+    if(existing){
+      const kept=JSON.parse(existing.payload_json);delete kept.notificationRequest;
+      if(stablePayload(kept)!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
+      return {session:this.view(getSessionById(existing.session_id)!)};
+    }
+    const session=db.transaction(()=>{
+      const created=createNativeSession('codex',{title,summary:'Retained spoken thoughts and canvas actions from one ambient voice session.',purpose:'chat',origin:'native',canvasObservation:true,canvasBoardId:input.boardId});
+      const receipt=retainSessionInput({sessionId:created.id,scope:'surface:canvas-observation',actionId:action,kind:'create',origin:'human',payload:input}).input;
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),receipt.id);
+      recordSessionEvent({eventId:`create:${receipt.id}`,sessionId:created.id,inputId:receipt.id,kind:'created',payload:{provider:created.provider_id,canvasObservation:true}});
+      return created;
+    })();
+    return {session:this.view(session)};
+  }
+  appendCanvasObservation(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','kind','text','action','result','context']);
+    if(!sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This is not an ambient canvas session.',409,'CANVAS_SESSION_REQUIRED');
+    const action=actionId(input);
+    if(!/^[0-9a-fA-F-]{36}$/.test(action)||!['spoken','agent','action'].includes(input.kind)||typeof input.text!=='string'||!input.text.trim()||input.text.length>20_000)
+      throw new SessionOwnerError('A stable observation and its words are required.');
+    if(input.kind!=='action'&&(input.action!==undefined||input.result!==undefined))throw new SessionOwnerError('Only canvas actions can carry an action result.');
+    if(input.kind==='action'&&(typeof input.action!=='string'||!input.action.trim()||input.action.length>100||typeof input.result!=='string'||input.result.length>20_000))
+      throw new SessionOwnerError('An action record needs its named action and observed result.');
+    const context=object(input.context);only(context,['boardId','activeThreadId','visibleThreadIds','focusModeId']);
+    if(typeof context.boardId!=='string'||!context.boardId||context.boardId.length>200||context.boardId!==sessionMetadata(session).canvasBoardId||
+      context.activeThreadId!==null&&(typeof context.activeThreadId!=='string'||context.activeThreadId.length>200)||
+      !Array.isArray(context.visibleThreadIds)||context.visibleThreadIds.length>100||context.visibleThreadIds.some(value=>typeof value!=='string'||value.length>200)||
+      context.focusModeId!==null&&(typeof context.focusModeId!=='string'||context.focusModeId.length>200))
+      throw new SessionOwnerError('Canvas observations need bounded board, thread and focus context.');
+    const text=input.text.trim();
+    const message={id:`canvas-observation:${action}`,role:input.kind==='spoken'?'user':'assistant',
+      content:text,tool:null,phase:null,
+      author:input.kind==='spoken'?{kind:'human',via:'on-device canvas speech'}:input.kind==='agent'?{kind:'agent',outsideAgent:{name:'Canvas voice agent',label:'OpenAI Realtime'}}:{kind:'service',via:'canvas action outcome'},
+      createdAt:new Date().toISOString(),timestampSource:'submitted',canvasContext:context,
+      ...(input.kind==='action'?{canvasAction:{name:input.action,result:input.result,source:'browser-executor'}}:{})};
+    const eventId=`canvas-observation:${action}`;
+    const previous=db.query('SELECT session_id,payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {session_id:string;payload_json:string}|null;
+    if(previous){
+      const prior=JSON.parse(previous.payload_json).message;
+      if(previous.session_id!==session.id||prior.content!==text||prior.role!==message.role||stablePayload(prior.canvasContext)!==stablePayload(context)||prior.canvasAction?.name!==message.canvasAction?.name||prior.canvasAction?.result!==message.canvasAction?.result)
+        throw new SessionOwnerError('Observation identity was reused for different words.',409,'IDEMPOTENCY_CONFLICT');
+      return {messageId:message.id,retained:true};
+    }
+    db.transaction(()=>{
+      recordSessionEvent({eventId,sessionId:session.id,kind:'message',payload:{message}});
+      db.query('UPDATE sessions SET last_turn_at=CURRENT_TIMESTAMP WHERE id=?').run(session.id);
+    })();
+    return {messageId:message.id,retained:true};
+  }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
+    if(sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This canvas record receives only observed speech and action results.',409,'CANVAS_OBSERVATION_ONLY');
     only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.messageThreadRootId!==undefined&&(typeof input.messageThreadRootId!=='string'||!input.messageThreadRootId.trim()))
@@ -2109,6 +2165,8 @@ export class SessionOwner {
       ...(nestedRoot?{messageThreadRootId:nestedRoot}:{}),...(nestedAuthor?.requestId?{messageThreadRequestId:nestedAuthor.requestId}:{})};
   }
   admit(input:OwnerAdmission) {
+    const target=getSessionById(input.sessionId);
+    if(!target||sessionMetadata(target).canvasObservation)throw new SessionOwnerError('This canvas record accepts only on-device speech and observed action results.',409,'CANVAS_OBSERVATION_ONLY');
     // A returned answer can carry the files it answered with. They are retained custody the
     // owner verifies here; the execution host writes them beside the turn like any attachment.
     const attachments=input.attachments?.length?this.attachments(input.attachments).map(file=>file.id):[];
@@ -2462,6 +2520,17 @@ export class SessionOwner {
   }
   private async historyPage(id:string,cursor:string|null,limit:number,activity=false) {
     const session=this.session(id);
+    if(sessionMetadata(session).canvasObservation){
+      const before=cursor===null?Number.MAX_SAFE_INTEGER:Number(cursor);
+      if(!Number.isSafeInteger(before)||before<1)throw new SessionOwnerError('Invalid canvas history position.',400,'HISTORY_CURSOR_INVALID');
+      const rows=db.query(`SELECT sequence,payload_json FROM session_owner_events
+        WHERE session_id=? AND kind='message' AND event_id LIKE 'canvas-observation:%' AND sequence<?
+        ORDER BY sequence DESC LIMIT ?`).all(session.id,before,Math.min(HISTORY_WINDOW,Math.max(1,limit))+1) as {sequence:number;payload_json:string}[];
+      const page=rows.slice(0,Math.min(HISTORY_WINDOW,Math.max(1,limit)));
+      return {messages:page.reverse().map(row=>previewHistoryMessage(JSON.parse(row.payload_json).message)),
+        nextCursor:rows.length>page.length?String(page[0]?.sequence??''):null,
+        coverage:{complete:true},asOf:encodePosition(pagePosition('none',ledgerHead(),session.binding_generation??1,[]))};
+    }
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)&&!(activity&&sessionMetadata(session).inbox)){
       try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
       catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
@@ -2493,6 +2562,15 @@ export class SessionOwner {
    */
   async historyDelta(id:string,after:string,activity=false) {
     const delegated=this.session(id);
+    if(sessionMetadata(delegated).canvasObservation){
+      const position=decodePosition(after),head=ledgerHead();
+      if(!position||position.k!=='none'||position.g!==(delegated.binding_generation??1)||position.s>head)return {reset:true as const};
+      const rows=db.query(`SELECT payload_json FROM session_owner_events
+        WHERE session_id=? AND kind='message' AND event_id LIKE 'canvas-observation:%' AND sequence>?
+        ORDER BY sequence ASC LIMIT ?`).all(delegated.id,position.s,HISTORY_WINDOW+1) as {payload_json:string}[];
+      if(rows.length>HISTORY_WINDOW)return {reset:true as const};
+      return {messages:rows.map(row=>previewHistoryMessage(JSON.parse(row.payload_json).message)),asOf:encodePosition({...position,s:head})};
+    }
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(delegated.provider_id)&&!(activity&&sessionMetadata(delegated).inbox)){
       try{return await this.runtime.projectedHistory(delegated,'delta',null,HISTORY_WINDOW,after);}
       catch(error){if(error instanceof Error&&['HISTORY_PAGE_STILL_PREPARING','STALE_HISTORY_CURSOR'].includes(error.message))return {reset:true};
@@ -2569,7 +2647,7 @@ export class SessionOwner {
     if(!message||message.id!==messageId)throw new SessionOwnerError('That exact message is unavailable.',404,'MESSAGE_NOT_FOUND');
     // A user message may be displayed from its immutable accepted input, rather than
     // provider scaffolding; the detail must use those same words and exact attribution.
-    if(!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
+    if(!metadata.canvasObservation&&!metadata.inbox&&metadata.origin!=='imported')message=projectSessionHistoryMessage(session.id,message).message;
     else if(metadata.inbox)message=this.projectInboxMessage({...message,sourceSessionId:session.id} as any);
     return historyContent(message);
     };
@@ -3596,6 +3674,8 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
+      else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=this.submit(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='feature-requests') result=this.submitFeatureRequest(parts[1]!,body);
