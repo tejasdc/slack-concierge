@@ -127,10 +127,10 @@ Home Assistant voice capture uses the public drop-off with its own credential:
 {"event_id":"<UUIDv4 minted before local custody>","recorded_at":"<RFC 3339 UTC timestamp>","text":"<final transcript>","audio":{"filename":"utterance.wav","content_type":"audio/wav","data_base64":"<canonical base64 bytes>"}}
 ```
 
-`audio` is optional because Home Assistant's current conversation hook supplies final text only.
-When a future speech component can supply the raw recording, it includes one existing-custody audio
-attachment in the initial frozen event; the whole request is bounded at 16 MiB and Concierge does no
-transcoding. Audio cannot be added on a later retry of the same event ID.
+`audio` is optional at the wire boundary. The Home Assistant speech owner includes its raw post-wake
+WAV recording in the initial frozen event; a text-only agent probe may omit it. The whole request is
+bounded at 16 MiB and Concierge does no transcoding. Audio cannot be added on a later retry of the
+same event ID.
 
 Home Assistant freezes the event fields in its local outbox and replays the same request until
 Concierge answers. Concierge retains the body before acknowledging and preserves `event_id`
@@ -142,7 +142,7 @@ recognition or completion by the Inbox agent.
 The native Inbox input owns ordering and Concierge is its one writer. The acceptance ladder is:
 Home Assistant has final words → its local outbox freezes them → the public drop-off retains them →
 native Inbox admission returns its input receipt → Thinkering displays `You · Home Assistant`.
-Ingress restart recovery retries the same native operation. A lost response followed by the same
+The existing delivery worker retries the same native operation after an ingress or Concierge restart. A lost response followed by the same
 request must return one retained capture and receipt. Agents exercise that sequence through
 `router-actions.sh test-capture --path home-assistant ...`; the owner validates their accepted input
 and run, labels the capture as the agent, and starts no Inbox turn. That check is not spoken-device
@@ -153,6 +153,8 @@ Assistant's secret store, never in tracked YAML or chat.
 To repeat the exact public request after a lost response, pass both `--source-id <UUIDv4>` and
 `--recorded-at <RFC 3339 UTC ending Z>` to the agent test command. Omitting both creates a fresh
 event. Supplying only one is refused before network access so a retry cannot silently change time.
+`--audio-file <WAV path>` adds that file to the same marked event and replay; the helper never
+transcribes or changes it.
 
 ## Configuration and recovery
 

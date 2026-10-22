@@ -17,6 +17,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
+import { basename } from 'node:path';
 
 const DROP_OFF = process.env.CONCIERGE_CAPTURE_URL ?? 'https://capture.tejas.nyc';
 const THNKRING = process.env.THINKERING_ORIGIN_URL ?? 'https://thnkr.ing';
@@ -65,7 +66,9 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
   }
   const eventId = repeatedEventId ?? randomUUID();
   const recordedAt = repeatedRecordedAt ?? new Date().toISOString();
-  await send(`${DROP_OFF}/home-assistant`, { method: 'POST', body: JSON.stringify({ event_id: eventId, recorded_at: recordedAt, text }),
+  const audioFile = flags.get('--audio-file');
+  const audio = audioFile ? { filename: basename(audioFile), content_type: 'audio/wav', data_base64: readFileSync(audioFile).toString('base64') } : undefined;
+  await send(`${DROP_OFF}/home-assistant`, { method: 'POST', body: JSON.stringify({ event_id: eventId, recorded_at: recordedAt, text, ...(audio ? { audio } : {}) }),
     headers: { ...agentHeader, 'content-type': 'application/json', authorization: `Bearer ${key('/etc/concierge/home-assistant.token')}` } });
 } else if (DEVICE_APPS[path]) {
   const replyTo = flags.get('--reply-to');
