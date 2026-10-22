@@ -745,6 +745,13 @@ capture_runtime_fingerprint() {
     | sha256sum | awk '{print $1}'
 }
 
+retire_capture_credentials() {
+  local retired_path
+  for retired_path in /etc/concierge/home-assistant.token; do
+    [ ! -e "$retired_path" ] || unlink "$retired_path"
+  done
+}
+
 record_capture_running_fingerprint() {
   local fingerprint temporary
   fingerprint=$(capture_runtime_fingerprint)
@@ -1160,6 +1167,8 @@ deploy() {
     CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
     DEPLOY_FAILURE_REASON="The promoted release's systemd units could not be installed."
     install_systemd_units
+    DEPLOY_FAILURE_REASON="The promoted release's retired capture credentials could not be removed."
+    retire_capture_credentials
     DEPLOY_FAILURE_REASON="The promoted release's router action helper could not be installed."
     install_router_actions
     DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
