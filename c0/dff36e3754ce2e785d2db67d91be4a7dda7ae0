@@ -1,0 +1,1 @@
+Concierge now records why a saved session send was refused before receipt, without retaining its words.
