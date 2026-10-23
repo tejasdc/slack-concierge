@@ -1,0 +1,1 @@
+An agent can withdraw a question from Needs attention once new evidence makes it unnecessary. TL;DR: The question stays in the session history with the reason it was withdrawn, so you can see what changed without answering it.
