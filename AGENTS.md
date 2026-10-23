@@ -83,6 +83,10 @@ The shared end-of-turn hook refuses Inbox completion while received human inputs
 unfiled, including earlier turns. Filing or an explicitly closed noise thread resolves it;
 see [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping).
 
+An asking session or the Inbox router can withdraw its exact open `needs_you` with a reason when
+the question becomes obsolete; the original declaration remains in history and the session
+shows the withdrawal. See [withdrawing a stale turn question](docs/contracts/session-owner-v1.md#withdrawing-a-stale-turn-question).
+
 Human replies addressed to an agent in an Inbox thread enter its live run and owe a prompt
 answer in that thread, with a two-minute reminder and three-minute overdue thread notice;
 see [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).

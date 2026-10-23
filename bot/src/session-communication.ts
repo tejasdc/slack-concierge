@@ -11,7 +11,7 @@ import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
-import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
+import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
@@ -721,6 +721,31 @@ export class SessionCommunicationCoordinator {
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
+            return {...receipt,duplicate:false};
+        })();
+    }
+    /** The asking session or Inbox router may retire one exact open needs_you, without redeclaring its turn. */
+    withdrawAttention(input:{source:CommunicationSource;action_id:string;address:string;need_event_id:string;reason:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);action(input.action_id);
+        if(!actor.inputId)throw new Error('Attention withdrawal needs an exact native source input and run.');
+        const target=resolveSessionAddress(input.address);
+        if(actor.session!==target.id&&!sessionMetadata(getSessionById(actor.session)!).inbox)
+            throw new Error('Only the session that asked or the Inbox router can withdraw its needs_you.');
+        const reason=input.reason?.trim();
+        if(!reason)throw new Error('Attention withdrawal requires a reason.');
+        if(reason.length>2000)throw new Error('Attention withdrawal reason is too long.');
+        if(!input.need_event_id?.trim())throw new Error('Name the exact open needs_you event.');
+        return db.transaction(()=>{
+            this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'attention-withdrawal',sessionId:target.id,needEventId:input.need_event_id,reason},
+                sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            const receipt=withdrawOpenNeed({sessionId:target.id,needEventId:input.need_event_id,reason,
+                bySessionId:actor.session,eventId:`attention_withdrawn:${saved.input.id}`});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(receipt),saved.input.id);
             return {...receipt,duplicate:false};
         })();
     }

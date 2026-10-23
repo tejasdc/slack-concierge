@@ -31,6 +31,7 @@ router-actions.sh sessions move <session-address> --project <project or project/
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
+router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. A bodyless final cannot use it.
@@ -141,6 +142,7 @@ export type SessionCommunicationRequest =
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string } }
+  | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; all_done?:boolean; hand_back?:string; quiet_because?:string } }
@@ -365,6 +367,20 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='attention'){
+    const verb=args.shift(),address=args.shift();
+    if(verb!=='withdraw'||!address?.trim()||address.startsWith('--'))invalid('attention withdraw requires a discovered session address.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--need','--reason'].includes(flag)
+        ||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid or repeated attention option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const actionId=flags.get('--action-id'),needEventId=flags.get('--need'),reason=flags.get('--reason');
+    if(!actionId||!needEventId||!reason)invalid('attention withdraw needs --action-id, --need and --reason.');
+    return {operation:'attention-withdraw',body:{source:sourceFrom(flags),action_id:actionId,address,need_event_id:needEventId,reason}};
+  }
   if(first==='pause'){
     const verb=args.shift();
     if(verb!=='status'&&verb!=='all'&&verb!=='resume')invalid('pause takes status, all or resume.');
