@@ -12,10 +12,14 @@ described below.
 `GET /sessions/v1/focus-hold` reports the effective lease and the current count of
 queued router turns. `POST /sessions/v1/focus-hold` sets or renews it with `held: true`,
 `untilMs`, `label`, and a stable `clientActionId`, or clears it with `held: false` and
-the action ID. The updated Focus client adds `reviewCaptures: true` to **each** start
-and renewal. Without that opt-in, the lease retains its previous queue-only behavior,
-so Concierge can be installed before the review screen. `GET` reports the effective
-`reviewCaptures` flag. Each expiry must be in the next 15 minutes; Thinkering renews while
+the action ID. Capture review is off by default at the accepting owner. It can be
+re-enabled later by setting `CONCIERGE_FOCUS_CAPTURE_REVIEW_ENABLED=1` on **both**
+cloud and Mac owners and installing/restarting them. Until then, older clients may
+continue sending `reviewCaptures: true` or `holdForReview: true`; the owner accepts
+each capture and routes it normally. The Focus lease still holds router turns.
+Once owner review is enabled, a Focus client adds `reviewCaptures: true` to **each**
+start and renewal to opt in. Without that client opt-in, the lease remains queue-only.
+`GET` reports the effective `reviewCaptures` flag. Each expiry must be in the next 15 minutes; Thinkering renews while
 focus continues. Repeating an action ID cannot change its meaning. Renewals preserve
 `since` while the prior lease remains live. The claim checks the deadline itself, and
 the queue timer wakes at expiry; clearing wakes it immediately. A Mac owner forwards
@@ -23,7 +27,7 @@ these controls to the cloud. This does not change Pause all or interrupt running
 
 ### Focus capture review
 
-The accepting owner retains the words, attachment custody IDs, immutable source identity and
+When owner review is enabled, the accepting owner retains the words, attachment custody IDs, immutable source identity and
 hold decision in one SQLite transaction. An ordinary human Inbox capture received while
 the Focus lease is live **and** its current action enabled capture review has no turn or
 provider steering. A Capture bar reply whose stable
@@ -74,10 +78,10 @@ An addressed Capture bar reply has no implicit urgency: it follows the capture h
 while an ordinary typed conversation reply remains live. The two paths stay visibly
 distinct in the product.
 
-The 15-minute lease and explicit review opt-in are the admission signal for *new* captures.
+The owner switch, 15-minute lease and explicit review opt-in are the admission signal for *new* captures.
 If Thinkering does not renew it, later captures use ordinary intake; already held captures
-remain held for review. Thinkering therefore renews the lease with `reviewCaptures: true`
-while Focus continues. The status and review page
+remain held for review. When capture review is deliberately re-enabled, Thinkering
+must renew the lease with `reviewCaptures: true` while Focus continues. The status and review page
 come from the owner ledger, so a stale page cannot silently release an unselected item.
 
 State card: the cloud owner writes the capture and release order; `source.kind` plus

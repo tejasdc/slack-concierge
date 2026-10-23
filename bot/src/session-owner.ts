@@ -36,7 +36,7 @@ import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,globalPauseState,globalPauseHoldsSession,focusHoldState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,globalPauseState,globalPauseHoldsSession,focusCaptureReviewEnabled,focusHoldState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -1822,7 +1822,7 @@ export class SessionOwner {
       const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent||outsideAgent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),
         payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,urgency:input.urgency??null,holdForReview:input.holdForReview===true,originalTextAttachmentId:presentation.report?attachments[0]:null}}}).input;
-      const holdForReview=!importOnly&&!input.urgency&&retained.origin==='human'
+      const holdForReview=focusCaptureReviewEnabled()&&!importOnly&&!input.urgency&&retained.origin==='human'
         &&(input.holdForReview===true||focusHoldState().reviewCaptures);
       if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
       else if(holdForReview){
@@ -2087,7 +2087,7 @@ export class SessionOwner {
     const shareCapture=/^share-reply:([0-9a-f-]{36})$/i.exec(actionId(input));
     if(input.holdForReview!==undefined&&(typeof input.holdForReview!=='boolean'||!shareCapture||!!agent))
       throw new SessionOwnerError('Only a human Capture bar reply may request Focus review.',400,'CAPTURE_REVIEW_INVALID');
-    const heldCaptureId=shareCapture&&!agent&&(input.holdForReview===true||focusHoldState().reviewCaptures)
+    const heldCaptureId=focusCaptureReviewEnabled()&&shareCapture&&!agent&&(input.holdForReview===true||focusHoldState().reviewCaptures)
       ?captureIdentity({kind:'thinkering',id:`share-reply:${shareCapture[1]!.toLowerCase()}`,recordedAt:''}):null;
     // A reply may pin the exact questions it answers; the owner proves they belong to the
     // topic it replies in, retains them on the input, and shows them to the router.

@@ -123,6 +123,9 @@ export function globalPauseHoldsSession(sessionId:number):boolean {
   return pause.paused&&!db.query('SELECT 1 FROM global_pause_exceptions WHERE generation=? AND machine=? AND session_id=?')
     .get(pause.generation,localPauseMachine,sessionId);
 }
+export function focusCaptureReviewEnabled():boolean {
+  return process.env.CONCIERGE_FOCUS_CAPTURE_REVIEW_ENABLED==='1';
+}
 export function focusHoldState(nowMs=Date.now()):{held:boolean;untilMs:number|null;label:string|null;since:number|null;reviewCaptures:boolean} {
   const row=db.query(`SELECT hold.until_ms,hold.label,hold.since_ms,review.enabled AS review_captures
     FROM focus_hold hold LEFT JOIN focus_capture_review_actions review ON review.action_id=hold.action_id
@@ -130,7 +133,7 @@ export function focusHoldState(nowMs=Date.now()):{held:boolean;untilMs:number|nu
     {until_ms:number|null;label:string|null;since_ms:number|null;review_captures:number|null};
   const held=row.until_ms!==null&&nowMs<row.until_ms;
   return {held,untilMs:held?row.until_ms:null,label:held?row.label:null,since:held?row.since_ms:null,
-    reviewCaptures:held&&row.review_captures===1};
+    reviewCaptures:held&&row.review_captures===1&&focusCaptureReviewEnabled()};
 }
 
 const executionChangeListeners = new Set<() => void>();
