@@ -41,6 +41,7 @@ export type NativeSessionMetadata = {
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
+  withdrawnNeeds?:import('./session-turn-outcome').WithdrawnNeed[];
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; canvasObservation?:boolean; canvasBoardId?:string; nativeBinding?:any;
   lineage?:{boundary:string;sourceVersion:string|null};
   recovery?:{sourceAddress:string;reason:'claude_usage_exhausted'};
