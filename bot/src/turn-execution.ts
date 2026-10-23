@@ -126,6 +126,13 @@ import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
+// Agents in long turns open a fresh `agent-browser --session` per check and never close the old
+// ones; the Stop hook only closes them when the turn ends, hours later. agent-browser's own idle
+// shutdown ends a daemon and the Chrome it launched once no command has reached it for this long,
+// and leaves a Chrome it merely attached to over CDP running. Every agent run inherits it, so it
+// applies exactly to browsers an agent started; under the host's one-hour aged-browser alert.
+const AGENT_BROWSER_IDLE_MS = 20 * 60_000;
+
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
   | { status: "retry_queued" | "provider_parked" | "cancelled"; turnId: number }
@@ -639,6 +646,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
       environment: {
+        AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
         ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
         // Only an older private execution being adopted needs its original Codex home.

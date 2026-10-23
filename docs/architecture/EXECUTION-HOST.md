@@ -306,6 +306,17 @@ instead of a periodic process killer, and does not touch other runs' browsers or
 shared App Server. A process that outlives a crashed or unhooked run remains visible to
 the host's aged-controller alert for owner investigation; the host observer never kills it.
 
+Within a long turn, every agent run's environment carries `AGENT_BROWSER_IDLE_TIMEOUT_MS`
+(20 minutes, `turn-execution.ts`), agent-browser's own idle shutdown: a daemon no command
+has reached for that long exits and closes the Chrome it launched. Agents that opened a fresh
+`--session` per check left four or five idle daemons for over an hour on October 22 and 23,
+2026, tripping the aged-browser alert while their turns kept running. The setting travels
+with the run's identity into exactly the browsers an agent starts; a browser it only attached
+to over CDP (such as the ChatGPT Chrome) is disconnected, not closed, and browsers started
+outside an agent run are unaffected. It was chosen over a periodic killer reading process
+ages because the daemon alone knows when it last received a command. An agent that needs a
+closed session again opens a new one.
+
 The host side exports processor wait and aged detached-controller counts. Its overload
 alert enters the standing Repair agent queue through the allowlisted Grafana condition;
 the alert's browser count is evidence to investigate, not proof a live browser is orphaned.
