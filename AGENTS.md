@@ -102,6 +102,9 @@ answer while every request retains its own closure; see the same prompt-answer c
 
 Account budget holds, withdrawn queued requests, and the audited October 10 stale-pause
 repair belong to the canonical owner; see [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#budget-pauses-and-the-october-10-idle-capacity-repair).
+Ordinary Claude turns retain a usable warm conversation account before weekly-room ranking;
+banked bindings, fresh manual selections and usage refusals keep their precedence. The retained
+call marker and choice evidence are in [provider usage](docs/architecture/PROVIDER-USAGE.md).
 That repair credits the exact covered taste-mining request to the retained Codex result
 before retiring its untouched Claude firing; the same provider-sessions section owns the evidence.
 Automatic new-session choice spreads work across fresh, usable Claude and Codex allowance;

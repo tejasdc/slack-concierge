@@ -273,7 +273,7 @@ export function admitProvenClaudeWaitingTurn(turnId:number,account:string,select
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
-export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
@@ -332,14 +332,24 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)
     &&!claudeAccountCachedReset(room.account,model)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
+  const lastGoodRoom=(room:typeof rooms[number]):number|null=>{
+    if(!(room.home||room.isDefault)||claudeAccountCachedReset(room.account,model))return null;
+    if(room.tightestUsedPercent!==null)return !room.problem&&room.tightestUsedPercent<100?room.tightestUsedPercent:null;
+    const reading=usage.accounts.find(account=>account.label===room.account);
+    const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
+    return used!==null&&used<100?used:null;
+  };
+  const warmRoom=warmCacheAccount?rooms.find(room=>room.account===warmCacheAccount&&lastGoodRoom(room)!==null):null;
   // Selection grants an attempt when the usage reader cannot measure this login. It is
   // not a fabricated zero-percent reading, and a known cached refusal still blocks it.
   const selectedAttempt=selected?rooms.find(room=>room.account===selected&&room.home
     &&(room.problem||room.tightestUsedPercent===null)
     &&!claudeAccountCachedReset(room.account,model)):null;
-  if(selectedAttempt)return {account:selectedAttempt.account,home:selectedAttempt.home,
+  if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount});
+  if(warmRoom&&!selectedAccount)return {account:warmRoom.account,home:warmRoom.home,
+    because:'stayed-for-warm-cache',expected,selectionRevision:selection?.revision??0};
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
   if(choice.account===null){
     // An old reading is not a limit. Each account is read about every twelve minutes and a reading
     // counts for six, so an account with room routinely looked unreadable here and work was held
@@ -349,13 +359,15 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     // Only a reading that was good when taken counts: a sign-in or read problem keeps its last
     // percentages but is not evidence the account can run.
     const lastShowedRoom=rooms.flatMap(room=>{
-      if(!room.home||room.tightestUsedPercent!==null||claudeAccountCachedReset(room.account,model))return [];
-      const reading=usage.accounts.find(account=>account.label===room.account);
-      const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
-      return used!==null&&used<100?[{room,used}]:[];
-    }).sort((a,b)=>Number(b.room.account===expected)-Number(a.room.account===expected)||a.used-b.used)[0];
+      if(room.tightestUsedPercent!==null||!room.home)return [];
+      const used=lastGoodRoom(room);
+      return used!==null?[{room,used}]:[];
+    }).sort((a,b)=>Number(b.room.account===warmCacheAccount)-Number(a.room.account===warmCacheAccount)
+      ||Number(b.room.account===expected)-Number(a.room.account===expected)||a.used-b.used)[0];
     if(lastShowedRoom)return {account:lastShowedRoom.room.account,home:lastShowedRoom.room.home,
-      because:lastShowedRoom.room.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
+      because:lastShowedRoom.room.account===warmCacheAccount?'stayed-for-warm-cache'
+        :lastShowedRoom.room.account===expected?'stayed-on-its-account':'moved-for-room',
+      expected,selectionRevision:selection?.revision??0};
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
     const resets=accountAvailability('claude-code',model).filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
       .flatMap(account=>account.freeAt!==null&&account.freeAt>Date.now()?[account.freeAt]:[]);

@@ -29,6 +29,7 @@ export type NativeSessionMetadata = {
   codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   claudeAccount?:string;
+  claudeCacheCall?:{account:string;conversation:string|null;callId:string;atMs:number;cacheable:boolean};
   claudeSelectionRevision?:number;
   /** Only a zero-work refused first turn may change the provider selected by Automatic. */
   automaticProviderChoice?:boolean;

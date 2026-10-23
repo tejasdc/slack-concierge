@@ -38,6 +38,7 @@ export interface AgentProvider {
     sessionUUID: string | null;
     onProgress?: ProgressCb;
     onProviderMessage?: ProviderMessageCallback;
+    onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void;
     systemPrompt?: string;
     clientUserMessageId?: string;
     environment?: Record<string, string>;
