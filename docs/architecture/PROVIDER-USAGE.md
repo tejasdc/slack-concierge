@@ -366,16 +366,36 @@ The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usa
 fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
 reads with its own copies of each login, so its failure says nothing about the login in the
 account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
-recorded only when Claude reports that the process started. It breaks ties between eligible accounts
-with equal weekly room after the latest readable usage comparison. A new Accounts selection wins the
-next turn, and a banked turn stays bound to its saved account. This preserves weekly room: at
+recorded only when Claude reports that the process started. Each main-conversation response with
+usage also retains its account, conversation ID, response ID and receipt time in that session's
+metadata. The next ordinary turn stays on that account when its last response is within the
+main conversation's one-hour cache lifetime and the account still has usable room. Anthropic
+isolates prompt caches between organizations; in the 48 hours before this change, 133 account
+changes accompanied 68.2 million rewritten tokens, and all 14 sampled changes within 50 minutes
+were cold. Keeping an eligible warm account avoids sacrificing that prefix to spend a different
+weekly allowance. A fresh Accounts selection still wins the next turn, a banked turn stays bound
+to its saved account, and a cached usage refusal makes an account ineligible. When the prefix is
+cold, the chooser again ranks usable accounts by weekly allowance lapse pressure and uses the
+previous account to break equal-room ties. That ranking preserves weekly room: at
 07:22 Eastern on 2026-10-10 Inbox stayed on an account with about 13% weekly room even though
 another launchable account had about 83%, because the older rule always preferred its last
 account while it had any room. The session view exposes the actual account; an account event
-carries the rule's existing one-time chosen or moved sentence. A confirmed usage refusal on one
+records the choice reason for diagnosis without announcing it. A confirmed usage refusal on one
 account is cached under
 that account, allowing a safe queued retry to choose another immediately. When none has
 room, the existing timed usage hold keeps the input for the earliest readable reset.
+The observed failure and replayable boundary are in
+[warm Claude conversation moved accounts](../incidents/2026-10-23-warm-claude-conversation-moved-accounts.md).
+
+State boundary: the session owner is the single writer for the last-call marker and account
+choice. A response ID identifies the observation; a turn ID identifies the dispatch attempt.
+The provider's response establishes a possible warm prefix, while a transcript usage record
+establishes what was actually read or rewritten. If a response is not recorded, a process restarts,
+the conversation ID changes, or the marker expires, dispatch uses the existing cold ranking.
+Older readers ignore the optional metadata. The falsifying sequence is a warm call on account A
+while account B has higher lapse pressure: A must win with room, B must win when A has no room,
+and a bound banked turn must remain bound. The focused chooser check exercises that sequence;
+installed usage figures measure the resulting cache behavior.
 "None has room" is a claim about readings and refusals only. A reading older than six minutes
 is unknown, not full: when no freshly read account has room, a launchable account whose last
 reading was good when taken and showed room, with no cached refusal, is tried, and Claude's own
@@ -942,8 +962,12 @@ investigation flag, not proof of a provider or Concierge bug. Transcript compact
 records share the existing cursor store; there is no second collector or owner-loop scan.
 The 48-hour count under `cacheDiagnostics.last48Hours` distinguishes expected first
 calls, flagged unexplained misses, unknown causes and observed reasons, with rewritten
-token totals per reason. Multiple observed reasons can count the same call. The same
-48-hour summary is attached to both period views; the period's detailed calls and
+token totals per reason. Multiple observed reasons can count the same call. Its
+`unknownPatterns` groups unresolved calls by provider, gap, account attribution and
+whether two adjacent turns' instruction fingerprints agree or were unavailable;
+it does not turn a matching fingerprint into a cause. A matching 15-minute summary
+under `last15Minutes` permits a bounded post-release comparison without mixing in
+the previous 48 hours. Both summaries are attached to both period views; the period's detailed calls and
 turns retain their own time bounds.
 
 The earlier per-turn identity, allowance brief, banked-work notice and first-run title

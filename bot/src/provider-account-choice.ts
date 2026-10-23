@@ -64,6 +64,7 @@ export type AccountBinding = Readonly<{
 export type AccountReason =
   | AccountBinding["reason"]
   | "stayed-on-its-account"
+  | "stayed-for-warm-cache"
   | "moved-for-room"
   | "most-headroom";
 
@@ -110,6 +111,8 @@ export function chooseAccountForTurn(input: {
   prefer: string | null;
   /** A fresh Accounts selection wins once, before ordinary room-based dispatch resumes. */
   newlySelected?: boolean;
+  /** A recent provider call on this conversation left a reusable prefix on this account. */
+  warmCacheAccount?: string | null;
   /** The instant the choice is made; the rule takes it so it can be run on past readings. */
   nowMs?: number;
 }): AccountChoice {
@@ -132,16 +135,19 @@ export function chooseAccountForTurn(input: {
   const withRoom = usable.filter(account => account.tightestUsedPercent! < 100);
   if (!withRoom.length) return { account: null, home: null, because: "no-account-has-room" };
 
-  // A fresh manual choice applies to the next turn. Otherwise use the account with most
-  // weekly room among accounts whose every required window can run. Keeping a conversation
-  // on its previous account while it had any room spent the last 13% of one weekly allowance
-  // after the other account's morning reset left 83% available (Inbox, 2026-10-10). Equal room is the case where
-  // staying is free; it also avoids a needless account hop.
+  // A fresh manual choice applies to the next turn. A reusable conversation prefix then
+  // stays on its account while that account has room: another subscription cannot read it.
+  // Once the prefix is cold, rank eligible accounts by allowance lapse pressure. That avoids
+  // spending the last 13% of one week while another has 83% (Inbox, 2026-10-10).
   const preferred = input.prefer && withRoom.find(account => account.account === input.prefer);
   if (input.newlySelected && preferred)
     return { account: preferred.account, home: preferred.home, because: "stayed-on-its-account" };
 
-  // Room is ranked by how fast it has to be spent before it lapses: the percent left divided by
+  const warm = input.warmCacheAccount && withRoom.find(account => account.account === input.warmCacheAccount);
+  if (warm)
+    return { account: warm.account, home: warm.home, because: "stayed-for-warm-cache" };
+
+  // Cold work is ranked by how fast room has to be spent before it lapses: the percent left divided by
   // the hours until that weekly allowance ends. A full week with 15 hours to its end outranks a
   // half week with five days (6.7 against 0.4 points an hour), and the 2026-10-10 case still
   // holds — 13% with two days left (0.3) loses to 83% with five (0.7). An unknown end counts as

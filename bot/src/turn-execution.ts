@@ -6,6 +6,7 @@ import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity} fr
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
+import {warmClaudeAccount} from './prompt-cache-lifetime';
 import {yieldBankedTurn} from './saved-work';
 import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
@@ -595,12 +596,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
+    const lastClaudeCall=input.providerId==='claude-code'?sessionMetadata(input.session).claudeCacheCall??null:null;
+    const warmClaudeCacheAccount=warmClaudeAccount(lastClaudeCall,previousClaudeAccount,
+      input.session.agent_session_uuid,Date.now());
     const claudeLaunchModel=input.providerId==='claude-code'
       ?input.model||getClaudePreferredModel(input.session.id,input.turnId)||null:null;
     runningClaudeModel=claudeLaunchModel;
     const claudeChoice=input.providerId==='claude-code'
       ?input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
-        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel)
+        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount)
       :null;
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
@@ -661,6 +665,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if(message.role==='assistant' && message.content.trim())observedAssistantOutput=true;
         try { projectSessionProviderMessage(input.turnId,message); }
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
+      },
+      onClaudeCall: (call) => {
+        if(!runningClaudeAccount)return;
+        try {updateSessionMetadata(input.session.id,{claudeCacheCall:{...call,account:runningClaudeAccount}});}
+        catch(error){log('warn','claude_cache_call_record_failed',{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
         if (event.type === 'mac_surface_activity' && input.presentation === 'native'

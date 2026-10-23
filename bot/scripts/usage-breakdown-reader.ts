@@ -4,6 +4,7 @@ import {closeSync,createReadStream,existsSync,mkdirSync,openSync,readFileSync,re
 import {homedir} from 'node:os';
 import {basename,dirname,join,resolve} from 'node:path';
 import {jsonLines} from '../src/json-lines';
+import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../src/prompt-cache-lifetime';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -245,6 +246,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const rows=cache.query(`SELECT path,record_id,provider,conversation,helper,at_ms,model,input,cache_write,cache_write_1h,cache_read,output,
     provider_turn_id,client_version FROM records WHERE at_ms>=? ORDER BY path,at_ms,record_id`).all(oneWeekAgo) as RecordRow[];
   const calls:any[]=[];
+  const unknownEvidence:{atMs:number;provider:string;gapMs:number|null;instructions:'same'|'changed'|'unavailable';accountKnown:boolean}[]=[];
   const callsByTurn=new Map<number,{turnId:number;sessionId:number;provider:string;account:string;status:string;raw:Counts;callCount:number;
     flaggedCallCount:number;unknownCauseCount:number}>();
   const previousByPath=new Map<string,{row:RecordRow;turn:Turn|null}>();
@@ -285,7 +287,8 @@ function report(period:'today'|'week',since:number,zone:string){
       // does not prove that expiry caused this particular rewrite.
       const elapsed=r.at_ms-previous.row.at_ms;
       if(r.provider==='claude-code'){
-        const lifetime=previous.row.helper&&previous.row.cache_write_1h===0?300_000:3600_000;
+        const lifetime=previous.row.helper&&previous.row.cache_write_1h===0
+          ?CLAUDE_HELPER_CACHE_LIFETIME_MS:CLAUDE_MAIN_CACHE_LIFETIME_MS;
         if(elapsed>=lifetime)reasons.push('cache_lifetime_elapsed');
       }
     }
@@ -297,6 +300,11 @@ function report(period:'today'|'week',since:number,zone:string){
     const largeUnexpected=largeMiss&&!!previous&&!expectedReason;
     const cause={status:!largeMiss?'not_applicable':expectedReason?'expected':reasons.length?'observed':'unknown',
       reasons:largeMiss?reasons:[],possibleReasons:largeMiss?possibleReasons:[]};
+    if(cause.status==='unknown')unknownEvidence.push({atMs:r.at_ms,provider:r.provider,
+      gapMs:previous?r.at_ms-previous.row.at_ms:null,
+      instructions:previous?.turn?.systemInstructionsSha256&&turn?.systemInstructionsSha256
+        ?previous.turn.systemInstructionsSha256===turn.systemInstructionsSha256?'same':'changed':'unavailable',
+      accountKnown:account!=='unknown'});
     const call={provider:r.provider,account,sessionId:s?.id??null,turnId:turn?.id??null,
       providerConversationId:r.conversation,callId:r.record_id,at:new Date(r.at_ms).toISOString(),model:r.model,
       clientVersion:r.client_version,raw:{input:r.input,cacheWrite:r.cache_write,cacheWrite1h:r.cache_write_1h,
@@ -360,6 +368,27 @@ function report(period:'today'|'week',since:number,zone:string){
     for(const entry of group.bySession.values())
       entry.cache.bug=aboveNormal(entry.cache.flaggedCallCount,entry.cache.callCount,group.provider);
   }
+  const summarySince=(fromMs:number)=>{
+    const recent=calls.filter(call=>Date.parse(call.at)>=fromMs);
+    const causes:Record<string,{calls:number;rewrittenInputTokens:number}>={};
+    for(const call of recent.filter(call=>call.cause.status!=='not_applicable')){
+      const labels=[...call.cause.reasons,...call.cause.possibleReasons];
+      for(const reason of labels.length?labels:['unknown']){
+        const prior=causes[reason]??{calls:0,rewrittenInputTokens:0};
+        causes[reason]={calls:prior.calls+1,rewrittenInputTokens:prior.rewrittenInputTokens+call.rewrittenInputTokens};
+      }}
+    const unknown=unknownEvidence.filter(item=>item.atMs>=fromMs);
+    const counts=(key:(item:typeof unknown[number])=>string)=>Object.fromEntries(
+      [...new Set(unknown.map(key))].sort().map(label=>[label,unknown.filter(item=>key(item)===label).length]));
+    return {callCount:recent.length,expected:recent.filter(call=>call.cause.status==='expected').length,
+      unexpected:recent.filter(call=>call.flags.length>0).length,
+      unknown:unknown.length,byCause:causes,
+      unknownPatterns:{byProvider:counts(item=>item.provider),
+        byGap:counts(item=>item.gapMs===null?'no_prior_call':item.gapMs<CLAUDE_HELPER_CACHE_LIFETIME_MS?'under_5_minutes'
+          :item.gapMs<CLAUDE_MAIN_CACHE_LIFETIME_MS?'5_to_60_minutes':'over_60_minutes'),
+        instructionFingerprints:counts(item=>item.instructions),
+        accountAttribution:counts(item=>item.accountKnown?'known':'unavailable')}};
+  };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
     measure:'Published API price equivalent in USD; a proxy for allowance share, not the provider subscription meter.',
     fallbackModels:[...fallbackModels].sort(),
@@ -367,17 +396,8 @@ function report(period:'today'|'week',since:number,zone:string){
       flagRule:'A call rewrites over half of more than 50000 input tokens after an earlier call, with no observed compaction or provider-supported cache lifetime elapsed. A turn or session is a bug candidate when its flagged-call rate exceeds both 5% and twice its provider period baseline.',
       ordinaryMissRate,
       callCount:calls.length,turnCount:callsByTurn.size,
-      last48Hours:(()=>{const recent=calls.filter(call=>Date.parse(call.at)>=Date.now()-48*3600_000);
-        const causes:Record<string,{calls:number;rewrittenInputTokens:number}>={};
-        for(const call of recent.filter(call=>call.cause.status!=='not_applicable')){
-          const labels=[...call.cause.reasons,...call.cause.possibleReasons];
-          for(const reason of labels.length?labels:['unknown']){
-            const prior=causes[reason]??{calls:0,rewrittenInputTokens:0};
-            causes[reason]={calls:prior.calls+1,rewrittenInputTokens:prior.rewrittenInputTokens+call.rewrittenInputTokens};
-          }}
-        return {callCount:recent.length,expected:recent.filter(call=>call.cause.status==='expected').length,
-          unexpected:recent.filter(call=>call.flags.length>0).length,
-          unknown:recent.filter(call=>call.cause.status==='unknown').length,byCause:causes};})(),
+      last48Hours:summarySince(Date.now()-48*3600_000),
+      last15Minutes:summarySince(Date.now()-15*60_000),
       calls:calls.sort((a,b)=>b.rewrittenInputTokens-a.rewrittenInputTokens).slice(0,100),
       turns:[...callsByTurn.values()].sort((a,b)=>b.raw.input+b.raw.cacheWrite+b.raw.cacheWrite1h-(a.raw.input+a.raw.cacheWrite+a.raw.cacheWrite1h))
         .slice(0,100).map(t=>({...t,bug:aboveNormal(t.flaggedCallCount,t.callCount,t.provider),cachedInputTokens:t.raw.cacheRead,

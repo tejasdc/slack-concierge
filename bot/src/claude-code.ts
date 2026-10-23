@@ -475,6 +475,7 @@ export async function runClaudeCodeTurn(input: {
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
+  onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
@@ -603,6 +604,12 @@ export async function runClaudeCodeTurn(input: {
       const usage = event.message.usage;
       const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
       if (tokens > 0) workloadContext = tokens;
+      if (typeof event.message.id === 'string') input.onClaudeCall?.({
+        conversation:observedSessionUuid??input.sessionUUID,
+        callId:event.message.id,
+        atMs:Date.now(),
+        cacheable:(usage.cache_read_input_tokens??0)+(usage.cache_creation_input_tokens??0)>0,
+      });
     } else if (event.type === "result") {
       const windows = Object.values(event.modelUsage ?? {}).map((model: any) => Number(model?.contextWindow)).filter(Number.isFinite);
       if (workloadContext !== null) recordClaudeWorkload(observedSessionUuid ?? input.sessionUUID, { contextTokens: workloadContext, contextWindow: windows.length ? Math.max(...windows) : null });
