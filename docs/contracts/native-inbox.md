@@ -2,6 +2,11 @@
 
 ## Waiting captures
 
+During an explicitly opted-in Focus lease, ordinary human captures and addressed Capture bar replies are accepted
+without entering this executable waiting queue. They appear in the separate held review
+page and enter the queue or their retained exact reply target only on a user-selected
+release. See [Focus capture review](../architecture/PAUSE-ALL.md#focus-capture-review).
+
 The owner exposes a bounded, ordered page of human Inbox inputs and attributed outside-agent
 captures that are still queued and have never reached a provider. A new executable capture
 joins the Inbox router's running turn by default; it appears in this waiting page when no

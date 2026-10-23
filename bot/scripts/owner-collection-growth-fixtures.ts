@@ -92,13 +92,17 @@ async function inboxCapturesGrowth(){
   const database=observedDatabase(new Database(':memory:'));
   try{
    database.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY);
-     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
-     CREATE INDEX session_inputs_capture_page ON session_inputs(session_id) WHERE id GLOB 'capture:*';`);
+     CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,action_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT);
+     CREATE INDEX session_inputs_capture_page ON session_inputs(session_id) WHERE id GLOB 'capture:*';
+     CREATE TABLE focus_held_captures(capture_id TEXT PRIMARY KEY,input_id TEXT UNIQUE,input_position INTEGER UNIQUE,held_at_ms INTEGER,released_at_ms INTEGER,release_action_id TEXT);
+     CREATE INDEX focus_held_captures_pending ON focus_held_captures(input_position DESC) WHERE released_at_ms IS NULL;`);
    database.query('INSERT INTO sessions(id) VALUES(1)').run();
-   const insert=database.query('INSERT INTO session_inputs(id,session_id,kind,payload_json,created_at) VALUES(?,?,?,?,?)');
-   for(let index=1;index<=count;index++)insert.run(`capture:${index}`,1,'input',
+   const insert=database.query('INSERT INTO session_inputs(id,session_id,action_id,kind,payload_json,created_at) VALUES(?,?,?,?,?,?)');
+   for(let index=1;index<=count;index++)insert.run(`capture:${index}`,1,`capture-${index}`,'input',
      JSON.stringify({text:`Capture ${index}`,capture:{source:{kind:'thinkering',recordedAt:'2026-10-14T12:00:00Z'}}}),
      '2026-10-14T12:00:00Z');
+   const held=database.query('INSERT INTO focus_held_captures(capture_id,input_id,input_position,held_at_ms) VALUES(?,?,?,0)');
+   for(let index=1;index<=count;index+=3)held.run(String(index),`capture:${index}`,index);
    const plan=database.query(`EXPLAIN QUERY PLAN SELECT rowid AS position,id,payload_json,created_at FROM session_inputs
      WHERE session_id=1 AND id GLOB 'capture:*' AND json_extract(payload_json,'$.capture') IS NOT NULL ORDER BY rowid DESC LIMIT 21`).all() as {detail:string}[];
    assert.ok(plan.some(row=>row.detail.includes('session_inputs_capture_page')),JSON.stringify(plan));
@@ -115,6 +119,15 @@ async function inboxCapturesGrowth(){
    const second=inboxCapturesPage(database,1,first.nextCursor,20);
    assert.equal(second.items.length,20);
    assert.ok(second.items.every(row=>!first.items.some(prior=>prior.id===row.id)));
+   const heldPlan=database.query(`EXPLAIN QUERY PLAN SELECT input.id FROM focus_held_captures held JOIN session_inputs input ON input.id=held.input_id
+     WHERE held.released_at_ms IS NULL ORDER BY held.input_position DESC LIMIT 21`).all() as {detail:string}[];
+   assert.ok(heldPlan.some(row=>row.detail.includes('focus_held_captures_pending')),JSON.stringify(heldPlan));
+   assert.ok(heldPlan.every(row=>!row.detail.includes('TEMP B-TREE')),JSON.stringify(heldPlan));
+   const pending=observeStorageOperation('inboxCapturesHeld',()=>withStorageReadBudget({maxCalls:128,maxRows:contract.maxStorageRows,
+     maxResultBytes:contract.maxResponseBytes*2},()=>inboxCapturesPage(database,1,null,20,true)));
+   assert.equal(pending.items.length,20);assert.ok(pending.items.every(row=>row.held));
+   const pendingNext=inboxCapturesPage(database,1,pending.nextCursor,20,true);
+   assert.ok(pendingNext.items.length>0&&pendingNext.items.length<=20);
   }finally{database.close();}
  }
 }

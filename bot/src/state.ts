@@ -89,6 +89,24 @@ CREATE TABLE IF NOT EXISTS focus_hold_actions (
   held INTEGER NOT NULL CHECK(held IN (0,1)),
   until_ms INTEGER,
   label TEXT
+);
+CREATE TABLE IF NOT EXISTS focus_capture_review_actions (
+  action_id TEXT PRIMARY KEY REFERENCES focus_hold_actions(action_id),
+  enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+);
+CREATE TABLE IF NOT EXISTS focus_held_captures (
+  capture_id TEXT PRIMARY KEY,
+  input_id TEXT NOT NULL UNIQUE REFERENCES session_inputs(id),
+  input_position INTEGER NOT NULL UNIQUE,
+  held_at_ms INTEGER NOT NULL,
+  released_at_ms INTEGER,
+  release_action_id TEXT
+);
+CREATE INDEX IF NOT EXISTS focus_held_captures_pending ON focus_held_captures(input_position DESC) WHERE released_at_ms IS NULL;
+CREATE TABLE IF NOT EXISTS focus_capture_release_actions (
+  action_id TEXT PRIMARY KEY,
+  capture_ids_json TEXT NOT NULL,
+  released_at_ms INTEGER NOT NULL
 )`);
 
 }).immediate();
@@ -105,11 +123,14 @@ export function globalPauseHoldsSession(sessionId:number):boolean {
   return pause.paused&&!db.query('SELECT 1 FROM global_pause_exceptions WHERE generation=? AND machine=? AND session_id=?')
     .get(pause.generation,localPauseMachine,sessionId);
 }
-export function focusHoldState(nowMs=Date.now()):{held:boolean;untilMs:number|null;label:string|null;since:number|null} {
-  const row=db.query('SELECT until_ms,label,since_ms FROM focus_hold WHERE singleton=1').get() as
-    {until_ms:number|null;label:string|null;since_ms:number|null};
+export function focusHoldState(nowMs=Date.now()):{held:boolean;untilMs:number|null;label:string|null;since:number|null;reviewCaptures:boolean} {
+  const row=db.query(`SELECT hold.until_ms,hold.label,hold.since_ms,review.enabled AS review_captures
+    FROM focus_hold hold LEFT JOIN focus_capture_review_actions review ON review.action_id=hold.action_id
+    WHERE hold.singleton=1`).get() as
+    {until_ms:number|null;label:string|null;since_ms:number|null;review_captures:number|null};
   const held=row.until_ms!==null&&nowMs<row.until_ms;
-  return {held,untilMs:held?row.until_ms:null,label:held?row.label:null,since:held?row.since_ms:null};
+  return {held,untilMs:held?row.until_ms:null,label:held?row.label:null,since:held?row.since_ms:null,
+    reviewCaptures:held&&row.review_captures===1};
 }
 
 const executionChangeListeners = new Set<() => void>();
@@ -5232,7 +5253,9 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=session.id))
   AND NOT EXISTS (SELECT 1 FROM focus_hold hold WHERE hold.singleton=1 AND hold.until_ms>?
-    AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router')
+    AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router'
+    AND NOT EXISTS (SELECT 1 FROM session_inputs urgent WHERE urgent.id=turn.accepted_input_id
+      AND json_extract(urgent.payload_json,'$.capture.urgency') IN ('data-loss','medication')))
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
     AND json_extract(coalesce(input.receipt_json,'{}'),'$.state')='canceled')
   AND NOT EXISTS (SELECT 1 FROM session_communication_requests request
@@ -5259,6 +5282,11 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     SELECT 1 FROM turns older
     WHERE older.session_id=turn.session_id AND ${queuePrecedesSql('older','turn')}
       AND ${EARLIER_TURN_BLOCKS_SQL}
+      AND NOT (EXISTS (SELECT 1 FROM focus_hold hold WHERE hold.singleton=1 AND hold.until_ms>?)
+        AND EXISTS (SELECT 1 FROM session_inputs urgent WHERE urgent.id=turn.accepted_input_id
+          AND json_extract(urgent.payload_json,'$.capture.urgency') IN ('data-loss','medication'))
+        AND NOT EXISTS (SELECT 1 FROM session_inputs earlier_urgent WHERE earlier_urgent.id=older.accepted_input_id
+          AND json_extract(earlier_urgent.payload_json,'$.capture.urgency') IN ('data-loss','medication')))
   )
   AND NOT EXISTS (
     SELECT 1 FROM turns live
@@ -5284,7 +5312,7 @@ let codexAdmissionHeld=false;
 export function holdCodexAdmission(held:boolean){codexAdmissionHeld=held;if(!held)executionChanged();}
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
-  return [nowMs,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),
+  return [nowMs,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
     survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHeld ? 1 : 0] as const;
 }
 

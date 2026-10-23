@@ -36,6 +36,9 @@ phase('live-store-copy-guard');
 const acceptance=Bun.spawnSync([process.execPath,join(import.meta.dir,'accepted-input-admission-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
 if(acceptance.exitCode!==0)throw new Error(`Accepted input check failed: ${acceptance.stderr.toString().slice(-3000)}`);
 phase('accepted-input-admission');
+const focusCaptures=Bun.spawnSync([process.execPath,join(import.meta.dir,'focus-capture-admission-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
+if(focusCaptures.exitCode!==0)throw new Error(`Focus capture admission check failed: ${focusCaptures.stderr.toString().slice(-3000)}`);
+phase('focus-capture-admission');
 const scanner=new Bun.Transpiler({loader:'ts'});
 const visited=new Set<string>();
 function readOnlyDependency(file:string){

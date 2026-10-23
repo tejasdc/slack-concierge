@@ -16,6 +16,8 @@ export type InboxCapture = {
   // transcribes it again.
   files?:{name:string;contentType:string;base64:string;transcript?:unknown}[];
   importOnly?:boolean;
+  /** Explicit urgent delivery chosen by the person, never inferred from the words. */
+  urgency?:'data-loss'|'medication';
 };
 /**
  * How long a Pebble note waited before it reached the server, when that is longer than a note

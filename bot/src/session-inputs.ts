@@ -329,9 +329,10 @@ export function enqueueSessionInput(inputId:string) {
       session.provider_id==='antigravity'?resolveProviderAlias('google'):
       session.provider_id==='chatgpt'?{model:defaultChatGptModel,reasoning_effort:null}:null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
-      requested_by_user_id,provider_model,reasoning_effort,replay_text)
-      VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,
-        metadata.model??currentDefault?.model??null,metadata.reasoningEffort??currentDefault?.reasoning_effort??null,text);
+      requested_by_user_id,provider_model,reasoning_effort,replay_text,queue_priority)
+      VALUES(?,NULL,?,'queued','native',?,?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,
+        metadata.model??currentDefault?.model??null,metadata.reasoningEffort??currentDefault?.reasoning_effort??null,text,
+        ['data-loss','medication'].includes(value.capture?.urgency)?1:0);
     const turnId=Number(inserted.lastInsertRowid);
     nativeRunId(turnId);
     db.query('UPDATE session_inputs SET turn_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL').run(turnId,input.id);

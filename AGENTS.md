@@ -41,8 +41,7 @@ Live event subscriptions stay with the accepting owner, but retained event pages
 projected by its existing read executors; see [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
 The cloud owner holds one [pause-all gate](docs/architecture/PAUSE-ALL.md) across session
 admission; the Inbox router remains answerable, and the Mac acknowledges the gate before work resumes there.
-The separate [focus hold](docs/architecture/PAUSE-ALL.md#focus-hold) leases only new Inbox router turns on the cloud;
-captured inputs wait in its normal queue while other sessions and running work continue.
+The [focus hold](docs/architecture/PAUSE-ALL.md#focus-hold) leases new Inbox router turns on the cloud while other sessions and running work continue. When the Focus client explicitly enables capture review on each lease, new human captures retain a separate per-capture hold until Tejas chooses a review release; addressed Capture bar replies keep their exact destination, including Mac-owned sessions through an explicit capture-time review flag. The [Focus capture contract](docs/architecture/PAUSE-ALL.md#focus-capture-review) owns review, urgency and release.
 Provider or model changes for running work use an acknowledged same-machine handoff;
 open obligations move only on acceptance. See [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff)
 and [router commands](docs/runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
