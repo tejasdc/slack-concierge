@@ -60,8 +60,9 @@ names the attempted action, client, session, sequence, occupying action, whether
 changed or the sequence was occupied, and only the names of fields that changed. Repeated
 attempts increment one counter. The 409 response and ingress warning carry those same safe
 fields; neither claims server custody for the attempted command. Investigate with a bounded
-read of `human_command_conflicts` by attempted action ID, then compare the occupying row in
-`human_commands`. A conflict alone never authorizes renumbering or replaying a device command:
+read of `human_command_conflicts` by attempted action ID from the diagnostic SQLite snapshot
+([runbook](../runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md)), then compare the occupying row in
+`human_commands` in that same snapshot. A conflict alone never authorizes renumbering or replaying a device command:
 compare its original device bytes and ordered stream before any recovery.
 If an older browser build already discarded a command before server custody, a private,
 authenticated recovery operation may mark that exact absent sequence as missing. The queue

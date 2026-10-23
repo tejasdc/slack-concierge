@@ -200,8 +200,8 @@ export class CommandIdentityConflict extends Error {
     super("The command identity already names different bytes or a different place in the stream.");
   }
 }
-function identityConflict(command:HumanCommand,existing:HumanCommandRow,reason:CommandConflictReason):CommandIdentityConflict {
-  const changedFields=reason==='action_changed' ? [
+function identityConflict(command:HumanCommand,existing:HumanCommandRow,reason:CommandConflictReason,comparedFields?:readonly string[]):CommandIdentityConflict {
+  const changedFields=comparedFields??(reason==='action_changed' ? [
     ...(existing.client_id!==command.clientId?['client_id']:[]),
     ...(existing.session_id!==command.sessionId?['session_id']:[]),
     ...(existing.sequence!==command.sequence?['sequence']:[]),
@@ -209,7 +209,7 @@ function identityConflict(command:HumanCommand,existing:HumanCommandRow,reason:C
     ...(existing.method!==command.method?['method']:[]),
     ...(existing.path!==command.path?['path']:[]),
     ...(existing.body_json!==JSON.stringify(command.body)?['body']:[]),
-  ]:[];
+  ]:[]);
   return new CommandIdentityConflict({attemptedActionId:command.actionId,clientId:command.clientId,
     sessionId:command.sessionId,sequence:command.sequence,reason,existingActionId:existing.action_id,changedFields});
 }
@@ -284,7 +284,14 @@ export function retainPreCustodyRefusal(command:HumanCommand,status:404|413):Hum
     ?(JSON.parse(existing.body_json) as {originalPath?:string}).originalPath:existing.path;
    if(existing.client_id!==command.clientId||existing.session_id!==command.sessionId
     ||existing.sequence!==command.sequence||existing.method!==command.method||existing.door!==command.door
-    ||priorPath!==originalPath)throw identityConflict(command,{...existing,path:priorPath},'action_changed');
+    ||priorPath!==originalPath)throw identityConflict(command,existing,'action_changed',[
+      ...(existing.client_id!==command.clientId?['client_id']:[]),
+      ...(existing.session_id!==command.sessionId?['session_id']:[]),
+      ...(existing.sequence!==command.sequence?['sequence']:[]),
+      ...(existing.method!==command.method?['method']:[]),
+      ...(existing.door!==command.door?['door']:[]),
+      ...(priorPath!==originalPath?['path']:[]),
+    ]);
    return existing;
   }
   captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
