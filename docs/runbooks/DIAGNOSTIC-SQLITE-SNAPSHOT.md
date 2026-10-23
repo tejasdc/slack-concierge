@@ -10,19 +10,38 @@ python3 scripts/diagnostic-sqlite-snapshot.py /absolute/source.db /private/diagn
 
 The command opens the source read-only, requires WAL mode, pins a committed read snapshot,
 and uses SQLite's native backup API to copy in bounded steps. Concurrent writers can continue;
-the pinned read snapshot holds WAL checkpoint history until the command ends. The default
+the pinned read snapshot holds WAL checkpoint history until the command ends, and the copy
+reads the source exactly once even while it is being written (measured 2026-10-23 with a
+writer committing every 5 ms). The default
 limits are 120 seconds and 8 GiB of database pages; `--max-seconds` and `--max-bytes` can
-lower or raise them for a known diagnostic. The command checks its deadline between backup
-steps, not while one SQLite step is running. Stop a wedged process at the operator boundary.
-The copy still reads the whole database through the shared disk; these limits bound that
-competition rather than removing it.
+lower or raise them for a known diagnostic. The deadline covers the whole copy, including
+writing it to disk, and is checked between backup steps, not while one SQLite step or flush
+is running. A deadline failure names how much was copied so the next attempt can size
+`--max-seconds` instead of killing the copy.
+
+**The copy is written through to disk as it goes, 32 MiB at a time.** Each piece is flushed
+and dropped from the page cache before the next is copied, so the shared filesystem never
+holds more than about 32 MiB of unwritten copy data. That matters because every fsync on the
+filesystem (the ledger's own durability sync reaches it through the loop device's flush)
+waits for all dirty, journal-ordered data, whoever wrote it. On 2026-10-23 the earlier
+version, which flushed only at the end, copied the 5.4 GB ledger into `/tmp` under the
+agents' 30 MB/s disk write cap: the whole copy sat dirty for three minutes, the owner's
+durability sync took 35 s, a ledger write on the owner loop blocked 31 s, thnkr.ing lost the
+owner 24 times, and Grafana's pressure rule fired
+([failure record](../incidents/2026-10-23-ledger-snapshot-copy-stalled-the-owner.md)).
+The copy still reads the whole database through the shared disk and still writes it at the
+disk's (or the caller's cgroup's) pace; under the agent write cap the ledger takes about
+three minutes, so pass `--max-seconds 300` or more for it. Killing a copy does not take back
+the pieces already written; with write-through there is at most one piece left to drain.
 
 The output is staged in a private directory beside the requested destination, with file mode
 0600. A complete copy is published atomically without replacing an existing path. Failure
 removes the staged database and sidecars, closes both SQLite connections and releases the
-read snapshot. A process killed by a signal may leave its private
-`.sqlite-snapshot-*` staging directory; no partial destination is published, and the OS
-releases its source read lock. Inspect and remove that staging directory separately.
+read snapshot. `SIGTERM` (a plain `kill`) is the clean stop: the command raises its own
+failure, removes its staging directory and exits 1 saying it was stopped. Only `SIGKILL`
+leaves the private `.sqlite-snapshot-*` staging directory behind; no partial destination is
+published, and the OS releases its source read lock. Inspect and remove that staging
+directory separately.
 Use a private destination directory because the destination inherits its
 parent's directory access. Do not use the raw `sqlite3 .backup` command for a live source;
 that command can restart its copy when writes occur between steps. See the
