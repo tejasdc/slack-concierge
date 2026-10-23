@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, recordHumanCommandConflict, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -25,6 +25,17 @@ export interface CaptureQueueApiDependencies {
 
 function jsonResponse(status: number, payload: Record<string, unknown>) {
   return Response.json(payload, { status, headers: { "cache-control": "no-store" } });
+}
+function commandConflictResponse(error:CommandIdentityConflict):Response {
+  const evidence=error.evidence;
+  if(evidence){
+    try{recordHumanCommandConflict(error);}catch(failure){log('error','human_command_conflict_record_failed',errorFields(failure));}
+    log('warn','human_command_identity_conflict',evidence);
+    return jsonResponse(409,{error:{code:'COMMAND_IDENTITY_CONFLICT',message:'This command conflicts with an existing identity or stream position.',
+      reason:evidence.reason,actionId:evidence.attemptedActionId,existingActionId:evidence.existingActionId,
+      clientId:evidence.clientId,sessionId:evidence.sessionId,sequence:evidence.sequence,changedFields:evidence.changedFields}});
+  }
+  return jsonResponse(409,{error:{code:'COMMAND_IDENTITY_CONFLICT',message:error.message}});
 }
 
 function authorized(request: Request, token: string): boolean {
@@ -129,7 +140,7 @@ export function createCaptureQueueRequestHandler(
         dependencies.afterCommit?.("claim",retained.action_id);
         return jsonResponse(202,commandReply(retained.action_id)!);
       } catch(error) {
-        if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:"command_identity_conflict"});
+        if(error instanceof CommandIdentityConflict)return commandConflictResponse(error);
         log("warn","human_command_custody_refused",errorFields(error));
         return jsonResponse(400,{error:"invalid_command_envelope"});
       }
@@ -174,7 +185,7 @@ export function createCaptureQueueRequestHandler(
         const command=humanCommand(body);
         return jsonResponse(202,commandReply(retainPreCustodyRefusal(command,body.preCustodyStatus).action_id)!);
       }catch(error){
-        if(error instanceof CommandIdentityConflict)return jsonResponse(409,{error:'command_identity_conflict'});
+        if(error instanceof CommandIdentityConflict)return commandConflictResponse(error);
         return jsonResponse(400,{error:'invalid_command_envelope'});
       }
     }

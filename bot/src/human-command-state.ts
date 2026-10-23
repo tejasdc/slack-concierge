@@ -91,6 +91,21 @@ CREATE TABLE IF NOT EXISTS human_command_late_releases(
   reason TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS human_command_conflicts(
+  attempted_action_id TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  reason TEXT NOT NULL CHECK(reason IN ('action_changed','sequence_occupied')),
+  existing_action_id TEXT NOT NULL,
+  changed_fields TEXT NOT NULL,
+  occurrences INTEGER NOT NULL DEFAULT 1,
+  first_seen_at_ms INTEGER NOT NULL,
+  last_seen_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(attempted_action_id,client_id,session_id,sequence,reason,existing_action_id,changed_fields)
+);
+CREATE INDEX IF NOT EXISTS human_command_conflicts_recent
+  ON human_command_conflicts(last_seen_at_ms);
 `);
 const commandColumns=captureDb.query("PRAGMA table_info(human_commands)").all() as {name:string}[];
 if(!commandColumns.some(column=>column.name==='decision_stage'))captureDb.exec("ALTER TABLE human_commands ADD COLUMN decision_stage TEXT CHECK(decision_stage IN ('preparation','owner'))");
@@ -175,8 +190,38 @@ export function releaseMissingHumanCommandSlot(input:Readonly<{clientId:string;s
  }).immediate();
 }
 
+export type CommandConflictReason='action_changed'|'sequence_occupied';
+export type CommandConflictEvidence=Readonly<{
+  attemptedActionId:string;clientId:string;sessionId:string;sequence:number;
+  reason:CommandConflictReason;existingActionId:string;changedFields:readonly string[];
+}>;
 export class CommandIdentityConflict extends Error {
-  constructor() { super("The command identity already names different bytes or a different place in the stream."); }
+  constructor(readonly evidence:CommandConflictEvidence|null=null) {
+    super("The command identity already names different bytes or a different place in the stream.");
+  }
+}
+function identityConflict(command:HumanCommand,existing:HumanCommandRow,reason:CommandConflictReason,comparedFields?:readonly string[]):CommandIdentityConflict {
+  const changedFields=comparedFields??(reason==='action_changed' ? [
+    ...(existing.client_id!==command.clientId?['client_id']:[]),
+    ...(existing.session_id!==command.sessionId?['session_id']:[]),
+    ...(existing.sequence!==command.sequence?['sequence']:[]),
+    ...(existing.door!==command.door?['door']:[]),
+    ...(existing.method!==command.method?['method']:[]),
+    ...(existing.path!==command.path?['path']:[]),
+    ...(existing.body_json!==JSON.stringify(command.body)?['body']:[]),
+  ]:[]);
+  return new CommandIdentityConflict({attemptedActionId:command.actionId,clientId:command.clientId,
+    sessionId:command.sessionId,sequence:command.sequence,reason,existingActionId:existing.action_id,changedFields});
+}
+export function recordHumanCommandConflict(error:CommandIdentityConflict):void {
+  const value=error.evidence;if(!value)return;
+  const now=Date.now();
+  captureDb.query(`INSERT INTO human_command_conflicts
+    (attempted_action_id,client_id,session_id,sequence,reason,existing_action_id,changed_fields,first_seen_at_ms,last_seen_at_ms)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT DO UPDATE SET occurrences=occurrences+1,last_seen_at_ms=excluded.last_seen_at_ms`)
+    .run(value.attemptedActionId,value.clientId,value.sessionId,value.sequence,value.reason,
+      value.existingActionId,value.changedFields.join(','),now,now);
 }
 
 function canceledAction(path:string):string|null {
@@ -194,12 +239,12 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
     captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
     const byAction = row(command.actionId);
     if (byAction) {
-      if (byAction.digest !== digest) throw new CommandIdentityConflict();
+      if (byAction.digest !== digest) throw identityConflict(command,byAction,'action_changed');
       return byAction;
     }
-    const bySequence = captureDb.query("SELECT action_id FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?")
-      .get(command.clientId, command.sessionId, command.sequence) as {action_id:string}|null;
-    if (bySequence) throw new CommandIdentityConflict();
+    const bySequence = captureDb.query("SELECT * FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?")
+      .get(command.clientId, command.sessionId, command.sequence) as HumanCommandRow|null;
+    if (bySequence) throw identityConflict(command,bySequence,'sequence_occupied');
     const arrivedAfterGap=!!captureDb.query('SELECT 1 FROM human_command_missing_slots WHERE client_id=? AND session_id=? AND sequence=?')
       .get(command.clientId,command.sessionId,command.sequence);
     const targetId=canceledAction(command.path);
@@ -239,13 +284,20 @@ export function retainPreCustodyRefusal(command:HumanCommand,status:404|413):Hum
     ?(JSON.parse(existing.body_json) as {originalPath?:string}).originalPath:existing.path;
    if(existing.client_id!==command.clientId||existing.session_id!==command.sessionId
     ||existing.sequence!==command.sequence||existing.method!==command.method||existing.door!==command.door
-    ||priorPath!==originalPath)throw new CommandIdentityConflict();
+    ||priorPath!==originalPath)throw identityConflict(command,existing,'action_changed',[
+      ...(existing.client_id!==command.clientId?['client_id']:[]),
+      ...(existing.session_id!==command.sessionId?['session_id']:[]),
+      ...(existing.sequence!==command.sequence?['sequence']:[]),
+      ...(existing.method!==command.method?['method']:[]),
+      ...(existing.door!==command.door?['door']:[]),
+      ...(priorPath!==originalPath?['path']:[]),
+    ]);
    return existing;
   }
   captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
-  const occupied=captureDb.query('SELECT action_id FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
-   .get(command.clientId,command.sessionId,command.sequence) as {action_id:string}|null;
-  if(occupied)throw new CommandIdentityConflict();
+  const occupied=captureDb.query('SELECT * FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
+   .get(command.clientId,command.sessionId,command.sequence) as HumanCommandRow|null;
+  if(occupied)throw identityConflict(command,occupied,'sequence_occupied');
   captureDb.query(`INSERT INTO human_commands
    (action_id,door,client_id,session_id,sequence,method,path,body_json,digest,status,owner_status,decision_stage,owner_response_json)
    VALUES (?,?,?,?,?,?,?,?,?,'refused',?,'preparation',?)`).run(command.actionId,command.door,command.clientId,

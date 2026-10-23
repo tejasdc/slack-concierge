@@ -55,6 +55,15 @@ client/session stream must settle before the next is delivered; a terminal refus
 stream. Sequence slots start at one; a missing earlier network arrival holds later ordinary
 commands. The browser retains that earlier command and retries it while the page is open and after
 reload; the queue must not invent a terminal slot without its bytes or a confirmed refusal.
+Identity refusals retain a separate, content-free conflict record in the capture database. It
+names the attempted action, client, session, sequence, occupying action, whether the action
+changed or the sequence was occupied, and only the names of fields that changed. Repeated
+attempts increment one counter. The 409 response and ingress warning carry those same safe
+fields; neither claims server custody for the attempted command. Investigate with a bounded
+read of `human_command_conflicts` by attempted action ID from the diagnostic SQLite snapshot
+([runbook](../runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md)), then compare the occupying row in
+`human_commands` in that same snapshot. A conflict alone never authorizes renumbering or replaying a device command:
+compare its original device bytes and ordered stream before any recovery.
 If an older browser build already discarded a command before server custody, a private,
 authenticated recovery operation may mark that exact absent sequence as missing. The queue
 requires it to be the current stream head, still absent, with a later ordinary command
