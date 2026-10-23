@@ -326,6 +326,10 @@ authorization or a change to the default rapid-iteration policy.
   see [startup transaction ownership](docs/architecture/STORAGE-OBSERVATION.md#startup-transaction-ownership).
   Offline investigations use the [bounded diagnostic snapshot entrance](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md);
   an incremental copy of a changing live database can restart indefinitely and compete with serving traffic.
+  That entrance writes its copy through to disk 32 MiB at a time, because a copy flushed only at the end
+  leaves gigabytes of journal-ordered dirty data that every fsync on the shared filesystem, the ledger's own
+  durability sync included, must wait for (the owner froze 31 s on 2026-10-23); the ledger needs about three
+  minutes under the agent write cap, so size `--max-seconds` for it rather than killing the copy.
   The installed machine command check refuses raw live-store copies even for older running agents;
   its private package-launch entrance accepts quoted arguments while refusing shell control outside them,
   and its safety check is independent of their pinned session hooks. See [database operations](docs/runbooks/DEPLOYMENT.md#state-migration-and-backups).
