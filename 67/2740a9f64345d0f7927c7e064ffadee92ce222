@@ -1,0 +1,1 @@
+Active Claude conversations now stay with their warm prompt cache when that account can still run them, reducing costly context rewrites.
