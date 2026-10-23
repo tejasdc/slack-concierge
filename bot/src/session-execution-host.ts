@@ -73,7 +73,7 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
   }catch{}
 }
 import type {RunResult} from './codex';
-import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
+import {sessionInputEnvelope,sessionInputInstructions,sessionTurnContext} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
@@ -902,7 +902,13 @@ export class SessionExecutionHost {
         const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
-      if(nativeContext&&!adoption)prompt=sessionInputEnvelope(input,nativeRunId(claim.turn_id),prompt);
+      if(nativeContext&&!adoption) {
+        const runId=nativeRunId(claim.turn_id);
+        const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),
+          budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
+          notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
+        prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
+      }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
@@ -974,11 +980,9 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='codex'
-        ?budgetBriefWithProviderRoom('codex', Date.now()):null,
+      baseSystemPrompt:nativeContext?sessionInputInstructions({
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
-          isWritingSession(session)?WRITING_SESSION_STANDING:null,
-          saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null}):undefined,
+          isWritingSession(session)?WRITING_SESSION_STANDING:null].filter(Boolean).join('\n\n')||null}):undefined,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
