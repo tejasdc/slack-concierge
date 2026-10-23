@@ -10,6 +10,8 @@ An accepted input's live steering retry follows its recorded state and cannot en
 The Inbox capture space reads a bounded page of retained inputs, with attachment
 metadata separated from bytes. The owner contract and query are in
 [capture presentation](docs/architecture/CAPTURE-PRESENTATION.md).
+Pre-custody human command identity conflicts retain a content-free reason and stream
+position for diagnosis; see [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md).
 
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
