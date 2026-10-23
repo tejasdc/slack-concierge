@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
@@ -605,17 +605,31 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     runningCodexAccount=input.providerId==='codex'?currentAccount('codex')?.label??null:null;
     runningClaudeHome=claudeChoice?.home??null;
-    const actualClaudeBrief=input.presentation==='native'&&runningClaudeAccount
+    const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
+    if(input.presentation==='native'&&(input.providerId==='claude-code'||input.providerId==='codex')){
+      try{
+        recordSessionEvent({eventId:`prompt-cache-identity:${input.turnId}:${dispatchAttempt}`,
+          sessionId:input.session.id,turnId:input.turnId,kind:'prompt_cache_identity',
+          payload:{systemInstructionsSha256:createHash('sha256').update(preparedTurn.systemPrompt??'').digest('hex'),
+            effort:input.reasoningEffort??null}});
+      }catch(error){log('warn','prompt_cache_identity_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+    }
+    const providerPrompt=[preparedTurn.prompt,actualClaudeBrief].filter(Boolean).join('\n\n');
+    // History attribution compares the provider's exact user bytes with this retained replay.
+    if(actualClaudeBrief&&input.presentation==='native')
+      setTurnReplayInput(input.turnId,providerPrompt,input.unreplayableAttachmentCount??0);
     // An adopted run's account was recorded when it started.
     let accountRecorded=!!input.adopted;
     const result = await input.provider.run({
-      prompt: preparedTurn.prompt,
+      // Claude Code snapshots system instructions on the first turn. Put the changing
+      // allowance reading in this turn's message so each resumed run receives it.
+      prompt: providerPrompt,
       interactionPolicy: input.interactionPolicy,
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid || (input.session.provider_id === 'chatgpt' ? sessionMetadata(input.session).nativeBinding?.sessionId : null) || null,
-      systemPrompt: [preparedTurn.systemPrompt,actualClaudeBrief].filter(Boolean).join('\n\n')||undefined,
+      systemPrompt: preparedTurn.systemPrompt,
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,

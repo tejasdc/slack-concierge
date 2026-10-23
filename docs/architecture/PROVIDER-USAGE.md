@@ -901,6 +901,59 @@ one firing. This is a read-only projection over the existing turn ledger and tra
 cursor, with no new collector, credential, or effect on dispatch. A five-minute background
 refresh means the latest firing may appear before its usage record does.
 
+The same incremental transcript reader also reports cache use. `cacheDiagnostics.calls`
+lists the 100 calls with the most rewritten input in the period; `callCount` is the full
+number, so a caller can tell when detail was omitted. `cacheDiagnostics.turns` similarly
+lists the 100 turns with the most rewritten input and gives the full `turnCount`. The
+existing account `bySession` rows contain complete per-session cached and rewritten input
+totals, call counts, and flag counts. Cached input is provider-reported cache reads;
+rewritten input is uncached input plus cache creation. A call's cache-read share uses
+those two input classes as its denominator. These are transcript accounting facts,
+not a measured cache hit probability or a subscription allowance charge.
+Codex's dedicated per-response usage record takes precedence over its duplicate
+cumulative event. Recent transcripts are rebuilt once in the same store so the two
+record styles cannot double count one call. Cursors for files untouched for over a week
+advance without rereading their archived bytes. The first refresh after installation
+still reads this week's changed transcripts once.
+
+Cause reasons for a large miss are observed changes between consecutive calls in one
+transcript: model, client version, a compaction boundary, or a changed
+Claude account or effort on two exactly attributed Concierge turns. Their timing does not
+prove which change invalidated the cached prefix when several occur together. A changed
+submitted system-instructions fingerprint is an observed difference for Codex and a
+possible difference at the provider for Claude. Claude Code's default system-prompt
+snapshot sends the first turn's recorded instructions on resume until compaction, even
+when Concierge submits different text. The fingerprint is a content-free SHA-256 recorded by the execution
+owner on each new turn. The first call is expected only if the cursor saw it at the
+beginning of the transcript; an older cursor without this fact stays unknown. An
+elapsed cache lifetime is an expected category for a gap of at least one hour
+for a main Claude conversation, or five minutes for a helper without an observed
+one-hour write on its preceding call. This classifies the gap, not the actual
+cause of the rewrite. Historical turns without a
+fingerprint and calls without unique turn attribution remain `unknown`. Calls
+without a large miss are `not_applicable`. A call is flagged
+`large_unexplained_cache_miss` when more than half of over 50,000 input tokens were
+rewritten after a previous call in the same transcript and neither compaction nor
+a provider-supported cache-lifetime gap is observed. An account, model, client
+version, effort or system-instructions change remains a candidate cause and does
+not suppress the flag. A turn or session is a bug candidate when its flagged-call
+rate exceeds both 5% and twice that provider's ordinary-call baseline for the period. This is an
+investigation flag, not proof of a provider or Concierge bug. Transcript compaction markers and usage
+records share the existing cursor store; there is no second collector or owner-loop scan.
+The 48-hour count under `cacheDiagnostics.last48Hours` distinguishes expected first
+calls, flagged unexplained misses, unknown causes and observed reasons, with rewritten
+token totals per reason. Multiple observed reasons can count the same call. The same
+48-hour summary is attached to both period views; the period's detailed calls and
+turns retain their own time bounds.
+
+The earlier per-turn identity, allowance brief, banked-work notice and first-run title
+instruction were submitted as system text. Claude Code's snapshot retained the first
+turn's copy, so later Claude turns did not receive their current values. Concierge now
+sends changing turn context with that turn's user message after the stable conversation.
+This corrects turn-context delivery. The historical Claude cache-miss records do not
+establish that it saves cache writes. Codex receives system instructions per turn, but
+whether this placement changes its cached prefix remains unmeasured.
+
 ## How long a conversation may grow
 
 Every model call, including each tool step inside a turn, re-sends the whole conversation;

@@ -48,14 +48,16 @@ function unnamedSessionStep(input: AcceptedSessionInput, runId: string) {
   return `This session has no name yet. Before any other step in this run, even for a short question, name it from the requested work: ${ROUTER_ACTIONS} sessions title --source-input '${input.id}' --source-run '${runId}' --action-id 'self-title' -- '<3–6 word title>'.`;
 }
 
-export function sessionInputInstructions(input: AcceptedSessionInput, runId: string,
-  options: { unnamed?: boolean; budget?: string | null; standing?: string | null } = {}) {
-  // The account's situation costs nothing to carry and is current at the instant the turn
-  // starts, so every turn that begins while the allowance is low reads it without anyone
-  // sending anything. A turn already under way is told separately, inside its own run.
-  // `standing` is a session kind's own instructions (the Inbox's), read once per run like the
-  // rest of this text instead of being repeated in front of every input.
-  return `${SESSION_INPUT_INSTRUCTIONS}${options.standing ? `\n\n${options.standing}` : ''}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.${options.budget ? `\n\n${options.budget}` : ''}${options.unnamed ? `\n\n${unnamedSessionStep(input, runId)}` : ''}`;
+export function sessionInputInstructions(options: { standing?: string | null } = {}) {
+  // Claude Code reuses the first system-prompt snapshot on resume. Changing identity,
+  // allowance and title instructions belong with the current message so they are delivered.
+  return `${SESSION_INPUT_INSTRUCTIONS}${options.standing ? `\n\n${options.standing}` : ''}`;
+}
+
+export function sessionTurnContext(input: AcceptedSessionInput, runId: string,
+  options: { unnamed?: boolean; budget?: string | null; notice?: string | null } = {}) {
+  return [options.budget,options.notice,options.unnamed?unnamedSessionStep(input,runId):null]
+    .filter(Boolean).join('\n\n');
 }
 
 /**
