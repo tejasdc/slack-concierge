@@ -9,6 +9,7 @@ async function checkOne(mode:'--child'|'--mac-child') {
  const state=await mkdtemp(join(tmpdir(),'concierge-focus-capture-'));
  try{return await runFixtureChild({command:process.execPath,args:[import.meta.path,mode],env:{...process.env,
   CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:'native-attribution-5eaa0768',
+  CONCIERGE_FOCUS_CAPTURE_REVIEW_ENABLED:'1',
   CONCIERGE_PEER_NAME:mode==='--mac-child'?'mac':'cloud',
   CONCIERGE_STATE_DIR:state,CONCIERGE_CAPTURE_STATE_DIR:join(state,'capture')},deadlineMs:30_000,fixture:'focus-capture-admission'});
  }finally{await rm(state,{recursive:true,force:true});}
@@ -85,6 +86,16 @@ async function child() {
   text:'Delayed Mac addressed words',selection:[],intent:null,holdForReview:true}).operation as {operationId:string;state:string};
  assert.equal(delayedReply.state,'held','an explicitly marked addressed reply must stay held after the lease ends');
  assert.equal((db.query('SELECT count(*) AS count FROM turns WHERE accepted_input_id=?').get(delayedReply.operationId) as {count:number}).count,0);
+ delete process.env.CONCIERGE_FOCUS_CAPTURE_REVIEW_ENABLED;
+ await owner.focusHoldControl({held:true,untilMs:Date.now()+14*60_000,label:'Review disabled fixture',reviewCaptures:true,clientActionId:'fixture-review-disabled'});
+ assert.equal((await owner.focusHoldStatus() as any).reviewCaptures,false,'the owner switch must override an older Focus client');
+ const ordinary=owner.acceptInboxCapture({source:{kind:'thinkering',id:'fixture-disabled-ordinary',recordedAt:new Date().toISOString()},text:'Ordinary capture while review is off'});
+ const explicit=owner.acceptInboxCapture({source:{kind:'thinkering',id:'fixture-disabled-explicit',recordedAt:new Date().toISOString()},text:'Explicit capture while review is off',holdForReview:true});
+ assert.equal(ordinary.item.held,false);
+ assert.equal(explicit.item.held,false,'an older explicit client flag must not hold a new capture');
+ const addressedWhenOff=owner.submit(`concierge:${addressed.id}`,{clientActionId:'share-reply:44444444-4444-4444-8444-444444444444',
+  text:'Addressed words while review is off',selection:[],intent:null,holdForReview:true}).operation as {state:string};
+ assert.notEqual(addressedWhenOff.state,'held','an older addressed client flag must not hold a new reply');
  console.log(JSON.stringify({fixture:'focus-capture-admission',status:'passed'}));
 }
 
@@ -110,6 +121,10 @@ async function macChild(){
  const released=await owner.releaseHeldCaptures({captureIds:[captureId],clientActionId:'mac-release'});
  assert.equal(released.released,true);
  assert.equal((db.query('SELECT session_id FROM turns WHERE accepted_input_id=?').get(accepted.operationId) as {session_id:number}).session_id,addressed.id);
+ delete process.env.CONCIERGE_FOCUS_CAPTURE_REVIEW_ENABLED;
+ const acceptedWhenOff=owner.submit(`concierge:${addressed.id}`,{clientActionId:'share-reply:55555555-5555-4555-8555-555555555555',
+  text:'Mac addressed words while review is off',selection:[],intent:null,holdForReview:true}).operation as {state:string};
+ assert.notEqual(acceptedWhenOff.state,'held','Mac must honor the same owner switch');
  console.log(JSON.stringify({fixture:'focus-capture-admission',status:'passed',machine:'mac'}));
 }
 
