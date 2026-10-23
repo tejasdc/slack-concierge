@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { once } from "node:events";
 import { basename, join, resolve } from "node:path";
-import { createCaptureEvent, getCaptureEvent, type CaptureEventRow } from "./capture-state";
+import { createCaptureEvent, getCaptureEvent, type CaptureEventRow, type CaptureSource } from "./capture-state";
 import { captureAttachmentSnapshot, retainedCaptureAttachments, type CaptureAttachment } from "./capture-attachments";
 import { createCaptureQueueRequestHandler, startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { recoverHumanCommands } from "./human-command-state";
@@ -97,6 +97,8 @@ export interface TextCapture {
   sourceEventId?: string;
   recordedAtMs: number;
   client: string;
+  urgency?: 'data-loss' | 'medication';
+  holdForReview?: boolean;
   sourceTrigger: string | null;
   sourceWebhookVersion: string | null;
   /** An agent testing this path, named by its own accepted input and run; recorded as that agent. */
@@ -515,11 +517,15 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
   try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
   catch { throw new CaptureRequestError(400, "malformed JSON"); }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)
-      || Object.keys(payload).some(key => !["event_id", "text", "kind", "attachments"].includes(key))) {
-    throw new CaptureRequestError(422, "Thinkering accepts event_id, text, optional kind=bug_report and report attachments");
+      || Object.keys(payload).some(key => !["event_id", "text", "kind", "attachments", "urgency", "holdForReview"].includes(key))) {
+    throw new CaptureRequestError(422, "Thinkering accepts event_id, text, optional kind=bug_report, urgency, holdForReview and report attachments");
   }
-  const { event_id: eventId, text, kind, attachments } = payload as Record<string, unknown>;
+  const { event_id: eventId, text, kind, attachments, urgency, holdForReview } = payload as Record<string, unknown>;
   if (kind !== undefined && kind !== "bug_report") throw new CaptureRequestError(422, "kind must be bug_report or omitted");
+  if (urgency !== undefined && urgency !== "data-loss" && urgency !== "medication")
+    throw new CaptureRequestError(422, "urgency must be data-loss or medication");
+  if (holdForReview !== undefined && typeof holdForReview !== 'boolean')
+    throw new CaptureRequestError(422, "holdForReview must be boolean");
   if (typeof eventId !== "string" || !/^thinkering-[a-f0-9]{64}$/.test(eventId)) {
     throw new CaptureRequestError(422, "event_id must be thinkering- followed by 64 lowercase SHA-256 hex characters");
   }
@@ -547,6 +553,8 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
   return { kind: "text", eventId: captureId(["thinkering:v1", route.id, eventId]),
     sourceEventId: eventId,
     routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: kind === "bug_report" ? "thinkering-bug-report" : "thinkering",
+    ...(urgency ? {urgency:urgency as 'data-loss'|'medication'} : {}),
+    ...(holdForReview === true ? {holdForReview:true} : {}),
     attachments: reportAttachments,
     sourceTrigger: null, sourceWebhookVersion: null,
     ...(agentSourceFrom(request) ? { agentSource: agentSourceFrom(request) } : {}) };
@@ -921,7 +929,9 @@ export class ProductionCaptureServices implements CaptureServices {
     const ensureSameSnapshot = (event: CaptureEventRow) => {
       if ((route.adapter === "thinkering" || event.delivery_kind === "session") && (event.message_text !== (event.delivery_kind === "session" ? capture.text : slackText(capture))
           || captureAttachmentSnapshot(retainedCaptureAttachments(event.attachment_snapshot_json))
-            !== captureAttachmentSnapshot(capture.attachments))) {
+            !== captureAttachmentSnapshot(capture.attachments)
+          || (JSON.parse(event.source_snapshot_json || 'null') as CaptureSource|null)?.metadata?.urgency !== capture.urgency
+          || ((JSON.parse(event.source_snapshot_json || 'null') as CaptureSource|null)?.metadata?.holdForReview === true) !== (capture.holdForReview === true))) {
         throw new CaptureRequestError(409, "event_id already identifies different text or attachments");
       }
     };
@@ -954,6 +964,8 @@ export class ProductionCaptureServices implements CaptureServices {
             trigger: capture.sourceTrigger,
             webhookVersion: capture.sourceWebhookVersion,
             ...(capture.sourceEventId ? { reportId: capture.sourceEventId } : {}),
+            ...(capture.urgency ? { urgency: capture.urgency } : {}),
+            ...(capture.holdForReview ? { holdForReview: true } : {}),
             ...(capture.agentSource ? { agentSource: capture.agentSource } : {}),
           },
         } } : {}),

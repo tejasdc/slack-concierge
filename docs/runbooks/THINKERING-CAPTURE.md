@@ -13,6 +13,11 @@ Transport does not classify intent or create another router/session ledger.
   application/json, for "Send to Inbox" selections and bug reports. The drop-off keeps them
   safe while Concierge is down; they went straight to Concierge for one day (2026-09-23) and
   failed whenever it was down, so they came back here.
+  Its JSON accepts optional `urgency: "data-loss" | "medication"` for a human-selected
+  urgent route and `holdForReview: true` for a capture made during an updated Focus session.
+  Both choices are retained with the exact capture before forwarding to the native Inbox;
+  urgency wins when both are present. A retry with the same event ID but a changed choice
+  conflicts. See [Focus capture review](../architecture/PAUSE-ALL.md#focus-capture-review).
 - Pebble: POST https://capture.tejas.nyc/pebble with the Bearer key held by the Pebble phone
   app, and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
   client. Every gesture and headerless request has the same destination. Trigger

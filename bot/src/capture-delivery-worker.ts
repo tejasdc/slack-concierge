@@ -54,6 +54,8 @@ export interface InboxCaptureDelivery {
   source: CaptureSource;
   text: string;
   files: Array<{ name: string; contentType: string; base64: string }>;
+  urgency?: 'data-loss' | 'medication';
+  holdForReview?: boolean;
 }
 
 class CaptureWorkerStopped extends Error {}
@@ -380,6 +382,7 @@ export class CaptureDeliveryWorker {
         if (!this.options.deliverInboxCapture) throw new SessionCaptureDeliveryError("Native Inbox delivery is unavailable", false);
         const source = JSON.parse(event.source_snapshot_json || "null") as CaptureSource | null;
         if (!source || source.id !== event.event_id) throw new SessionCaptureDeliveryError("Native capture source identity is missing or mismatched", false);
+        const urgency=source.metadata?.urgency;
         let result: any;
         try {
           result = await this.options.deliverInboxCapture({
@@ -388,6 +391,8 @@ export class CaptureDeliveryWorker {
             files: retainedCaptureAttachments(event.attachment_snapshot_json).map(file => ({
               name: file.filename, contentType: file.contentType, base64: file.dataBase64,
             })),
+            ...(urgency === 'data-loss' || urgency === 'medication' ? {urgency} : {}),
+            ...(source.metadata?.holdForReview === true ? {holdForReview:true} : {}),
           });
         } catch (error) {
           const status = Number((error as any)?.status);

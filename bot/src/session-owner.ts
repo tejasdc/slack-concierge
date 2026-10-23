@@ -571,17 +571,25 @@ export class SessionOwner {
   async focusHoldStatus(){
     if(this.selfMachine!=='cloud'){
       if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
-      return this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false);
+      const cloud=await this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false) as Record<string,unknown>;
+      const localHeldCaptureCount=(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count;
+      return {...cloud,localHeldCaptureCount};
     }
     const waiting=(db.query(`SELECT count(*) AS count FROM turns turn JOIN sessions session ON session.id=turn.session_id
       WHERE turn.status='queued' AND json_extract(session.native_metadata_json,'$.inboxRole')='project-router'`)
       .get() as {count:number}).count;
-    return {...focusHoldState(),waiting};
+    const heldCaptureCount=(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count;
+    return {...focusHoldState(),waiting,heldCaptureCount};
   }
   async focusHoldControl(body:unknown){
-    const input=object(body);only(input,['held','untilMs','label','clientActionId']);
+    const input=object(body);only(input,['held','untilMs','label','reviewCaptures','clientActionId']);
     const held=input.held;
     if(typeof held!=='boolean')throw new SessionOwnerError('held must be a boolean.',400,'FOCUS_HOLD_INVALID');
+    if(input.reviewCaptures!==undefined&&typeof input.reviewCaptures!=='boolean')
+      throw new SessionOwnerError('reviewCaptures must be a boolean.',400,'FOCUS_HOLD_INVALID');
+    if(!held&&input.reviewCaptures!==undefined)
+      throw new SessionOwnerError('Clearing a focus hold cannot set capture review.',400,'FOCUS_HOLD_INVALID');
+    const reviewCaptures=held&&input.reviewCaptures===true;
     const clientActionId=actionId(input);
     if(held){
       if(!Number.isSafeInteger(input.untilMs))
@@ -600,7 +608,8 @@ export class SessionOwner {
       const previous=db.query('SELECT held,until_ms,label FROM focus_hold_actions WHERE action_id=?').get(clientActionId) as
         {held:number;until_ms:number|null;label:string|null}|null;
       if(previous){
-        if(previous.held!==(held?1:0)||previous.until_ms!==(held?input.untilMs:null)||previous.label!==(held?input.label:null))
+        const previousReview=(db.query('SELECT enabled FROM focus_capture_review_actions WHERE action_id=?').get(clientActionId) as {enabled:number}|null)?.enabled===1;
+        if(previous.held!==(held?1:0)||previous.until_ms!==(held?input.untilMs:null)||previous.label!==(held?input.label:null)||previousReview!==reviewCaptures)
           throw new SessionOwnerError('Focus hold action identity has another meaning.',409,'IDEMPOTENCY_CONFLICT');
         return false;
       }
@@ -611,6 +620,7 @@ export class SessionOwner {
         .run(held?input.untilMs:null,held?input.label:null,held?(current.held?current.since:now):null,clientActionId);
       db.query('INSERT INTO focus_hold_actions(action_id,held,until_ms,label) VALUES(?,?,?,?)')
         .run(clientActionId,held?1:0,held?input.untilMs:null,held?input.label:null);
+      if(reviewCaptures)db.query('INSERT INTO focus_capture_review_actions(action_id,enabled) VALUES(?,1)').run(clientActionId);
       return true;
     })();
     if(changed){
@@ -1235,7 +1245,8 @@ export class SessionOwner {
     // Admission may have queued the turn in its own transaction. Its post-commit
     // dispatch still owes the queue a wake even when no further write is needed.
     if(input.turn_id!==null){this.runtime.wake();return input;}
-    if(focusHoldState().held&&sessionMetadata(session).inboxRole==='project-router'){
+    const urgentCapture=['data-loss','medication'].includes(JSON.parse(input.payload_json).capture?.urgency);
+    if(focusHoldState().held&&sessionMetadata(session).inboxRole==='project-router'&&!urgentCapture){
       enqueueSessionInput(input.id);
       this.runtime.wake();
       return getAcceptedSessionInput(input.id)!;
@@ -1730,15 +1741,16 @@ export class SessionOwner {
   }
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
+    const held=!!db.query('SELECT 1 FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId);
     return {captureId,inputId:input.id,sessionId:`concierge:${input.session_id}`,source:body.capture.source,text:body.text,
-      attachments:this.attachmentMetadata(body.attachments)};
+      attachments:this.attachmentMetadata(body.attachments),held,urgency:body.capture.urgency??null};
   }
   /** Captures have their own durable input rows. Conversation history is a poor index for
    * them: a busy Inbox can place hundreds of agent/tool messages ahead of one capture. */
-  inboxCapturesPage(cursor:string|null,limit:number) {
+  inboxCapturesPage(cursor:string|null,limit:number,heldOnly=false) {
     const inbox=inboxSession();
-    if(!inbox)return {items:[],nextCursor:null};
-    try{return inboxCapturesPage(db,inbox.id,cursor,limit);}
+    if(!inbox&&!heldOnly)return {items:[],nextCursor:null};
+    try{return inboxCapturesPage(db,inbox?.id??0,cursor,limit,heldOnly);}
     catch(error){if(error instanceof Error&&error.message==='CAPTURE_CURSOR_INVALID')
       throw new SessionOwnerError('Invalid capture cursor.',400,'CAPTURE_CURSOR_INVALID');throw error;}
   }
@@ -1759,7 +1771,7 @@ export class SessionOwner {
     return [original,...(body.attachments??[])];
   }
   acceptInboxCapture(body:unknown) {
-    const input=object(body);only(input,['source','text','files','importOnly']);inputText(input);
+    const input=object(body);only(input,['source','text','files','importOnly','urgency','holdForReview']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
     if(!isInboxProducerKind(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
     if(source.title!==undefined&&typeof source.title!=='string')throw new SessionOwnerError('Capture title must be text.');
@@ -1770,13 +1782,23 @@ export class SessionOwner {
     if(source.kind==='outside-agent'&&(source.metadata as Record<string,unknown>|undefined)?.agentSource!==undefined)throw new SessionOwnerError('An outside-agent capture cannot cite a Concierge run.');
     if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
     if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
+    if(input.holdForReview!==undefined&&typeof input.holdForReview!=='boolean')
+      throw new SessionOwnerError('holdForReview must be boolean.',400,'CAPTURE_REVIEW_INVALID');
+    if(input.holdForReview===true&&source.kind!=='thinkering')
+      throw new SessionOwnerError('Only Thinkering may preserve a Focus review request.',403,'CAPTURE_REVIEW_FORBIDDEN');
+    if(input.urgency!==undefined&&!['data-loss','medication'].includes(String(input.urgency)))
+      throw new SessionOwnerError('Urgency must be an explicit data-loss or medication choice.',400,'CAPTURE_URGENCY_INVALID');
+    if(input.urgency!==undefined&&input.importOnly===true)
+      throw new SessionOwnerError('An urgent capture must enter the Inbox router.',400,'CAPTURE_URGENCY_INVALID');
     if(source.kind==='outside-agent'&&input.importOnly===true)throw new SessionOwnerError('An outside-agent capture always enters the Inbox router.');
     // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
     // starting the Inbox's own turn.
     const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);
+    if(input.urgency!==undefined&&(outsideAgent||agent))
+      throw new SessionOwnerError('Only a human capture may choose urgent delivery.',403,'CAPTURE_URGENCY_FORBIDDEN');
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
     const importOnly=input.importOnly===true||!!agent;
-    const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[]}));
+    const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[],...(input.urgency?{urgency:input.urgency}:{}),...(input.holdForReview?{holdForReview:true}:{})}));
     const digest=digestFor(input.source);
     const accepted=db.transaction(()=>{
       const prior=getAcceptedSessionInput(`capture:${captureId}`);
@@ -1799,20 +1821,95 @@ export class SessionOwner {
       });
       const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent||outsideAgent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),
-        payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,originalTextAttachmentId:presentation.report?attachments[0]:null}}}).input;
+        payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,urgency:input.urgency??null,holdForReview:input.holdForReview===true,originalTextAttachmentId:presentation.report?attachments[0]:null}}}).input;
+      const holdForReview=!importOnly&&!input.urgency&&retained.origin==='human'
+        &&(input.holdForReview===true||focusHoldState().reviewCaptures);
       if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
+      else if(holdForReview){
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'held',state:'held'}),retained.id);
+        const position=(db.query('SELECT rowid AS position FROM session_inputs WHERE id=?').get(retained.id) as {position:number}).position;
+        db.query('INSERT INTO focus_held_captures(capture_id,input_id,input_position,held_at_ms) VALUES(?,?,?,?)')
+          .run(captureId,retained.id,position,Date.now());
+      }
       else db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),retained.id);
-      if(!agent&&!outsideAgent)recordSessionInputAttention(retained.id);
-      recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
+      if(!agent&&!outsideAgent&&!holdForReview)recordSessionInputAttention(retained.id);
+      if(!db.query('SELECT 1 FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId))
+        recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
       return getAcceptedSessionInput(retained.id)!;
     })();
     // Delivery follows the durable capture/attachment/intent transaction. A duplicate or
     // restart replays only that unacted intent, never an admitted or ambiguous effect.
-    if(!importOnly){this.recoverAcceptedInput(accepted);this.communication?.wake();}
+    if(!importOnly&&JSON.parse(accepted.receipt_json??'{}').admissionIntent!=='held'){
+      this.recoverAcceptedInput(accepted);this.communication?.wake();
+    }
     this.runtime.wake();
     const current=getAcceptedSessionInput(accepted.id)!;
     const session=getSessionById(current.session_id)!;
     return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(current),id:current.id}};
+  }
+  async releaseHeldCaptures(body:unknown) {
+    const input=object(body);only(input,['captureIds','clientActionId']);
+    const clientActionId=actionId(input);
+    if(!Array.isArray(input.captureIds)||input.captureIds.length<1||input.captureIds.length>100
+      ||input.captureIds.some(id=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))
+      ||new Set(input.captureIds).size!==input.captureIds.length)
+      throw new SessionOwnerError('Choose one to 100 unique held captures.',400,'FOCUS_CAPTURE_SELECTION_INVALID');
+    if(this.selfMachine!=='cloud'){
+      if(!this.peers)throw new SessionOwnerError('The focus hold owner is unreachable.',503,'FOCUS_HOLD_OWNER_UNREACHABLE');
+      const cloud=await this.peers.client('cloud').request('GET','/sessions/v1/focus-hold',undefined,5_000,false) as {held:boolean};
+      if(cloud.held)throw new SessionOwnerError('Finish Focus before releasing held captures.',409,'FOCUS_STILL_ACTIVE');
+    }
+    const captureIds=input.captureIds as string[];
+    const forwardedInputs:string[]=[];
+    const released=db.transaction(()=>{
+      const prior=db.query('SELECT capture_ids_json FROM focus_capture_release_actions WHERE action_id=?').get(clientActionId) as {capture_ids_json:string}|null;
+      if(prior){
+        if(prior.capture_ids_json!==JSON.stringify(captureIds))throw new SessionOwnerError('Capture release action identity has another meaning.',409,'IDEMPOTENCY_CONFLICT');
+        return false;
+      }
+      if(focusHoldState().held)throw new SessionOwnerError('Finish Focus before releasing held captures.',409,'FOCUS_STILL_ACTIVE');
+      for(const captureId of captureIds){
+        const held=db.query('SELECT input_id FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId) as {input_id:string}|null;
+        if(!held)throw new SessionOwnerError('That capture is not waiting for Focus review.',409,'FOCUS_CAPTURE_NOT_HELD');
+        const accepted=getAcceptedSessionInput(held.input_id);
+        if(!accepted||accepted.turn_id!==null||accepted.steering_id!==null
+          ||JSON.parse(accepted.receipt_json??'{}').admissionIntent!=='held')
+          throw new SessionOwnerError('That capture has another delivery state.',409,'FOCUS_CAPTURE_STATE_CONFLICT');
+      }
+      const now=Date.now();
+      db.query('INSERT INTO focus_capture_release_actions(action_id,capture_ids_json,released_at_ms) VALUES(?,?,?)')
+        .run(clientActionId,JSON.stringify(captureIds),now);
+      for(const captureId of captureIds){
+        const held=db.query('SELECT input_id FROM focus_held_captures WHERE capture_id=?').get(captureId) as {input_id:string};
+        const accepted=getAcceptedSessionInput(held.input_id)!;
+        const payload=JSON.parse(accepted.payload_json);
+        const previous=JSON.parse(accepted.receipt_json??'{}');
+        const forward=previous.forwardTarget;
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify(forward?{state:'waiting',forwardTarget:forward,releasedBy:clientActionId}:{admissionIntent:'queue',releasedBy:clientActionId}),held.input_id);
+        db.query('UPDATE focus_held_captures SET released_at_ms=?,release_action_id=? WHERE capture_id=? AND released_at_ms IS NULL')
+          .run(now,clientActionId,captureId);
+        if(forward){
+          recordForwardedThreadReply(getSessionById(accepted.session_id)!,accepted,forward);
+          forwardedInputs.push(held.input_id);
+        }else enqueueSessionInput(held.input_id);
+        if(accepted.id.startsWith('capture:'))
+          recordSessionEvent({eventId:accepted.id,sessionId:accepted.session_id,inputId:accepted.id,kind:'inbox_capture',
+            payload:{captureId,source:payload.capture.source}});
+        if(accepted.scope==='surface:thinkering'){
+          clearNeedsForHumanInput(accepted.session_id,payload);
+          if(sessionMetadata(getSessionById(accepted.session_id)!).inbox)
+            reopenThreadForHisMessage(accepted.session_id,accepted.id,payload.replyToMessage?.messageId);
+        }
+        recordSessionInputAttention(held.input_id);
+      }
+      return true;
+    })();
+    if(released){
+      for(const inputId of forwardedInputs)this.recoverAcceptedInput(getAcceptedSessionInput(inputId)!);
+      this.runtime.wake();this.communication?.wake();
+    }
+    return {captureIds,released,heldCaptureCount:(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count};
   }
   async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
@@ -1979,7 +2076,7 @@ export class SessionOwner {
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
     if(sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This canvas record receives only observed speech and action results.',409,'CANVAS_OBSERVATION_ONLY');
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo']);sessionInputText(input);validateContext(input)
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview']);sessionInputText(input);validateContext(input)
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.messageThreadRootId!==undefined&&(typeof input.messageThreadRootId!=='string'||!input.messageThreadRootId.trim()))
       throw new SessionOwnerError('messageThreadRootId names one exact agent message.');
@@ -1987,6 +2084,11 @@ export class SessionOwner {
       throw new SessionOwnerError('A message reply thread needs its Inbox parent and fixed recipient.',409,'MESSAGE_THREAD_CONTEXT_REQUIRED');
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const agent=agentTestSource(input.agentSource);
+    const shareCapture=/^share-reply:([0-9a-f-]{36})$/i.exec(actionId(input));
+    if(input.holdForReview!==undefined&&(typeof input.holdForReview!=='boolean'||!shareCapture||!!agent))
+      throw new SessionOwnerError('Only a human Capture bar reply may request Focus review.',400,'CAPTURE_REVIEW_INVALID');
+    const heldCaptureId=shareCapture&&!agent&&(input.holdForReview===true||focusHoldState().reviewCaptures)
+      ?captureIdentity({kind:'thinkering',id:`share-reply:${shareCapture[1]!.toLowerCase()}`,recordedAt:''}):null;
     // A reply may pin the exact questions it answers; the owner proves they belong to the
     // topic it replies in, retains them on the input, and shows them to the router.
     validateReviewSelection(session.id,input);
@@ -2044,6 +2146,14 @@ export class SessionOwner {
     const retained=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
+      if(heldCaptureId&&!saved.duplicate){
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
+          .run(JSON.stringify({admissionIntent:'held',state:'held',...(forward?{forwardTarget:forward}:{})}),saved.input.id);
+        const position=(db.query('SELECT rowid AS position FROM session_inputs WHERE id=?').get(saved.input.id) as {position:number}).position;
+        db.query('INSERT INTO focus_held_captures(capture_id,input_id,input_position,held_at_ms) VALUES(?,?,?,?)')
+          .run(heldCaptureId,saved.input.id,position,Date.now());
+        return saved;
+      }
       // His message is his answer to whatever this session (or Inbox thread) asked him.
       const canceled=saved.input.receipt_json&&JSON.parse(saved.input.receipt_json).state==='canceled';
       if(!saved.duplicate&&!agent&&!canceled)clearNeedsForHumanInput(session.id,input);
@@ -2068,6 +2178,7 @@ export class SessionOwner {
       }
       return saved;
     })();
+    if(heldCaptureId)return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
     if(retained.input.receipt_json&&JSON.parse(retained.input.receipt_json).state==='canceled')
       return {operation:this.receipt(retained.input)};
     if(forward) {
@@ -3488,6 +3599,7 @@ export class SessionOwner {
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
+      else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts[1]==='release'&&parts.length===2)result=await this.releaseHeldCaptures(body);
       else if(request.method==='GET'&&parts[0]==='pause-all'&&parts.length===1)result=this.globalPauseStatus();
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=await this.globalPauseControl(true,body);
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=await this.globalPauseControl(false,body);
@@ -3496,7 +3608,11 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='captures'&&parts.length===2)
-        result=this.inboxCapturesPage(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20);
+        {
+          const heldOnly=url.searchParams.get('heldOnly');
+          if(heldOnly!==null&&heldOnly!=='true'&&heldOnly!=='false')throw new SessionOwnerError('heldOnly is true or false.',400,'CAPTURE_FILTER_INVALID');
+          result=this.inboxCapturesPage(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20,heldOnly==='true');
+        }
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='queue-actions'&&parts.length===2)
         result=this.inboxQueueAction(body);
       // Which thread a piece of work served, so thnkr.ing's update list can link each change to it. Not
