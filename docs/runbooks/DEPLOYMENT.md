@@ -726,9 +726,12 @@ schema phase (`--schema-only` with no backup path) re-checks with the coordinato
 copies first if a difference has appeared, and otherwise exits `unchanged` without the
 whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
 filled the disk to 99% on 2026-10-10 (ten copies in 90 minutes). Only copies with matching
-verification records qualify for automatic retention. The newest eight verified copies are
+verification records qualify for automatic retention. The newest two verified copies are
 kept after a new copy is durably published, including when a later deployment step fails,
-and only as many of those as fit in 16 GB (the newest is always kept). An unverified
+and only as many of those as fit in 12 GiB (the newest is always kept). The same retention
+is also applied by the next deployment when no schema change requires a new backup;
+an operator can apply it without a deployment using `migrate-deployment-repair.ts --prune-only`.
+An unverified
 automatic copy (`state.pre-deployment-repair.<ms>.db` without a matching record) is removed
 once a newer verified copy exists, since it can never be a rollback source; one newer than
 every verified copy, or still being published, is left alone. Before this, uncertified copies

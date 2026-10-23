@@ -42,7 +42,8 @@ if (!existsSync(statePath)) throw new Error(`Concierge state database does not e
 const backupOnly = process.argv.includes('--backup-only');
 const backupIfNeeded = process.argv.includes('--backup-if-needed');
 const schemaOnly = process.argv.includes('--schema-only');
-if ([backupOnly, backupIfNeeded, schemaOnly].filter(Boolean).length > 1) throw new Error('Choose one of backup-only, backup-if-needed or schema-only.');
+const pruneOnly = process.argv.includes('--prune-only');
+if ([backupOnly, backupIfNeeded, schemaOnly, pruneOnly].filter(Boolean).length > 1) throw new Error('Choose one of backup-only, backup-if-needed, schema-only or prune-only.');
 const backupArgument = process.argv.indexOf('--backup-path');
 const namedBackup = (backupArgument >= 0 ? process.argv[backupArgument + 1] : undefined) || process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP || '';
 const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
@@ -83,18 +84,24 @@ function schemaChanges(): string[] {
  * could not start. After a migration that succeeded, only the newest copies are kept. Hand-made
  * backups in the same folder have other names and are never touched. Twenty copies (38 GB at
  * 1.9 GB each) still left the 436 GB disk at 17 GB free on 2026-10-09, and that evening the hourly
- * Thinkering backup's 21 GB temporary snapshot filled it and every write failed. Eight copies keep a
- * day of rollbacks at the usual pace of releases for 15 GB.
+ * Thinkering backup's 21 GB temporary snapshot filled it and every write failed. Two verified
+ * copies keep the latest rollback and one earlier point without retaining every repair image.
  */
-const AUTOMATIC_COPIES_KEPT = 8;
-// And never more than 16 GB of them however large the ledger grows (2.9 GB on 2026-10-12, so five
-// copies today): the root disk's cleanup holds a 50 GB floor and cannot remove these itself.
-const AUTOMATIC_COPY_BYTES = 16 * 1024 ** 3;
+const AUTOMATIC_COPIES_KEPT = 2;
+// At most 12 GiB, retaining the newest even if it exceeds the cap. Two October 23 copies
+// consume about 9 GiB; the prior 16 GiB cap retained all four and pushed root below 50 GiB free.
+const AUTOMATIC_COPY_BYTES = 12 * 1024 ** 3;
 // Failed or legacy unverified names cannot evict a proven recovery copy. Prune only after
 // the replacement is verified and durably published, including when later release checks fail.
 function pruneAutomaticCopies(keep = AUTOMATIC_COPIES_KEPT): number {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return 0;
   return pruneVerifiedBackups(dirname(backupPath), keep, AUTOMATIC_COPY_BYTES);
+}
+
+if (pruneOnly) {
+  if (namedBackup) throw new Error('Prune-only uses the automatic backup directory.');
+  console.log(JSON.stringify({ status: 'pruned', count: pruneAutomaticCopies() }));
+  process.exit(0);
 }
 
 if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
@@ -123,6 +130,7 @@ if (backupIfNeeded) {
   // schema step would add, and only then is the ledger copied.
   const changes = schemaChanges();
   if (changes.length) backUp();
+  else pruneAutomaticCopies();
   console.log(JSON.stringify(changes.length ? { status: 'backed_up', backup_path: backupPath, changes }
     : { status: 'no_schema_change', backup_path: null, changes }));
   process.exit(0);
