@@ -64,6 +64,25 @@ read of `human_command_conflicts` by attempted action ID from the diagnostic SQL
 ([runbook](../runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md)), then compare the occupying row in
 `human_commands` in that same snapshot. A conflict alone never authorizes renumbering or replaying a device command:
 compare its original device bytes and ordered stream before any recovery.
+An older phone page can retain an already delivered action at a sequence later marked
+missing during a historical repair. Ingress may return the existing delivered receipt
+only when the action ID, client, stream, door, method, path and body all match the
+delivered command and the retried sequence is an audited missing slot. It writes no
+second command, does not fill the missing slot, and logs the accepted and retried
+sequence. A changed body, target, client or an ordinary occupied sequence still gets
+409. This lets the installed page remove the duplicate local retry by its original
+action ID while the owner effect and the stream repair remain unchanged.
+
+State card for this recovery: the command stream is ordered by Concierge ingress,
+which is its sole writer; the action ID survives device and network retries. Device
+storage, ingress custody and owner delivery are separate rungs, and only a delivered
+owner row permits acknowledgement. The three observed phone retries from October 16
+used delivered action IDs with only their sequence changed to previously released
+missing slots. The response-lost path returns that same delivered receipt, so the
+browser clears its local copy; no second owner input is created. A scratch ingress
+check must show that exact case succeeds and that a changed body or an unreleased
+sequence still refuses. The live check is whether the phone's next ordinary retry
+clears those three entries without a second accepted input.
 If an older browser build already discarded a command before server custody, a private,
 authenticated recovery operation may mark that exact absent sequence as missing. The queue
 requires it to be the current stream head, still absent, with a later ordinary command

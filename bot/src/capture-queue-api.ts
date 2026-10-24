@@ -134,6 +134,10 @@ export function createCaptureQueueRequestHandler(
       try {
         const command=humanCommand(await requestBody(request));
         const retained=retainHumanCommand(command);
+        if(retained.sequence!==command.sequence)log('info','human_command_reconciled',{
+          action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
+          accepted_sequence:retained.sequence,retried_sequence:command.sequence,
+        });
         if(command.path.endsWith('/inputs'))log('info','human_message_retained',{
           action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
           sequence:retained.sequence,status:retained.status});

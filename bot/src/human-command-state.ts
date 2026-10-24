@@ -239,7 +239,21 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
     captureDb.query('INSERT OR IGNORE INTO human_command_streams(client_id,session_id) VALUES(?,?)').run(command.clientId,command.sessionId);
     const byAction = row(command.actionId);
     if (byAction) {
-      if (byAction.digest !== digest) throw identityConflict(command,byAction,'action_changed');
+      if (byAction.digest !== digest) {
+        // A historical missing-slot release can leave an older browser retrying an
+        // already delivered action at the released slot. Reacknowledge only that
+        // same owner effect; never retain or deliver a second command for the slot.
+        const sameEffect=byAction.status==='delivered'&&byAction.decision_stage==='owner'
+          &&byAction.client_id===command.clientId&&byAction.session_id===command.sessionId
+          &&byAction.door===command.door&&byAction.method===command.method
+          &&byAction.path===command.path&&byAction.body_json===bodyJson;
+        const releasedSlot=sameEffect&&byAction.sequence!==command.sequence
+          &&captureDb.query('SELECT 1 FROM human_command_missing_slots WHERE client_id=? AND session_id=? AND sequence=?')
+            .get(command.clientId,command.sessionId,command.sequence)
+          &&!captureDb.query('SELECT 1 FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?')
+            .get(command.clientId,command.sessionId,command.sequence);
+        if (!releasedSlot) throw identityConflict(command,byAction,'action_changed');
+      }
       return byAction;
     }
     const bySequence = captureDb.query("SELECT * FROM human_commands WHERE client_id=? AND session_id=? AND sequence=?")
