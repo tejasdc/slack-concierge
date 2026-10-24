@@ -1,0 +1,1 @@
+The phone incident record now distinguishes request timing IDs from message identities, so the four newer sends remain correctly marked unconfirmed.
