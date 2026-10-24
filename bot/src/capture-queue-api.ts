@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   claimNextCaptureEvent,
   markCaptureEventDelivered,
@@ -99,13 +99,16 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
   return {version:1,clientId,sessionId,actionId,door,method,path,sequence,body:payload as Record<string,unknown>};
 }
 
-function commandReply(actionId:string) {
+function commandReply(actionId:string,includeIdentity=false) {
   const row=commandStatus(actionId);
   if(!row)return null;
   const terminal=['delivered','refused','canceled'].includes(row.status);
   return {custody:"server",actionId:row.action_id,status:terminal?row.status:row.exhausted_reason==='held_after_gap'?'held':row.exhausted_at_ms!==null?'unconfirmed':row.status,
     decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null,
-    ...(!terminal&&row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{})};
+    ...(!terminal&&row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{}),
+    ...(includeIdentity?{commandIdentity:{version:1,actionId:row.action_id,clientId:row.client_id,
+      sessionId:row.session_id,sequence:row.sequence,door:row.door,method:row.method,path:row.path,
+      bodySha256:createHash('sha256').update(row.body_json,'utf8').digest('hex')}}:{})};
 }
 
 function claimProof(eventId: string, body: Record<string, unknown>): CaptureClaimProof {
@@ -241,7 +244,7 @@ export function createCaptureQueueRequestHandler(
     const commandMatch=url.pathname.match(/^\/commands\/([^/]+)$/);
     if(commandMatch&&request.method==="GET") {
       const actionId=decodeURIComponent(commandMatch[1]);
-      const reply=commandReply(actionId);
+      const reply=commandReply(actionId,true);
       return reply?jsonResponse(200,reply):jsonResponse(404,{error:"command_not_found"});
     }
     const resumeMatch=url.pathname.match(/^\/commands\/([^/]+)\/resume$/);
