@@ -15,9 +15,14 @@ repeated 409 responses from session input admission. Those three action IDs were
 already in Concierge's independent capture store as delivered on October 16 at
 sequences 206, 208 and 209. The phone retried them at 207, 214 and 215.
 
-The October 23 four-send incident remains separate: its four reported action IDs
-have no accepted or conflict rows in the bounded snapshot used here and are absent
-from this phone command census. This repair does not assert custody for those sends.
+The October 23 four-send incident remains separate. Four UUIDs initially treated
+as action IDs came from HTTP request timing diagnostics; that field identifies a
+diagnostic span, so their absence from the command store says nothing about the
+sends' custody. The four Thinkering request IDs supplied by the incident report
+did not appear in command rows in the bounded snapshot, but their relationship to
+the browser's command action IDs and to owner receipts has not been established.
+This phone census contains only the three older actions, and this repair does not
+assert custody or loss for the four newer sends.
 
 ## Cause
 
