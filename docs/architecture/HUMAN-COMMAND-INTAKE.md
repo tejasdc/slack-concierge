@@ -20,6 +20,22 @@ validation happens after custody, so an invalid command occupies its terminal st
 instead of leaving a missing predecessor. Browser cards
 distinguish device custody, server custody, and owner acceptance.
 
+The authenticated `GET /commands/:actionId` status read also returns `commandIdentity`:
+`{version:1,actionId,clientId,sessionId,sequence,door,method,path,bodySha256}`. These are
+the original ingress row's immutable fields, not a new sequence or the owner's operation
+identity. `bodySha256` is lowercase hexadecimal SHA-256 of the UTF-8 bytes of the exact
+stored `body_json` string, which ingress made with `JSON.stringify(command.body)`. A
+browser comparing a saved human command computes the same digest from `JSON.stringify`
+of its exact original submitted body. `path` is the full owner route, so a saved
+browser command's relative path is compared as `'/sessions/v1' + saved.path`.
+Pre-custody refusal rows instead describe the compact refusal envelope, and
+agent-sourced inputs include the verified agent source that the gateway added;
+neither kind is an equality proof for an original human card. The added identity
+object has no command content; the pre-existing `ownerResponse` may contain a
+receipt with text. This read cannot create or release a stream slot. A missing
+action returns 404; a different digest or envelope keeps the saved card for
+review. Older readers can ignore the added object.
+
 The worker uses named attempt and age limits for each delivery window and for reaching the custody
 queue. A malformed route or invalid prepared body settles as a preparation refusal before any owner
 exchange. A lost owner answer, timeout or owner 5xx does not establish whether the effect happened:
