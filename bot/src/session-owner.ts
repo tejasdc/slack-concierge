@@ -3578,7 +3578,10 @@ export class SessionOwner {
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
     try {
       const parts=url.pathname.slice('/sessions/v1'.length).split('/').filter(Boolean).map(decodeURIComponent);
-      const body=request.method==='POST'?await request.json():null;
+      // The body arrives from outside the owner: a Mac agent's reply with screenshots crosses the
+      // Tailscale relay while this awaits. On 2026-10-24 a 7.3 MB reply took 13.7 s to arrive and
+      // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
+      const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
       // The read-only predecessor remains in history, but Thinkering must not open
       // another operation on it after its obligations have moved to the successor.
       if(request.method==='POST'&&parts[0]==='sessions'&&parts.length>=3){
