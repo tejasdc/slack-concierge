@@ -73,16 +73,6 @@ sequence. A changed body, target, client or an ordinary occupied sequence still 
 409. This lets the installed page remove the duplicate local retry by its original
 action ID while the owner effect and the stream repair remain unchanged.
 
-State card for this recovery: the command stream is ordered by Concierge ingress,
-which is its sole writer; the action ID survives device and network retries. Device
-storage, ingress custody and owner delivery are separate rungs, and only a delivered
-owner row permits acknowledgement. The three observed phone retries from October 16
-used delivered action IDs with only their sequence changed to previously released
-missing slots. The response-lost path returns that same delivered receipt, so the
-browser clears its local copy; no second owner input is created. A scratch ingress
-check must show that exact case succeeds and that a changed body or an unreleased
-sequence still refuses. The live check is whether the phone's next ordinary retry
-clears those three entries without a second accepted input.
 If an older browser build already discarded a command before server custody, a private,
 authenticated recovery operation may mark that exact absent sequence as missing. The queue
 requires it to be the current stream head, still absent, with a later ordinary command

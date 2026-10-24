@@ -28,6 +28,12 @@ included sequence. The new conflict records show `action_changed` with only
 `sequence` changed for each of the three actions, 17 attempts apiece at snapshot
 time. Their body, client, stream, door, method and target match the delivered rows.
 
+The command stream is ordered by Concierge ingress, its sole writer. The action ID
+survives device and network retries. Device storage, ingress custody and owner
+delivery are separate rungs; only the owner-delivered row allows this response.
+If the receipt is lost again, the same action returns the same delivered receipt
+and the browser clears its local copy without a second owner input.
+
 ## Fix
 
 Ingress returns the existing delivered action receipt when every effect field
