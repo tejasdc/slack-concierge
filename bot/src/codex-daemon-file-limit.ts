@@ -70,14 +70,20 @@ let lastDaemonStartAt = 0;
  * At most one start runs, and not more often than every 30 seconds while the socket refuses.
  */
 export function startCodexDaemonWhenAbsent(reason: string) {
-  if (process.platform !== "linux" || autoStartHeld || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
+  if ((process.platform !== "linux" && process.platform !== "darwin") || autoStartHeld || daemonStart || Date.now() - lastDaemonStartAt < 30_000) return;
   lastDaemonStartAt = Date.now();
   if (!codexUpdaterDisabled()) {
     log("error", "codex_daemon_start_failed", { reason, error: "Codex automatic App Server updates are not disabled." });
     return;
   }
-  daemonStart = run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--property=IOAccounting=yes", "--description=Shared Codex App Server",
-    MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 })
+  // The Mac has no systemd. Only install-mac.sh started its daemon, so after a reboot cleared
+  // /private/tmp (and with it the daemon's socket) nothing brought it back until the next update
+  // (2026-10-26, 10:53 AM restart). `daemon start` detaches itself, as it does from the update
+  // job; the raised limit matches install-mac.sh, because launchd gives this service 256.
+  daemonStart = (process.platform === "darwin"
+    ? run("/bin/sh", ["-c", 'ulimit -n 65536 2>/dev/null; exec "$0" app-server daemon start', MANAGED_CODEX], { timeout: 60_000 })
+    : run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--property=IOAccounting=yes", "--description=Shared Codex App Server",
+      MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 }))
     .then(({ stdout }) => log("warn", "codex_daemon_started_when_absent", { reason, answer: stdout.trim().slice(0, 300) }))
     .catch((error: unknown) => log("error", "codex_daemon_start_failed", { reason, error: error instanceof Error ? error.message : String(error) }))
     .finally(() => { daemonStart = null; });
