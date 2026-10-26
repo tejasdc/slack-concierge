@@ -135,6 +135,36 @@ function row(actionId: string): HumanCommandRow | null {
 
 export function commandStatus(actionId: string): HumanCommandRow | null { return row(actionId); }
 
+export type HumanCommandHold = Readonly<{
+  reason: 'missing_predecessor' | 'predecessor_exhausted' | 'predecessor_active' | 'held_after_gap';
+  headSequence: number;
+  headActionId: string | null;
+}>;
+
+/** The current ordering obstacle for one retained command, derived from the stream owner. */
+export function commandHold(command: HumanCommandRow): HumanCommandHold | null {
+  if (['delivered', 'refused', 'canceled'].includes(command.status)) return null;
+  if (command.exhausted_reason === 'held_after_gap') return {
+    reason: 'held_after_gap', headSequence: command.sequence, headActionId: command.action_id,
+  };
+  if (command.path.endsWith('/stop') || canceledAction(command.path) !== null) return null;
+  const head = captureDb.query(`SELECT stream.next_sequence AS headSequence,
+      predecessor.action_id AS headActionId, predecessor.exhausted_at_ms AS exhaustedAtMs
+    FROM human_command_streams stream
+    LEFT JOIN human_commands predecessor ON predecessor.client_id=stream.client_id
+      AND predecessor.session_id=stream.session_id AND predecessor.sequence=stream.next_sequence
+    WHERE stream.client_id=? AND stream.session_id=?`)
+    .get(command.client_id, command.session_id) as {
+      headSequence: number; headActionId: string | null; exhaustedAtMs: number | null;
+    } | null;
+  if (!head || head.headSequence >= command.sequence) return null;
+  return {
+    reason: head.headActionId === null ? 'missing_predecessor'
+      : head.exhaustedAtMs !== null ? 'predecessor_exhausted' : 'predecessor_active',
+    headSequence: head.headSequence, headActionId: head.headActionId,
+  };
+}
+
 /** Browser messages waiting behind an absent or stopped stream head. The capture store owns this ordering. */
 export function blockedHumanMessageStreams(nowMs=Date.now(),minimumAgeMs=60_000): Array<{
   clientId:string;sessionId:string;headSequence:number;headActionId:string|null;

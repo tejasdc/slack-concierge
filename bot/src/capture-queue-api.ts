@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandStatus, exhaustHumanCommand, prepareHumanCommand, recordHumanCommandConflict, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandHold, commandStatus, exhaustHumanCommand, prepareHumanCommand, recordHumanCommandConflict, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -102,8 +102,10 @@ function humanCommand(body:Record<string,unknown>):HumanCommand {
 function commandReply(actionId:string,includeIdentity=false) {
   const row=commandStatus(actionId);
   if(!row)return null;
+  const hold=commandHold(row);
   const terminal=['delivered','refused','canceled'].includes(row.status);
   return {custody:"server",actionId:row.action_id,status:terminal?row.status:row.exhausted_reason==='held_after_gap'?'held':row.exhausted_at_ms!==null?'unconfirmed':row.status,
+    ...(hold?{hold}:{}),
     decisionStage:row.decision_stage,ownerStatus:row.owner_status,ownerResponse:row.owner_response_json?JSON.parse(row.owner_response_json):null,
     ...(!terminal&&row.exhausted_at_ms!==null?{reason:row.exhausted_reason,automaticRetry:false}:{}),
     ...(includeIdentity?{commandIdentity:{version:1,actionId:row.action_id,clientId:row.client_id,
@@ -136,6 +138,7 @@ export function createCaptureQueueRequestHandler(
     if (url.pathname === "/commands" && request.method === "POST") {
       try {
         const command=humanCommand(await requestBody(request));
+        const previouslyRetained=commandStatus(command.actionId)!==null;
         const retained=retainHumanCommand(command);
         if(retained.sequence!==command.sequence)log('info','human_command_reconciled',{
           action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
@@ -144,6 +147,13 @@ export function createCaptureQueueRequestHandler(
         if(command.path.endsWith('/inputs'))log('info','human_message_retained',{
           action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
           sequence:retained.sequence,status:retained.status});
+        if(!previouslyRetained){
+          const hold=commandHold(retained);
+          if(hold)log('warn','human_command_held',{
+            action_id:retained.action_id,client_id:retained.client_id,session_id:retained.session_id,
+            sequence:retained.sequence,reason:hold.reason,head_sequence:hold.headSequence,
+            head_action_id:hold.headActionId});
+        }
         dependencies.afterCommit?.("claim",retained.action_id);
         return jsonResponse(202,commandReply(retained.action_id)!);
       } catch(error) {

@@ -44,6 +44,14 @@ keeps the same command, ordered position and prepared bytes. A later answer from
 the original action; its idempotency key makes an ambiguous retry safe. Other streams keep moving.
 The browser keeps checking a pending command without making the person press Retry. An older
 `unconfirmed` command can still be resumed explicitly with the same identity.
+The authenticated custody receipt and status read include a live `hold` when an earlier
+sequence is preventing this command from advancing. Its reason is `missing_predecessor`,
+`predecessor_exhausted`, or `predecessor_active`, with the stream's head sequence and
+optional action ID. A late original held after an audited gap uses `held_after_gap`.
+These fields are additive for older clients; they name the ordering obstacle without
+claiming the command reached the session owner. The first custody of a held command
+records its action ID and bounded reason, and each identity conflict records its
+specific refusal reason. Workspace replication health is a separate signal.
 
 The capture store also reports ordered streams with a retained human message waiting at least one
 minute behind an absent or exhausted predecessor. The command worker checks this every thirty
