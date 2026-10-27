@@ -21,6 +21,8 @@ The canonical server and Mac session owners accept and validate one bounded argu
 
 The exact selected owner advertises this protocol at `GET /sessions/v1/sessions/:id/capabilities`. Thinkering creates or resolves the session and requires `{canvasContext:true}` before it starts microphone capture. An older owner returns404, so no speech is recorded or sent to a schema that would terminally refuse it.
 
+The first capability-route commit declared its bounded GET cost but omitted the same route from the native read executor's exhaustive ownership table. The required release check refused the candidate because its read workers could not classify the new route. The route is an independent canonical read of one exact session record, so the executor now owns it in that class; unknown future GET exceptions remain refused.
+
 ## Acceptance scenario
 
 - **Seed:** An ordinary Codex session owned by either the server or Mac, and one argument-map speech input whose transcript is `Maybe these have a common cause` with separate board and open-page context.
