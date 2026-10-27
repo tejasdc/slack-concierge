@@ -888,6 +888,13 @@ if (!columns("turns").has("saved_fire_at_ms")) {
 addColumn("turns", "dispatch_hold", "dispatch_hold TEXT");
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
+// The saved-work clock runs before every queue claim, and the queue is woken by every execution
+// change, which every recorded provider message raises. Its latest-repeating-firing query was a
+// full scan of turns (12,098 rows of ~3 KB, 15–32 ms): about 25 ms of blocked owner loop per
+// message, 3–7 s a minute while four agents streamed output (2026-10-27). Partial, so no other
+// query can pick it up; saved_kind leads because the planner ignored a (saved_root_id,
+// saved_sequence) partial index for this query (measured on a copy of the schema).
+db.exec("CREATE INDEX IF NOT EXISTS turns_repeating_schedule ON turns(saved_kind,saved_root_id,saved_sequence) WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
   quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,
