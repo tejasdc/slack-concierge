@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS session_communication_requests (
   UNIQUE(source_channel, source_message_ts, action_id)
 );
 CREATE INDEX IF NOT EXISTS session_communication_pending ON session_communication_requests(status) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS session_communication_open_reconcile ON session_communication_requests(outcome) WHERE outcome IS NULL;
 CREATE INDEX IF NOT EXISTS session_communication_due ON session_communication_requests(due_at_ms) WHERE outcome IS NULL AND overdue_at_ms IS NULL;
 CREATE INDEX IF NOT EXISTS session_communication_turn_lookup ON session_communication_requests(target_turn_id);
 CREATE INDEX IF NOT EXISTS session_communication_lab_source ON session_communication_requests(source_session_id,request_id);
@@ -888,6 +889,9 @@ if (!columns("turns").has("saved_fire_at_ms")) {
 addColumn("turns", "dispatch_hold", "dispatch_hold TEXT");
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
+// The clock inspects one root per repeating schedule, then seeks its latest firing through
+// saved_turn_firing. Historical firings must not be re-examined on every queue wake.
+db.exec("CREATE INDEX IF NOT EXISTS saved_repeat_roots ON turns(id) WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_sequence=0 AND saved_root_id=id");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
   quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,
