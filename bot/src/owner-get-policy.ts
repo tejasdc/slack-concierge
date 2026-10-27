@@ -40,6 +40,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/sessions',purpose:'UNBOUNDED whole catalogue; MUST REMOVE after peer migration',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/sessions/:id',purpose:'legacy receipts page; MUST REMOVE after prepared consumers migrate',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/sessions/:id/view',purpose:'selected exact view; attention prepared, other costs under review',maxResponseBytes:2*MiB,kind:'legacy'},
+ {path:'/sessions/:id/capabilities',purpose:'bounded protocol feature negotiation for one exact session owner',maxResponseBytes:MiB,kind:'control'},
  {path:'/sessions/:id/history',purpose:'legacy cursor-paged provider history; retire after prepared message readers',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/sessions/:id/history/messages/:id/detail',purpose:'one exact selected history message version; full JSON body on explicit selection, or 4 KiB verified compatibility part',maxResponseBytes:0,kind:'control'},
 ];

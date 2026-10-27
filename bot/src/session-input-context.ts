@@ -43,6 +43,10 @@ function identity(input: AcceptedSessionInput, runId: string) {
   return { id: input.id, runId, sessionId: `concierge:${input.session_id}`, origin: input.origin, ...(provenance?{provenance}:{}) };
 }
 
+export function sessionInputIdentityContext(input: AcceptedSessionInput, runId: string) {
+  return JSON.stringify({ type: 'concierge-session-input', input: identity(input, runId) });
+}
+
 // The general self-title paragraph sits among many others and agents skipped it for
 // short requests, so an unnamed session also gets one direct, prefilled step.
 function unnamedSessionStep(input: AcceptedSessionInput, runId: string) {
@@ -69,5 +73,5 @@ export function sessionTurnContext(input: AcceptedSessionInput, runId: string,
  * Sending the same normal form keeps both sides identical.
  */
 export function sessionInputEnvelope(input: AcceptedSessionInput, runId: string, content: string) {
-  return `${JSON.stringify({ type: 'concierge-session-input', input: identity(input, runId) })}\n\n${content}`.trimEnd();
+  return `${sessionInputIdentityContext(input, runId)}\n\n${content}`.trimEnd();
 }

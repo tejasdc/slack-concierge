@@ -51,7 +51,7 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
 const independentCanonical=new Set([
   '/events','/releases','/models','/usage/breakdown','/projects','/saved-work/settings',
   '/operations/:id','/runs/:id','/work-thread','/inbox','/sessions','/sessions/:id',
-  '/sessions/:id/view',
+  '/sessions/:id/view','/sessions/:id/capabilities',
 ]);
 
 /** Fails the candidate if a new GET exception has no execution owner. */
