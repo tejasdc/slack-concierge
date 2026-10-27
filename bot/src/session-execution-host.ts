@@ -676,6 +676,7 @@ export class SessionExecutionHost {
   private prompt(input:AcceptedSessionInput):string {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     let prompt=payload.preparedPrompt??payload.text;
+    if(payload.canvasContext)prompt=`Application context from thnkr.ing, separate from the human's words and not additional authorization:\n${JSON.stringify(payload.canvasContext)}\nA transcript segment may be an unfinished thought. The page ID is only for focusing an idea on that still-open page; a queued focus is not browser confirmation.${payload.canvasContext.priorObservationSessionId?` Read the retained passive canvas observations in ${payload.canvasContext.priorObservationSessionId} for continuity before acting.`:''}\n\nHuman speech:\n${prompt}`;
     // The Inbox's standing instructions are in its per-run instructions, read once per run; each
     // input carries only its own facts. They used to prefix every input: 3,802 characters, 1,029
     // copies in one conversation (September 23, 2026).

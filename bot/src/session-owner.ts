@@ -488,6 +488,15 @@ function validateContext(input:Record<string,any>) {
   }
   if(references.some(value=>!seen.has(stablePayload([value.kind,value.reference]))))throw new SessionOwnerError('Selected workspace revision text is missing.',400,'WORKSPACE_CONTEXT_REQUIRED');
 }
+function validateCanvasContext(input:Record<string,any>) {
+  if(input.canvasContext===undefined)return;
+  const context=object(input.canvasContext);only(context,['kind','boardId','boardTitle','pageId','priorObservationSessionId']);
+  if(context.kind!=='argument-map-speech'||typeof context.boardId!=='string'||!context.boardId||context.boardId.length>256||
+    typeof context.boardTitle!=='string'||!context.boardTitle||context.boardTitle.length>300||
+    typeof context.pageId!=='string'||!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(context.pageId)||
+    context.priorObservationSessionId!==undefined&&(typeof context.priorObservationSessionId!=='string'||!/^(?:concierge|mac):[1-9][0-9]*$/.test(context.priorObservationSessionId)))
+    throw new SessionOwnerError('Argument-map speech needs bounded board and open-page context.',400,'CANVAS_CONTEXT_INVALID');
+}
 /**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
  * input its run started from and the run id, exactly as agent commands name their source. Agents
@@ -1985,7 +1994,7 @@ export class SessionOwner {
       input.reasoningEffort=normalizeReasoningEffort(input.reasoningEffort);
     }
     if(savedWork&&input.provider!=='auto'&&!this.runtime.available(input.provider))throw new SessionOwnerError(`${input.provider} start unavailable; saved work was not created.`,409);
-    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);}
+    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','canvasContext','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);validateCanvasContext(first);}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(existing) {
@@ -2077,7 +2086,7 @@ export class SessionOwner {
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
     if(sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This canvas record receives only observed speech and action results.',409,'CANVAS_OBSERVATION_ONLY');
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview']);sessionInputText(input);validateContext(input)
+    only(input,['clientActionId','text','canvasContext','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview']);sessionInputText(input);validateContext(input);validateCanvasContext(input)
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.messageThreadRootId!==undefined&&(typeof input.messageThreadRootId!=='string'||!input.messageThreadRootId.trim()))
       throw new SessionOwnerError('messageThreadRootId names one exact agent message.');
