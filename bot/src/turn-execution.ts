@@ -237,6 +237,8 @@ export interface SlackTurnExecutionInput {
   sessionMode: SessionMode;
   hydrateSlackLinks: boolean;
   baseSystemPrompt?: string;
+  /** The provider's user-message bytes are the product record; continuity belongs in application context. */
+  exactProviderInput?: boolean;
   cwd: string;
   additionalDirs: string[];
   botToken: string;
@@ -454,13 +456,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const replayText = input.prompt;
       setTurnReplayInput(input.turnId, replayText, input.unreplayableAttachmentCount ?? 0);
       const context = listInterruptedInputContext(input.turnId);
+      const continuityContext=interruptedInputContext(context);
       preparedTurn = {
         attachmentBundle,
-        prompt: [interruptedInputContext(context), replayText].filter(Boolean).join("\n\n"),
+        prompt: input.exactProviderInput?replayText:[continuityContext, replayText].filter(Boolean).join("\n\n"),
         contextTurnIds: context.map((entry) => entry.turn_id),
         continuityNotice: "",
         additionalDirs: [...input.additionalDirs, attachmentRoot],
-        systemPrompt: input.baseSystemPrompt,
+        systemPrompt: [input.baseSystemPrompt,input.exactProviderInput?continuityContext:null].filter(Boolean).join("\n\n")||undefined,
       };
     } else {
       if (!useAgentExperience && input.turnKind !== "deployment_verification") await addWorkingReaction(input);

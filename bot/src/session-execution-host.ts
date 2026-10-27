@@ -1032,6 +1032,7 @@ export class SessionExecutionHost {
       baseSystemPrompt:nativeContext?[sessionInputInstructions({
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
           isWritingSession(session)?WRITING_SESSION_STANDING:null].filter(Boolean).join('\n\n')||null}),canvasApplicationContext].filter(Boolean).join('\n\n'):undefined,
+      exactProviderInput:!!canvasSpeechContext(input),
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
