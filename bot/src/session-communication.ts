@@ -2296,7 +2296,7 @@ export class SessionCommunicationCoordinator {
                 catch(error){log('warn','accepted_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
             });
             await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
-                WHERE scope LIKE 'capture:%' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
+                WHERE scope GLOB 'capture:*' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND json_extract(receipt_json,'$.admissionIntent')='live'
                   AND id='capture:' || json_extract(payload_json,'$.capture.id')
                   AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`, input=>{

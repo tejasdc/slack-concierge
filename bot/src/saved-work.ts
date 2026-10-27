@@ -296,12 +296,15 @@ export function waitingSavedWork():SavedTurn[] {return savedRows();}
  */
 export function advanceRepeatingSchedules(now=Date.now()):number {
   let advanced=0;
-  const due=db.query(`SELECT * FROM turns latest WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.saved_root_id=latest.saved_root_id AND later.saved_sequence>latest.saved_sequence)
-    AND ((status='queued' AND dispatch_next_attempt_ms<=?) OR (status<>'queued' AND saved_fire_at_ms IS NOT NULL))
+  const due=db.query(`SELECT latest.* FROM turns root
+    JOIN turns latest ON latest.id=(SELECT firing.id FROM turns firing
+      WHERE firing.saved_root_id=root.id ORDER BY firing.saved_sequence DESC LIMIT 1)
+    WHERE root.saved_kind='scheduled' AND root.saved_repeat_ms IS NOT NULL
+    AND root.saved_root_id=root.id AND root.saved_sequence=0
+    AND ((latest.status='queued' AND latest.dispatch_next_attempt_ms<=?) OR (latest.status<>'queued' AND latest.saved_fire_at_ms IS NOT NULL))
     AND (latest.status<>'queued' OR EXISTS (SELECT 1 FROM sessions session WHERE session.id=latest.session_id
       AND session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
-    ORDER BY id`).all(now) as SavedTurn[];
+    ORDER BY latest.id`).all(now) as SavedTurn[];
   for(const row of due) {
     // One broken schedule must not stop the claim that every other session's work waits on.
     try {db.transaction(()=>{
