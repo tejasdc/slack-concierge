@@ -1,0 +1,1 @@
+The Mac or server compatibility check now travels through Concierge’s normal bounded read path, so starting think-aloud cannot disable session reads.
