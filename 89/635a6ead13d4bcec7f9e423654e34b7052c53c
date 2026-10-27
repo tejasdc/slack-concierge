@@ -1,0 +1,1 @@
+Think-aloud now keeps every transcript as exactly your words, gives Codex the board and map controls separately, and checks the selected Mac or server session before it starts listening.
