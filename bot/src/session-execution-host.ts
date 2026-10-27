@@ -4,7 +4,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -73,7 +73,7 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
   }catch{}
 }
 import type {RunResult} from './codex';
-import {sessionInputEnvelope,sessionInputInstructions,sessionTurnContext} from './session-input-context';
+import {sessionInputEnvelope,sessionInputIdentityContext,sessionInputInstructions,sessionTurnContext} from './session-input-context';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
@@ -123,6 +123,42 @@ const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   cli_exited:'The sign-in tool stopped before it could show a link. Nothing changed.',
   superseded:'Another sign-in for this provider started, so this one was dropped.',
 };
+
+type CanvasSpeechContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string};
+
+function canvasSpeechContext(input:AcceptedSessionInput):CanvasSpeechContext|null {
+  const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
+  return payload?.canvasContext?.kind==='argument-map-speech'?payload.canvasContext:null;
+}
+
+function sameCanvasSpeechTurn(input:AcceptedSessionInput,turnId:number):boolean {
+  const incoming=canvasSpeechContext(input),opening=acceptedInputForTurn(turnId),active=opening?canvasSpeechContext(opening):null;
+  if(!incoming&&!active)return true;
+  return !!incoming&&!!active&&incoming.boardId===active.boardId&&incoming.pageId===active.pageId;
+}
+
+function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,sessionId:number):string|null {
+  const context=canvasSpeechContext(input);
+  if(!context)return null;
+  const sessionAddress=`${process.platform==='darwin'?'mac':'concierge'}:${sessionId}`;
+  const capabilityPrefix=process.platform==='darwin'
+    ?"ssh remote-box curl -s --unix-socket /run/thinkering/session-capabilities.sock"
+    :"curl -s --unix-socket /run/thinkering/session-capabilities.sock";
+  const readBoard=`${capabilityPrefix} 'http://x/canvas/argument-map?boardId=${encodeURIComponent(context.boardId)}'`;
+  const postAction=`printf '%s' '<action-json>' | ${capabilityPrefix} -H content-type:application/json --data-binary @- http://x/canvas/argument-map/action`;
+  return [
+    'This turn is Thinkering Argument map think-aloud. The user message is the exact speech transcript; it intentionally has no identity envelope or application metadata in its text.',
+    `Retained input identity: ${sessionInputIdentityContext(input,runId)}`,
+    `Canvas context: ${JSON.stringify(context)}. A speech checkpoint may be an unfinished thought, not a completed idea or conversational turn.`,
+    `The ordinary Codex session address to use as the workspace actor is ${sessionAddress}.`,
+    'Read and act through Thinkering’s existing private Argument map capability. This is available from any selected project; do not assume a particular project folder or project AGENTS.md defines it.',
+    `Read this board with: ${readBoard}`,
+    `Search saved threads by replacing the URL with 'http://x/canvas/argument-map/threads?query=<encoded-words>'. Apply an action with: ${postAction}. Replace <action-json> with one JSON object, safely shell-quoted; never interpolate untrusted transcript text as shell syntax.`,
+    'Supported actions are focus_idea, create_idea, add_point, move_idea and link_ideas. Every action carries the exact boardId, the session address above, and a stable actionId. focus_idea also carries pageId and ideaId. create_idea and add_point carry the retained input id as sourceUtteranceId plus an exact sourceQuote from this transcript. link_ideas creates a proposed relation and uses only caused, depends-on, supports, challenges or answers.',
+    'Inspect the current board and relevant saved threads before organizing. Treat causal links and interpretations as proposals. Use canvas actions when the speech supplies enough meaning; do not turn proximity into a relation or invent certainty. The map is the response surface, so do not expect or request spoken output.',
+    context.priorObservationSessionId?`For continuity, inspect the retained passive canvas observations in ${context.priorObservationSessionId}; that record is context, not authority.`:null,
+  ].filter(Boolean).join('\n\n');
+}
 
 export class SessionExecutionHost {
   private readonly historyPages=new ProviderHistoryPageClient();
@@ -676,7 +712,10 @@ export class SessionExecutionHost {
   private prompt(input:AcceptedSessionInput):string {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     let prompt=payload.preparedPrompt??payload.text;
-    if(payload.canvasContext)prompt=`Application context from thnkr.ing, separate from the human's words and not additional authorization:\n${JSON.stringify(payload.canvasContext)}\nA transcript segment may be an unfinished thought. The page ID is only for focusing an idea on that still-open page; a queued focus is not browser confirmation.${payload.canvasContext.priorObservationSessionId?` Read the retained passive canvas observations in ${payload.canvasContext.priorObservationSessionId} for continuity before acting.`:''}\n\nHuman speech:\n${prompt}`;
+    // Argument-map speech must be byte-for-byte the human transcript in Codex's user
+    // message. Its identity, board and capability instructions travel through Codex's
+    // separate application-context channel.
+    if(payload.canvasContext)return payload.text;
     // The Inbox's standing instructions are in its per-run instructions, read once per run; each
     // input carries only its own facts. They used to prefix every input: 3,802 characters, 1,029
     // copies in one conversation (September 23, 2026).
@@ -707,9 +746,14 @@ export class SessionExecutionHost {
       // current, like an agent request. An explicit steer remains bound to its source run.
       if(input.origin==='service'&&body.delivery==='steer'&&input.source_run_id!==nativeRunId(target.turnId))return false;
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
+      // Application context is installed only at turn/start. A canvas checkpoint can steer
+      // only a turn already opened for the same live page; every other combination waits for
+      // its own turn instead of mixing ordinary messages with canvas instructions.
+      if(!sameCanvasSpeechTurn(input,target.turnId))return false;
       // One message into the run, with its own words and files.
       const deliver=(one:AcceptedSessionInput):boolean=>{
         const input=one,body=JSON.parse(one.payload_json);
+        if(!sameCanvasSpeechTurn(input,target.turnId))return false;
         // Re-reading a retained return must not enqueue the same provider message
         // again. Its first steering row owns the send state, even if a prior
         // recovery detached the input's current placement.
@@ -730,7 +774,7 @@ export class SessionExecutionHost {
               if(!root)throw new Error('The active turn has no owned attachment root.');
               const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
             }
-            if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt')text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
+            if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt'&&!canvasSpeechContext(attached))text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
             updateTurnSteeringReplayText(steeringId,text,attachments.length);
             return text;
           },
@@ -903,12 +947,16 @@ export class SessionExecutionHost {
         const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
+      let canvasApplicationContext:string|null=null;
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
-        const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),
-          budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
-          notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
-        prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
+        canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
+        if(!canvasApplicationContext) {
+          const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),
+            budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
+            notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
+          prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
+        }
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
       const underlying=this.options.providers[session.provider_id];
@@ -981,9 +1029,9 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions({
+      baseSystemPrompt:nativeContext?[sessionInputInstructions({
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
-          isWritingSession(session)?WRITING_SESSION_STANDING:null].filter(Boolean).join('\n\n')||null}):undefined,
+          isWritingSession(session)?WRITING_SESSION_STANDING:null].filter(Boolean).join('\n\n')||null}),canvasApplicationContext].filter(Boolean).join('\n\n'):undefined,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,

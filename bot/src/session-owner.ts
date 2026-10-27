@@ -1994,7 +1994,7 @@ export class SessionOwner {
       input.reasoningEffort=normalizeReasoningEffort(input.reasoningEffort);
     }
     if(savedWork&&input.provider!=='auto'&&!this.runtime.available(input.provider))throw new SessionOwnerError(`${input.provider} start unavailable; saved work was not created.`,409);
-    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','canvasContext','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);validateCanvasContext(first);}
+    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','canvasContext','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);validateCanvasContext(first);if(first.canvasContext&&first.attachments?.length)throw new SessionOwnerError('Argument-map speech carries transcript text only; canvas metadata uses application context.',400,'CANVAS_CONTEXT_CONFLICT');}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(existing) {
@@ -2005,6 +2005,7 @@ export class SessionOwner {
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project,{inside:true});
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const provider=input.provider==='auto'?automaticProvider(provider=>this.runtime.available(provider),action):input.provider as ProviderId;
+      if(input.firstInput?.canvasContext&&provider!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
       const providerDefault=input.provider==='auto'?resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider as AutomaticProvider]):
         provider==='codex'?resolveProviderDefault('codex'):
         provider==='antigravity'?resolveProviderAlias('google'):null;
@@ -2087,6 +2088,8 @@ export class SessionOwner {
     const session=this.session(id),input=object(body);
     if(sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This canvas record receives only observed speech and action results.',409,'CANVAS_OBSERVATION_ONLY');
     only(input,['clientActionId','text','canvasContext','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview']);sessionInputText(input);validateContext(input);validateCanvasContext(input)
+    if(input.canvasContext&&session.provider_id!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
+    if(input.canvasContext&&input.attachments?.length)throw new SessionOwnerError('Argument-map speech carries transcript text only; canvas metadata uses application context.',400,'CANVAS_CONTEXT_CONFLICT');
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
     if(input.messageThreadRootId!==undefined&&(typeof input.messageThreadRootId!=='string'||!input.messageThreadRootId.trim()))
       throw new SessionOwnerError('messageThreadRootId names one exact agent message.');
@@ -3767,6 +3770,10 @@ export class SessionOwner {
         result=displays.some(value=>value===null)
           ?{root,messages:[],nextCursor:null,coverage:{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:page.coverage.appliedSequence}}
           :{root,messages:withCurrentAuthors(displays),nextCursor:page.nextCursor,coverage:page.coverage};
+      }
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='capabilities'&&parts.length===3){
+        const session=this.session(parts[1]!);
+        result={canvasContext:session.provider_id==='codex'};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='view'&&parts.length===3)
         result={session:this.view(this.session(parts[1]!))};
