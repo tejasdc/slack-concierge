@@ -21,6 +21,11 @@ alert. The old Slack design is historical reference only.
   aged browser count identifies candidates, not confirmed orphans; the investigator
   matches each process to its agent run before stopping it. This separate alert has a
   two-minute hold so queued work is noticed before the fifteen-minute reserve warning.
+- `ThinkeringMacWebContentFootprintHigh` and
+  `ThinkeringMacWebContentFootprintUnavailable` enter that same Repair agent queue.
+  The first reports high measured Mac WebContent physical footprint; the second reports
+  missing or stale footprint observations. Neither opens a human thread or starts a
+  second investigator.
 - Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
   thread, repair notice, or investigator starts.
 
