@@ -30,13 +30,15 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/bot/scripts/private-code-command.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/bot/scripts/private-code-command.js" ] && [ -f "$release/control/bot/scripts/install-codex-browser-policy.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
   bot="$release/control/bot"
   updater_policy="$release/control/ensure-codex-updater-disabled.js"
+  browser_policy="$bot/scripts/install-codex-browser-policy.js"
   suffix=js
 else
-  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/private-code-command.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/private-code-command.ts" ] && [ -f "$bot/scripts/install-codex-browser-policy.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
   updater_policy="$bot/scripts/ensure-codex-updater-disabled.ts"
+  browser_policy="$bot/scripts/install-codex-browser-policy.ts"
   suffix=ts
 fi
 [ -d "$state" ] || { echo "No Concierge state directory: $state" >&2; exit 2; }
@@ -56,6 +58,7 @@ if [ -e "$requirements" ] && ! head -1 "$requirements" | grep -Fq "$marker"; the
   echo "$requirements exists and was not written by this installer; merge the [hooks] block by hand." >&2
   exit 1
 fi
+"$bun" run "$browser_policy" "$etc/config.toml"
 
 hook="$etc/hooks/concierge-owed-reply"
 if [ -e "$hook" ] && ! grep -Fq "$marker" "$hook"; then
@@ -202,6 +205,15 @@ type = "command"
 command = "$hook"
 timeout = 20
 statusMessage = "Checking for replies this agent still owes"
+
+# Spawned Codex agents finish with SubagentStop, not Stop. Their own thread identity
+# closes only the agent-browser processes they launched.
+[[hooks.SubagentStop]]
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = "$hook"
+timeout = 20
+statusMessage = "Closing this subagent's browser"
 
 # Pushed history is never rewritten: a forced push, or amending or rebasing a pushed commit, is
 # refused before it runs (bot/scripts/history-guard.ts; Tejas, 2026-09-23).
