@@ -12,6 +12,7 @@
     "control/bot/scripts/router-todo.js": "bot/scripts/router-todo.ts",
     "control/bot/scripts/agent-test-capture.js": "bot/scripts/agent-test-capture.ts",
     "control/bot/scripts/owed-reply-stop-hook.js": "bot/scripts/owed-reply-stop-hook.ts",
+    "control/bot/scripts/install-codex-browser-policy.js": "bot/scripts/install-codex-browser-policy.ts",
     "control/bot/scripts/history-guard.js": "bot/scripts/history-guard.ts",
     "control/bot/scripts/live-store-copy-guard.js": "bot/scripts/live-store-copy-guard.ts",
     "control/bot/scripts/private-code-command.js": "bot/scripts/private-code-command.ts",

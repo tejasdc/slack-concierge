@@ -306,6 +306,12 @@ instead of a periodic process killer, and does not touch other runs' browsers or
 shared App Server. A process that outlives a crashed or unhooked run remains visible to
 the host's aged-controller alert for owner investigation; the host observer never kills it.
 
+Codex sends `SubagentStop`, not `Stop`, when a spawned agent or nested helper ends.
+The managed hook registers both events. On `SubagentStop`, the same process filter uses
+that child's own Codex thread ID; the parent stays running and its browsers stay open.
+The hook asks the owner as usual, but an unbound child owes no Concierge request. The
+child's `CODEX_THREAD_ID` is enough for cleanup even if that owner call fails.
+
 Within a long turn, every agent run's environment carries `AGENT_BROWSER_IDLE_TIMEOUT_MS`
 (20 minutes, `turn-execution.ts`), agent-browser's own idle shutdown: a daemon no command
 has reached for that long exits and closes the Chrome it launched. Agents that opened a fresh
@@ -316,6 +322,13 @@ to over CDP (such as the ChatGPT Chrome) is disconnected, not closed, and browse
 outside an agent run are unaffected. It was chosen over a periodic killer reading process
 ages because the daemon alone knows when it last received a command. An agent that needs a
 closed session again opens a new one.
+Codex's per-thread shell setting does not reach spawned agents on the installed App Server.
+The machine's Codex config therefore also sets the same idle timeout for shells in new
+Codex threads, including nested children. The hook installer merges that setting into
+`/etc/codex/config.toml` on each machine, leaving the separate ChatGPT browser process
+outside Codex untouched. The shared App Server is not restarted for this setting; a
+new root thread and its children read the installed config when they start. Existing
+threads still rely on their own per-turn policy and Stop hooks until they finish.
 
 The host side exports processor wait and aged detached-controller counts. Its overload
 alert enters the standing Repair agent queue through the allowlisted Grafana condition;
