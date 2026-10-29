@@ -38,7 +38,7 @@ export type NativeSessionMetadata = {
   claudeAccountNotice?:null;
   /** Every turn runs as the Codex command line in its own unit, started and watched, never driven (outside-codex.ts). */
   outside?:boolean;
-  project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; suspended?:boolean; pinned?:boolean;
+  project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; repairAgent?:boolean; standingRole?:import('./standing-agents').StandingAgentRole|null; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;
   withdrawnNeeds?:import('./session-turn-outcome').WithdrawnNeed[];

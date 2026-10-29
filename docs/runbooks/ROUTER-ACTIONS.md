@@ -109,6 +109,29 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
+### Standing agents
+
+`sessions agents` lists each continuing role, its agent project, job, wake source and bound
+non-archived session address, or `unbound`. `sessions ask --role <role> --summary "<one line>" --action-id A -- <text>`
+uses that session. If the role is unbound, it starts one in the declared agent project and binds
+it at creation, with the role's description as its session name; `--session-name` overrides that
+name for creation. `sessions agents bind <role> <session-address> <source-flags> --action-id A`
+moves a role's binding to an existing non-archived session in its exact declared folder. The
+source and action ID make retries idempotent. Moving a bound session to another folder clears its
+binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
+`sessions context` and the session view expose only a session's explicit role binding.
+
+New repeating schedules and renewing file watches require both the requesting session and
+the scheduled session, where applicable, to be in `workspace/agents/`, a declared top-level
+agent project, or the existing agent lab. `life-logistics` and `skills` are product projects
+for this rule. Existing queued firings and armed watches continue. Move a continuing job
+to an agent project made with `projects new <name> --owner agents`, then use
+`sessions ask --role` for a declared standing role. Until the existing roles are bound, journal
+observations use the known keeper `concierge:4571`, and repair notices use the exact-title repair
+session in `agents/concierge-repair`. Neither fallback chooses the newest session in a folder;
+both stop once their roles have a binding. Bind the existing roles after installation rather
+than sending their first request through an unbound role.
+
 Project setup uses the same local owner socket on either machine:
 
 ```bash

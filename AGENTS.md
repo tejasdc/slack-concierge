@@ -228,6 +228,12 @@ and mandatory review requirements in this repository and linked historical mater
 
 ## Working boundaries
 
+- Standing agents and their project folders are declared once in Concierge; use
+  `sessions agents` to discover explicit session bindings, `sessions agents bind` to assign an
+  existing session in the role's folder, and `sessions ask --role` to address a bound role or create one.
+  New repeating schedules and renewing watches belong only in agent, router or
+  lab projects. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
+
 - Grafana health alerts queue the standing repair agent without a human Inbox thread; the external work-flow supervisor owns
   host resource pressure plus responsive-owner/speech memory and latency repair. Webhook acceptance alone does not
   prove notice delivery or agent admission. The same allowlisted receiver owns server and
