@@ -1,0 +1,1 @@
+Codex helpers now close their browsers when they finish, and idle browsers close after 20 minutes.
