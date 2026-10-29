@@ -56,6 +56,15 @@ the same administrator step as the existing managed Stop hook. `install-mac.sh`
 checks for that event specifically; when it is absent in an unattended run, it
 reports the terminal install command rather than treating the older hook as current.
 Installing the policy or hook does not restart the shared Codex App Server.
+The same updater keeps the Mac's npm-owned `agent-browser` at a pinned version that
+supports idle shutdown. On October 29, the Mac still had 0.16.3, which ignored the
+timeout inherited by a native Codex child; the feature arrived in
+[agent-browser 0.20.14](https://github.com/vercel-labs/agent-browser/blob/main/CHANGELOG.md).
+The pinned version is the one already exercised in this project's server browser
+runbook. On the Mac, a disposable session with a six-second idle limit disappeared
+after twelve seconds on that version. The updater checks the CLI before reinstalling
+it, and a failed install stops the update before Concierge restarts. The browser
+package is separate from the shared Codex App Server.
 
 **The Mac runs source, so Bun's compile cache is off** (`BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`
 in the Concierge and speech launchd jobs, inherited by every child). Bun keys that cache by file

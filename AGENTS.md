@@ -180,6 +180,8 @@ a blocked turn keeps its browser. Within a long turn, agent-browser's own idle s
 daemon and the Chrome it launched after 20 idle minutes. The host overload alert enters the standing repair queue. See
 [agent browser ownership](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
 and [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
+The Mac updater keeps its npm-owned browser CLI at the exercised idle-shutdown version;
+see [Mac installation](docs/runbooks/PEER-INSTANCES.md#install-or-update-the-mac-instance).
 
 ## Current delivery policy
 

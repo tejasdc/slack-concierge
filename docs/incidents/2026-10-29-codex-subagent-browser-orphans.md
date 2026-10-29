@@ -1,7 +1,7 @@
 ---
 failure: Codex subagent browsers lacked the 20-minute idle shutdown and escaped end-of-turn cleanup.
 date: 2026-10-29
-fix_commits: []
+fix_commits: [5ab97c62]
 cause_status: confirmed
 ---
 
@@ -21,6 +21,9 @@ Concierge gave the browser timeout to the root Codex thread as a per-thread shel
 The spawned child did not receive it. The managed cleanup hook registered Codex `Stop`, but
 Codex emits `SubagentStop` for a spawned child, so cleanup did not run for that child either.
 The child has its own `CODEX_THREAD_ID`, which cannot match the parent's Stop hook.
+On the Mac, the npm-owned `agent-browser` was also 0.16.3. That version predated its
+idle-shutdown setting, so a native child could inherit the timeout without the
+browser daemon honoring it.
 
 ## Fix
 
@@ -31,6 +34,8 @@ restart the shared App Server for this change.
 The Mac's unattended updater also sets the timeout in its user's Codex config and checks
 whether the administrator-installed `SubagentStop` hook is present; an older hook must not
 be accepted as current merely because it has the earlier per-run wrapper.
+The Mac updater pins its npm-owned browser CLI to a version with working idle shutdown;
+the package is upgraded separately from the shared Codex App Server.
 
 ## Acceptance scenario
 
@@ -41,3 +46,6 @@ be accepted as current merely because it has the earlier per-run wrapper.
   closes at child turn end. A different thread's controller and the ChatGPT browser remain.
 - **Replayable offline:** the config merge and hook registration are; inherited child shell
   environment and hook execution need a live App Server check.
+- **Mac package check:** A disposable session with a six-second idle setting must appear
+  while active and disappear after twelve seconds. A native child must pass its inherited
+  20-minute setting and own thread ID to the browser controller.
