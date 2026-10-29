@@ -50,6 +50,13 @@ presentation protocol on both peers and observing a refresh, sleep and wake on t
 cd ~/workspace/slack-concierge && git pull --ff-only && scripts/install-mac.sh
 ```
 
+The unattended updater installs the 20-minute Codex browser idle setting in the
+signed-in user's Codex config. The machine-wide `SubagentStop` cleanup hook requires
+the same administrator step as the existing managed Stop hook. `install-mac.sh`
+checks for that event specifically; when it is absent in an unattended run, it
+reports the terminal install command rather than treating the older hook as current.
+Installing the policy or hook does not restart the shared Codex App Server.
+
 **The Mac runs source, so Bun's compile cache is off** (`BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`
 in the Concierge and speech launchd jobs, inherited by every child). Bun keys that cache by file
 contents alone, yet folds `process.env` comparisons into the compiled copy; the owner, its read
