@@ -1,0 +1,1 @@
+Codex helpers now close their own browsers when they finish, while a still-running parent keeps its browser; the Mac gets the same cleanup after its administrator hook installation.
