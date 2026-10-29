@@ -176,8 +176,10 @@ socket-pause check are described in [Bounded application logging](docs/architect
 The end-of-turn hook closes agent-browser processes carrying that exact run or Codex
 conversation identity, including spawned Codex helpers, after the agent is allowed to finish;
 a blocked turn keeps its browser. Within a long turn, agent-browser's own idle shutdown
-(set in Codex's machine config for new helper threads) closes a
-daemon and the Chrome it launched after 20 idle minutes. The host overload alert enters the standing repair queue. See
+(set in Codex's config for new helper threads) closes a
+daemon and the Chrome it launched after 20 idle minutes. On the Mac, turn-end closure
+requires the administrator-installed managed hook; unattended updates report its absence.
+The host overload alert enters the standing repair queue. See
 [agent browser ownership](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
 and [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md).
 The Mac updater keeps its npm-owned browser CLI at the exercised idle-shutdown version;
