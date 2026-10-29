@@ -1,0 +1,1 @@
+Conversations that were compacted before this fix get their earlier messages back the next time they are prepared.
