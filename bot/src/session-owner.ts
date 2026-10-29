@@ -655,13 +655,17 @@ export class SessionOwner {
       AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=? AND allowed.machine=?
         AND allowed.session_id=session.id)
       GROUP BY session.id ORDER BY max(turn.id) DESC LIMIT 100`).all(state.generation,this.selfMachine) as Array<{id:number;title:string;count:number}>;
-    const peerRows=db.query('SELECT peer,generation,acknowledged_generation,last_error,snapshot_json,updated_at_ms FROM global_pause_peer_state').all() as Array<{
-      peer:string;generation:number;acknowledged_generation:number;last_error:string|null;snapshot_json:string|null;updated_at_ms:number}>;
+    const peerRows=db.query('SELECT peer,generation,acknowledged_generation,last_error,snapshot_json,last_reached_at_ms,updated_at_ms FROM global_pause_peer_state').all() as Array<{
+      peer:string;generation:number;acknowledged_generation:number;last_error:string|null;snapshot_json:string|null;last_reached_at_ms:number|null;updated_at_ms:number}>;
+    const observedAt=Date.now();
     const peers=(this.selfMachine==='cloud'?this.peers?.names()??[]:[]).map(name=>{
       const row=peerRows.find(value=>value.peer===name);
+      const lastReachedAt=row?.last_reached_at_ms??null;
       return {name,reachable:row?row.last_error===null:null,paused:state.paused&&row?.acknowledged_generation===state.generation,
         pending:state.generation>0&&(!row||row.acknowledged_generation!==state.generation),error:row?.last_error??null,
-        snapshot:row?.snapshot_json?JSON.parse(row.snapshot_json):null};
+        snapshot:row?.snapshot_json?JSON.parse(row.snapshot_json):null,
+        lastReachedAt:lastReachedAt?new Date(lastReachedAt).toISOString():null,
+        ageMs:lastReachedAt===null?null:Math.max(0,observedAt-lastReachedAt)};
     });
     const allowed=db.query('SELECT machine,session_id FROM global_pause_exceptions WHERE generation=? ORDER BY machine,session_id')
       .all(state.generation) as Array<{machine:string;session_id:number}>;
@@ -837,10 +841,12 @@ export class SessionOwner {
             ?await this.peers!.client(name).request('GET','/sessions/v1/pause-all',undefined,5_000,false)
             :await this.peers!.client(name).request('POST','/sessions/v1/pause-all/peer',
               {paused:state.paused,generation:state.generation,allowedSessionIds:allowed.map(row=>row.session_id),continueSessionIds:continued},5_000,false);
-          db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,snapshot_json,updated_at_ms)
-            VALUES(?,?,?,?,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
-            acknowledged_generation=excluded.acknowledged_generation,last_error=NULL,snapshot_json=excluded.snapshot_json,updated_at_ms=excluded.updated_at_ms`)
-            .run(name,state.generation,state.generation,null,JSON.stringify(snapshot),Date.now());
+          const reachedAt=Date.now();
+          db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,snapshot_json,last_reached_at_ms,updated_at_ms)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,
+            acknowledged_generation=excluded.acknowledged_generation,last_error=NULL,snapshot_json=excluded.snapshot_json,
+            last_reached_at_ms=excluded.last_reached_at_ms,updated_at_ms=excluded.updated_at_ms`)
+            .run(name,state.generation,state.generation,null,JSON.stringify(snapshot),reachedAt,reachedAt);
         } catch(error){
           db.query(`INSERT INTO global_pause_peer_state(peer,generation,acknowledged_generation,last_error,updated_at_ms)
             VALUES(?,?,0,?,?) ON CONFLICT(peer) DO UPDATE SET generation=excluded.generation,

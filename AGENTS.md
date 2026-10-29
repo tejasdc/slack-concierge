@@ -45,6 +45,8 @@ Live event subscriptions stay with the accepting owner, but retained event pages
 projected by its existing read executors; see [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md).
 The cloud owner holds one [pause-all gate](docs/architecture/PAUSE-ALL.md) across session
 admission; the Inbox router remains answerable, and the Mac acknowledges the gate before work resumes there.
+Pause status reads the cloud's retained peer snapshot and last successful reach time;
+the existing background reconciliation updates it without making a screen wait for a sleeping Mac.
 The [focus hold](docs/architecture/PAUSE-ALL.md#focus-hold) leases new Inbox router turns on the cloud while other sessions and running work continue. Capture review is owner-disabled by default; older client review flags cannot hold new captures. The [Focus capture contract](docs/architecture/PAUSE-ALL.md#focus-capture-review) owns the later opt-in, urgency and release.
 Provider or model changes for running work use an acknowledged same-machine handoff;
 open obligations move only on acceptance. See [provider-change handoff](docs/architecture/SESSION-OWNER.md#provider-change-handoff)

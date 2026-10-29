@@ -120,6 +120,12 @@ reports a peer as pending until it acknowledges the current generation. A peer r
 includes its bounded paused-work snapshot, so thnkr.ing can show both machines.
 While paused, the existing reconciliation refreshes that snapshot after acknowledgement,
 so a confirmed stop replaces the initial pending stop in the sheet.
+The cloud keeps the last successful peer snapshot and its observation time separately
+from the latest attempt. A failed background check retains that snapshot and marks the
+peer unreachable; the status read never contacts a peer. The response includes the
+last reached time and its age, so a sleeping Mac can be shown as not reached since
+that time without presenting the old snapshot as current. The existing five-second
+reconciliation and peer contact refresh the record.
 
 `POST /sessions/v1/pause-all/resume` with only an action ID clears the gate on both
 machines. With `sessionIds`, it keeps the global gate and admits only those sessions.
