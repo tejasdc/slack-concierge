@@ -2,7 +2,7 @@ import {relative, sep} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {db,type SessionRow} from './state';
 import {sessionMetadata} from './session-inputs';
-import {sessionProject} from './session-projects';
+import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
 import {isLabProject} from './session-space';
@@ -62,7 +62,7 @@ export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefine
   try {root=realpathSync(workspaceRoot);actual=realpathSync(cwd);} catch {return false;}
   const under=relative(root,actual);
   if(under==='agents'||under.startsWith(`agents${sep}`))return true;
-  return !!standingAgentForCwd(root,actual)||isLabProject(actual);
+  return !!standingAgentForCwd(root,actual)||isLabProject(containingProject(root,actual)?.cwd);
 }
 
 export const STANDING_WORK_REFUSAL =
