@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS global_pause_peer_state (
   acknowledged_generation INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   snapshot_json TEXT,
+  last_reached_at_ms INTEGER,
   updated_at_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS global_pause_exceptions (
@@ -716,6 +717,9 @@ db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
 
 addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
+addColumn("global_pause_peer_state", "last_reached_at_ms", "last_reached_at_ms INTEGER");
+db.exec(`UPDATE global_pause_peer_state SET last_reached_at_ms=updated_at_ms
+  WHERE last_reached_at_ms IS NULL AND last_error IS NULL AND snapshot_json IS NOT NULL AND updated_at_ms>0`);
 
 // A Slack message is one logical input even when Slack retries its event or
 // provider timing changes how the router sees the thread. Backfill existing
