@@ -7,7 +7,7 @@ import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chat
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
-router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--here-only] [--source-input <id> --source-run <id>]
+router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery

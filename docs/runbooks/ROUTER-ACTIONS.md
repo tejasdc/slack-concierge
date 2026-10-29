@@ -114,6 +114,7 @@ Project setup uses the same local owner socket on either machine:
 ```bash
 router-actions.sh projects new command-line-tools --owner tejas --purpose "Shared commands for Tejas's machines."
 router-actions.sh projects new disk-usage-watch --owner agents --purpose "A maintenance agent's disk checks." --here-only
+router-actions.sh projects new third-places-online --owner tejas --template writing --purpose "An essay asking whether third places can exist online."
 router-actions.sh projects share life-logistics --to mac
 router-actions.sh projects status life-logistics --to mac
 router-actions.sh projects cancel life-logistics --to mac  # only while still recorded
@@ -126,6 +127,11 @@ projects, ones he follows and ones he asked for: they sit at the top of the work
 The session project list finds both by the same name, a name is one project wherever it sits,
 and the other machine's setup puts it in the same place. Existing projects are not moved,
 because sessions and transcripts are recorded against their folder path.
+
+`--template brainstorm|writing|design` lays a project template into the new project before its
+first commit: a threads file, research dossiers and an `agents/` folder of standing agent
+specifications (research, co-writer as a fork of research, interface), growing with each template.
+See [project templates](../plans/2026-10-29-project-templates.md).
 
 An agent appends its exact `--source-input` and `--source-run` pair to `new` or `share`;
 a terminal user omits it. A new project gets the canonical instruction file, its Claude
