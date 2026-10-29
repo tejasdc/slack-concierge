@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, open, rename, rm, stat, unlink } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
+import { CLAUDE_HISTORY_FORMAT } from "./provider-history-format";
 import { writeLogLine } from "./log";
 
 function toolNames(rows: readonly any[]) {
@@ -66,7 +67,7 @@ async function compactionOffsets(path: string, size: number) {
  */
 async function compactedSegments(sessionUuid: string, cwd: string, sourcePath: string, size: number) {
   const offsets = (await compactionOffsets(sourcePath, size)).filter(offset => offset > 0);
-  if (!offsets.length) return [];
+  if (!offsets.length) return { compactions: 0, rows: [] as SessionMessage[] };
   const root = await mkdtemp(join(tmpdir(), "claude-history-segment-"));
   const configDir = process.env.CLAUDE_CONFIG_DIR;
   try {
@@ -79,7 +80,7 @@ async function compactedSegments(sessionUuid: string, cwd: string, sourcePath: s
       await copyPrefix(sourcePath, segmentPath, end);
       rows.push(...await getSessionMessages(sessionUuid, { dir: cwd }));
     }
-    return rows;
+    return { compactions: offsets.length, rows };
   } finally {
     if (configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = configDir;
     await rm(root, { recursive: true, force: true });
@@ -105,7 +106,8 @@ async function main() {
   const eventCutoff = Number(cutoffText || 0);
   if (!Number.isSafeInteger(eventCutoff) || eventCutoff < 0) throw new Error("INVALID_HISTORY_CUTOFF");
   const before = await stat(sourcePath);
-  const listed = [...await compactedSegments(sessionUuid, cwd, sourcePath, before.size), ...await getSessionMessages(sessionUuid, {})];
+  const earlier = await compactedSegments(sessionUuid, cwd, sourcePath, before.size);
+  const listed = [...earlier.rows, ...await getSessionMessages(sessionUuid, {})];
   const seen = new Set<string>();
   const unique = listed.filter(row => !seen.has(row.uuid) && !!seen.add(row.uuid));
   const queued = await claudeQueuedMessages(sessionUuid, cwd);
@@ -123,7 +125,8 @@ async function main() {
       source_size INTEGER NOT NULL,source_mtime_ms REAL NOT NULL,
       row_count INTEGER NOT NULL,generation TEXT NOT NULL,event_cutoff INTEGER NOT NULL,
       tail_uuid TEXT,verified_source_size INTEGER NOT NULL,
-      verified_source_mtime_ms REAL NOT NULL,verified_tail_uuid TEXT,needs_reimport INTEGER NOT NULL DEFAULT 0
+      verified_source_mtime_ms REAL NOT NULL,verified_tail_uuid TEXT,needs_reimport INTEGER NOT NULL DEFAULT 0,
+      history_format INTEGER NOT NULL
     ); CREATE TABLE rows (ordinal INTEGER PRIMARY KEY,uuid TEXT NOT NULL,json TEXT NOT NULL);
     CREATE INDEX rows_uuid ON rows(uuid);
     CREATE TABLE message_ids (id TEXT PRIMARY KEY,ordinal INTEGER NOT NULL);
@@ -133,9 +136,9 @@ async function main() {
     const insertTool = db.query("INSERT INTO tool_names(tool_id,name) VALUES(?,?)");
     const insertMessageId = db.query("INSERT OR IGNORE INTO message_ids(id,ordinal) VALUES(?,?)");
     db.transaction(() => {
-      db.query("INSERT INTO meta VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(sessionUuid,cwd,sourcePath,
+      db.query("INSERT INTO meta VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(sessionUuid,cwd,sourcePath,
         before.size,before.mtimeMs,rows.length,generation,eventCutoff,tailUuid,
-        before.size,before.mtimeMs,tailUuid,0);
+        before.size,before.mtimeMs,tailUuid,0,CLAUDE_HISTORY_FORMAT);
       for (let index = 0; index < rows.length; index++) {
         const row: any = rows[index]!;
         insertRow.run(index,row.uuid,JSON.stringify(row));
@@ -149,7 +152,8 @@ async function main() {
       for (const [id,name] of names) insertTool.run(id,name);
     })();
     db.exec("PRAGMA optimize");
-    writeLogLine("info", JSON.stringify({ generation, rows: rows.length, changedDuringImport: before.size !== after.size || before.mtimeMs !== after.mtimeMs }));
+    writeLogLine("info", JSON.stringify({ generation, rows: rows.length, compactions: earlier.compactions,
+      rowsBeforeLatestCompaction: earlier.rows.length, changedDuringImport: before.size !== after.size || before.mtimeMs !== after.mtimeMs }));
   } finally { db.close(); }
   await rename(temporary,destination);
 }
