@@ -21,10 +21,11 @@ project sessions without a folder boundary.
 
 ## Fix
 
-Concierge declares standing roles and their folders in one table. Addressing a role resolves
-the newest active session in that folder or creates it there. Journal and repair delivery use
-the same lookup, with a dated fallback to the existing repair session until it is moved. New
-recurring schedules and renewing watches refuse product project folders; accepted work continues.
+Concierge declares standing roles and their folders in one table. The first fix addressed a
+role by the newest active session in its folder. The follow-up
+[binding correction](2026-10-29-standing-role-selected-neighbor-session.md) replaced recency
+with an explicit session binding. New recurring schedules and renewing watches refuse product
+project folders; accepted work continues.
 
 ## Acceptance scenario
 

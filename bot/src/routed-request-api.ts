@@ -68,6 +68,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
         if (operation === 'agents') return Response.json(sessions.agents(input));
+        if (operation === 'agent-bind') return Response.json(sessions.bindAgent(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
         if (operation === 'usage') {
           const current=sessions.usage(input);

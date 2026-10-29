@@ -1,7 +1,7 @@
 import {relative, sep} from 'node:path';
 import {realpathSync} from 'node:fs';
-import {db,type SessionRow} from './state';
-import {sessionMetadata} from './session-inputs';
+import {db,getSessionById,type SessionRow} from './state';
+import {sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
@@ -52,8 +52,25 @@ export function standingAgentForCwd(workspaceRoot:string,cwd:string|null|undefin
 
 export function standingAgentForSession(workspaceRoot:string,session:SessionRow) {
   const meta=sessionMetadata(session);
-  return standingAgentForCwd(workspaceRoot,meta.cwd)?.role
-    ?? (relative(workspaceRoot,meta.cwd??'')==='slack-concierge'&&meta.title===REPAIR_AGENT_TITLE?'concierge-repair':null);
+  return meta.standingRole&&standingAgentForCwd(workspaceRoot,meta.cwd)?.role===meta.standingRole?meta.standingRole:null;
+}
+
+export function assertStandingAgentFolder(workspaceRoot:string,role:string,cwd:string|null|undefined) {
+  const project=standingAgentProject(workspaceRoot,role);
+  if(!project||cwd!==project.cwd)throw new Error(`The ${role} binding requires a session in its declared agent folder.`);
+}
+
+/** The target and every former holder change in one owner transaction. */
+export function bindStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
+  db.transaction(()=>{
+    const agent=standingAgent(role);
+    if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
+    if(session.status==='archived')throw new Error('An archived session cannot hold a standing agent role.');
+    assertStandingAgentFolder(workspaceRoot,agent.role,sessionMetadata(session).cwd);
+    db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
+      WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')=?`).run(session.id,agent.role);
+    updateSessionMetadata(session.id,{standingRole:agent.role});
+  })();
 }
 
 export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefined):boolean {
@@ -71,20 +88,39 @@ export const STANDING_WORK_REFUSAL =
 
 export function standingAgentSession(workspaceRoot:string,role:string):SessionRow|null {
   const project=standingAgentProject(workspaceRoot,role);
-  const session=project?db.query(`SELECT * FROM sessions WHERE status!='archived'
-    AND json_extract(native_metadata_json,'$.cwd')=? ORDER BY id DESC LIMIT 1`).get(project.cwd) as SessionRow|null:null;
-  if(session||role!=='concierge-repair')return session;
-  // 2026-10-29: until sessions move places concierge:4543 in its agent folder,
-  // retain the exact-title repair session in the Concierge project as the binding.
-  const oldProject=sessionProject(workspaceRoot,'slack-concierge');
-  return oldProject?db.query(`SELECT * FROM sessions WHERE status!='archived'
+  return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
+    AND json_extract(native_metadata_json,'$.cwd')=?
+    AND json_extract(native_metadata_json,'$.standingRole')=?
+    ORDER BY id DESC LIMIT 1`).get(project.cwd,role) as SessionRow|null:null;
+}
+
+function hasStandingAgentBinding(role:string):boolean {
+  return !!db.query(`SELECT 1 FROM sessions WHERE json_extract(native_metadata_json,'$.standingRole')=? LIMIT 1`).get(role);
+}
+
+export function unboundJournalKeeperSession(workspaceRoot:string):SessionRow|null {
+  // 2026-10-29: concierge:4571 is the known keeper until sessions agents bind journal-keeper has run.
+  if(hasStandingAgentBinding('journal-keeper'))return null;
+  const project=standingAgentProject(workspaceRoot,'journal-keeper');
+  const session=getSessionById(4571);
+  if(!project||!session||session.status==='archived')return null;
+  return sessionMetadata(session).cwd===project.cwd?session:null;
+}
+
+export function unboundRepairAgentSession(workspaceRoot:string):SessionRow|null {
+  // 2026-10-29: exact-title repair delivery ends once sessions agents bind concierge-repair has run.
+  if(hasStandingAgentBinding('concierge-repair'))return null;
+  const project=standingAgentProject(workspaceRoot,'concierge-repair');
+  return project?db.query(`SELECT * FROM sessions WHERE status!='archived'
     AND json_extract(native_metadata_json,'$.cwd')=?
     AND json_extract(native_metadata_json,'$.title')=?
-    ORDER BY id DESC LIMIT 1`).get(oldProject.cwd,REPAIR_AGENT_TITLE) as SessionRow|null:null;
+    ORDER BY id DESC LIMIT 1`).get(project.cwd,REPAIR_AGENT_TITLE) as SessionRow|null:null;
 }
 
 export function standingAgentRows(workspaceRoot:string) {
-  return STANDING_AGENTS.map(agent=>({
-    ...agent,session:(()=>{const row=standingAgentSession(workspaceRoot,agent.role);return row?{id:`concierge:${row.id}`,address:sessionAddress(row)}:null;})(),
-  }));
+  return STANDING_AGENTS.map(agent=>{
+    const row=standingAgentSession(workspaceRoot,agent.role);
+    return {...agent,session:row?{id:`concierge:${row.id}`,address:sessionAddress(row)}:null,
+      binding:row?'bound':'unbound'};
+  });
 }

@@ -8,6 +8,7 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
+router-actions.sh sessions agents bind <role> <session-address> <source-flags> --action-id A
 router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
@@ -136,6 +137,7 @@ export type SessionCommunicationRequest =
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "agents"; body: { source: Source } }
+  | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
@@ -522,6 +524,20 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
   if (operation === "areas") return parseTopicsArgs(['area',...args]);
+  if(operation==='agents'&&args[0]==='bind') {
+    args.shift();
+    const role=args.shift(),address=args.shift();
+    if(!role||role.startsWith('--')||!address?.startsWith('session:'))invalid('agents bind needs a role and an exact session address.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid agents bind option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),action_id=flags.get('--action-id');
+    if(!action_id)invalid('agents bind needs a stable --action-id.');
+    return {operation:'agent-bind',body:{source,action_id,role,address}};
+  }
   if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }

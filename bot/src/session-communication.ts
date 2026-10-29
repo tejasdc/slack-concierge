@@ -30,7 +30,7 @@ import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } f
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
-import {standingAgent,standingAgentProject,standingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
+import {standingAgent,standingAgentProject,standingAgentSession,bindStandingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
 import {sessionProject} from './session-projects';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
@@ -503,6 +503,28 @@ export class SessionCommunicationCoordinator {
     agents(input:{source:CommunicationSource}) {
         this.actor(input.source);
         return this.dependencies.owner.standingAgents();
+    }
+    bindAgent(input:{source:CommunicationSource;action_id:string;role:string;address:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));
+        action(input.action_id);
+        if(!standingAgent(input.role))throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
+        const target=resolveSessionAddress(input.address);
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        return db.transaction(()=>{
+            this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'bind-standing-agent',role:input.role,address:input.address},
+                sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return JSON.parse(saved.input.receipt_json??'{}');
+            const session=getSessionById(target.id);
+            if(!session)throw new Error('The exact session does not exist.');
+            bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
+            const receipt={state:'completed',role:input.role,binding:'bound',session:{id:`concierge:${session.id}`,address:sessionAddress(session)}};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(receipt),saved.input.id);
+            return receipt;
+        })();
     }
     async peerInventory(input:{source:CommunicationSource}) {
         this.actor(input.source);
@@ -1052,6 +1074,7 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        let standingRole:import('./standing-agents').StandingAgentRole|undefined;
         if(input.role!==undefined) {
             const agent=standingAgent(input.role);
             if(!agent)throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
@@ -1060,6 +1083,7 @@ export class SessionCommunicationCoordinator {
             const project=standingAgentProject(this.dependencies.owner.defaultCwd,agent.role);
             if(!project)throw new Error(`The ${agent.role} agent project is unavailable on this machine.`);
             const session=standingAgentSession(this.dependencies.owner.defaultCwd,agent.role);
+            if(!session)standingRole=agent.role;
             input=session?{...input,role:undefined,address:sessionAddress(session)}
                 :{...input,role:undefined,provider:'auto',project:project.cwd,title:input.title??agent.description};
         }
@@ -1257,7 +1281,7 @@ export class SessionCommunicationCoordinator {
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,firstInput,saved:input.saved});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {
