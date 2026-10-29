@@ -4,6 +4,10 @@ The public and peer listeners admit requests without opening the canonical ledge
 routes have one storage-free classification in `bot/src/native-read-routes.ts`. Finite product
 reads go to a pool of private read executors; command routes remain with the canonical owner;
 event streams and reads that require live coordinator state use their declared owner path.
+Pause status uses a read executor because its gate, stopped runs and last peer
+observation are retained in the ledger. This keeps the screen responsive even when
+an Inbox command occupies the canonical owner's loop. The executor uses a single
+read transaction and the same configured peer names; only the owner refreshes peers.
 The owner keeps each event stream's live subscription and cursor. For each bounded replay
 page it asks the local gateway to run the retained event projection in a read executor,
 then forwards the executor's complete SSE frames. The gateway's private page entrance is

@@ -536,7 +536,8 @@ export class SessionOwner {
   // A subscriber reconnects within seconds over its kept-alive connection, which a graceful stop
   // still serves, so the owner also refuses every later stream: none can outlive the drain.
   closeStreams() {this.streamsClosed=true;for(const close of [...this.openStreams]){try{close();}catch{}}}
-  constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
+  constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string,
+    private readonly readPeerNames:readonly string[]=[]){}
   /** In-memory login state only; account files and usage belong to isolated readers. */
   authEphemera():ProviderAuthEphemera|null {return this.runtime.auth?.ephemera?.()??null;}
   async refreshAuthEphemera():Promise<ProviderAuthEphemera> {
@@ -638,7 +639,7 @@ export class SessionOwner {
     }
     return this.focusHoldStatus();
   }
-  globalPauseStatus(){
+  globalPauseStatus(){return db.transaction(()=>{
     const state=globalPauseState();
     const running=db.query(`SELECT target.session_id,target.run_id,target.title,target.turn_id,target.stop_error,turn.status,
       turn.stop_requested_at,session.provider_id FROM global_pause_targets target LEFT JOIN turns turn ON turn.id=target.turn_id
@@ -658,7 +659,7 @@ export class SessionOwner {
     const peerRows=db.query('SELECT peer,generation,acknowledged_generation,last_error,snapshot_json,last_reached_at_ms,updated_at_ms FROM global_pause_peer_state').all() as Array<{
       peer:string;generation:number;acknowledged_generation:number;last_error:string|null;snapshot_json:string|null;last_reached_at_ms:number|null;updated_at_ms:number}>;
     const observedAt=Date.now();
-    const peers=(this.selfMachine==='cloud'?this.peers?.names()??[]:[]).map(name=>{
+    const peers=(this.selfMachine==='cloud'?this.peers?.names()??this.readPeerNames:[]).map(name=>{
       const row=peerRows.find(value=>value.peer===name);
       const lastReachedAt=row?.last_reached_at_ms??null;
       return {name,reachable:row?row.last_error===null:null,paused:state.paused&&row?.acknowledged_generation===state.generation,
@@ -678,6 +679,7 @@ export class SessionOwner {
       waitingCount:waiting,waitingSessions:waitingSessions.map(row=>({sessionId:`${this.selfMachine==='cloud'?'concierge':this.selfMachine}:${row.id}`,title:row.title,count:row.count})),
       allowed:allowed.map(row=>`${row.machine==='cloud'?'concierge':row.machine}:${row.session_id}`),
       continued:JSON.parse(action?.session_ids_json??'[]') as string[],peers};
+  })();
   }
   private applyGlobalPause(paused:boolean,clientActionId:string,generation?:number,sessionIds:readonly string[]=[],peerAllowed:readonly number[]=[],peerContinue:readonly number[]=[]){
     if(typeof clientActionId!=='string'||!clientActionId||clientActionId.length>200)throw new SessionOwnerError('Stable clientActionId required.');

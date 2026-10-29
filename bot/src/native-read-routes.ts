@@ -11,7 +11,7 @@ export type NativeReadRoute=Readonly<{
 }>;
 
 const liveOwner=new Set([
-  '/status','/pause-all','/focus-hold','/projects/:id/status','/peers','/peers/operations/:id',
+  '/status','/focus-hold','/projects/:id/status','/peers','/peers/operations/:id',
   '/peers/requests/:id','/peers/requests/:id/replies/:id','/requests/:id','/sources/refresh',
 ]);
 const provider=new Set(['/sessions/:id/history','/sessions/:id/history/messages/:id/detail',
@@ -49,7 +49,7 @@ export function classifyNativeReadRoute(method:string,pathname:string):NativeRea
 }
 
 const independentCanonical=new Set([
-  '/events','/releases','/models','/usage/breakdown','/projects','/saved-work/settings',
+  '/events','/releases','/models','/usage/breakdown','/projects','/saved-work/settings','/pause-all',
   '/operations/:id','/runs/:id','/work-thread','/inbox','/sessions','/sessions/:id',
   '/sessions/:id/view','/sessions/:id/capabilities',
 ]);
