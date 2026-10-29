@@ -99,7 +99,10 @@ function routeForMessage(source:Database,messageId:unknown):{destinationMessageI
   row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {payload_json:string}|null;
  }
  if(!row){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;
+  const routes=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
+   .all(id) as {payload_json:string}[];
+  if(routes.length>1)return null;
+  row=routes[0]??null;
  }
  if(!row){
   row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;

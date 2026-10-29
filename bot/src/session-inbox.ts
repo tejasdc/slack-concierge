@@ -7,6 +7,7 @@ import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
+import {messageRouteReceipts} from './message-route-receipts';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -97,14 +98,9 @@ const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(cl
 export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null;payload_json?:string})=>row.kind==='message'&&row.payload_json
   ?JSON.parse(row.payload_json).message?.id??row.event_id:['result','post','request','topic_route'].includes(row.kind)?row.event_id:row.input_id;
 export function messageRouteForSource(sourceMessageId:string):{topicId?:string;sessionId?:string;messageId:string}|null {
-  const row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
-    .get(sourceMessageId) as {kind:string;payload_json:string}|null;
-  if(!row)return null;
-  const route=JSON.parse(row.payload_json);
-  const peer=route.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
-  if(peer?.delivery_json&&peer.outcome)return null;
-  return {messageId:route.destinationMessageId,
-    ...(row.kind==='topic_route'?{topicId:route.topicId}:{sessionId:route.destinationSessionId})};
+  const routes=messageRouteReceipts(db,sourceMessageId).filter(route=>route.delivery!=='failed');
+  // A reply under the original message cannot choose one of several destinations for him.
+  return routes.length===1?routes[0]!:null;
 }
 export function inboxMessage(row:any) {
   if(row.kind==='message'){
@@ -150,14 +146,10 @@ export function inboxMessage(row:any) {
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
-  const routed=row.input_id&&!agent?(db.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1").get(row.input_id) as {payload_json:string}|null):null;
-  const route=routed?JSON.parse(routed.payload_json):null;
-  const peerRoute=route?.requestId?db.query('SELECT delivery_json,outcome FROM session_peer_requests WHERE request_id=?').get(route.requestId) as {delivery_json:string|null;outcome:string|null}|null:null;
-  const delivery=peerRoute?.delivery_json?(peerRoute.outcome?'failed':'pending'):'delivered';
+  const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
-    ...(route?{routedTo:{...(route.topicId?{topicId:route.topicId}:{}),...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),messageId:route.destinationMessageId,
-      title:routeTitle(db,route.topicId,route.destinationSessionId),delivery}}:{}),
+    ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
