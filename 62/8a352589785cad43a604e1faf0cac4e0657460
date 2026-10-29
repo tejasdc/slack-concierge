@@ -1,0 +1,1 @@
+A conversation that ran out of room and was compacted now keeps its earlier messages in the window, in order, instead of losing them and showing an older request at the bottom.
