@@ -52,6 +52,7 @@ fi
 chmod 600 "$STATE/peer.token"
 
 (cd "$REPO/bot" && "$BUN" install --frozen-lockfile)
+"$REPO/scripts/ensure-mac-agent-browser.sh" "$NODE"
 # Same as remote-box's ExecStartPre: start the managed app-server daemon if it is not running.
 # Apply the native updater preference as this user, never from the later sudo hook installer.
 # A daemon start otherwise ensures an updater even when the listener is already running.
