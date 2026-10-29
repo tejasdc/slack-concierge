@@ -14,6 +14,7 @@ import type {SessionOwner} from './session-owner';
 import type {PeerClient} from './session-peers';
 import {PeerError} from './session-peers';
 import {log,errorFields} from './log';
+import {awaitingOutside} from './storage-observation';
 
 const NAME=/^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
 const VAGUE=new Set(['commands','tools','scripts','utils','misc','stuff','test','project','new','temp','app','helpers','things','notes']);
@@ -48,7 +49,9 @@ type Outcome={state:'done'|'already_present'|'refused'|'failed'|'cancelled';reas
 type Outgoing={order_id:string;peer:string;project:string;body_json:string;state:string;result_json:string|null;created_at_ms:number;last_attempt_at_ms:number|null;notice_kind:string|null;notice_text:string|null;source_session_id:number|null;source_input_id:string|null;source_run_id:string|null;return_input_id:string|null};
 const gitEnv=()=>({...process.env,GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never',GIT_LFS_SKIP_SMUDGE:'1',GIT_ALLOW_PROTOCOL:'https'});
 // GitHub and Git may wait on the network. The operation owns the result; the event loop does not.
-const run=async(file:string,args:string[],cwd?:string)=>(await promisify(execFile)(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024})).stdout.trim();
+// That wait is recorded as outside time, not owner time: four 8 s `projects new` calls with no
+// loop blocking opened a slow-reads incident on 2026-10-29 (work-flow supervisor 9e80e9c2).
+const run=async(file:string,args:string[],cwd?:string)=>(await awaitingOutside(()=>promisify(execFile)(file,args,{cwd,encoding:'utf8',env:gitEnv(),maxBuffer:16*1024*1024}))).stdout.trim();
 function git(cwd:string,...args:string[]){return run('git',args,cwd);}
 // A new project's name must say what it is (the naming rule); an existing project keeps the name
 // it already has, so share, status and the receiving side only check that it is a safe folder name.
