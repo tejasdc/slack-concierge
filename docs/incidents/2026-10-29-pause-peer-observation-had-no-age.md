@@ -21,6 +21,9 @@ started. The Mac peer call was not in the read path.
 The retained peer row had a snapshot and the time of the latest attempt, but no time
 for the latest successful answer. A failed attempt replaced the attempt time, so the
 status could not truthfully say how old the saved snapshot was.
+The first installed response exposed a seven-day-old successful observation still
+marked reachable: reconciliation had stopped checking a peer after an unpaused
+generation was acknowledged.
 
 ## Cause
 
@@ -34,6 +37,8 @@ read even though all its input is retained.
 Store the successful observation time separately and retain it after failed checks.
 Serve that time and its age with the saved snapshot. Keep the existing background
 reconciliation as the only peer request path for status.
+Keep checking unpaused peers in that existing loop at a one-minute cadence; keep
+the five-second paused cadence for Stop receipts. Check before the first pause too.
 Route the pause read to the existing independent read executors and assemble its
 ledger reads within one consistent snapshot. An Inbox command can then occupy the
 owner loop without holding this screen read.
