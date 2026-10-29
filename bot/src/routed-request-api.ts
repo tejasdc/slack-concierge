@@ -56,7 +56,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
-        const readOnly=operation==='search'||operation==='projects'||operation==='peers'||operation==='usage'
+        const readOnly=operation==='search'||operation==='projects'||operation==='agents'||operation==='peers'||operation==='usage'
           ||operation==='pause'&&input.verb==='status'
           ||operation==='get'||operation==='context'||operation==='obligations'
           ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
@@ -67,6 +67,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json({error:'This proposed handoff was withdrawn; this successor cannot write.',code:'HANDOFF_WITHDRAWN'},{status:409});
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
+        if (operation === 'agents') return Response.json(sessions.agents(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
         if (operation === 'usage') {
           const current=sessions.usage(input);

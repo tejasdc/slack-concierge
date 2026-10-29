@@ -7,6 +7,7 @@ import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chat
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+router-actions.sh sessions agents <source-flags>
 router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
@@ -16,6 +17,7 @@ router-actions.sh sessions usage <source-flags> [--by-session] [--period today|w
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] -- <text>
+router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --outside --project <registered-project> [--provider <codex alias>] [--effort <level>] --session-name <title> --summary "<one line>" [--thread <message-id>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro | --gpt <https://chatgpt.com/g/g-…>] [--his-chat] [--session-name <title>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
@@ -133,11 +135,12 @@ export type SessionCommunicationRequest =
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
   | { operation: "projects"; body: { source: Source; peer?: string } }
+  | { operation: "agents"; body: { source: Source } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -519,14 +522,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
   if (operation === "areas") return parseTopicsArgs(['area',...args]);
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
+  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "agents" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "outcome" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -622,6 +625,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--route-message" && operation === "ask")
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
+      || (flag === "--role" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
       || (flag === "--expires" && savedKind==='scheduled')
       || (flag === "--every-ms" && savedKind==='scheduled')
@@ -671,6 +675,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='projects') {
     if(separator>=0)invalid('projects does not accept text.');
     return {operation,body:{source,...(peer?{peer}:{})}};
+  }
+  if(operation==='agents') {
+    if(separator>=0)invalid('agents does not accept text.');
+    return {operation,body:{source}};
   }
   if(operation==='peers') {
     if(separator>=0)invalid('peers does not accept text.');
@@ -789,8 +797,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // An outside run is a Codex CLI agent, so its default is Concierge's Codex default, never Automatic.
   const provider=flags.get('--provider')??(operation==='ask'&&!identity&&flags.has('--project')?(outside?'codex':'auto'):undefined);
   const title=flags.get('--session-name')?.trim();
+  const role=flags.get('--role');
   if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
-  if(title!==undefined&&!provider)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
+  if(title!==undefined&&!provider&&!role)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
   const effort=flags.get('--effort'),project=flags.get('--project'),requestedEffect=flags.get('--requested-effect');
   const workDisposition=flags.get('--work-disposition');
   if(workDisposition&&(!['completed','failed','needs_decision'].includes(workDisposition)||partial))
@@ -814,14 +823,16 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
-  if(operation==='ask'&&(provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
-    invalid('ask requires either an exact discovered address or --provider with a supported alias.');
+  if(operation==='ask'&&(role?(!!identity||!!provider||!!project||!!peer||!!savedKind):provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
+    invalid('ask requires a discovered address, --role, or --provider with a supported alias; choose one destination.');
   }
+  if(role&&(effort||smallTask||outside||resurrect||flags.has('--consult')))
+    invalid('--role selects its existing session or creates it in its agent project; these new-session options cannot be combined with it.');
   if(flags.has('--route-message')&&flags.has('--thread'))invalid('--route-message owns one message destination; do not also name an Inbox thread.');
   if(smallTask&&(provider!=='auto'||peer||identity))invalid('--small-task requires a new local Automatic session.');
   if(outside&&(identity||peer||savedKind||provider==='chatgpt'||provider==='auto'||!project))
     invalid('--outside starts a new Codex session on this machine: give --project (and optionally a Codex --provider alias), not an address, --peer, ChatGPT, Automatic or saved work.');
-  if(!provider&&(project||effort))invalid('--project and --effort require new session creation.');
+  if(!provider&&!role&&(project||effort))invalid('--project and --effort require new session creation.');
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&after.length)invalid('A peer request cannot wait on --after-request.');
   if(provider==='chatgpt'&&project)invalid('ChatGPT accepts no project.');
@@ -841,7 +852,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,

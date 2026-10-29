@@ -17,7 +17,6 @@ export const REPAIR_FIRST_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 export const REPAIR_AGENT_TITLE = "Repair agent";
-export const REPAIR_AGENT_PROJECT = "slack-concierge";
 export const REPAIR_AGENT_PROVIDER = "cc-opus";
 
 const initialized=new WeakSet<Database>();

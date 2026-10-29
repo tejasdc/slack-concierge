@@ -30,6 +30,8 @@ import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } f
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
+import {standingAgent,standingAgentProject,standingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
+import {sessionProject} from './session-projects';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -497,6 +499,10 @@ export class SessionCommunicationCoordinator {
         if(input.peer!==undefined)return this.peers().projects(input.peer);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         return this.dependencies.owner.projects();
+    }
+    agents(input:{source:CommunicationSource}) {
+        this.actor(input.source);
+        return this.dependencies.owner.standingAgents();
     }
     async peerInventory(input:{source:CommunicationSource}) {
         this.actor(input.source);
@@ -997,6 +1003,8 @@ export class SessionCommunicationCoordinator {
         if(typeof input.until!=='string'||!input.until.trim())throw new Error('--until is required.');
         if(input.verb==='file'){
             if(typeof input.path!=='string')throw new Error('Name the file or directory to watch.');
+            if(input.renew&&!canOwnStandingWork(this.dependencies.owner.defaultCwd,sessionMetadata(getSessionById(actor.session)!).cwd))
+                throw new Error(STANDING_WORK_REFUSAL);
             return registerWatch({kind:'file',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,path:input.path,renew:input.renew});
         }
         if(!Array.isArray(input.argv)||typeof input.cwd!=='string')throw new Error('A command watch needs --cwd and the command after --.');
@@ -1006,6 +1014,7 @@ export class SessionCommunicationCoordinator {
         source: CommunicationSource;
         action_id: string;
         address?: string;
+        role?: string;
         provider?: string;
         smallTask?: boolean;
         hisChat?: boolean;
@@ -1043,6 +1052,17 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        if(input.role!==undefined) {
+            const agent=standingAgent(input.role);
+            if(!agent)throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
+            if(input.address||input.provider||input.project||input.peer||input.outside||input.resurrect||input.saved||input.consult)
+                throw new Error('--role chooses the standing agent session and project; do not combine it with an address, provider, project, peer or saved work.');
+            const project=standingAgentProject(this.dependencies.owner.defaultCwd,agent.role);
+            if(!project)throw new Error(`The ${agent.role} agent project is unavailable on this machine.`);
+            const session=standingAgentSession(this.dependencies.owner.defaultCwd,agent.role);
+            input=session?{...input,role:undefined,address:sessionAddress(session)}
+                :{...input,role:undefined,provider:'auto',project:project.cwd,title:input.title??agent.description};
+        }
         let routedFrom:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'}|null=null;
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
@@ -1113,6 +1133,12 @@ export class SessionCommunicationCoordinator {
             if(input.saved.kind!=='scheduled'&&input.saved.kind!=='banked')throw new Error('Unknown saved work kind.');
             if(input.saved.kind==='scheduled'&&(!Number.isFinite(input.saved.atMs)||input.saved.atMs!<=Date.now()))
                 throw new Error('Scheduled work needs a future time.');
+            if(input.saved.repeatEveryMs!==undefined) {
+                const root=this.dependencies.owner.defaultCwd;
+                const target=input.project?sessionProject(root,input.project,{inside:true}):null;
+                if(!canOwnStandingWork(root,sessionMetadata(getSessionById(actor.session)!).cwd)||!canOwnStandingWork(root,target?.cwd))
+                    throw new Error(STANDING_WORK_REFUSAL);
+            }
         }
         if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined||input.peer!==undefined) {

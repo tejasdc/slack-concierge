@@ -109,6 +109,24 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
+### Standing agents
+
+`sessions agents` lists each continuing role, its agent project, job, wake source and current
+non-archived session address. `sessions ask --role <role> --summary "<one line>" --action-id A -- <text>`
+uses that session. If none exists, it starts one in the declared agent project with the role's
+description as its session name; `--session-name` overrides that name for creation.
+The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
+`sessions context` and the session view expose the role derived from the session's folder.
+
+New repeating schedules and renewing file watches require both the requesting session and
+the scheduled session, where applicable, to be in `workspace/agents/`, a declared top-level
+agent project, or the existing agent lab. `life-logistics` and `skills` are product projects
+for this rule. Existing queued firings and armed watches continue. Move a continuing job
+to an agent project made with `projects new <name> --owner agents`, then use
+`sessions ask --role` for a declared standing role. Journal delivery resolves the newest
+non-archived session in `journal-keeper`; repair notices use `agents/concierge-repair`,
+with an exact-title fallback for the old repair session until it is moved.
+
 Project setup uses the same local owner socket on either machine:
 
 ```bash
