@@ -33,6 +33,7 @@ linked source and destination views; whole-conversation placement requires the r
 Placement refuses moving a root with a forwarded human reply bound to its current topic;
 route that exact message instead so its answers and notices stay with it.
 See [one-message routing](docs/plans/2026-10-15-route-one-inbox-message.md).
+One accepted capture may have several independently addressed topic routes; each destination keeps its own reply root, and the source shows every route. See the same contract.
 
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the

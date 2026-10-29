@@ -111,7 +111,11 @@ export function routedMessageFor(messageId:unknown) {
     row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {kind:string;payload_json:string}|null;
   }
   if(!row){
-    row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {kind:string;payload_json:string}|null;
+    const routes=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
+      .all(id) as {kind:string;payload_json:string}[];
+    // A source with several routes has no single destination for answer matching.
+    if(routes.length>1)return null;
+    row=routes[0]??null;
   }
   if(!row){
     row=db.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {kind:string;payload_json:string}|null;
@@ -1666,10 +1670,12 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const sourceRoot=inboxThreadRoot(source.session_id,messageId);
         const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
-        const prior=existingMessageRoute(messageId);
-        if(prior)throw new TopicError(`This message was already routed as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
         if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
         const topic=topicFor(destination);
+        const prior=(db.query(`SELECT event_id,payload_json FROM session_owner_events WHERE kind='topic_route'
+          AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC`).all(messageId) as {event_id:string;payload_json:string}[])
+          .find(route=>topicOfRoot(JSON.parse(route.payload_json).destinationMessageId)===destination);
+        if(prior)throw new TopicError(`This message was already routed to this thread as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
         const destinationMessageId=`topic-change:${actionInputId}`;
         const by=byOf(actor),at=nowIso(),next=bumped(topic);
         const payload={change:'routed',topicId:destination,topic:next,destinationSessionId:`concierge:${session.id}`,sourceMessageId:messageId,

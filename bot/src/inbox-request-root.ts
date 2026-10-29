@@ -44,9 +44,9 @@ export function inboxRequestRoot(database:Database,requestId:string,originalRoot
     ??database.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(requestId)) as {payload_json:string}|null;
   const forwarded=request?JSON.parse(request.payload_json)?.forwardedReply?.inboxInputId:null;
   if(typeof forwarded==='string'){
-    const route=database.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 1")
-      .get(forwarded) as {kind:string;payload_json:string}|null;
-    if(route?.kind==='topic_route')return JSON.parse(route.payload_json).destinationMessageId;
+    const routes=database.query("SELECT kind,payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
+      .all(forwarded) as {kind:string;payload_json:string}[];
+    if(routes.length===1&&routes[0]?.kind==='topic_route')return JSON.parse(routes[0].payload_json).destinationMessageId;
   }
   const ownRoot=`request:${requestId}`;
   if(database.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(ownRoot))return ownRoot;
