@@ -1,0 +1,1 @@
+Paused agents now checks your Mac in the background even when agents are not paused, so its saved status does not stay stale for days.
