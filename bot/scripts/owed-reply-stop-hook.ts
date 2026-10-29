@@ -3,9 +3,10 @@
  * turn while it still owes a final reply or Inbox filing, send it back with the exact
  * command, inside the same turn. Usage: owed-reply-stop-hook.ts <claude-code|codex>.
  *
- * Both providers run Stop hooks when the agent finishes, give the hook the provider's own
- * conversation id as `session_id` and `stop_hook_active` when the turn is already continuing
- * because of a Stop hook, and take `{"decision":"block","reason"}` as "keep going with this"
+ * Both providers run Stop hooks when the agent finishes. A regular Stop names the provider's
+ * conversation in `session_id`; Codex's SubagentStop names its parent there and the child in
+ * `agent_id`. A continuing Stop carries `stop_hook_active`, and both events take
+ * `{"decision":"block","reason"}` as "keep going with this"
  * (https://code.claude.com/docs/en/hooks#stop, https://learn.chatgpt.com/docs/hooks). Claude gets
  * this hook from Concierge with --settings on every run (claude-code.ts). Codex gets it as a
  * managed hook from /etc/codex/requirements.toml, which Codex trusts by policy for unattended
@@ -23,13 +24,18 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { requestApiResponse } from './router-request-client';
 import { RETRY_POLICIES } from '../src/retry-policies';
 
 const provider = process.argv[2];
 let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
-const conversation = typeof hook.session_id === 'string' ? hook.session_id : null;
+// Codex's SubagentStop session_id names the parent; agent_id names the child whose
+// browser and request obligations this hook may close. Never use the parent's run ID there.
+const childStop = provider === 'codex' && hook.hook_event_name === 'SubagentStop';
+const browserOwnerId = childStop ? hook.agent_id : hook.session_id;
+const conversation = typeof browserOwnerId === 'string' ? browserOwnerId : null;
 if (!provider || !conversation) process.exit(0);
 const background = Array.isArray(hook.background_tasks) && hook.background_tasks.length > 0;
 
@@ -38,6 +44,44 @@ const background = Array.isArray(hook.background_tasks) && hook.background_tasks
 // native run (Claude) is carried into that controller's environment. Stop only processes bearing
 // that identity, after the turn is allowed to finish; a blocked Stop still owns its browser.
 function closeRunBrowsers(runId: string | null) {
+  if (process.platform === 'darwin') {
+    // macOS has no /proc. Chrome does not expose the controller's environment through ps,
+    // so first prove the detached agent-browser controller's identity, then close its tree.
+    const listing = spawnSync('/bin/ps', ['-A', '-ww', '-o', 'pid=', '-o', 'ppid=', '-o', 'command='],
+      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    if (listing.status !== 0) return;
+    const processes = new Map<number, { parent: number; command: string }>();
+    for (const line of listing.stdout.split('\n')) {
+      const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+      if (match) processes.set(Number(match[1]), { parent: Number(match[2]), command: match[3] });
+    }
+    for (const [controller, { command }] of processes) {
+      if (!/^\/\S*\/agent-browser-darwin-(?:arm64|x64)(?:\s|$)/.test(command)) continue;
+      const details = spawnSync('/bin/ps', ['eww', '-p', String(controller), '-o', 'command='],
+        { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+      if (details.status !== 0) continue;
+      const fields = details.stdout.split(/\s+/);
+      const owned = (runId && fields.includes(`CONCIERGE_SOURCE_RUN_ID=${runId}`))
+        || (provider === 'codex' && fields.includes(`CODEX_THREAD_ID=${conversation}`));
+      if (!owned) continue;
+      const descendants: { pid: number; depth: number }[] = [];
+      for (const pid of processes.keys()) {
+        if (pid === controller) continue;
+        let parent = processes.get(pid)?.parent;
+        let depth = 0;
+        while (parent && parent !== 1 && depth < processes.size) {
+          depth++;
+          if (parent === controller) { descendants.push({ pid, depth }); break; }
+          parent = processes.get(parent)?.parent;
+        }
+      }
+      // Keep the Chrome children identified before the controller exits and reparents them.
+      for (const pid of [controller, ...descendants.sort((a, b) => b.depth - a.depth).map(child => child.pid)]) {
+        try { process.kill(pid, 'SIGTERM'); } catch { /* It may already have exited. */ }
+      }
+    }
+    return;
+  }
   if (process.platform !== 'linux') return;
   for (const entry of readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
@@ -86,7 +130,7 @@ try {
     // Only after the reminder is written: these exact requests were shown to the agent in this run.
     if (owed.length) await ask({ offer: owed.map(request => request.request_id) });
   } else if (!background) {
-    closeRunBrowsers(source?.run_id ?? null);
+    closeRunBrowsers(childStop ? null : source?.run_id ?? null);
   }
 } catch {
   // The owner may be restarting. Codex's own conversation identity is still enough to close

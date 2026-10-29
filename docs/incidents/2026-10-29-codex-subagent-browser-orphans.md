@@ -36,6 +36,16 @@ whether the administrator-installed `SubagentStop` hook is present; an older hoo
 be accepted as current merely because it has the earlier per-run wrapper.
 The Mac updater pins its npm-owned browser CLI to a version with working idle shutdown;
 the package is upgraded separately from the shared Codex App Server.
+The first Mac child probe exposed a further cleanup gap: the hook returned immediately on macOS because
+its process scan used Linux `/proc`. A Mac controller in the upgraded 0.27.0 probe exposed
+its Codex thread ID through `ps eww`, while its direct Chrome child did not. The hook now
+matches that controller by executable and exact thread/run identity, then closes its
+recorded descendants. The administrator-installed hook still needs `sudo`.
+The first server child probe also showed that its Stop was blocked by the parent's open
+request. Codex's hook input gives `session_id` for the parent and `agent_id` for the child;
+using the parent resolved the parent's running turn and could close the parent's browser
+while that turn was still active.
+The corrected child hook uses only the child agent ID for its owner query and browser match.
 
 ## Acceptance scenario
 

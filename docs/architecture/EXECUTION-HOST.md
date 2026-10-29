@@ -298,17 +298,24 @@ so ending an agent turn does not end its browser. On October 11, 2026, 26 contro
 from completed native turns held hundreds of processes until their exact run identities
 were matched and stopped.
 
-The existing Stop hook closes only agent-browser controller and Chrome executables whose
-process environment carries the native run ID the owner returned, or the Codex conversation
-ID in the hook input. It acts only when the turn may stop: a blocked reply reminder keeps
-its browser, as does a reported background task. This uses the existing trusted hook
+The Stop hook closes agent-browser processes only after proving the native run ID
+the owner returned, or the Codex conversation ID in the hook input. On Linux it
+matches both controllers and Chrome by that identity in `/proc`. On macOS,
+Chrome does not expose the controller's environment through `ps`, so the hook first
+matches the controller and then closes its recorded child process tree. It acts only
+when the turn may stop: a blocked reply reminder keeps its browser, as does a reported
+background task. This uses the existing trusted hook
 instead of a periodic process killer, and does not touch other runs' browsers or the
 shared App Server. A process that outlives a crashed or unhooked run remains visible to
 the host's aged-controller alert for owner investigation; the host observer never kills it.
+On macOS, Chrome left after its controller has already died and crash handlers reparented
+to launchd are outside that recorded tree and cannot be closed by this hook.
 
 Codex sends `SubagentStop`, not `Stop`, when a spawned agent or nested helper ends.
 The managed hook registers both events. On `SubagentStop`, the same process filter uses
-that child's own Codex thread ID; the parent stays running and its browsers stay open.
+the hook's child agent ID as that child's Codex thread ID, rather than the parent session ID
+Codex also supplies. It does not use the parent's run ID, so the parent stays running and
+its browsers stay open.
 The hook asks the owner as usual, but an unbound child owes no Concierge request. The
 child's `CODEX_THREAD_ID` is enough for cleanup even if that owner call fails.
 
@@ -328,9 +335,14 @@ Codex threads, including nested children. The server hook installer merges it in
 `/etc/codex/config.toml`; the Mac's unattended installer merges it into that user's
 Codex config. The Mac's machine-wide SubagentStop hook still needs the existing
 administrator installation, and unattended updates report when it is missing.
+Its agent-browser package must also support the idle setting: version 0.16.3 ignored
+it in a short live probe, whereas 0.20.14 introduced the setting. A fresh child shell
+inheriting the value proves policy delivery; a short idle expiry probe proves the
+installed daemon acts on it.
 The separate ChatGPT browser process stays outside Codex. The shared App Server is not restarted for this setting; a
 new root thread and its children read the installed config when they start. Existing
-threads still rely on their own per-turn policy and Stop hooks until they finish.
+threads keep their pinned Stop hook code until they finish; only new threads receive the
+corrected child identity match.
 
 The host side exports processor wait and aged detached-controller counts. Its overload
 alert enters the standing Repair agent queue through the allowlisted Grafana condition;
