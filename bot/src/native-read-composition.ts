@@ -84,5 +84,5 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
       historyMessage:input=>capabilityClient.sourceHistoryMessage(input),
     }:undefined,
   };
-  return {owner:new SessionOwner(runtime,defaultCwd),close:()=>historyPages.close()};
+  return {owner:new SessionOwner(runtime,defaultCwd,configuredPeers.peers.map(peer=>peer.name)),close:()=>historyPages.close()};
 }
