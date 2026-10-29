@@ -324,9 +324,11 @@ ages because the daemon alone knows when it last received a command. An agent th
 closed session again opens a new one.
 Codex's per-thread shell setting does not reach spawned agents on the installed App Server.
 The machine's Codex config therefore also sets the same idle timeout for shells in new
-Codex threads, including nested children. The hook installer merges that setting into
-`/etc/codex/config.toml` on each machine, leaving the separate ChatGPT browser process
-outside Codex untouched. The shared App Server is not restarted for this setting; a
+Codex threads, including nested children. The server hook installer merges it into
+`/etc/codex/config.toml`; the Mac's unattended installer merges it into that user's
+Codex config. The Mac's machine-wide SubagentStop hook still needs the existing
+administrator installation, and unattended updates report when it is missing.
+The separate ChatGPT browser process stays outside Codex. The shared App Server is not restarted for this setting; a
 new root thread and its children read the installed config when they start. Existing
 threads still rely on their own per-turn policy and Stop hooks until they finish.
 

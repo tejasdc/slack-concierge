@@ -57,6 +57,10 @@ chmod 600 "$STATE/peer.token"
 # A daemon start otherwise ensures an updater even when the listener is already running.
 CODEX_DAEMON_SETTINGS="$HOME/.codex/app-server-daemon/settings.json"
 "$BUN" run "$REPO/bot/scripts/ensure-codex-updater-disabled.ts" "$CODEX_DAEMON_SETTINGS"
+# The unattended updater can write this user's Codex config without a password. New
+# Codex threads and their spawned helpers get the browser idle timeout even before
+# the separate machine-wide hook's next administrator installation.
+"$BUN" run "$REPO/bot/scripts/install-codex-browser-policy.ts" "$HOME/.codex/config.toml"
 # The daemon keeps the open-file limit of whoever started it. launchd gives this update job 256; the App Server
 # holds about eleven files per Codex conversation it has open (the observer opens every one), so
 # at ~20 conversations it failed with "Too many open files" (2026-09-25). Match the box's unit.
@@ -84,13 +88,14 @@ hooks_current() { grep -Fqs '# dispatch: per-run v2' /etc/codex/hooks/concierge-
   && grep -Fqs '# current-live-store-copy v1' /etc/codex/hooks/concierge-history-guard; }
 if hooks_current && grep -Fqs "dir='$REPO/bot'" /etc/codex/hooks/concierge-owed-reply \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
+  && grep -Fqs '[[hooks.SubagentStop]]' /etc/codex/requirements.toml \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-history-guard"' /etc/codex/requirements.toml \
   && grep -Fqs 'hooks = true' /etc/codex/requirements.toml; then :
 elif [ -t 0 ]; then
   echo "Installing Codex's and Claude's machine-wide hooks; macOS will ask for your password once."
   sudo "$REPO/scripts/install-codex-stop-hook.sh" --bun "$BUN" --bot "$REPO/bot" --state "$STATE"
 else
-  echo "Codex's and Claude's machine-wide hooks are not installed; run scripts/install-mac.sh once from a terminal." >&2
+  echo "Codex's machine-wide hooks are missing or outdated; run scripts/install-mac.sh once from a terminal to apply the administrator step." >&2
 fi
 # git refuses a push that rewrites pushed history for this user without any password, so the
 # unattended update installs it every time; the password step above adds it machine-wide.

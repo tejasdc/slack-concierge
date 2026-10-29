@@ -28,6 +28,9 @@ Install the 20-minute idle timeout in Codex's machine config, which new root thr
 spawned descendants read. Register the existing exact-thread browser cleanup hook for Codex
 `SubagentStop` as well as `Stop`. Keep the ChatGPT browser outside Codex config and do not
 restart the shared App Server for this change.
+The Mac's unattended updater also sets the timeout in its user's Codex config and checks
+whether the administrator-installed `SubagentStop` hook is present; an older hook must not
+be accepted as current merely because it has the earlier per-run wrapper.
 
 ## Acceptance scenario
 
