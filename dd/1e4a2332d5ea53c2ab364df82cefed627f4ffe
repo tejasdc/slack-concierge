@@ -1,0 +1,1 @@
+Concierge now keeps one list of standing agents and which session holds each role, and refuses to set up a repeating or watching agent inside a product project.
