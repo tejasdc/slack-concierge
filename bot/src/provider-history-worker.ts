@@ -1,8 +1,9 @@
 /** One-shot canonical Claude history import. Runs in a child process, never in the owner. */
-import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
-import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, mkdtemp, open, rename, rm, stat, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
 import { writeLogLine } from "./log";
 
@@ -29,15 +30,86 @@ async function transcriptTailUuid(path: string, size: number) {
   } finally { await handle.close(); }
 }
 
+/** Byte offsets of every compaction boundary line, in transcript order. */
+async function compactionOffsets(path: string, size: number) {
+  const offsets: number[] = [];
+  const handle = await open(path, "r");
+  try {
+    let offset = 0, carry = Buffer.alloc(0);
+    while (offset < size) {
+      const chunk = Buffer.alloc(Math.min(4 * 1024 * 1024, size - offset));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
+      if (!bytesRead) break;
+      const bytes = Buffer.concat([carry, chunk.subarray(0, bytesRead)]);
+      const base = offset - carry.length;
+      offset += bytesRead;
+      let start = 0;
+      for (let end = bytes.indexOf(10); end >= 0; start = end + 1, end = bytes.indexOf(10, start)) {
+        const line = bytes.subarray(start, end);
+        if (line.includes('"compact_boundary"')) {
+          try { if (JSON.parse(line.toString("utf8"))?.subtype === "compact_boundary") offsets.push(base + start); }
+          catch { /* A line that does not parse is not a boundary. */ }
+        }
+      }
+      carry = bytes.subarray(start);
+    }
+  } finally { await handle.close(); }
+  return offsets;
+}
+
+/**
+ * Claude Code's reader lists only what follows a conversation's latest compaction, so every
+ * compaction removed the whole earlier conversation from the session window, and requests
+ * from before it were drawn at the bottom (report 60b1809c, 2026-10-29). The same native
+ * reader, run on the transcript as it stood just before each boundary, returns each earlier
+ * part under Claude Code's own rules; Concierge still never interprets the graph itself.
+ */
+async function compactedSegments(sessionUuid: string, cwd: string, sourcePath: string, size: number) {
+  const offsets = (await compactionOffsets(sourcePath, size)).filter(offset => offset > 0);
+  if (!offsets.length) return [];
+  const root = await mkdtemp(join(tmpdir(), "claude-history-segment-"));
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const projectDir = join(root, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    await mkdir(projectDir, { recursive: true, mode: 0o700 });
+    const segmentPath = join(projectDir, `${sessionUuid}.jsonl`);
+    const rows: SessionMessage[] = [];
+    process.env.CLAUDE_CONFIG_DIR = root;
+    for (const end of offsets) {
+      await copyPrefix(sourcePath, segmentPath, end);
+      rows.push(...await getSessionMessages(sessionUuid, { dir: cwd }));
+    }
+    return rows;
+  } finally {
+    if (configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = configDir;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function copyPrefix(source: string, destination: string, length: number) {
+  const input = await open(source, "r"), output = await open(destination, "w", 0o600);
+  try {
+    for (let offset = 0; offset < length;) {
+      const bytes = Buffer.alloc(Math.min(4 * 1024 * 1024, length - offset));
+      const { bytesRead } = await input.read(bytes, 0, bytes.length, offset);
+      if (!bytesRead) throw new Error("HISTORY_SEGMENT_SHORT");
+      await output.write(bytes, 0, bytesRead);
+      offset += bytesRead;
+    }
+  } finally { await input.close(); await output.close(); }
+}
+
 async function main() {
   const [sessionUuid, cwd, sourcePath, destination, cutoffText] = process.argv.slice(2);
   if (!sessionUuid || !/^[a-f0-9-]{36}$/i.test(sessionUuid) || !cwd || !sourcePath || !destination) throw new Error("INVALID_HISTORY_IMPORT");
   const eventCutoff = Number(cutoffText || 0);
   if (!Number.isSafeInteger(eventCutoff) || eventCutoff < 0) throw new Error("INVALID_HISTORY_CUTOFF");
   const before = await stat(sourcePath);
-  const listed = await getSessionMessages(sessionUuid, {});
+  const listed = [...await compactedSegments(sessionUuid, cwd, sourcePath, before.size), ...await getSessionMessages(sessionUuid, {})];
+  const seen = new Set<string>();
+  const unique = listed.filter(row => !seen.has(row.uuid) && !!seen.add(row.uuid));
   const queued = await claudeQueuedMessages(sessionUuid, cwd);
-  const rows = withQueuedMessages(listed, queued, sessionUuid);
+  const rows = withQueuedMessages(unique, queued, sessionUuid);
   const names = toolNames(rows);
   const after = await stat(sourcePath);
   const tailUuid = await transcriptTailUuid(sourcePath, before.size);
