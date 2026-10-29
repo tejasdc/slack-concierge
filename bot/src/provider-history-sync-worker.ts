@@ -3,9 +3,10 @@ import { Database } from "bun:sqlite";
 import { open, stat, readFile, writeFile, rename } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import { writeLogLine } from "./log";
+import { CLAUDE_HISTORY_FORMAT } from "./provider-history-format";
 
 type Meta = { session_uuid:string;source_path:string;event_cutoff:number;generation:string;verified_source_size:number;
-  verified_source_mtime_ms:number;verified_tail_uuid:string|null };
+  verified_source_mtime_ms:number;verified_tail_uuid:string|null;history_format?:number };
 
 async function verifyTail(cache:Database,state:Database,sessionId:number,meta:Meta):Promise<{size:number;mtimeMs:number;tailUuid:string|null;covered:boolean}> {
   const file = await stat(meta.source_path);
@@ -60,6 +61,26 @@ async function verifyTail(cache:Database,state:Database,sessionId:number,meta:Me
   } finally { await handle.close(); }
 }
 
+async function everCompacted(path:string,size:number) {
+  const handle=await open(path,"r");
+  try {
+    let offset=0,pending="";
+    const decoder=new StringDecoder("utf8");
+    while(offset<size) {
+      const bytes=Buffer.alloc(Math.min(4*1024*1024,size-offset));
+      const read=await handle.read(bytes,0,bytes.length,offset);
+      if(!read.bytesRead)break;
+      offset+=read.bytesRead;
+      const lines=(pending+decoder.write(bytes.subarray(0,read.bytesRead))).split("\n");
+      pending=lines.pop() || "";
+      for(const line of lines) if(line.includes('"compact_boundary"')) {
+        try { if(JSON.parse(line)?.subtype==="compact_boundary")return true; } catch { /* Not a boundary row. */ }
+      }
+    }
+    return false;
+  } finally { await handle.close(); }
+}
+
 async function main() {
   const [cachePath,statePath,sessionText,uuid] = process.argv.slice(2);
   const sessionId=Number(sessionText);
@@ -76,8 +97,13 @@ async function main() {
       if(saved.generation===meta.generation)checkpoint=saved;
     } catch { /* Missing or incomplete status: start from the immutable import position. */ }
     const fresh=await verifyTail(cache,state,sessionId,{...meta,...checkpoint});
+    // A snapshot from before format 2 is current only if its transcript never compacted; one
+    // that did lost everything before the compaction and must be rebuilt.
+    const formatKnown=meta.history_format===CLAUDE_HISTORY_FORMAT || checkpoint.history_format===CLAUDE_HISTORY_FORMAT;
+    const formatCurrent=formatKnown || (fresh.covered && !await everCompacted(meta.source_path,fresh.size));
     const next={generation:meta.generation,verified_source_size:fresh.size,
-      verified_source_mtime_ms:fresh.mtimeMs,verified_tail_uuid:fresh.tailUuid,needs_reimport:fresh.covered?0:1};
+      verified_source_mtime_ms:fresh.mtimeMs,verified_tail_uuid:fresh.tailUuid,needs_reimport:fresh.covered && formatCurrent?0:1,
+      ...(formatCurrent?{history_format:CLAUDE_HISTORY_FORMAT}:{})};
     const temporary=statusPath+`.${process.pid}.next`;
     await writeFile(temporary,JSON.stringify(next),{mode:0o600});
     await rename(temporary,statusPath);

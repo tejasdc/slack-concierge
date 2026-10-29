@@ -6,6 +6,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
+import { CLAUDE_HISTORY_FORMAT } from "./provider-history-format";
 import { claudeConfigDir, locateClaudeTranscript } from "./claude-transcript-watch";
 import { log } from "./log";
 import { db as ownerDb } from "./state";
@@ -239,7 +240,8 @@ export async function readCodexHistoryDetail(input: ProviderDetailInput,
 
 type ClaudeCacheMeta = { session_uuid: string; cwd: string; source_path: string; source_size: number;
   source_mtime_ms: number; row_count: number; generation: string; event_cutoff: number; tail_uuid: string | null;
-  verified_source_size: number; verified_source_mtime_ms: number; verified_tail_uuid: string | null; needs_reimport: number };
+  verified_source_size: number; verified_source_mtime_ms: number; verified_tail_uuid: string | null; needs_reimport: number;
+  history_format?: number };
 const queuedImports = new Map<string, Promise<void>>();
 const activeImportChildren = new Set<ReturnType<typeof Bun.spawn>>();
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>();
@@ -272,8 +274,12 @@ function openCache(sessionUuid: string): { db: Database; meta: ClaudeCacheMeta }
         meta.verified_source_mtime_ms=status.verified_source_mtime_ms;
         meta.verified_tail_uuid=typeof status.verified_tail_uuid==="string"?status.verified_tail_uuid:null;
         meta.needs_reimport=status.needs_reimport===1?1:0;
+        if(status.history_format===CLAUDE_HISTORY_FORMAT)meta.history_format=CLAUDE_HISTORY_FORMAT;
       }
     } catch { /* The immutable baseline remains valid without a verifier checkpoint. */ }
+    // An older snapshot keeps serving its rows until the verifier child confirms its transcript
+    // never compacted (it then records the current format) or one rebuild replaces it.
+    if (meta.history_format !== CLAUDE_HISTORY_FORMAT) meta.needs_reimport = 1;
     return { db, meta };
   } catch (error) {
     db?.close();
