@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import {requestApiResponse} from './router-request-client';
 
-const usage=`router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--here-only] [--source-input <id> --source-run <id>]
+const usage=`router-actions.sh projects new <name> --owner tejas|agents --purpose "<one sentence>" [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>`;
@@ -14,19 +14,19 @@ async function main(args:string[]){
   for(let i=0;i<rest.length;i++){
     const flag=rest[i]!;
     if(flag==='--here-only'){if(flags.has(flag))throw new Error('Repeated --here-only.');flags.set(flag,'true');continue;}
-    if(!['--purpose','--owner','--to','--source-input','--source-run'].includes(flag)||flags.has(flag)||i+1>=rest.length||rest[i+1]!.startsWith('--'))throw new Error(`Invalid project option: ${flag}.\n${usage}`);
+    if(!['--purpose','--owner','--template','--to','--source-input','--source-run'].includes(flag)||flags.has(flag)||i+1>=rest.length||rest[i+1]!.startsWith('--'))throw new Error(`Invalid project option: ${flag}.\n${usage}`);
     flags.set(flag,rest[++i]!);
   }
   if(!!flags.get('--source-input')!==!!flags.get('--source-run'))throw new Error('Pass both source input and source run, or neither.');
   if(verb==='status'&&(flags.has('--purpose')||flags.has('--here-only')||flags.has('--source-input')))throw new Error(usage);
   if(verb==='new'&&(!flags.get('--purpose')||flags.has('--to')))throw new Error(usage);
   if(verb==='new'&&!['tejas','agents'].includes(flags.get('--owner')??''))throw new Error(`Say who the project is for. --owner tejas: his own project, one he follows, or one he asked for; it sits at the top of the workspace. --owner agents: an agent's own or maintenance project; it sits in workspace/agents/.\n${usage}`);
-  if(verb!=='new'&&flags.has('--owner'))throw new Error(usage);
+  if(verb!=='new'&&(flags.has('--owner')||flags.has('--template')))throw new Error(usage);
   if(verb==='share'&&(!flags.get('--to')||flags.has('--purpose')||flags.has('--here-only')))throw new Error(usage);
   if(verb==='cancel'&&(!flags.get('--to')||flags.has('--purpose')||flags.has('--here-only')||flags.has('--source-input')))throw new Error(usage);
   const source=flags.has('--source-input')?{input:flags.get('--source-input'),run:flags.get('--source-run')}:undefined;
   const path=verb==='status'?`/sessions/v1/projects/status/${encodeURIComponent(project)}${flags.get('--to')?`?peer=${encodeURIComponent(flags.get('--to')!)}`:''}`:`/sessions/v1/projects/${verb}`;
-  const body=verb==='new'?{name:project,owner:flags.get('--owner'),purpose:flags.get('--purpose'),hereOnly:flags.has('--here-only'),...(source?{source}:{})}:verb==='share'?{name:project,to:flags.get('--to'),...(source?{source}:{})}:verb==='cancel'?{name:project,to:flags.get('--to')}:undefined;
+  const body=verb==='new'?{name:project,owner:flags.get('--owner'),purpose:flags.get('--purpose'),...(flags.has('--template')?{template:flags.get('--template')}:{}),hereOnly:flags.has('--here-only'),...(source?{source}:{})}:verb==='share'?{name:project,to:flags.get('--to'),...(source?{source}:{})}:verb==='cancel'?{name:project,to:flags.get('--to')}:undefined;
   const answer=await requestApiResponse(path,body);
   console.log(JSON.stringify(answer.result));
   if(!answer.ok)process.exitCode=1;

@@ -5,6 +5,7 @@ import {existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,renameSync,rmSy
 import {join,relative,dirname} from 'node:path';
 import {db,getSessionById} from './state';
 import {canonicalAgentsTemplate,canonicalDocsIndexTemplate} from './project-scaffold';
+import {projectTemplate,templateAgentsSection,templateFiles,type ProjectTemplate} from './project-templates';
 import {sessionProject} from './session-projects';
 import {getAcceptedSessionInput,nativeRunId,sessionInputProvenance} from './session-inputs';
 import {publishProviderFreeNotice} from './provider-free-notice';
@@ -72,15 +73,17 @@ async function originOf(path:string){try{return (await git(path,'remote','get-ur
 function expectedOrigin(project:string){return `https://github.com/tejasdc/${project}`;}
 function head(path:string){return git(path,'rev-parse','HEAD');}
 function projectPredicate(path:string){try{return lstatSync(join(path,'.git')).isDirectory()&&lstatSync(join(path,'AGENTS.md')).isFile();}catch{return false;}}
-async function createScaffold(path:string,project:string,purpose:string,workspace:string){
+async function createScaffold(path:string,project:string,purpose:string,workspace:string,template?:ProjectTemplate){
   const intent=join(path,'tmp','project-setup-intent.json');
   mkdirSync(join(path,'tmp'),{recursive:true});
+  const intended=JSON.stringify({project,purpose,...(template?{template}:{})});
   if(pathExists(intent)){
-    if(readFileSync(intent,'utf8')!==JSON.stringify({project,purpose}))throw new Error('This folder has a different unfinished project setup.');
-  }else writeFileSync(intent,JSON.stringify({project,purpose}),{flag:'wx'});
+    if(readFileSync(intent,'utf8')!==intended)throw new Error('This folder has a different unfinished project setup.');
+  }else writeFileSync(intent,intended,{flag:'wx'});
   const file=(name:string,content:string)=>{const target=join(path,name);if(pathExists(target)){if(readFileSync(target,'utf8')!==content)throw new Error(`Existing ${name} differs from the project scaffold.`);}else writeFileSync(target,content,{flag:'wx'});};
   mkdirSync(join(path,'docs'),{recursive:true});
-  file('AGENTS.md',canonicalAgentsTemplate(project,path).replace(`Working directory: \`${path}\``,`${purpose}\n\nWorking directory: \`${path}\``));
+  file('AGENTS.md',canonicalAgentsTemplate(project,path).replace(`Working directory: \`${path}\``,`${purpose}\n\nWorking directory: \`${path}\``)+(template?templateAgentsSection(template):''));
+  if(template)for(const [name,content] of Object.entries(templateFiles(template,project,purpose))){mkdirSync(dirname(join(path,name)),{recursive:true});file(name,content);}
   const claude=join(path,'CLAUDE.md');
   if(pathExists(claude)){if(!lstatSync(claude).isSymbolicLink()||readlinkSync(claude)!=='AGENTS.md')throw new Error('Existing CLAUDE.md is not the canonical link.');}
   else symlinkSync('AGENTS.md',claude);
@@ -139,7 +142,7 @@ export class ProjectSetup {
     this.wake();this.onRecorded?.();return this.status(project,peer);
   }
   async new(input:unknown){
-    const data=exactKeys(input,['name','purpose','hereOnly','source','owner']);const project=newName(data.name);projectOwner(data.owner);
+    const data=exactKeys(input,['name','purpose','hereOnly','source','owner','template']);const project=newName(data.name);projectOwner(data.owner);projectTemplate(data.template);
     return this.serialProject(project,()=>this.createLocal(data,project));
   }
   private async serialProject<T>(project:string,operation:()=>Promise<T>):Promise<T>{
@@ -162,8 +165,9 @@ export class ProjectSetup {
     if(folder)ensureAgentsFolder(this.workspace);
     if(pathExists(intent)&&await originOf(destination)&&await originOf(destination)!==expectedOrigin(project))throw new Error('The unfinished project has a different GitHub origin.');
     if(!pathExists(destination))mkdirSync(destination);
-    if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace);
-    else if(!projectPredicate(destination))await createScaffold(destination,project,data.purpose.trim(),this.workspace);
+    const template=projectTemplate(data.template);
+    if(pathExists(intent))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
+    else if(!projectPredicate(destination))await createScaffold(destination,project,data.purpose.trim(),this.workspace,template);
     const current=await git(destination,'status','--porcelain');if(current)throw new Error('The existing project has unpushed or uncommitted files; finish and push it first.');
     if(await originOf(destination)!==expectedOrigin(project)){
       if(await originOf(destination))throw new Error('This folder has a different GitHub origin.');
