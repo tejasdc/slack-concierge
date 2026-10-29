@@ -827,11 +827,12 @@ export class SessionOwner {
     if(this.pauseSync)return this.pauseSync;
     this.pauseSync=(async()=>{
       const state=globalPauseState();
-      if(state.generation===0)return;
       await Promise.all(this.peers!.names().map(async name=>{
-        const row=db.query('SELECT acknowledged_generation FROM global_pause_peer_state WHERE peer=?').get(name) as {acknowledged_generation:number}|null;
-        const acknowledged=row?.acknowledged_generation===state.generation;
-        if(acknowledged&&!state.paused)return;
+        const row=db.query('SELECT acknowledged_generation,updated_at_ms FROM global_pause_peer_state WHERE peer=?').get(name) as {acknowledged_generation:number;updated_at_ms:number}|null;
+        const acknowledged=state.generation===0||row?.acknowledged_generation===state.generation;
+        // A sleeping peer is observed in the background, even when no pause is active.
+        // The five-second paused reconciliation remains responsible for Stop receipts.
+        if(acknowledged&&!state.paused&&row&&Date.now()-row.updated_at_ms<60_000)return;
         try {
           const allowed=db.query('SELECT session_id FROM global_pause_exceptions WHERE generation=? AND machine=?')
             .all(state.generation,name) as Array<{session_id:number}>;

@@ -125,7 +125,11 @@ from the latest attempt. A failed background check retains that snapshot and mar
 peer unreachable; the status read never contacts a peer. The response includes the
 last reached time and its age, so a sleeping Mac can be shown as not reached since
 that time without presenting the old snapshot as current. The existing five-second
-reconciliation and peer contact refresh the record.
+reconciliation refreshes paused peers on every pass. While unpaused, it checks each
+peer at most once a minute, including before the first pause, so a sleeping Mac
+becomes marked unreachable without putting the check on a screen read. A minute
+bounds ordinary stale reporting while avoiding a network request every five seconds;
+the active pause still needs the faster Stop receipt updates.
 
 `POST /sessions/v1/pause-all/resume` with only an action ID clears the gate on both
 machines. With `sessionIds`, it keeps the global gate and admits only those sessions.
