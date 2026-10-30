@@ -229,6 +229,13 @@ const historyPath=Symbol('history path');
 type HistoryPath='inbox'|'provider'|'none';
 const HISTORY_WINDOW=20;
 const HISTORY_WINDOW_PAGES=60;
+/**
+ * A window's pages after the first are read 100 provider items at a time. A Codex session of
+ * tool steps needed 41 pages of 20 (about 100 ms each inside the window) to show 30 messages
+ * he reads, 4.2 s per open (nightly review, 2026-10-30); the first page keeps the client's size
+ * so its delta position is unchanged.
+ */
+const HISTORY_WINDOW_CONTINUATION=100;
 const HISTORY_WINDOW_MS=4000;
 const savedExcerpt=(content:string)=>{const text=content.replace(/\s+/g,' ').trim();return text.length>280?text.slice(0,279)+'…':text;};
 // Marking a message that never streamed through the owner reads its transcript to prove
@@ -395,7 +402,8 @@ export type SessionOwnerRuntime = {
   peerForPath?(path:string):string|null;
   requestReceipt?(requestId:string):{outcome:string|null;result:any;execution?:{acknowledged_at:string|null}|null;events:Array<{event_id:string;kind:string;status:string;error:string|null}>}|null;
   history?(session:SessionRow,cursor:string|null,limit:number):Promise<unknown>;
-  projectedHistory?(session:SessionRow,operation:'page'|'delta',cursor:string|null,limit:number,after:string|null):Promise<unknown>;
+  projectedHistory?(session:SessionRow,operation:'page'|'delta',cursor:string|null,limit:number,after:string|null,
+    want?:{dialogue:number;untilInput:boolean}):Promise<unknown>;
   historyMessage?(session:SessionRow,messageId:string,turnId:string|null):Promise<ProviderHistoryMessage|null>;
   detail?(session:SessionRow,key:string):Promise<unknown>;
   artifact?(session:SessionRow,id:string):Promise<unknown>;
@@ -2654,20 +2662,24 @@ export class SessionOwner {
    * continuation is the last page's and the delta position the newest page's.
    */
   async history(id:string,cursor:string|null,limit:number,activity=false,want={dialogue:0,untilInput:false}) {
-    const first=await this.historyPage(id,cursor,limit,activity) as any;
-    if(!want.dialogue&&!want.untilInput)return first;
-    const started=performance.now();
+    const windowed=!!(want.dialogue||want.untilInput),started=performance.now();
+    const first=await this.historyPage(id,cursor,limit,activity,windowed?want:undefined) as any;
+    if(!windowed||typeof first.collectedPages==='number')return first;
     let last=first,messages=[...first.messages],reads=1;
     const enough=()=>want.untilInput?messages.some((message:any)=>message.role==='user')
       :messages.filter((message:any)=>message.role!=='tool').length>=want.dialogue;
     while(last.nextCursor&&last.coverage?.complete!==false&&!enough()&&reads<HISTORY_WINDOW_PAGES&&performance.now()-started<HISTORY_WINDOW_MS){
-      last=await this.historyPage(id,last.nextCursor,limit,activity) as any;reads++;
+      last=await this.historyPage(id,last.nextCursor,HISTORY_WINDOW_CONTINUATION,activity) as any;reads++;
       messages=[...last.messages,...messages];
     }
     return {...first,messages,nextCursor:last.nextCursor,...(last.coverage?{coverage:last.coverage}:{}),collectedPages:reads};
   }
-  private async historyPage(id:string,cursor:string|null,limit:number,activity=false) {
+  private async historyPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
     const session=this.session(id);
+    // Continuation pages of a window may be larger than a client page, but only where the page
+    // comes from the provider; ledger-backed positions stay bounded by the client window.
+    const providerPage=['claude-code','codex'].includes(session.provider_id)&&!sessionMetadata(session).inbox;
+    const pageLimit=Math.min(providerPage?HISTORY_WINDOW_CONTINUATION:HISTORY_WINDOW,Math.max(1,limit));
     if(sessionMetadata(session).canvasObservation){
       const before=cursor===null?Number.MAX_SAFE_INTEGER:Number(cursor);
       if(!Number.isSafeInteger(before)||before<1)throw new SessionOwnerError('Invalid canvas history position.',400,'HISTORY_CURSOR_INVALID');
@@ -2680,7 +2692,7 @@ export class SessionOwner {
         coverage:{complete:true},asOf:encodePosition(pagePosition('none',ledgerHead(),session.binding_generation??1,[]))};
     }
     if(this.runtime.projectedHistory&&['claude-code','codex'].includes(session.provider_id)&&!(activity&&sessionMetadata(session).inbox)){
-      try{return await this.runtime.projectedHistory(session,'page',cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),null);}
+      try{return await this.runtime.projectedHistory(session,'page',cursor,pageLimit,null,want);}
       catch(error){if(error instanceof Error&&error.message==='HISTORY_PAGE_STILL_PREPARING')
         return {messages:[],nextCursor:null,coverage:{complete:false,code:'history_indexing',retryAfterMs:1000,
           omissions:['Conversation history is still being prepared.']}};
@@ -2696,7 +2708,7 @@ export class SessionOwner {
           status===503?'HISTORY_PAGE_UNAVAILABLE':'HISTORY_PAGE_INVALID');}
     }
     const head=ledgerHead();
-    const page=await this.readHistory(id,cursor,Math.min(HISTORY_WINDOW,Math.max(1,limit)),activity) as ProviderHistoryPage,metadata=sessionMetadata(session);
+    const page=await this.readHistory(id,cursor,pageLimit,activity) as ProviderHistoryPage,metadata=sessionMetadata(session);
     const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages,activity));
     if((page as any)[ledgerHistory])return {...page,asOf,messages:page.messages.map(previewHistoryMessage)};
     if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>previewHistoryMessage({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};

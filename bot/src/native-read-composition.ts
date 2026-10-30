@@ -51,8 +51,8 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
       if(!provider?.history||!session.agent_session_uuid)return null;
       return provider.history({sessionUuid:session.agent_session_uuid,cwd:cwd(session),cursor,limit,ownerSessionId:session.id});
     },
-    projectedHistory:(session,operation,cursor,limit,after)=>historyPages.request({operation,
-      sessionId:`concierge:${session.id}`,cwd:cwd(session),cursor,limit,after}),
+    projectedHistory:(session,operation,cursor,limit,after,want)=>historyPages.request({operation,
+      sessionId:`concierge:${session.id}`,cwd:cwd(session),cursor,limit,after,want}),
     historyMessage:async(session,messageId,turnId)=>{
       if(!session.agent_session_uuid)return null;
       if(session.provider_id==='claude-code')return readClaudeCachedMessage(session.agent_session_uuid,messageId);
