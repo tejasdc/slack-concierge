@@ -828,7 +828,14 @@ export class SessionOwner {
     if(!allowed||!continued)throw new SessionOwnerError('Peer pause selection is invalid.',400,'PAUSE_PEER_INVALID');
     return this.applyGlobalPause(input.paused,`cloud:${input.generation}`,input.generation,[],allowed,continued);
   }
+  /** Runs every five seconds from fire-and-forget timers, so it never throws or rejects: a pass that
+   * fails, for example on a locked ledger, logs and leaves the next pass to retry. */
   syncGlobalPausePeers():Promise<void>{
+    const failed=(error:unknown)=>log('warn','global_pause_peer_sync_failed',{error:String(error).slice(0,300)});
+    try{return this.syncGlobalPausePeersPass().catch(failed);}
+    catch(error){failed(error);return Promise.resolve();}
+  }
+  private syncGlobalPausePeersPass():Promise<void>{
     this.requestPausedStops();
     this.resumePausedSessions(globalPauseState().actionId??'pause-recovery');
     if(this.selfMachine!=='cloud')return this.refreshGlobalPauseFromOwner();
