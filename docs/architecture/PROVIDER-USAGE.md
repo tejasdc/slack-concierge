@@ -896,9 +896,13 @@ the ledger. The ledger is read only for session titles, projects, and account ch
 The worker does not copy or modify transcripts and does not hold the owner event loop.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
-read after a start waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
+read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
 was stalling for other reasons one read took 50 s, the Accounts page gave up at 30 s and told
-Tejas the session owner had not answered. `usage_breakdown_refreshed` / `_refresh_failed` log
+Tejas the session owner had not answered. The read itself is answered by a read worker, a
+separate process, so the latest result is published to `usage-breakdown-latest.json` beside
+the ledger and every process serves that file; until 2026-10-30 each worker kept its own empty
+copy and its reads each waited about 2 s for a scan. A reader scans itself only when no result
+exists or the file is more than fifteen minutes old. `usage_breakdown_refreshed` / `_refresh_failed` log
 each scan's duration.
 
 Shares use published API token prices as an **allowance proxy**, not a claim that a
