@@ -17,6 +17,10 @@ envelope and body digest for exact saved-card recovery; see [human command custo
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Human thread read marks validate the exact displayed conversation entry and advance
+the retained read position without rebuilding a thread summary on the owner loop;
+message routing checks prior routes through the indexed source-message read;
+see [native Inbox](docs/contracts/native-inbox.md).
 Agent requests to the Inbox are request/reply coordination, not conversation roots;
 unplaced requests do not demand topic filing and stay out of his prepared conversation.
 Deliberate agent posts remain visible. See [native Inbox](docs/contracts/native-inbox.md#filing-before-stopping).

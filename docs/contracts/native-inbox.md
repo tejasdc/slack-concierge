@@ -302,6 +302,15 @@ into the tables and is idempotent; `bun run bot/scripts/migrate-inbox-topics.ts 
 runs it. Payloads carry only the titles, summaries, briefs and cited answer passages the
 router wrote — never transcript text, prompts or provider errors.
 
+A human read mark carries the exact conversation event sequence the screen displayed.
+The owner validates that single retained entry still belongs to the thread, then advances
+the read position monotonically in the same transaction as its receipt. A stale placement
+returns a conflict so the screen can refresh. This action does not build a topic summary
+or scan other threads while the owner holds its write transaction.
+Routing one accepted message to a second thread checks earlier routes through the retained
+source-message index before it writes another destination; the query uses the index's
+two-kind predicate and then selects topic routes, preserving the independent-route rule.
+
 The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
 rows. After a restart it is filled by `warmEntryIndex` in bounded steps that yield the
