@@ -2,7 +2,7 @@ import {readFileSync} from "node:fs";
 import {chmod} from "node:fs/promises";
 import {removeUnboundSocket} from "./private-api-socket";
 import {startForegroundGatewayProcess,type ForegroundPeer} from "./foreground-gateway-supervisor";
-import { join } from "node:path";
+import { dirname,join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
@@ -67,7 +67,13 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json({error:'This proposed handoff was withdrawn; this successor cannot write.',code:'HANDOFF_WITHDRAWN'},{status:409});
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
-        if (operation === 'agents') return Response.json(sessions.agents(input));
+        if (operation === 'agents') {
+          sessions.agents(input);
+          const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB)
+            :process.env.CONCIERGE_STATE_DIR||'/root/.local/state/concierge';
+          return fetch('http://localhost/sessions/v1/presentation/agents',
+            {unix:join(stateDir,'requests.sock'),signal:AbortSignal.timeout(8_000)} as RequestInit);
+        }
         if (operation === 'agent-bind') return Response.json(sessions.bindAgent(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
         if (operation === 'usage') {

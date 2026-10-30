@@ -896,6 +896,9 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root
 // The clock inspects one root per repeating schedule, then seeks its latest firing through
 // saved_turn_firing. Historical firings must not be re-examined on every queue wake.
 db.exec("CREATE INDEX IF NOT EXISTS saved_repeat_roots ON turns(id) WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_sequence=0 AND saved_root_id=id");
+db.exec("CREATE INDEX IF NOT EXISTS standing_queued_repeats ON turns(id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS standing_role_repeats ON turns(session_id,id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS standing_last_turn ON turns(session_id,id DESC) WHERE ended_at IS NOT NULL");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
   quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,

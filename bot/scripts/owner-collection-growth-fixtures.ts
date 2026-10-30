@@ -6,6 +6,7 @@ import {inboxQueuePage} from '../src/inbox-queue';
 import {inboxCapturesPage} from '../src/inbox-captures-page';
 import {observedDatabase,observeStorageOperation,withStorageReadBudget,type StorageWork} from '../src/storage-observation';
 import {PRESENTATION_READERS} from '../src/presentation-reader-contracts';
+import {standingAgentView} from '../src/standing-agent-view';
 
 function source(count:number){
  const db=observedDatabase(new Database(':memory:'));
@@ -131,6 +132,49 @@ async function inboxCapturesGrowth(){
   }finally{database.close();}
  }
 }
+async function standingAgentsGrowth(){
+ for(const count of [100,1_000,10_000]){
+  const database=observedDatabase(new Database(':memory:'));
+  try{
+   database.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,native_metadata_json TEXT,provider_id TEXT,binding_generation INTEGER);
+    CREATE INDEX standing_session_role ON sessions(json_extract(native_metadata_json,'$.standingRole'),id DESC) WHERE status!='archived';
+    CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,saved_kind TEXT,saved_repeat_ms INTEGER,
+      saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,dispatch_next_attempt_ms INTEGER,
+      ended_at TEXT,agent_text TEXT);
+    CREATE INDEX standing_queued_repeats ON turns(id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL;
+    CREATE INDEX standing_role_repeats ON turns(session_id,id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL;
+    CREATE INDEX standing_last_turn ON turns(session_id,id DESC) WHERE ended_at IS NOT NULL;
+    CREATE INDEX saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL;
+    CREATE TABLE watches(watch_id TEXT,session_id INTEGER,kind TEXT,condition_json TEXT,state TEXT);
+    CREATE INDEX standing_armed_watches ON watches(session_id,watch_id) WHERE state IN ('accepted','observing');
+    CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,turn_id INTEGER,kind TEXT,payload_json TEXT);
+    CREATE INDEX session_owner_events_turn_kind ON session_owner_events(turn_id,kind) WHERE turn_id IS NOT NULL;`);
+   const session=database.query('INSERT INTO sessions VALUES(?,\'idle\',?,\'codex\',1)');
+   const turn=database.query('INSERT INTO turns(id,session_id,status,saved_kind,saved_repeat_ms,saved_root_id,saved_sequence,saved_fire_at_ms,dispatch_next_attempt_ms,ended_at,agent_text) VALUES(?,?,?, ?,?,?,?,?,?,?,?)');
+   session.run(1,JSON.stringify({cwd:'/workspace/agents/ai-provider-watch',standingRole:'ai-provider-watch',title:'Provider watch'}));
+   session.run(2,JSON.stringify({cwd:'/workspace/agents/stray-job',title:'Stray job'}));
+   for(let id=1;id<=count;id++)turn.run(id,2,'done',null,null,null,null,null,null,'2026-10-29 00:00:00','Earlier work');
+   turn.run(count+1,1,'done','scheduled',60_000,count+1,0,Date.now()-60_000,null,'2026-10-30 00:00:00','Watched providers');
+   turn.run(count+2,1,'queued','scheduled',60_000,count+1,1,Date.now()+60_000,Date.now()+60_000,null,null);
+   turn.run(count+3,2,'queued','scheduled',86_400_000,count+3,0,Date.now()+60_000,Date.now()+60_000,null,null);
+   database.query('INSERT INTO watches VALUES(?,?,?,?,?)').run('watch-1',1,'file',JSON.stringify({path:'/workspace/agents/ai-provider-watch/source'}),'observing');
+   const contract=PRESENTATION_READERS.standingAgents;
+   let work:StorageWork|undefined;
+   const view=observeStorageOperation('standingAgents',()=>withStorageReadBudget({maxCalls:128,maxRows:contract.maxStorageRows,
+     maxResultBytes:contract.maxResponseBytes*2},()=>standingAgentView(database,'/workspace')),value=>{work=value;});
+   assert.equal(view.agents.find(agent=>agent.role==='ai-provider-watch')?.repeatingSchedule?.turnId,count+2);
+   assert.equal(view.unownedSchedules.length,1);
+   assert.equal(view.agents.find(agent=>agent.role==='ai-provider-watch')?.armedWatches.count,1);
+   assert.equal(view.coverage.complete,true);
+   assert.ok(work&&work.db_calls<=128&&work.db_rows<=contract.maxStorageRows);
+   assert.ok(Buffer.byteLength(JSON.stringify(view))<contract.maxResponseBytes);
+   // Walking the partial index of queued repeating firings is bounded by the schedules that exist, not by turns.
+   const plan=database.query("EXPLAIN QUERY PLAN SELECT id FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL ORDER BY id LIMIT 33").all() as {detail:string}[];
+   assert.ok(plan.every(row=>row.detail.includes('standing_queued_repeats')&&!/TEMP B-TREE/.test(row.detail)),JSON.stringify(plan));
+  }finally{database.close();}
+ }
+}
 export const READ_GROWTH_FIXTURES={'saved-messages-growth':savedMessagesGrowth,'saved-work-growth':savedWorkGrowth,
- 'inbox-queue-growth':inboxQueueGrowth,'inbox-captures-growth':inboxCapturesGrowth};
+ 'inbox-queue-growth':inboxQueueGrowth,'inbox-captures-growth':inboxCapturesGrowth,
+ 'standing-agents-growth':standingAgentsGrowth};
 if(import.meta.main)for(const [name,check] of Object.entries(READ_GROWTH_FIXTURES)){await check();console.log(`${name}: passed`);}

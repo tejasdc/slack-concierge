@@ -236,8 +236,10 @@ and mandatory review requirements in this repository and linked historical mater
 ## Working boundaries
 
 - Standing agents and their project folders are declared once in Concierge; use
-  `sessions agents` to discover explicit session bindings, `sessions agents bind` to assign an
-  existing session in the role's folder, and `sessions ask --role` to address a bound role or create one.
+  `sessions agents` or Thinkering's owner read to see bindings, repeating schedules, watches,
+  last runs, unowned schedules and host timers. Create their projects with `projects new --owner agents`,
+  write the project `AGENTS.md`, add the role row, then use `sessions agents bind`, `sessions ask --role`
+  or `sessions schedule --role` to address the continuing session.
   New repeating schedules and renewing watches belong only in agent, router or
   lab projects. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
 
