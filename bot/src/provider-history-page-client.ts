@@ -1,8 +1,8 @@
 import {Worker} from 'node:worker_threads';
 import {releaseWorkerPath} from './release-worker';
 
-type Work={operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
-  want?:{dialogue:number;untilInput:boolean}};
+type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
+  want?:{dialogue:number;untilInput:boolean};thread?:string};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
 
 // A window is collected inside the worker under the owner's own four-second budget.
@@ -33,6 +33,10 @@ export class ProviderHistoryPageClient {
     this.worker=worker;
     return worker;
   }
+  /** Tops up one Codex conversation's kept history window in the background; failures only cost the next open. */
+  prepareCodexWindow(sessionId:number,thread:string){
+    void this.request({operation:'prepare',sessionId:`concierge:${sessionId}`,cwd:'',cursor:null,limit:1,after:null,thread}).catch(()=>{});
+  }
   /** Loads the worker before the first open asks for a page, instead of during it. */
   warm(){this.ensure();}
   request(work:Work):Promise<unknown>{
@@ -44,7 +48,7 @@ export class ProviderHistoryPageClient {
         item.reject(new Error('HISTORY_PAGE_STILL_PREPARING'));
         // An import already under way must finish and warm the worker. Killing it here
         // would make every retry start the same expensive cold read from zero.
-      },work.want?HISTORY_WINDOW_WAIT_MS:5000);
+      },work.want||work.operation==='prepare'?HISTORY_WINDOW_WAIT_MS:5000);
       timer.unref?.();
       this.pending.set(id,{resolve,reject,timer});
       worker.postMessage({id,...work});

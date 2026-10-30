@@ -1,3 +1,4 @@
+import {onCodexHistoryChanged} from './codex-session-observer';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -162,6 +163,7 @@ function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,
 
 export class SessionExecutionHost {
   private readonly historyPages=new ProviderHistoryPageClient();
+  private readonly stopCodexWindows:()=>void;
   // Thinkering's ChatGPT capability verifies every call by asking this owner for the run's receipt,
   // so a ChatGPT run taken back at startup is followed only once the owner's request API answers.
   // Following it earlier (adoption runs before the API starts) was refused as unverifiable and ended
@@ -232,6 +234,8 @@ export class SessionExecutionHost {
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account),
         retryHeldUsage:()=>this.retryHeldUsage()},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),proof:input=>this.capabilityClient!.sourceSearchProof(input),history:input=>this.capabilityClient!.sourceHistory(input),historyMessage:input=>this.capabilityClient!.sourceHistoryMessage(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
+    // Each change to a Codex conversation's history tops up its kept window off the owner loop.
+    this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
   /** What Codex itself last said about its sign-in; see codexSignInState. */
   private codexSignIn:'signed-in'|'signed-out'|'unknown'='unknown';
@@ -663,7 +667,7 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
-  async stop():Promise<void>{this.stopCodexMoves();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
+  async stop():Promise<void>{this.stopCodexMoves();this.stopCodexWindows();await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop(),this.claudeLogin.stop(),this.historyPages.close()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work',...CHATGPT_THINKING_LEVELS,...CHATGPT_THINKING_LEVELS.map(level=>HIS_CHATGPT_PREFIX+level)],attachments:['*/*']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';

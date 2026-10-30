@@ -24,6 +24,13 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/** Told when a bound Codex conversation's history changed, so its kept window can be topped up. */
+const codexHistoryListeners=new Set<(sessionId:number,providerThreadUuid:string)=>void>();
+export function onCodexHistoryChanged(listener:(sessionId:number,providerThreadUuid:string)=>void):()=>void {
+  codexHistoryListeners.add(listener);
+  return ()=>{codexHistoryListeners.delete(listener);};
+}
+
 export class CodexSessionObserver {
   private stopped = false;
   private connectionLoop: Promise<void> | null = null;
@@ -152,6 +159,7 @@ export class CodexSessionObserver {
   }
 
   private invalidateHistory(sessionId: number, providerThreadUuid: string) {
+    for (const listener of codexHistoryListeners) listener(sessionId, providerThreadUuid);
     recordSessionEvent({
       eventId: `provider-history:${sessionId}:${randomUUID()}`,
       sessionId,
