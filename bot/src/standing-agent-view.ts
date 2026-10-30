@@ -44,7 +44,7 @@ function schedule(row:ScheduleRow|null) {
 function sessionView(row:SessionRow|null) {
   if(!row)return null;
   const meta=sessionMetadata(row);
-  return {address:sessionAddress(row),title:meta.title??null,provider:row.provider_id,model:meta.model??null};
+  return {id:`concierge:${row.id}`,address:sessionAddress(row),title:meta.title??null,provider:row.provider_id,model:meta.model??null};
 }
 
 /** Finite role list plus a capped indexed walk of currently queued repeating firings. */
