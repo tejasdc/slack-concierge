@@ -1247,8 +1247,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
 - A confirmed provider refusal after assistant output or tools keeps the failed turn in
   history and queues one new service continuation under that turn's identity. The original
   input is never replayed: the next run checks its transcript and external effects before
-  resuming. Usage, rate and sign-in continuations use the same queue releases and
-  provider-free episode notices as holds. Stop, pause, archive or a later human/agent
+  resuming. Usage, rate and sign-in continuations use the same queue releases as holds;
+  only usage and sign-in continuations publish the provider-free episode notice, because a
+  rate limit or model at capacity clears by itself and is only logged. Stop, pause, archive or a later human/agent
   input cancel a queued continuation. The same `queueTurnContinuation` entry point takes
   a distinct boundary reason for work intentionally yielded before deployment, and an
   `interrupted` reason for a Codex run cut off from outside after it had worked: its app server

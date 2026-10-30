@@ -199,6 +199,16 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
     noticeUsageHold({...input,clearsAtMs:input.reason.waitUntilMs},record);
     return;
   }
+  // A rate limit or a model at capacity clears by itself within seconds and the continuation
+  // carries on, so nothing has stopped and there is nothing for him to know. Phrased as an
+  // allowance notice it read "9 messages are waiting on tejas@chann.app … stopped at the GPT-6
+  // limit" while that account had 61% of its week left, 22 times from Oct 16 to Oct 30, each a
+  // new push. If such waits never end, the retry policy's exhaustion notice reaches the repair agent.
+  if(input.reason.refusal==='rate_limit'){
+    log('info','provider_continuation_rate_limit_quiet',{provider:input.provider,model:input.model,
+      turn_id:input.turnId,clears_at:input.reason.waitUntilMs?new Date(input.reason.waitUntilMs).toISOString():null});
+    return;
+  }
   const turn=db.query('SELECT session_id,accepted_input_id FROM turns WHERE id=?').get(input.turnId) as
     {session_id:number;accepted_input_id:string|null}|null;
   if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
@@ -207,8 +217,12 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
       AND sessions.provider_id=?`).get(input.provider) as {id:number|null};
   const eventId=`provider-continuation-hold:${input.provider}:${input.reason.refusal}:${head.id??input.turnId}`;
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
+  // Only work this refusal actually stopped: scheduled and banked items waiting for their own
+  // time, and queued turns of suspended sessions, are not waiting on an allowance.
   const waiting=db.query(`SELECT count(*) AS held FROM turns JOIN sessions ON sessions.id=turns.session_id
-    WHERE turns.status='queued' AND sessions.provider_id=?`).get(input.provider) as {held:number};
+    WHERE turns.status='queued' AND sessions.provider_id=?
+      AND (turns.dispatch_hold='usage' OR turns.dispatch_failure_class='usage_wait' OR turns.id=?)`)
+    .get(input.provider,input.turnId) as {held:number};
   try{
     record({eventId,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId:input.turnId,
       kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
