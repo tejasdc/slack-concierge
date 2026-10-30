@@ -1672,9 +1672,13 @@ export function topicsCommand(actor:TopicActor,body:any) {
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');
         if(sourceTopicId===destination)throw new TopicError('The destination is already this message’s topic.',409,'ROUTE_SAME_TOPIC');
         const topic=topicFor(destination);
-        const prior=(db.query(`SELECT event_id,payload_json FROM session_owner_events WHERE kind='topic_route'
-          AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC`).all(messageId) as {event_id:string;payload_json:string}[])
-          .find(route=>topicOfRoot(JSON.parse(route.payload_json).destinationMessageId)===destination);
+        // Match the partial route-source index's predicate exactly. SQLite cannot infer
+        // that kind='topic_route' implies its two-kind predicate; that form scanned the
+        // full event ledger and held the owner loop for 8.3 seconds in production.
+        const prior=(db.query(`SELECT kind,event_id,payload_json FROM session_owner_events
+          WHERE kind IN ('topic_route','session_route')
+          AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC`).all(messageId) as {kind:string;event_id:string;payload_json:string}[])
+          .find(route=>route.kind==='topic_route'&&topicOfRoot(JSON.parse(route.payload_json).destinationMessageId)===destination);
         if(prior)throw new TopicError(`This message was already routed to this thread as ${prior.event_id}.`,409,'MESSAGE_ALREADY_ROUTED');
         const destinationMessageId=`topic-change:${actionInputId}`;
         const by=byOf(actor),at=nowIso(),next=bumped(topic);
@@ -2070,11 +2074,19 @@ export function topicHumanAction(topicId:string,body:any) {
       case 'read':{
         const sequence=Number(action.sequence);
         if(!Number.isSafeInteger(sequence)||sequence<0)throw new TopicError('Exact observed entry sequence required.');
-        const index=entryIndex();
-        const summary=topicSummary(topic,session,index,workIndex(session.id),readIndex(session.id));
-        const clamped=Math.max(topic.readSequence,Math.min(sequence,summary.lastEntrySequence));
-        const next={...topic,readSequence:clamped,updatedAt:topic.updatedAt};
-        return {change:{kind:'topic_reading',payload:{change:'read',topicId,topic:next,sequence:clamped,by,revision:topic.revision}},result:{readSequence:clamped}};
+        if(sequence>topic.readSequence){
+          // The screen sends the exact event it displayed. Validate that one event against
+          // its current thread placement instead of rebuilding every thread summary while
+          // holding the owner's write transaction.
+          const row=db.query(`${inboxRows} AND event.sequence=?`).get(sequence) as any|null;
+          const messageId=row?inboxMessageId(row):null;
+          const root=messageId?rootOf(row.session_id,messageId):null;
+          if(!root||!db.query('SELECT 1 FROM inbox_topic_roots WHERE topic_id=? AND root_input_id=?').get(topicId,root))
+            throw new TopicError('This thread changed; read it again before marking it read.',409,'TOPIC_READ_SEQUENCE_STALE');
+        }
+        const readSequence=Math.max(topic.readSequence,sequence);
+        const next={...topic,readSequence,updatedAt:topic.updatedAt};
+        return {change:{kind:'topic_reading',payload:{change:'read',topicId,topic:next,sequence:readSequence,by,revision:topic.revision}},result:{readSequence}};
       }
       case 'expose':{
         if(!Array.isArray(action.items)||!action.items.length)throw new TopicError('Name the items actually shown.');
