@@ -168,7 +168,9 @@ async function standingAgentsGrowth(){
    assert.equal(view.coverage.complete,true);
    assert.ok(work&&work.db_calls<=128&&work.db_rows<=contract.maxStorageRows);
    assert.ok(Buffer.byteLength(JSON.stringify(view))<contract.maxResponseBytes);
-   checkPlan(database,"SELECT id FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL ORDER BY id LIMIT 33",'standing_queued_repeats');
+   // Walking the partial index of queued repeating firings is bounded by the schedules that exist, not by turns.
+   const plan=database.query("EXPLAIN QUERY PLAN SELECT id FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL ORDER BY id LIMIT 33").all() as {detail:string}[];
+   assert.ok(plan.every(row=>row.detail.includes('standing_queued_repeats')&&!/TEMP B-TREE/.test(row.detail)),JSON.stringify(plan));
   }finally{database.close();}
  }
 }

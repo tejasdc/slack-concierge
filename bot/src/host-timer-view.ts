@@ -5,6 +5,11 @@ type TimerRow={unit?:unknown;activates?:unknown;next?:unknown;last?:unknown};
 function short(value:unknown):string|null {
   return typeof value==='string'&&value&&value!=='n/a'?value.slice(0,160):null;
 }
+/** systemctl's JSON gives next/last as microseconds since the epoch, and 0 when never run. */
+function when(value:unknown):string|null {
+  if(typeof value==='number')return value>0?new Date(value/1000).toISOString():null;
+  return short(value);
+}
 
 /** Runs only in the isolated read executor. A missing host facility is an explicit view state. */
 export async function hostTimerView() {
@@ -29,7 +34,7 @@ export async function hostTimerView() {
     if(!Array.isArray(rows))throw new Error('Invalid timer list');
     return {status:'available' as const,reason:null,
       items:rows.slice(0,MAX_TIMERS).map(row=>({kind:'host timer' as const,name:short(row.unit),activates:short(row.activates),
-        nextRun:short(row.next),lastRun:short(row.last)})),
+        nextRun:when(row.next),lastRun:when(row.last)})),
       coverage:{complete:rows.length<=MAX_TIMERS,limit:MAX_TIMERS}};
   }catch{return {status:'unavailable' as const,reason:'systemctl returned an unreadable timer list.',items:[]};}
   finally{clearTimeout(timeout);}
