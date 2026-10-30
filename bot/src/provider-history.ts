@@ -215,9 +215,14 @@ export async function readCodexHistory(input: ProviderHistoryInput,
  */
 type CodexWindowEntry={id:string;turnId:string;messages:ProviderHistoryMessage[]};
 type CodexWindowSegment={entries:CodexWindowEntry[];next:string|null};
-type CodexWindow={version:1;thread:string;mark:CodexTranscriptMark|null;segments:CodexWindowSegment[];omissions:string[]};
-const CODEX_WINDOW_PAGE=100;
-const CODEX_WINDOW_TOPUP_PAGES=5;
+type CodexWindow={version:2;thread:string;segments:CodexWindowSegment[];omissions:string[]};
+/**
+ * Kept pages are 20 items, the client's page size, so an answer can stop at the first page that
+ * completes what was asked: a 100-item page made a read of a tool-heavy conversation carry
+ * 250-540 messages (0.8-1.7 MB, 150-360 ms) to show 30 readable ones (2026-10-30).
+ */
+const CODEX_WINDOW_PAGE=20;
+const CODEX_WINDOW_TOPUP_PAGES=25;
 const CODEX_WINDOW_BUILD_PAGES=60;
 export const CODEX_WINDOW_DIALOGUE=40;
 
@@ -225,18 +230,28 @@ function codexWindowPath(thread:string){
   if(!/^[A-Za-z0-9-]{8,80}$/.test(thread))throw new Error("INVALID_HISTORY_REQUEST");
   return join(process.env.CONCIERGE_STATE_DIR||join(homedir(),".local","state","concierge"),"codex-history-window",`${thread}.json`);
 }
-function loadCodexWindow(thread:string):CodexWindow|null{
+// The window and the rollout position its timestamps were read to are separate files: the
+// position moves with every bookkeeping line Codex writes, the window only when items change.
+function loadCodexWindow(thread:string):{window:CodexWindow;text:string;mark:CodexTranscriptMark|null}|null{
   try{
-    const stored=JSON.parse(readFileSync(codexWindowPath(thread),"utf8")) as CodexWindow;
-    return stored?.version===1&&stored.thread===thread&&Array.isArray(stored.segments)&&stored.segments.length?stored:null;
+    const path=codexWindowPath(thread),text=readFileSync(path,"utf8"),window=JSON.parse(text) as CodexWindow;
+    if(window?.version!==2||window.thread!==thread||!Array.isArray(window.segments)||!window.segments.length)return null;
+    let mark:CodexTranscriptMark|null=null;
+    try{mark=JSON.parse(readFileSync(`${path}.mark`,"utf8"));}catch{/* Timestamps are then read from the rollout's start. */}
+    return {window,text,mark};
   }catch{return null;}
 }
-function saveCodexWindow(window:CodexWindow){
+function writeAtomically(path:string,text:string){
+  const temporary=`${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  writeFileSync(temporary,text,{mode:0o600});
+  renameSync(temporary,path);
+}
+function saveCodexWindow(thread:string,text:string|null,mark:CodexTranscriptMark|null){
   try{
-    const path=codexWindowPath(window.thread),temporary=`${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    const path=codexWindowPath(thread);
     mkdirSync(dirname(path),{recursive:true,mode:0o700});
-    writeFileSync(temporary,JSON.stringify(window),{mode:0o600});
-    renameSync(temporary,path);
+    if(text!==null)writeAtomically(path,text);
+    if(mark)writeAtomically(`${path}.mark`,JSON.stringify(mark));
   }catch(error){log("warn","codex_history_window_save_failed",{error:String(error).slice(0,300)});}
 }
 const windowDialogue=(segments:readonly CodexWindowSegment[])=>{
@@ -249,8 +264,9 @@ const windowDialogue=(segments:readonly CodexWindowSegment[])=>{
 };
 
 /** The kept window for one thread, topped up from the App Server; built once when none is kept. */
-export async function readCodexHistoryWindow(input:{sessionUuid:string},request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryPage>{
-  const thread=input.sessionUuid,kept=loadCodexWindow(thread);
+export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{dialogue:number;untilInput:boolean}},
+  request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryPage>{
+  const thread=input.sessionUuid,loaded=loadCodexWindow(thread),kept=loaded?.window??null;
   const head=kept?.segments[0]?.entries.at(-1);
   // Listed items are always projected afresh (one still being written can change); only their
   // timestamps are reused, so a top-up reads just the rollout bytes written since.
@@ -280,7 +296,7 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string},request:
   {
     // Timestamps for listed items not already kept: only the rollout bytes after the kept mark,
     // or the whole rollout when nothing usable is kept.
-    const resumable=met>=0?kept!.mark:null;
+    const resumable=met>=0?loaded!.mark:null;
     const read=await codexTranscriptTimestampsAfter(thread,request,resumable);
     const timestamps=read?.timestamps??new Map<string,string|null>();
     const omissions=new Set<string>(met>=0?kept!.omissions:[]);
@@ -310,13 +326,20 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string},request:
       const covered=windowDialogue(segments.slice(0,count));
       if(covered.dialogue>=CODEX_WINDOW_DIALOGUE&&covered.user){keep=count;break;}
     }
-    window={version:1,thread,mark:read?.mark??null,segments:segments.slice(0,keep),omissions:[...omissions]};
-    const same=kept&&JSON.stringify({...kept,mark:null})===JSON.stringify({...window,mark:null});
+    window={version:2,thread,segments:segments.slice(0,keep),omissions:[...omissions]};
     // A rollout that only gained bookkeeping (token counts) leaves the kept window as it was.
-    if(!same)saveCodexWindow(window);
+    const text=JSON.stringify(window);
+    saveCodexWindow(thread,text===loaded?.text?null:text,read?.mark??null);
   }
-  const messages=window.segments.slice().reverse().flatMap(segment=>segment.entries.flatMap(entry=>entry.messages));
-  const next=window.segments.at(-1)!.next;
+  // Answer with the newest pages that complete what was asked, not the whole kept window.
+  let answer=window.segments.length;
+  if(input.want)for(let count=1;count<=window.segments.length;count++){
+    const covered=windowDialogue(window.segments.slice(0,count));
+    if(covered.dialogue>=input.want.dialogue&&(!input.want.untilInput||covered.user)){answer=count;break;}
+  }
+  const served=window.segments.slice(0,answer);
+  const messages=served.slice().reverse().flatMap(segment=>segment.entries.flatMap(entry=>entry.messages));
+  const next=served.at(-1)!.next;
   return {messages,nextCursor:next===null?null:encode({sessionUuid:thread,cursor:next}),
     ...(window.omissions.length?{coverage:{complete:false,omissions:window.omissions}}:{})};
 }

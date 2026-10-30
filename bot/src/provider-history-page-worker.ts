@@ -29,7 +29,7 @@ parentPort.on('message',async(input:Work)=>{
         // The newest page of a window read is the conversation's kept window, not a listing.
         // A kept window that cannot be read or topped up falls back to the ordinary listing.
         if(session.provider_id==='codex'&&cursor===null&&input.operation==='page'&&input.want&&(input.want.dialogue||input.want.untilInput))
-          try{return await readCodexHistoryWindow({sessionUuid:session.agent_session_uuid});}
+          try{return await readCodexHistoryWindow({sessionUuid:session.agent_session_uuid,want:input.want});}
           catch(error){log('warn','codex_history_window_unavailable',{session_id:session.id,error:String(error).slice(0,300)});}
         return session.provider_id==='claude-code'?readClaudeHistory(options):session.provider_id==='codex'?readCodexHistory(options):null;
       }},input.cwd);
