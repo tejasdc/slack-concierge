@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
-import { accountReadingFresh,includedAllowanceWindows } from './account-allowance-observation';
+import { accountReadingFresh,includedAllowanceWindows,refillsWithinHours } from './account-allowance-observation';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
 import { claudeAccountCachedReset } from './provider-usage';
@@ -33,11 +33,17 @@ function candidatesForNewWork(now: number): Candidate[] {
       if (provider === 'codex' && account.label !== currentAccount('codex')?.label) continue;
       const relevant = includedAllowanceWindows(provider,account,model);
       if (!relevant.length || relevant.some(window => !Number.isFinite(window.usedPercent))) continue;
-      const used = cachedReset ? 100 : Math.max(...relevant.map(window => window.usedPercent));
+      // A new session keeps its provider for life, so it is weighed by the room that lasts
+      // (the weekly windows). A window that refills within hours counts only when it is
+      // spent, because then the work cannot start now (Tejas, 2026-10-30: none of the
+      // five-hour limits should be "limiting our judgment").
+      const weighed = relevant.filter(window => !refillsWithinHours(window) || window.usedPercent >= 100);
+      const basis = weighed.length ? weighed : relevant;
+      const used = cachedReset ? 100 : Math.max(...basis.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)
         .map(window => Date.parse(window.resetsAt ?? '')).filter(Number.isFinite);
       if (cachedReset) spent.push(cachedReset);
-      const tightest = relevant.reduce((best, window) => window.usedPercent > best.usedPercent ? window : best);
+      const tightest = basis.reduce((best, window) => window.usedPercent > best.usedPercent ? window : best);
       const windowResetAt = Date.parse(tightest.resetsAt ?? '');
       candidates.push({ provider, account: account.label, used, resetsAt: spent.length ? Math.max(...spent) : null,
         windowResetAt: Number.isFinite(windowResetAt) ? windowResetAt : null });
@@ -78,8 +84,9 @@ export function measuredBudgetPressure(provider: 'claude-code' | 'codex', accoun
     : usage.accounts.find(value => value.current);
   if (!account || !accountReadingFresh(provider,usage,account,now,BUDGET_NOTICE_MAX_AGE_MS)) return null;
   const observedAt = Date.parse(account.readAt!);
+  // A nearly full five-hour window refills by itself; it is not budget pressure.
   const window = account.windows.filter(value => value.name !== 'Weekly · Fable only'
-    && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
+    && !refillsWithinHours(value) && Number.isFinite(value.usedPercent) && value.usedPercent >= NOTICE_AT_PERCENT)
     .sort((left, right) => right.usedPercent - left.usedPercent)[0];
   return window ? { account: account.label, window: window.name, usedPercent: window.usedPercent,
     resetsAt: window.resetsAt, observedAt: new Date(observedAt).toISOString() } : null;
