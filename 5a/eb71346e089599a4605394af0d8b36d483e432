@@ -1,0 +1,1 @@
+Inbox thread routing now stops scanning old history, and marking a thread read checks only the conversation entry you saw, so these actions return sooner without holding up other work.
