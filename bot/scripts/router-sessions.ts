@@ -26,6 +26,7 @@ router-actions.sh sessions ask --peer mac --machine-need "<ios-native|mac-app|ma
 router-actions.sh sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default] <source-flags> --action-id A
 Only a current direct request from Tejas can open a link in his browser on the Mac; agent browser checks use the server. Chrome is the default unless --browser says otherwise. The opener starts no agent session, and a sleeping Mac queues the link for at most a day. It only opens the page; it never clicks, types or reads it.
 router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name> | --journal entry|checkin]
@@ -839,7 +840,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
-  if(operation==='ask'&&(role?(!!identity||!!provider||!!project||!!peer||!!savedKind):provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
+  if(operation==='ask'&&(role?(!!identity||!!provider||!!project||!!peer||savedKind==='banked'):provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
     invalid('ask requires a discovered address, --role, or --provider with a supported alias; choose one destination.');
   }
   if(role&&(effort||smallTask||outside||resurrect||flags.has('--consult')))
@@ -859,7 +860,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(gpt&&effort)invalid('A GPT runs on the model its maker chose; --gpt takes no --effort.');
   const chatgptChoice=gpt?`${CHATGPT_GPT_PREFIX}${gpt}`:effort;
   if(savedKind) {
-    if(!provider||provider==='chatgpt'||identity||peer||after.length||!title)invalid('Saved work needs a named new local coding session.');
+    if((!role&&(!provider||provider==='chatgpt'||!title))||identity||peer||after.length)
+      invalid('Saved work needs a standing role or a named new local coding session.');
     if(savedKind==='scheduled'&&(!flags.get('--at')||!Number.isFinite(Date.parse(flags.get('--at')!))||Date.parse(flags.get('--at')!)<=Date.now()))
       invalid('schedule requires --at with a future ISO-8601 time.');
     if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=Date.parse(flags.get('--at')!)))
@@ -877,6 +879,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='agents')return requestApiResponse('/sessions/v1/presentation/agents');
   if (request.operation !== 'reply' || !request.body.also?.length)
     return requestApiResponse(`/session-communication/${request.operation}`, request.body);
   // One explicit command closes several requests. Its stable group identity, rather than its

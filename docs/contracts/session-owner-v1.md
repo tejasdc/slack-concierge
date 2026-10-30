@@ -477,6 +477,27 @@ An identical action/reference returns its existing operation (200) without anoth
 
 These explicit bind and server-resolved workspace context semantics implement the native-owner clarification1789459294. They do not activate legacy extraction/transform callbacks.
 
+### Standing agents and scheduled work view
+
+`GET /sessions/v1/presentation/agents` is an authenticated, bounded owner read served by a read
+executor. It returns `{agents, unownedSchedules, hostTimers, coverage}`. Each `agents` entry has
+`role`, `job`, `folder`, `wake`, `binding` (`bound` or `unbound`), `session` (address, title,
+provider and model, or null), `repeatingSchedule` (queued turn and root IDs, interval in
+milliseconds and next firing time, or null), `armedWatches` (total count and up to 20 watch
+IDs, kinds and short descriptions), and `lastRun` (end time, declared outcome, short outcome
+or final text, and turn status, or null). A role with no matching live binding remains `unbound`.
+
+`unownedSchedules` contains each queued repeating firing whose session has no current standing
+role binding: `kind: "unowned"`, session, folder, repeatingSchedule and lastRun. A former role's
+schedule becomes unowned when its binding moves. `hostTimers` has status `available` or
+`unavailable`, a reason when unavailable, and items marked `kind: "host timer"` with unit name,
+activated unit, next run and last run. Systemd is inspected in the read executor; no timers are
+invented on a Mac or when systemctl cannot answer. Times are ISO-8601 where Concierge owns them;
+systemd's own time strings are preserved. The response is capped at 32 queued repeating firings,
+20 watch descriptions per role and 128 host timers. `coverage.complete` and the host timer
+coverage say whether those caps omitted rows. The route's registered growth fixture exercises
+it against growing historical turns; an unknown GET remains refused by default.
+
 ## Agent request/reply and return
 
 Native search treats the historical Slack routing index as a separate evidence source.

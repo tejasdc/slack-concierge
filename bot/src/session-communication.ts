@@ -503,7 +503,6 @@ export class SessionCommunicationCoordinator {
     }
     agents(input:{source:CommunicationSource}) {
         this.actor(input.source);
-        return this.dependencies.owner.standingAgents();
     }
     bindAgent(input:{source:CommunicationSource;action_id:string;role:string;address:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1077,12 +1076,14 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(this.fenced(this.actor(input.source)));
         const actor = sender.actor;
         action(input.action_id);
+        const requestedRole=input.role;
+        const requestedTitle=input.title;
         let standingRole:import('./standing-agents').StandingAgentRole|undefined;
         if(input.role!==undefined) {
             const agent=standingAgent(input.role);
             if(!agent)throw new Error(`Unknown standing agent role ${input.role}; use sessions agents.`);
-            if(input.address||input.provider||input.project||input.peer||input.outside||input.resurrect||input.saved||input.consult)
-                throw new Error('--role chooses the standing agent session and project; do not combine it with an address, provider, project, peer or saved work.');
+            if(input.address||input.provider||input.project||input.peer||input.outside||input.resurrect||input.saved?.kind==='banked'||input.consult)
+                throw new Error('--role chooses the standing agent session and project; do not combine it with an address, provider, project, peer or banked work.');
             const project=standingAgentProject(this.dependencies.owner.defaultCwd,agent.role);
             if(!project)throw new Error(`The ${agent.role} agent project is unavailable on this machine.`);
             const session=standingAgentSession(this.dependencies.owner.defaultCwd,agent.role);
@@ -1153,8 +1154,8 @@ export class SessionCommunicationCoordinator {
             throw new Error('Requester returns must be explicitly enabled.');
         const title=normalizeSessionTitle(input.title);
         if(input.saved) {
-            if(!input.provider||input.address||input.peer||!title||input.after?.length)
-                throw new Error('Saved work needs a newly named local session with no prerequisites.');
+            if((!input.provider&&!requestedRole)||input.peer||(!requestedRole&&!title)||input.after?.length)
+                throw new Error('Saved work needs a standing role or a newly named local session with no prerequisites.');
             if(input.provider==='chatgpt')throw new Error('Banked and scheduled work needs a coding provider.');
             if(input.saved.kind!=='scheduled'&&input.saved.kind!=='banked')throw new Error('Unknown saved work kind.');
             if(input.saved.kind==='scheduled'&&(!Number.isFinite(input.saved.atMs)||input.saved.atMs!<=Date.now()))
@@ -1162,11 +1163,12 @@ export class SessionCommunicationCoordinator {
             if(input.saved.repeatEveryMs!==undefined) {
                 const root=this.dependencies.owner.defaultCwd;
                 const target=input.project?sessionProject(root,input.project,{inside:true}):null;
-                if(!canOwnStandingWork(root,sessionMetadata(getSessionById(actor.session)!).cwd)||!canOwnStandingWork(root,target?.cwd))
+                if((!requestedRole&&!canOwnStandingWork(root,sessionMetadata(getSessionById(actor.session)!).cwd))
+                  ||!canOwnStandingWork(root,target?.cwd??sessionMetadata(getSessionById(this.address(input.address!).session)!).cwd))
                     throw new Error(STANDING_WORK_REFUSAL);
             }
         }
-        if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
+        if(title!==undefined&&!input.provider&&!requestedRole)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined||input.peer!==undefined) {
             if(input.provider!==undefined&&(typeof input.provider!=='string'||!input.provider||input.address!==undefined))throw new Error('Choose either an exact session address or an explicit provider for a new session.');
             const sourceSession=getSessionById(actor.session)!;
@@ -1219,7 +1221,8 @@ export class SessionCommunicationCoordinator {
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
-        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
+        const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
+            ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.return_to_requester?{returnToRequester:true}:{}),
@@ -1293,6 +1296,14 @@ export class SessionCommunicationCoordinator {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,standingRole,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
+            if(input.saved&&requestedRole&&!input.provider){
+                const admitted=retainSessionInput({id:`request:${id}`,sessionId:target!.session,
+                    scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
+                    payload:firstInput,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
+                const queued=enqueueSessionInput(admitted.id);
+                if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
+                saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,requestedRole);
+            }
             if(consultation) {
                 const created=this.dependencies.owner!.createRequestConsultation(consultation,{sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -1308,7 +1319,7 @@ export class SessionCommunicationCoordinator {
                     input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
                     now,sourceInput,`request:${id}`,threadRoot,topicRoot??'');
             if (sourceInput) {
-                if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
+                if(!input.provider&&!consultation&&!(input.saved&&requestedRole))retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
                     sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id});
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInput}`,actionId:input.action_id,kind:'request',origin:'agent',

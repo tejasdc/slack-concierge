@@ -84,6 +84,8 @@ if (process.env.CONCIERGE_READ_WORKER !== "1") {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_renewing_file_watch
     ON watches(session_id, condition_json)
     WHERE kind='file' AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`);
+  db.exec(`CREATE INDEX IF NOT EXISTS standing_armed_watches ON watches(session_id,watch_id)
+    WHERE state IN ('accepted','observing')`);
 }
 
 export type WatchRow = {

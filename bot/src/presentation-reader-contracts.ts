@@ -2,6 +2,9 @@
  * The release harness runs these descriptors against retained-cardinality fixtures; adding
  * a route here without a fixture is a build failure, not a performance waiver. */
 export const PRESENTATION_READERS={
+  standingAgents:{route:'GET /sessions/v1/presentation/agents',collection:'standing agents, repeating schedules and host timers',
+    growth:'old sessions, finished firings, watches and unrelated saved work',maxRows:172,maxStorageRows:320,maxResponseBytes:131_072,
+    sourceTables:['sessions','turns','watches','session_owner_events'],fixture:'standing-agents-growth'},
   areaWindow:{route:'GET /sessions/v1/presentation/areas',collection:'areas of interest',
     growth:'older areas and unrelated Inbox threads',maxRows:20,maxStorageRows:100,maxResponseBytes:65_536,
     sourceTables:['presentation_areas','presentation_area_threads'],fixture:'areas-window-growth'},

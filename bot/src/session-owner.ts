@@ -58,7 +58,9 @@ import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
 import {markRepairNoticesDelivered,pendingRepairNotices,repairNoticeText,REPAIR_AGENT_PROVIDER,REPAIR_AGENT_TITLE} from './repair-notices';
-import {standingAgentForSession,standingAgentRows,standingAgentSession,standingAgentProject,assertStandingAgentFolder,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {standingAgentForSession,standingAgentSession,standingAgentProject,assertStandingAgentFolder,bindStandingAgentSession,unboundJournalKeeperSession,unboundRepairAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL,type StandingAgentRole} from './standing-agents';
+import {standingAgentView} from './standing-agent-view';
+import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
@@ -1338,7 +1340,7 @@ export class SessionOwner {
     if(input.saved) {
       const queued=enqueueSessionInput(operation.id);
       if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
-      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs);
+      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs,undefined,input.standingRole);
     }
     return getAcceptedSessionInput(operation.id)!;
   }
@@ -1416,7 +1418,7 @@ export class SessionOwner {
   projects() {
     return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
-  standingAgents() {return {agents:standingAgentRows(this.defaultCwd)};}
+  async standingAgents() {return {...standingAgentView(db,this.defaultCwd),hostTimers:await hostTimerView()};}
   private project(id:string) {
     const project=sessionProject(this.defaultCwd,id);
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable.',404,'PROJECT_UNAVAILABLE');
@@ -3716,6 +3718,8 @@ export class SessionOwner {
         result=this.saved(kind,url.searchParams.get('cursor'));
       }
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList(url.searchParams.get('cursor'));
+      else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='agents'&&parts.length===2)
+        result=await this.standingAgents();
       else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='breakdown'&&parts.length===2){
         const period=url.searchParams.get('period')??'today';

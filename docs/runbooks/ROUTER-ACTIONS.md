@@ -111,8 +111,14 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ### Standing agents
 
-`sessions agents` lists each continuing role, its agent project, job, wake source and bound
-non-archived session address, or `unbound`. `sessions ask --role <role> --summary "<one line>" --action-id A -- <text>`
+Create a continuing job with `projects new <name> --owner agents --purpose "<one sentence>"`,
+write its project's `AGENTS.md`, and add one role row to the standing-agent list. `sessions agents`
+then shows every role's job, folder, bound session (title and provider/model), repeating schedule,
+armed watches and last run. It also shows unowned repeating schedules and this machine's systemd
+timers, or an explicit unavailable state on a Mac or host without systemd. The same read is
+`GET /sessions/v1/presentation/agents` for Thinkering.
+
+`sessions ask --role <role> --summary "<one line>" --action-id A -- <text>`
 uses that session. If the role is unbound, it starts one in the declared agent project and binds
 it at creation, with the role's description as its session name; `--session-name` overrides that
 name for creation. `sessions agents bind <role> <session-address> <source-flags> --action-id A`
@@ -120,6 +126,14 @@ moves a role's binding to an existing non-archived session in its exact declared
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
 `sessions context` and the session view expose only a session's explicit role binding.
+
+`sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
+queues one firing in that bound session, or creates and binds the role's session first. A repeating
+schedule keeps firing there. While one repeating firing for the role is queued, another repeating
+schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
+with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available under the existing
+agent-project restriction. The read caps repeating schedules at 32, watches per role at 20, and host
+timers at 128; its coverage field says when a cap was reached.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to be in `workspace/agents/`, a declared top-level
