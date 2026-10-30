@@ -8,7 +8,16 @@ export function withLocalCurrentAccount(usage:ProviderUsage,selected:string|null
   return {...usage,accounts:usage.accounts.map(account=>({...account,current:account.label===selected}))};
 }
 
-/** Windows that constrain the ordinary Claude Opus start; Fable has a separate weekly cap. */
+/** A window that refills within hours (Claude's and Codex's five-hour, Gemini's five-hour).
+ * It can stop a turn now, but says nothing about how much a long-lived session can do. */
+export function refillsWithinHours(window:AccountUsage['windows'][number]):boolean {
+  return window.durationMinutes!=null?window.durationMinutes<=300:/5-hour/.test(window.name);
+}
+
+/** Windows that constrain the ordinary Claude Opus start; Fable has a separate weekly cap.
+ * The five-hour window is counted when the reading has one, never required: Anthropic
+ * removes it from verified Ultra accounts (email of 2026-10-30), and a reading without it
+ * must still show room rather than read as an unreadable account. */
 export function includedAllowanceWindows(provider:AccountIdentityProvider,account:AccountUsage,
   model?:string|null):AccountUsage['windows'] {
   if(provider==='codex')
@@ -19,7 +28,7 @@ export function includedAllowanceWindows(provider:AccountIdentityProvider,accoun
   if(provider==='claude-code'){
     const relevant=model!==null&&!/fable/i.test(model??'')
       ?account.windows.filter(window=>window.name!=='Weekly · Fable only'):account.windows;
-    const required=['5-hour','Weekly',...(model===null||/fable/i.test(model??'')?['Weekly · Fable only']:[])];
+    const required=['Weekly',...(model===null||/fable/i.test(model??'')?['Weekly · Fable only']:[])];
     return required.every(name=>relevant.some(window=>window.name===name))?relevant:[];
   }
   return account.windows;

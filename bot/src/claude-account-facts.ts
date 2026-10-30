@@ -70,10 +70,13 @@ const CALL_TIMEOUT_MS = 10_000;
 /** Where the credential portal installs an Admin API key for an account's Console organization. */
 export const ADMIN_KEY_DIR = "/root/.local/state/credential-portal/credentials/anthropic-admin-api";
 
-const MONTHLY_API_CREDIT_USD: Readonly<Record<string, number>> = { "Max 5x": 100, "Max 20x": 200 };
+const MONTHLY_API_CREDIT_USD: Readonly<Record<string, number>> = { "Max": 100, "Ultra": 200 };
 
 export function planName(tier: unknown, hasMax: boolean, hasPro: boolean): string | null {
   const text = typeof tier === "string" ? tier : "";
+  // Anthropic renamed the plans on 2026-10-30: Max 20x is Ultra, Max 5x is Max.
+  if (/ultra|max_20x/.test(text)) return "Ultra";
+  if (/max_5x/.test(text)) return "Max";
   const match = /max_(\d+)x/.exec(text);
   if (match) return `Max ${match[1]}x`;
   if (hasMax) return "Max";

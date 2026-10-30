@@ -334,8 +334,13 @@ not qualify as small merely because one agent could finish it in one session.
 Each candidate needs a fresh, complete allowance reading, a launchable account and an
 offered model. Claude may use a verified account home; Codex and Google use only the
 account signed in to their local execution host. The candidate's spent fraction is its
-tightest usable allowance window, so a nearly exhausted five-hour or weekly bucket
-reduces its share. The owner first uses candidates below the existing 90% warning level;
+tightest lasting (weekly) allowance window, because a new session keeps its provider for
+life. A window that refills within hours (the five-hour ones) counts only once it is
+spent, when the work could not start now; a nearly full one does not move the choice, and
+it does not trigger the running-session budget brief either (Tejas, 2026-10-30: none of the
+five-hour limits should be "limiting our judgment"). Anthropic removes the five-hour limit
+from verified Ultra (formerly Max 20x) accounts, so a Claude reading without one is complete:
+only the weekly windows are required. The owner first uses candidates below the existing 90% warning level;
 the others are eligible only when every candidate has crossed it. A stable hash of the
 accepted request identity then distributes starts in proportion to each candidate's
 remaining allowance. That mixes providers even when their readings are equal without
