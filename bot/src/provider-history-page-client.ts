@@ -1,8 +1,12 @@
 import {Worker} from 'node:worker_threads';
 import {releaseWorkerPath} from './release-worker';
 
-type Work={operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null};
+type Work={operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
+  want?:{dialogue:number;untilInput:boolean}};
 type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
+
+// A window is collected inside the worker under the owner's own four-second budget.
+const HISTORY_WINDOW_WAIT_MS=6000;
 
 /** One persistent worker keeps the cold Claude import alive between requests. */
 export class ProviderHistoryPageClient {
@@ -40,7 +44,7 @@ export class ProviderHistoryPageClient {
         item.reject(new Error('HISTORY_PAGE_STILL_PREPARING'));
         // An import already under way must finish and warm the worker. Killing it here
         // would make every retry start the same expensive cold read from zero.
-      },5000);
+      },work.want?HISTORY_WINDOW_WAIT_MS:5000);
       timer.unref?.();
       this.pending.set(id,{resolve,reject,timer});
       worker.postMessage({id,...work});

@@ -3,13 +3,15 @@ import {parentPort} from 'node:worker_threads';
 import {SessionOwner} from './session-owner';
 import {readClaudeHistory,readCodexHistory} from './provider-history';
 
-type Work={id:number;operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null};
+type Work={id:number;operation:'page'|'delta';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
+  want?:{dialogue:number;untilInput:boolean}};
 if(!parentPort)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
 parentPort.on('message',async(input:Work)=>{
   try {
     if(!Number.isSafeInteger(input.id)||input.id<1||!/^concierge:[1-9][0-9]*$/.test(input.sessionId)
       ||!['page','delta'].includes(input.operation)||typeof input.cwd!=='string'||input.cwd.length>4096
-      ||!Number.isSafeInteger(input.limit)||input.limit<1||input.limit>20)
+      ||!Number.isSafeInteger(input.limit)||input.limit<1||input.limit>100
+      ||input.want!==undefined&&(!Number.isSafeInteger(input.want.dialogue)||input.want.dialogue<0||input.want.dialogue>40||typeof input.want.untilInput!=='boolean'))
       throw new Error('INVALID_HISTORY_PAGE_WORK');
     const owner=new SessionOwner({wake(){},steer(){return false;},async stop(){return false;},available(){return false;},
       history:async(session,cursor,limit)=>{
@@ -18,7 +20,8 @@ parentPort.on('message',async(input:Work)=>{
         return session.provider_id==='claude-code'?readClaudeHistory(options):session.provider_id==='codex'?readCodexHistory(options):null;
       }},input.cwd);
     const result=input.operation==='page'
-      ?await owner.history(input.sessionId,input.cursor,input.limit)
+      // A window is collected here, page after page, rather than one worker round trip per page.
+      ?await owner.history(input.sessionId,input.cursor,input.limit,false,input.want)
       :await owner.historyDelta(input.sessionId,input.after??'');
     parentPort!.postMessage({id:input.id,result});
   } catch(error) {

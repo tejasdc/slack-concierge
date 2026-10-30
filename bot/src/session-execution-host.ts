@@ -221,8 +221,8 @@ export class SessionExecutionHost {
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       projectedHistory:options.history||Object.entries(options.providers).some(([provider,value])=>
         (provider==='codex'||provider==='claude-code')&&value?.history!==
-          (provider==='codex'?readCodexHistory:readClaudeHistory))?undefined:((session,operation,cursor,limit,after)=>
-        this.historyPages.request({operation,sessionId:`concierge:${session.id}`,cwd:this.cwd(session),cursor,limit,after})),
+          (provider==='codex'?readCodexHistory:readClaudeHistory))?undefined:((session,operation,cursor,limit,after,want)=>
+        this.historyPages.request({operation,sessionId:`concierge:${session.id}`,cwd:this.cwd(session),cursor,limit,after,want})),
       historyMessage:(session,messageId,turnId)=>this.historyMessage(session,messageId,turnId),
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
