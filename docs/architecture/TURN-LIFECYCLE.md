@@ -22,7 +22,10 @@ The continuation waits in the ordinary per-session FIFO. A known usage reset or 
 retry time uses the queue's existing deadline; an unknown usage reset waits for the
 existing account-usage reading to show room; a sign-in refusal uses the authentication
 hold released only after the account answers. No second runner or timer is involved.
-The existing provider-free outage notice counts waiting continuations, once per episode.
+The existing provider-free outage notice is published once per episode for usage and sign-in
+refusals only, counting the work that refusal actually holds. A rate limit or a model at
+capacity clears by itself and is logged (`provider_continuation_rate_limit_quiet`), never
+pushed to Tejas: as an allowance notice it named an account with room 22 times (Oct 16–30, 2026).
 Requests owed by the failed run remain open and a later run of that session can answer
 them.
 
