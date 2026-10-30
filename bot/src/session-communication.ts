@@ -17,7 +17,7 @@ import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-r
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
 import {boundSearchResponse} from './search-response-boundary';
-import {savedWorkSettings} from './saved-work';
+import {saveQueuedTurn,savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
