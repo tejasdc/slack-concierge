@@ -270,7 +270,10 @@ const PHASE_ORDER: DeploymentRunStatus[] = [
   "releasing",
 ];
 
-if (initializeLedgerSchema) {
+// Fresh schema rehearsal uses this same initializer. Commit its tables and upgrades
+// together so each DDL statement does not incur a separate durable disk write.
+// Inside the deployment migrator's transaction this becomes a nested savepoint.
+if (initializeLedgerSchema) db.transaction(() => {
 db.exec(`
 CREATE TABLE IF NOT EXISTS deployment_runs (
   id                    TEXT PRIMARY KEY,
@@ -513,7 +516,7 @@ db.query(`UPDATE deployment_wakes
       error='Post-deployment verification wakes were retired; successful deployments no longer invoke feature agents.',
       updated_at=CURRENT_TIMESTAMP
   WHERE status IN ('pending', 'running')`).run();
-}
+}).immediate();
 
 function appendRunEvent(runId: string, event: string, detail: Record<string, unknown> = {}) {
   db.query(`INSERT INTO deployment_run_events (run_id, event, detail_json) VALUES (?, ?, ?)`)

@@ -91,6 +91,36 @@ originating user input so Slack can place every transition in that user's
 Activity feed. The agent response remains the authoritative status target.
 Neither reaction starts or resumes a provider session.
 
+## Deployment schema initialization
+
+The deployment schema initializer reserves the writer once and commits its tables,
+indexes, additive columns and legacy wake retirement together. The normal stopped-owner
+migrator already holds a transaction; the initializer nests within it through the driver's
+savepoint support. Scratch schema rehearsal and ordinary schema-owning startup use the
+same batch. Read-only/controller entrances still skip initialization, and SQLite's
+durability settings and all candidate deadlines remain unchanged.
+
+Incident `48a4e85d-f1da-416a-9d6f-db3ec43135d4` (October 30, 2026) failed during
+the database-safety child with empty stderr. Its retained scratch database at
+`/tmp/concierge-schema-plan-7mGQlS/state.db`, inspected with SQLite `mode=ro` and
+`query_only=ON`, contained the deployment base tables and the first three added
+`deployment_runs` columns (`repair_state`, `candidate_artifact_digest`,
+`candidate_commit`), but lacked `desired_commit`, `activation_state` and the later
+repair columns. This localizes interruption to deployment schema initialization,
+before the fixture's held-writer read checks. The source performed these DDL
+statements in autocommit mode; batching removes their repeated commit boundaries
+instead of raising the timeout or weakening the safety check.
+
+The candidate-check logs are retained under
+`/var/lib/slack-concierge-deployment/candidate-check-failures/91087402-3630-4d22-ab08-8c14634e75fb-presentation`.
+The deploy unit journal reports the preparation failure at 06:52:24 UTC and the
+healthy previous runtime at 06:52:30 UTC. The scratch WAL last changed at 06:52:01
+UTC. Empty child stderr does not establish the terminating signal or the time
+spent in each individual disk wait; the timeout is the likely termination mechanism,
+not a retained signal observation. The candidate's transcript/usage changes do not
+establish causality. No tests or reviews were run for this repair; integration and
+activation proof remain with the external supervisor and detached controller.
+
 ## Immutable releases
 
 ### Application workers and the first upgraded builder

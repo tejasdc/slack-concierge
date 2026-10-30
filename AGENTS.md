@@ -1448,6 +1448,8 @@ the deployment online marker remains the readiness authority. See the deployment
 Release promotion and repair ownership claims acquire SQLite's writer lock before reading
 their guards. Keep these transactions immediate: runtime writers remain active after
 admission reopens, so deferred read-to-write upgrades can fail despite the busy timeout.
+Deployment schema initialization also uses one immediate transaction, including in scratch
+rehearsal; see [schema initialization](docs/architecture/DEPLOYMENT-REPAIR.md#deployment-schema-initialization).
 The same writer-first boundary applies to every deployment-domain transaction,
 including dead-owner recovery and explicit controller reservations. An application
 commit does not change immutable LKG control until proven promotion; use the
