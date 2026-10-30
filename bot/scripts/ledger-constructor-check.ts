@@ -28,7 +28,7 @@ const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/presentation-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
   'scripts/history-delta-growth-fixtures.ts': ["new Database(':memory:')"],
   'scripts/receipt-projection-fixture.ts': ["new Database(':memory:')"],
-  'scripts/owner-collection-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
+  'scripts/owner-collection-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')", "new Database(':memory:')"],
   'scripts/session-card-growth-fixtures.ts': ["new Database(':memory:')", "new Database(':memory:')"],
 };
 
