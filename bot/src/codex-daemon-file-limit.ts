@@ -131,10 +131,19 @@ export async function moveCodexDaemonToOwnScope() {
   const pids = withDescendants(roots);
   const from = [...new Set(roots.map(cgroupOf))];
   const scope = `codex-app-server-${Math.min(...roots)}.scope`;
+  // busctl takes the property count before the properties. It is derived from the list, because a
+  // hand-written "4" stayed when IOAccounting became the fifth (2026-10-15), and systemd refused every
+  // move for two weeks, leaving each new daemon inside concierge-bot.service.
+  const startScope = (members: number[]) => {
+    const properties: string[][] = [["Slice", "s", AGENT_WORK_SLICE], ["PIDs", "au", String(members.length), ...members.map(String)],
+      ["Description", "s", "Shared Codex App Server"], ["CollectMode", "s", "inactive-or-failed"], ["IOAccounting", "b", "true"]];
+    return run("busctl", ["call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+      "StartTransientUnit", "ssa(sv)a(sa(sv))", scope, "fail", String(properties.length), ...properties.flat(), "0"], { timeout: 5_000 });
+  };
   try {
-    await run("busctl", ["call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-      "StartTransientUnit", "ssa(sv)a(sa(sv))", scope, "fail", "4", "Slice", "s", AGENT_WORK_SLICE, "PIDs", "au", String(pids.length), ...pids.map(String),
-      "Description", "s", "Shared Codex App Server", "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true", "0"], { timeout: 5_000 });
+    // A busy daemon's short-lived children can exit mid-call, which fails the whole move with "No such
+    // process"; the long-lived roots alone are what must leave the restartable unit.
+    await startScope(pids).catch(() => startScope(roots));
   } catch (error) {
     // Connections open several at a time; another one may have just made this same move.
     if (roots.every(pid => OWN_SCOPE.test(cgroupOf(pid)))) return;
