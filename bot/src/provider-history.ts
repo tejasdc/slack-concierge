@@ -1,7 +1,7 @@
 import {releaseWorkerPath} from "./release-worker";
 import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ import { preparedOwnerMessageVersion } from "./presentation-message-reader";
 import type { RunResult } from "./codex";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
-import { codexTranscriptTimestamps } from './provider-transcript-metadata';
+import { codexTranscriptTimestamps, codexTranscriptTimestampsAfter, type CodexTranscriptMark } from './provider-transcript-metadata';
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 
 /**
@@ -198,6 +198,127 @@ export async function readCodexHistory(input: ProviderHistoryInput,
   }
   return { messages, nextCursor: page.nextCursor === null ? null : encode({ sessionUuid: input.sessionUuid, cursor: page.nextCursor }),
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };
+}
+
+/**
+ * The newest readable window of each Codex conversation, kept beside the ledger and topped up
+ * with only what Codex added since. Without it every open listed 5-8 App Server pages of a
+ * tool-heavy conversation and, after a restart, re-read its whole rollout for timestamps:
+ * 0.3-1.1 s per open warm and 3-6 s cold (nightly review, 2026-10-30).
+ *
+ * The window is a run of real App Server pages, newest first. Codex items never change once
+ * listed and its continuation markers are rollout positions, so each kept page's marker stays
+ * valid. A top-up lists from the newest item until it meets the kept head; the page that meets
+ * it replaces the kept items it covers, and the remainder of the kept page it lands in keeps
+ * that page's marker. A head that is no longer listed (a rolled-back thread) or a gap longer than
+ * a few pages rebuilds the window from the newest page.
+ */
+type CodexWindowEntry={id:string;turnId:string;messages:ProviderHistoryMessage[]};
+type CodexWindowSegment={entries:CodexWindowEntry[];next:string|null};
+type CodexWindow={version:1;thread:string;mark:CodexTranscriptMark|null;segments:CodexWindowSegment[];omissions:string[]};
+const CODEX_WINDOW_PAGE=100;
+const CODEX_WINDOW_TOPUP_PAGES=5;
+const CODEX_WINDOW_BUILD_PAGES=60;
+export const CODEX_WINDOW_DIALOGUE=40;
+
+function codexWindowPath(thread:string){
+  if(!/^[A-Za-z0-9-]{8,80}$/.test(thread))throw new Error("INVALID_HISTORY_REQUEST");
+  return join(process.env.CONCIERGE_STATE_DIR||join(homedir(),".local","state","concierge"),"codex-history-window",`${thread}.json`);
+}
+function loadCodexWindow(thread:string):CodexWindow|null{
+  try{
+    const stored=JSON.parse(readFileSync(codexWindowPath(thread),"utf8")) as CodexWindow;
+    return stored?.version===1&&stored.thread===thread&&Array.isArray(stored.segments)&&stored.segments.length?stored:null;
+  }catch{return null;}
+}
+function saveCodexWindow(window:CodexWindow){
+  try{
+    const path=codexWindowPath(window.thread),temporary=`${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    mkdirSync(dirname(path),{recursive:true,mode:0o700});
+    writeFileSync(temporary,JSON.stringify(window),{mode:0o600});
+    renameSync(temporary,path);
+  }catch(error){log("warn","codex_history_window_save_failed",{error:String(error).slice(0,300)});}
+}
+const windowDialogue=(segments:readonly CodexWindowSegment[])=>{
+  let dialogue=0,user=false;
+  for(const segment of segments)for(const entry of segment.entries)for(const message of entry.messages){
+    if(message.role!=="tool")dialogue++;
+    if(message.role==="user")user=true;
+  }
+  return {dialogue,user};
+};
+
+/** The kept window for one thread, topped up from the App Server; built once when none is kept. */
+export async function readCodexHistoryWindow(input:{sessionUuid:string},request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryPage>{
+  const thread=input.sessionUuid,kept=loadCodexWindow(thread);
+  const head=kept?.segments[0]?.entries.at(-1);
+  // Listed items are always projected afresh (one still being written can change); only their
+  // timestamps are reused, so a top-up reads just the rollout bytes written since.
+  const keptTimes=new Map<string,string>();
+  if(kept)for(const segment of kept.segments)for(const entry of segment.entries)for(const message of entry.messages)
+    if(message.createdAt&&message.timestampSource==="provider")keptTimes.set(JSON.stringify([message.turnId,message.id]),message.createdAt);
+  const pages:{data:any[];next:string|null}[]=[];
+  let cursor:string|null=null,met=-1,topUp=!!head;
+  for(let page=0;page<CODEX_WINDOW_BUILD_PAGES;page++){
+    const listed=codexPage(await request("thread/items/list",{threadId:thread,cursor,limit:CODEX_WINDOW_PAGE,sortDirection:"desc"}));
+    if(listed.nextCursor!==null&&listed.nextCursor===cursor)throw new Error("PROVIDER_HISTORY_INVALID");
+    pages.push({data:listed.data,next:listed.nextCursor});
+    if(topUp){
+      met=listed.data.findIndex(entry=>entry?.turnId===head!.turnId&&entry?.item?.id===head!.id);
+      if(met>=0)break;
+      if(pages.length>=CODEX_WINDOW_TOPUP_PAGES)topUp=false;
+    }
+    if(!topUp){
+      const listedEntries=pages.flatMap(item=>item.data).map(entry=>({role:entry?.item?.type}));
+      const dialogue=listedEntries.filter(entry=>entry.role==="userMessage"||entry.role==="agentMessage").length;
+      if(dialogue>=CODEX_WINDOW_DIALOGUE&&listedEntries.some(entry=>entry.role==="userMessage"))break;
+    }
+    if(!listed.nextCursor)break;
+    cursor=listed.nextCursor;
+  }
+  let window:CodexWindow;
+  {
+    // Timestamps for listed items not already kept: only the rollout bytes after the kept mark,
+    // or the whole rollout when nothing usable is kept.
+    const resumable=met>=0?kept!.mark:null;
+    const read=await codexTranscriptTimestampsAfter(thread,request,resumable);
+    const timestamps=read?.timestamps??new Map<string,string|null>();
+    const omissions=new Set<string>(met>=0?kept!.omissions:[]);
+    const segments:CodexWindowSegment[]=pages.map(page=>({next:page.next,entries:page.data.slice().reverse().map(entry=>{
+      if(typeof entry?.turnId!=="string")throw new Error("PROVIDER_HISTORY_INVALID");
+      const messages=codexHistoryMessages(entry.item,entry.turnId,thread,omissions);
+      for(const message of messages){
+        const key=JSON.stringify([message.turnId,message.id]);
+        const timestamp=timestamps.get(key)??(met>=0?keptTimes.get(key):undefined);
+        if(timestamp){message.createdAt=timestamp;message.timestampSource="provider";}
+      }
+      return {id:entry.item.id,turnId:entry.turnId,messages};
+    })}));
+    if(met>=0){
+      // The kept items older than the last listed one keep their own pages and markers.
+      const oldest=segments.at(-1)!.entries[0]!;
+      const at=kept!.segments.findIndex(segment=>segment.entries.some(entry=>entry.id===oldest.id&&entry.turnId===oldest.turnId));
+      if(at>=0){
+        const landing=kept!.segments[at]!,index=landing.entries.findIndex(entry=>entry.id===oldest.id&&entry.turnId===oldest.turnId);
+        if(index>0)segments.push({entries:landing.entries.slice(0,index),next:landing.next});
+        segments.push(...kept!.segments.slice(at+1));
+      }
+    }
+    // Keep the newest pages that hold the readable window; older pages are read on demand.
+    let keep=segments.length;
+    for(let count=1;count<=segments.length;count++){
+      const covered=windowDialogue(segments.slice(0,count));
+      if(covered.dialogue>=CODEX_WINDOW_DIALOGUE&&covered.user){keep=count;break;}
+    }
+    window={version:1,thread,mark:read?.mark??null,segments:segments.slice(0,keep),omissions:[...omissions]};
+    const same=kept&&JSON.stringify({...kept,mark:null})===JSON.stringify({...window,mark:null});
+    // A rollout that only gained bookkeeping (token counts) leaves the kept window as it was.
+    if(!same)saveCodexWindow(window);
+  }
+  const messages=window.segments.slice().reverse().flatMap(segment=>segment.entries.flatMap(entry=>entry.messages));
+  const next=window.segments.at(-1)!.next;
+  return {messages,nextCursor:next===null?null:encode({sessionUuid:thread,cursor:next}),
+    ...(window.omissions.length?{coverage:{complete:false,omissions:window.omissions}}:{})};
 }
 
 /** An explicit detail read uses the provider's exact turn and item identity, not a history scan. */

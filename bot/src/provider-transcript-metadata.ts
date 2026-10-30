@@ -46,6 +46,27 @@ async function readFrom(path:string,thread:string,state:FileState,end:number) {
   }
 }
 
+export type CodexTranscriptMark={path:string;identity:string;offset:number};
+
+/**
+ * Timestamps recorded after `from`, for a caller that keeps its own earlier ones (the stored
+ * history window): a top-up after a restart reads only what Codex wrote since, never the whole
+ * rollout again. A replaced or shortened rollout, or no mark, reads it from its first byte.
+ */
+export async function codexTranscriptTimestampsAfter(thread:string,request:Request,from:CodexTranscriptMark|null)
+  :Promise<{timestamps:Timestamps;mark:CodexTranscriptMark}|null> {
+  const path=from?.path??await request('thread/read',{threadId:thread,includeTurns:false}).then(result=>
+    result?.thread?.id===thread&&typeof result.thread.path==='string'?result.thread.path:null).catch(()=>null);
+  if(!path)return null;
+  try {
+    const info=await stat(path),identity=JSON.stringify([info.dev,info.ino]);
+    const resume=from&&from.identity===identity&&info.size>=from.offset;
+    const state:FileState={identity,offset:resume?from.offset:0,timestamps:new Map(),reading:Promise.resolve()};
+    await readFrom(path,thread,state,info.size);
+    return {timestamps:state.timestamps,mark:{path,identity,offset:state.offset}};
+  } catch {return null;}
+}
+
 /** Exact thread/turn/item evidence; unavailable or conflicting metadata never invents a date. */
 export async function codexTranscriptTimestamps(thread:string,request:Request):Promise<Timestamps> {
   let owned=paths.get(request);if(!owned){owned=new Map();paths.set(request,owned);}
