@@ -82,7 +82,12 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- Who wrote a message is looked up per message in every history page and live update;
         -- without these each lookup read the whole events table (2026-10-07, Inbox reads of 20 s+).
         CREATE INDEX IF NOT EXISTS session_communication_events_accepted_input ON session_communication_events(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS session_communication_events_routed_request ON session_communication_events(routed_request_id) WHERE routed_request_id IS NOT NULL;`);
+        CREATE INDEX IF NOT EXISTS session_communication_events_routed_request ON session_communication_events(routed_request_id) WHERE routed_request_id IS NOT NULL;
+        -- A request's events are read by request id on every communication wake: for each open request
+        -- dispatched, each undelivered event delivered, each liveness check and each request view. Only
+        -- the peer table had this index; here every such read scanned the whole table, about twenty
+        -- full scans a second while agents worked, 300 MB of page reads per five seconds (2026-10-30).
+        CREATE INDEX IF NOT EXISTS session_communication_events_request ON session_communication_events(request_id);`);
       db.exec(`
         CREATE TABLE IF NOT EXISTS session_inputs (
           id TEXT PRIMARY KEY,

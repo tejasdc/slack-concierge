@@ -1444,7 +1444,10 @@ changing anything. Loops over ledger rows use `ledgerRows()`, never a statement'
 early exit left the read open and two crashes followed (2026-10-07; the release lint refuses it). The
 ledger has no planner statistics, so a new index can hijack unrelated queries that sort by its
 columns: make new indexes partial or narrow, and time the hot reads (history projections, the
-Inbox rows) on a copy before shipping.
+Inbox rows) on a copy before shipping. Check query plans with Bun's own SQLite (`bun:sqlite`), never
+the system `sqlite3`: the two choose different indexes without statistics, and a partial index the
+system planner used was ignored by the engine that runs here until the query named it with
+`INDEXED BY` (2026-10-30, `docs/incidents/2026-10-30-communication-wake-scanned-events-and-inputs.md`).
 
 Startup wait boundaries emit `concierge_startup_phase` with `started`, `completed`, or
 `failed`. An unmatched start identifies an unfinished dependency, not a healthy runtime;

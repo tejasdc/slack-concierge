@@ -2339,7 +2339,11 @@ export class SessionCommunicationCoordinator {
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
             let pendingAcceptedRecovery=false;
-            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
+            // Both recovery scans name their narrow partial index. Without the hint Bun's SQLite chose the
+            // plain turn index for `turn_id IS NULL` and walked every input without a turn (37,000 of
+            // 54,000 rows, 80 MB of pages) twice per wake, while the system sqlite3 used to check the plan
+            // chose the partial index (2026-10-30). The hint makes the bound hold under the engine that runs.
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_surface_recovery
                 WHERE scope='surface:thinkering' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND (json_extract(receipt_json,'$.admissionIntent') IN ('queue','live')
                     OR json_extract(receipt_json,'$.state')='waiting' AND json_extract(receipt_json,'$.forwardTarget') IS NOT NULL)
@@ -2354,7 +2358,7 @@ export class SessionCommunicationCoordinator {
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','accepted_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
             });
-            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_capture_recovery
                 WHERE scope GLOB 'capture:*' AND kind='input' AND turn_id IS NULL AND steering_id IS NULL
                   AND request_id IS NULL AND json_extract(receipt_json,'$.admissionIntent')='live'
                   AND id='capture:' || json_extract(payload_json,'$.capture.id')
