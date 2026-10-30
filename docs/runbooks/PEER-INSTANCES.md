@@ -117,10 +117,17 @@ minutes is queued, not refused, and the gate is released when the installer fini
 `logs/update.log`. Before 2026-09-29 the Mac updated only when someone remembered, and sat four
 days behind main. `install-mac.sh` loads this job when it is missing and never reloads it, because the job runs the installer and booting it out would end that run (its first real run did exactly that on 2026-09-29).
 
-**What runs on the Mac.** New work runs on the server. A session is started on the Mac only for
-what the Mac alone can do (its Messages app, Xcode or the Simulator, a file or app that exists
-only there, a screenshot) or when Tejas names it; `sessions ask --peer mac --provider …` requires
-`--machine-need` saying which, and the owner refuses it without
+**What runs on the Mac.** New work runs on the server. Desktop browser, phone-sized viewport,
+and Linux WebKit checks run in a server browser. The Mac is reserved for native iOS Safari
+touch and selection, Xcode, Messages, a Mac-only file or app, its physical screen, or an
+explicit request from Tejas. New and addressed Mac work requires `--machine-need`
+`ios-native|mac-app|mac-file|mac-screen|messages|human-mac:<specific reason>`; the receiving
+Mac owner refuses an absent or malformed need. A provider tool hook refuses agent-browser,
+Chrome control, foreground application launches, and Simulator automation without the
+matching iOS need. Agent checks cannot take over Tejas's Chrome or desktop focus.
+The hook covers provider tool calls, not arbitrary programs launched outside those providers;
+the owner gate covers Concierge peer work, not direct SSH. See [Mac agent awareness](../architecture/MAC-AGENT-AWARENESS.md).
+This implements the physical-need placement rule
 [decision: sessions-placed-by-physical-need]. The messaging agent moved to the server on
 2026-09-29; the Mac keeps the texting relay.
 
@@ -306,7 +313,8 @@ unavailable".
 
 `router-actions.sh sessions open <link> <source-flags> --action-id A` (optionally
 `--on <machine>`, default `mac`, and `--browser chrome|safari|default`, default Chrome) opens a
-link in his browser on the Mac. It is an order between the two Concierges, not an agent
+link in his browser on the Mac only when the current accepted input is Tejas's direct request
+to open that link. The command refuses agent-authored requests and verification. It is an order between the two Concierges, not an agent
 session: on 2026-10-11 a server agent started two Mac sessions ("Open TypeSafe API key form in
 Mac Chrome") only to run `open` on a credential form, and both appeared in his session list.
 

@@ -32,6 +32,8 @@ export function macSurfaceActivity(toolName: string, input: unknown): MacSurface
   const code = command || commandText(details.code ?? argumentsValue.code ?? inputValue.code
     ?? argumentsValue.command ?? inputValue.command ?? details.input);
   const tool = toolName.toLowerCase();
+  if (/playwright|agent.browser|browser_run_code|browser_navigate/i.test(tool))
+    return {key:'agent-browser',action:'Running an agent browser on the Mac'};
   // Server agents can surface a macOS prompt through SSH without starting a Mac
   // Concierge turn. Observe the outgoing tool call before it runs, using the same
   // session event and phone notice as an action made by a Mac agent.
@@ -58,6 +60,11 @@ export function macSurfaceActivity(toolName: string, input: unknown): MacSurface
   }
   if (new RegExp(start+'(?:/bin/)?launchctl\\s+(?:bootstrap|load|enable)\\b','i').test(code))
     return { key: 'background-item', action: 'Adding a Mac background item' };
+  if (/\bxcrun\s+simctl\s+(?:boot|launch|io|ui|create|install|push|openurl)\b|\bsafaridriver\b|\bscripts\/ios-look\.mjs\b/i.test(code))
+    return {key:'ios-simulator',action:'Using the iPhone Simulator on the Mac'};
+  if (/\bagent-browser\b|\bplaywright\s+(?:open|codegen|test)\b/i.test(code)
+    && !/^\s*(?:rg|grep|sed|cat|git\s+diff)\b/.test(code))
+    return {key:'agent-browser',action:'Running an agent browser on the Mac'};
   if (/--remote-debugging-(?:port|pipe)\b|\bconnectOverCDP\b/i.test(code) && !/^\s*(?:rg|grep|sed|cat|git\s+diff)\b/.test(code))
     return { key: 'chrome-debugging', action: 'Opening Chrome with debugging access' };
   if (new RegExp(start+'(?:[^\\s]+/)?(?:mac-screenshot|mac-capture|screencapture)\\b','i').test(code))

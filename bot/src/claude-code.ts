@@ -452,7 +452,7 @@ export function claudeCodeArgs(input: {
 const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIERGE_PINNED_HELPERS_DIR ? "js" : "ts";
 const MANAGED_HISTORY_HOOK = `${process.env.CODEX_SYSTEM_DIR || "/etc/codex"}/hooks/concierge-history-guard`;
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
-const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*(navigate|new_page|open_url|goto).*";
+const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],

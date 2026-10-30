@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -29,9 +29,10 @@ import { completionWithCheck, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
-import { isWritingSession, MACHINE_NEED_REQUIRED, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
+import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
 import {standingAgent,standingAgentProject,standingAgentSession,bindStandingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
 import {sessionProject} from './session-projects';
+import {parseMachineNeed} from './machine-need';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -1006,6 +1007,8 @@ export class SessionCommunicationCoordinator {
         const links=this.dependencies.owner?.peerLinks;
         if(!links)throw new Error('Opening links on another machine is not available on this instance.');
         const actor=this.fenced(this.actor(input.source));
+        const source=getAcceptedSessionInput(actor.inputId!);
+        if(!source||!humanAuthored(source))throw new Error('Opening a link in Tejas’s own browser requires his current direct request. Agent work and verification use a server browser.');
         action(input.action_id);
         return links.open({source:{session:actor.session,input:actor.inputId!,run:nativeRunId(actor.turn)},actionId:input.action_id,url:input.url,
             ...(input.on===undefined?{}:{peer:input.on}),...(input.browser===undefined?{}:{browser:input.browser})});
@@ -1118,7 +1121,6 @@ export class SessionCommunicationCoordinator {
         // unmarked requests from the lab coordinator arrived information-only and three agents
         // declined to build what Tejas had asked for (2026-10-08).
         if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
-        if(input.peer!==undefined&&input.provider!==undefined&&!input.machine_need?.trim())throw new Error(MACHINE_NEED_REQUIRED);
         if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
             throw new Error('An outside request starts a new local Codex session: --outside with --project and an optional Codex alias.');
         if(input.consult!==undefined) {
@@ -1185,6 +1187,9 @@ export class SessionCommunicationCoordinator {
         }
         if(input.peer!==undefined) {
             if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
+            const machineNeed=input.peer==='mac'&&(input.provider!==undefined||input.requestedEffect==='work')
+                ?parseMachineNeed(input.machine_need):undefined;
+            if(input.machine_need!==undefined&&input.peer!=='mac')throw new Error('--machine-need is for Mac work.');
             if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
@@ -1195,9 +1200,13 @@ export class SessionCommunicationCoordinator {
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
                 requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester,
+                ...(machineNeed?{machineNeed}:{}),
                 ...(routedFrom?{routedFrom}:{})});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
+        if(input.machine_need!==undefined&&process.platform!=='darwin')throw new Error('--machine-need is for Mac work.');
+        const localMachineNeed=process.platform==='darwin'&&(input.provider!==undefined||input.requestedEffect==='work')
+            ?parseMachineNeed(input.machine_need):undefined;
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
             throw new Error('after must contain exact existing request IDs.');
         const after = [...new Set(input.after ?? [])].sort();
@@ -1209,7 +1218,7 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
-        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
+        const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),

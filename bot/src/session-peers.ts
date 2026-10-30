@@ -25,6 +25,7 @@ import {recordRequesterDecisionReturn} from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
+import {parseMachineNeed,type MachineNeed} from './machine-need';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -443,6 +444,7 @@ export class SessionPeers {
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
+    machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
@@ -452,7 +454,7 @@ export class SessionPeers {
     const effect=input.requestedEffect??'informational';
     const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
-      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
+      ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{})});
     const digest=hash(encoded);
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
@@ -478,7 +480,7 @@ export class SessionPeers {
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Answer here; its original thread shows only the routing receipt.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
+      text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(files.length?{files}:{})};
     const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
       const raced=prior();
@@ -1066,6 +1068,12 @@ export class SessionPeers {
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
+    let machineNeed:MachineNeed|undefined;
+    if(this.self==='mac'&&(typeof input.provider==='string'||input.requestedEffect==='work'&&!input.forwardedReply)) {
+      try { machineNeed=parseMachineNeed(typeof input.machineNeed?.kind==='string'&&typeof input.machineNeed?.why==='string'
+        ? `${input.machineNeed.kind}:${input.machineNeed.why}`:undefined); }
+      catch(error) { throw new SessionOwnerError(error instanceof Error?error.message:'Mac-only need required.',400,'MACHINE_NEED_REQUIRED'); }
+    }
     if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))
       ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
       ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
@@ -1087,12 +1095,15 @@ export class SessionPeers {
         throw new SessionOwnerError('Idempotency conflict: forwarded request payload changed.',409);
       if(JSON.stringify(retained.routedFrom??null)!==JSON.stringify(input.routedFrom??null))
         throw new SessionOwnerError('Idempotency conflict: routed message changed.',409);
+      if(JSON.stringify(retained.machineNeed??null)!==JSON.stringify(machineNeed??null))
+        throw new SessionOwnerError('Idempotency conflict: Mac need changed.',409);
       const target=getAcceptedSessionInput(existing.target_input_id)!;
       if(target.turn_id===null)this.dependencies.owner.dispatch(target);
       return this.accepted(existing);
     }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(machineNeed?{machineNeed}:{}),
       ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{})};
     const created=db.transaction(()=>{
@@ -1101,7 +1112,7 @@ export class SessionPeers {
       let sessionId:number;
       if(typeof input.provider==='string'){
         const operation=owner.createRequestTarget({scope,requestId,provider:input.provider,effort:input.effort,project:input.project,title:input.title,summary:typeof input.summary==='string'?input.summary:undefined,
-          firstInput:{text:input.text,...(attachments.length?{attachments}:{})}});
+          firstInput:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{})}});
         sessionId=operation.session_id;
       } else {
         if(typeof input.address!=='string')throw new SessionOwnerError('Choose an exact session address or a provider for a new session.');
@@ -1110,7 +1121,7 @@ export class SessionPeers {
         if(!owner.canSend(target))throw new SessionOwnerError('The exact session is not currently messageable.',409,'CAPABILITY_UNAVAILABLE');
         owner.attachments(attachments);
         retainSessionInput({id:`request:${requestId}`,sessionId:target.id,scope,actionId:`request:${requestId}`,kind:'input',origin:'agent',
-          payload:{text:input.text,...(attachments.length?{attachments}:{}),...(input.routedFrom?{routedFrom:input.routedFrom}:{}),
+          payload:{text:input.text,...(machineNeed?{machineNeed}:{}),...(attachments.length?{attachments}:{}),...(input.routedFrom?{routedFrom:input.routedFrom}:{}),
             ...(target.provider_id==='chatgpt'||sessionMetadata(target).interactionPolicy==='consultation-only'?{delivery:'queue'}:{})},requestId});
         sessionId=target.id;
       }
