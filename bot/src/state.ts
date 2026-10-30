@@ -899,7 +899,6 @@ db.exec("CREATE INDEX IF NOT EXISTS saved_repeat_roots ON turns(id) WHERE saved_
 db.exec("CREATE INDEX IF NOT EXISTS standing_queued_repeats ON turns(id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS standing_role_repeats ON turns(session_id,id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS standing_last_turn ON turns(session_id,id DESC) WHERE ended_at IS NOT NULL");
-db.exec("CREATE INDEX IF NOT EXISTS standing_session_role ON sessions(json_extract(native_metadata_json,'$.standingRole'),id DESC) WHERE status!='archived'");
 db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
   quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,

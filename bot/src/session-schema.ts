@@ -56,6 +56,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       };
       add('sessions','binding_generation','binding_generation INTEGER NOT NULL DEFAULT 1');
       add('sessions','native_metadata_json',"native_metadata_json TEXT NOT NULL DEFAULT '{}'");
+      // A standing role resolves to its explicitly bound session (standing-agents.ts); created here, after the column exists.
+      db.exec("CREATE INDEX IF NOT EXISTS standing_session_role ON sessions(json_extract(native_metadata_json,'$.standingRole'),id DESC) WHERE status!='archived'");
       add('turns','accepted_input_id','accepted_input_id TEXT');
       add('turns','native_run_id','native_run_id TEXT');
       add('turn_steering_messages','accepted_input_id','accepted_input_id TEXT');
