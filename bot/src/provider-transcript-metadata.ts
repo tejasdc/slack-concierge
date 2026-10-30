@@ -1,5 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 type Request=(method:string,params:Record<string,unknown>)=>Promise<any>;
 type Timestamps=Map<string,string|null>;
@@ -55,8 +57,7 @@ export type CodexTranscriptMark={path:string;identity:string;offset:number};
  */
 export async function codexTranscriptTimestampsAfter(thread:string,request:Request,from:CodexTranscriptMark|null)
   :Promise<{timestamps:Timestamps;mark:CodexTranscriptMark}|null> {
-  const path=from?.path??await request('thread/read',{threadId:thread,includeTurns:false}).then(result=>
-    result?.thread?.id===thread&&typeof result.thread.path==='string'?result.thread.path:null).catch(()=>null);
+  const path=from?.path??await codexRolloutPath(thread,request);
   if(!path)return null;
   try {
     const info=await stat(path),identity=JSON.stringify([info.dev,info.ino]);
@@ -67,12 +68,40 @@ export async function codexTranscriptTimestampsAfter(thread:string,request:Reque
   } catch {return null;}
 }
 
+const THREAD_READ_WAIT_MS=2000;
+/**
+ * Where a Codex conversation's rollout file is. Codex names it after the conversation id under
+ * sessions/<local date>/, and the id (a UUIDv7) carries its creation instant, so the file is found
+ * in that day's folder (or a neighbour, for a time-zone edge) without asking the App Server. The
+ * App Server's thread/read is the last resort, bounded: for two long conversations it went
+ * unanswered for 30 s on every call, and every history open waited on it (2026-10-30).
+ */
+async function codexRolloutPath(thread:string,request:Request):Promise<string|null>{
+  const home=process.env.CODEX_HOME||join(homedir(),'.codex');
+  const created=/^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(thread)?parseInt(thread.replace(/-/g,'').slice(0,12),16):NaN;
+  if(Number.isFinite(created)){
+    for(const offset of [0,-1,1]){
+      const day=new Date(created+offset*86_400_000);
+      const folder=join(home,'sessions',String(day.getFullYear()),String(day.getMonth()+1).padStart(2,'0'),String(day.getDate()).padStart(2,'0'));
+      const name=(await readdir(folder).catch(()=>[] as string[])).find(entry=>entry.endsWith(`-${thread}.jsonl`));
+      if(name)return join(folder,name);
+    }
+  }
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const answered=await Promise.race([
+    request('thread/read',{threadId:thread,includeTurns:false}).then(result=>
+      result?.thread?.id===thread&&typeof result.thread.path==='string'?result.thread.path as string:null).catch(()=>null),
+    new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),THREAD_READ_WAIT_MS);}),
+  ]);
+  clearTimeout(timer);
+  return answered;
+}
+
 /** Exact thread/turn/item evidence; unavailable or conflicting metadata never invents a date. */
 export async function codexTranscriptTimestamps(thread:string,request:Request):Promise<Timestamps> {
   let owned=paths.get(request);if(!owned){owned=new Map();paths.set(request,owned);}
   let pending=owned.get(thread);
-  if(!pending){pending=request('thread/read',{threadId:thread,includeTurns:false}).then(result=>
-    result?.thread?.id===thread&&typeof result.thread.path==='string'?result.thread.path:null).catch(()=>null);
+  if(!pending){pending=codexRolloutPath(thread,request);
     owned.set(thread,pending);}
   const path=await pending;if(!path){owned.delete(thread);return new Map();}
   const key=JSON.stringify([thread,path]);
