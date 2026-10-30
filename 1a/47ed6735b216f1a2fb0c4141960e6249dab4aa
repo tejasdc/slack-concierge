@@ -1,0 +1,1 @@
+Agent browser checks now run on the server; Mac work must name a Mac-only reason, and agents are stopped before opening your Chrome or taking desktop focus.
