@@ -1036,7 +1036,8 @@ export class SessionExecutionHost {
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
-      providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id)},
+      providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:''},
       ...(boundAccount?{boundAccount}:{}),
       // Admission was recorded when this run first started; taking it back is not a new admission.
       ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}:{}),

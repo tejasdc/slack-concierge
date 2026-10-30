@@ -32,6 +32,7 @@ import { siteRunbookNotices } from '../src/site-runbook-notice';
 import { messagesDatabaseRefusal } from '../src/messages-database-policy';
 import { recordMessagesRead } from '../src/messages-read-log';
 import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
+import { macSurfaceRefusal } from '../src/mac-surface-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -93,6 +94,8 @@ try {
   const command = toolCommand(input);
   reason = messagesDatabaseRefusal(command, input);
   refusedMessages = reason !== null;
+  if(!reason)reason=macSurfaceRefusal({command,toolName:String(hook.tool_name??''),toolInput:input,
+    need:process.env.CONCIERGE_MAC_NEED??'',platform:process.platform});
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {

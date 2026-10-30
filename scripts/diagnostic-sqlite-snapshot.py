@@ -56,8 +56,12 @@ def flush_written(fd):
     # fdatasync on a second descriptor of the same inode writes out what SQLite has
     # spilled so far; DONTNEED then returns those pages so the copy never evicts the
     # serving process's own cached data.
-    os.fdatasync(fd)
-    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    if hasattr(os, "fdatasync"):
+        os.fdatasync(fd)
+    else:
+        os.fsync(fd)
+    if hasattr(os, "posix_fadvise"):
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
 def snapshot(source_path, destination_path, max_seconds, max_bytes):

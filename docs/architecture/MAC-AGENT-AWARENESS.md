@@ -1,5 +1,13 @@
 # Mac agent awareness
 
+The Mac owner now refuses new or addressed peer work without a named Mac-only need. The
+request must state the relevant native iOS, Mac app, Mac file, Mac screen, Messages, or
+explicit human Mac need. A pre-tool hook also refuses common browser and foreground-control
+commands in Claude and Codex turns, including server SSH commands aimed at the Mac. It allows
+background Simulator command-line automation only with a native iOS need on that accepted
+turn. This is a tool boundary; arbitrary programs outside the managed provider stream remain
+outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
+
 The Mac session owner observes Claude and Codex tool starts in the existing provider
 progress stream. The server owner also observes tool calls that SSH to Tejas's Mac,
 including a plain command and AppleScript from a server agent. For actions that can
@@ -37,7 +45,6 @@ running work; a completed action still has its retained record. The notifier
 uses its existing target and delivery store. Replay is deduplicated by event ID,
 and events older than ten minutes are not pushed after an outage.
 
-This awareness does not revoke Mac automation access. Tejas expressly confirmed
-that agents may automate his Mac; the earlier proposed screen/app-control gate was
-not installed after he rejected that expansion. The behavior here answers who did
-what and gives him the existing Stop path.
+The activity record still answers who did what and gives him the existing Stop path. The
+new refusal is limited to browser and foreground control and does not revoke background
+Mac-only automation.
