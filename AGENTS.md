@@ -809,7 +809,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   notified, and admits a service notice to the question's owner (the Inbox router for most)
   naming the thread, so it can refresh anything in the question that expires before he opens it;
   his `open` state brings one back by hand (Tejas, 2026-10-07: "remind me later … 30 minutes, 3
-  hours, 6 hours, one week") [decision: remind-me-later-on-questions]. **The open-threads list is ordered by
+  hours, 6 hours, one week") [decision: remind-me-later-on-questions]. **A question waiting on him is reminded until it ends** (`remindWaitingQuestions`, same cadence): at one and four hours on its own, then in one morning list of everything still waiting, never at night; the rule and event identities are in [requested phone delivery](docs/contracts/requested-phone-notifications.md#reminders-until-he-answers). **The open-threads list is ordered by
   what needs him** (`listTopics`: a decision or something to read first, then work moving, then unread, then
   the quiet rest, newest first within each by the conversation's own time; closed threads by `closedAt`), **a
   thread's time, newest entry and unread mark come from its conversation alone** (his messages, posts and

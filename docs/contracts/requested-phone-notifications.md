@@ -47,6 +47,34 @@ push. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
+### Reminders until he answers
+
+A question still waiting on him is said again (`remindWaitingQuestions` in
+`session-topics.ts`, on the owner's reading cadence in both runtime compositions;
+Tejas, 2026-10-30: "it's imperative that the notification gets repeated … Not 'I
+sent a notification, my job is done', and then sleep"). What is reminded is
+exactly what Needs you lists: the shared `awaitingHim` rule, with his reply that
+names the question counting as answered. So an answer, a withdrawal, a set-aside
+or his naming reply ends the reminders with nothing to cancel.
+
+- One hour and four hours after a question was asked, that question alone:
+  `needs_you` event `question-nudge:<questionId>:<1h|4h>`, shaped like the
+  set-aside wake-up (thread root, `questionId`, agent and task), with words
+  "Still waiting on you, <how long> now: <the one thing it asks>" so the
+  notifier's same-question quiet rule does not swallow it. Only the latest due
+  step is sent. The asking session receives a service notice at the same moment
+  to refresh anything that expired (a texted code, a one-time link) or settle the
+  question; it owes no reply.
+- After its first day a question has no reminder of its own. Each morning one
+  `needs_you` event `waiting-on-you:<local date>` lists everything still waiting,
+  newest first (three named, then a count), with no thread root, so it opens the
+  Inbox where the Needs you filter shows them all. One a day rather than one per
+  question, because dozens of old questions each ringing daily would teach him to
+  ignore all of them.
+- Nothing rings during the saved-work quiet hours (his one setting for when he
+  sleeps) or before 9 AM in that time zone; a step that came due overnight goes
+  out at 9 AM. Event identities make a restart harmless.
+
 The old per-input session promises, session watcher, peer replay, expiry,
 backfill, and service posts are retired. Their historical ledger rows remain
 inert, including any pending rows. They no longer create notifications or
