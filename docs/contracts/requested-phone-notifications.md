@@ -57,14 +57,16 @@ exactly what Needs you lists: the shared `awaitingHim` rule, with his reply that
 names the question counting as answered. So an answer, a withdrawal, a set-aside
 or his naming reply ends the reminders with nothing to cancel.
 
-- One hour and four hours after a question was asked, that question alone:
-  `needs_you` event `question-nudge:<questionId>:<1h|4h>`, shaped like the
+- One hour and four hours after he was last told about a question (asked, back
+  from set-aside, or made ready late), that question alone: `needs_you` event
+  `question-nudge:<questionId>:<told-at>:<1h|4h>`, shaped like the
   set-aside wake-up (thread root, `questionId`, agent and task), with words
   "Still waiting on you, <how long> now: <the one thing it asks>" so the
   notifier's same-question quiet rule does not swallow it. Only the latest due
-  step is sent. The asking session receives a service notice at the same moment
-  to refresh anything that expired (a texted code, a one-time link) or settle the
-  question; it owes no reply.
+  step is sent. At the one-hour reminder the asking session (unless it is the
+  Inbox router, whose turns are its largest) receives a service notice to refresh
+  anything that expired (a texted code, a one-time link) or settle the question;
+  it owes no reply. A pass that sends the morning list sends no single reminder.
 - After its first day a question has no reminder of its own. Each morning one
   `needs_you` event `waiting-on-you:<local date>` lists everything still waiting,
   newest first (three named, then a count), with no thread root, so it opens the
@@ -72,8 +74,8 @@ or his naming reply ends the reminders with nothing to cancel.
   question, because dozens of old questions each ringing daily would teach him to
   ignore all of them.
 - Nothing rings during the saved-work quiet hours (his one setting for when he
-  sleeps) or before 9 AM in that time zone; a step that came due overnight goes
-  out at 9 AM. Event identities make a restart harmless.
+  sleeps) or before 9 AM in that time zone. Event identities make a restart
+  harmless, and a failure is logged without stopping the rest of the reading pass.
 
 The old per-input session promises, session watcher, peer replay, expiry,
 backfill, and service posts are retired. Their historical ledger rows remain
