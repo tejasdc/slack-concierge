@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
-import {savedMessagePage,savedWorkPage} from '../src/owner-collection-pages';
+import {savedMessagePage,savedWorkListPage} from '../src/owner-collection-pages';
 import {inboxQueuePage} from '../src/inbox-queue';
 import {inboxCapturesPage} from '../src/inbox-captures-page';
 import {observedDatabase,observeStorageOperation,withStorageReadBudget,type StorageWork} from '../src/storage-observation';
@@ -12,10 +12,14 @@ function source(count:number){
  const db=observedDatabase(new Database(':memory:'));
  db.exec(`CREATE TABLE session_saved_messages(session_id INTEGER,message_id TEXT,excerpt TEXT,created_at TEXT,PRIMARY KEY(session_id,message_id));
   CREATE TABLE session_followed_messages(session_id INTEGER,message_id TEXT,excerpt TEXT,created_at TEXT,PRIMARY KEY(session_id,message_id));
+  CREATE TABLE sessions(id INTEGER PRIMARY KEY,binding_generation INTEGER,provider_id TEXT,native_metadata_json TEXT,
+    slack_channel_id TEXT,slack_thread_ts TEXT);
   CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,saved_kind TEXT,status TEXT,
     turn_kind TEXT,owner_instance_id TEXT,provider_admission_intended_at TEXT,provider_started_at TEXT,
     provider_turn_id TEXT,provider_input_acknowledged_at TEXT,stop_requested_at TEXT,native_run_id TEXT,
-    accepted_input_id TEXT,queue_priority INTEGER NOT NULL DEFAULT 0);
+    accepted_input_id TEXT,queue_priority INTEGER NOT NULL DEFAULT 0,saved_at_ms INTEGER NOT NULL DEFAULT 1,
+    saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,saved_repeat_ms INTEGER,saved_sequence INTEGER,
+    dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER);
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,origin TEXT,kind TEXT,steering_id INTEGER,receipt_json TEXT,payload_json TEXT,created_at TEXT);
   CREATE INDEX saved_message_page ON session_saved_messages(created_at DESC,session_id DESC,message_id DESC);
   CREATE INDEX followed_message_page ON session_followed_messages(created_at DESC,session_id DESC,message_id DESC);
@@ -24,8 +28,10 @@ function source(count:number){
  const saved=db.query('INSERT INTO session_saved_messages VALUES(?,?,?,?)');
  const followed=db.query('INSERT INTO session_followed_messages VALUES(?,?,?,?)');
  const turn=db.query('INSERT INTO turns(id,session_id,saved_kind,status) VALUES(?,?,?,?)');
+ const session=db.query("INSERT INTO sessions VALUES(?,1,'codex',?,NULL,NULL)");
  const inboxTurn=db.query("INSERT INTO turns(id,session_id,saved_kind,status,turn_kind,accepted_input_id,queue_priority) VALUES(?,1,NULL,'queued','native',?,?)");
  const inboxInput=db.query("INSERT INTO session_inputs VALUES(?,'human','input',NULL,NULL,?,'2026-10-10')");
+ for(let id=1;id<=23;id++)session.run(id,JSON.stringify({title:`Session ${id}`}));
  for(let id=1;id<=count;id++){
   const at=new Date(Date.UTC(2026,9,8)+Math.floor(id/3)*1000).toISOString();
   saved.run(id%23+1,`saved-${id}`,'A saved message',at);
@@ -37,11 +43,12 @@ function source(count:number){
  }
  return db;
 }
-function bounded<T>(name:'savedMessages'|'savedWork'|'inboxQueue',read:()=>T){
+function bounded<T>(name:'savedMessages'|'savedWork'|'inboxQueue',read:()=>T,maxCalls=128){
  const contract=PRESENTATION_READERS[name];let work:StorageWork|undefined;
  const page=observeStorageOperation(name,()=>withStorageReadBudget({maxCalls:128,maxRows:contract.maxStorageRows,
   maxResultBytes:contract.maxResponseBytes*2},read),value=>{work=value;});
  assert.ok(work&&work.db_calls>0);
+ assert.ok(work.db_calls<=maxCalls,`${name} used ${work.db_calls} database calls`);
  assert.ok(Buffer.byteLength(JSON.stringify(page))<contract.maxResponseBytes);
  return page;
 }
@@ -66,10 +73,12 @@ async function savedMessagesGrowth(){
 async function savedWorkGrowth(){
  for(const count of [100,1000,10_000]){const db=source(count);try{
   checkPlan(db,"SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued' AND id<500 ORDER BY id DESC LIMIT 11",'saved_work_page');
-  const first=bounded('savedWork',()=>savedWorkPage(db));
+  const first=bounded('savedWork',()=>savedWorkListPage(db),32);
   assert.equal(first.items.length,10);assert.ok(first.nextCursor);
-  const second=bounded('savedWork',()=>savedWorkPage(db,first.nextCursor));
-  assert.equal(second.items.length,10);assert.ok(second.items.every(row=>!first.items.some(prior=>prior.id===row.id)));
+  assert.equal(new Set(first.items.map(row=>row.session.id)).size,10);
+  assert.equal(first.items[0]?.session.title,`Session ${count%23+1}`);
+  const second=bounded('savedWork',()=>savedWorkListPage(db,first.nextCursor),32);
+  assert.equal(second.items.length,10);assert.ok(second.items.every(row=>!first.items.some(prior=>prior.turnId===row.turnId)));
  }finally{db.close();}}
 }
 async function inboxQueueGrowth(){

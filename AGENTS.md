@@ -265,7 +265,8 @@ and mandatory review requirements in this repository and linked historical mater
   `sessions saved list|start|cancel` uses an exact source and stable action identity for changes;
   the owner lists waiting items at `/saved-work` and controls them at
   `/saved-work/<turn-id>/<start|time|schedule|drop>`. `time` changes only a schedule;
-  `schedule` explicitly converts a banked item.
+  `schedule` explicitly converts a banked item. The list returns compact session labels;
+  full session details are read only when that session is opened. See [storage observation](docs/architecture/STORAGE-OBSERVATION.md).
   Banked Claude work is released
   against fresh usage on any account this machine can launch; banked Codex work uses only
   the account currently signed in to the shared Codex App Server. Both release only while
