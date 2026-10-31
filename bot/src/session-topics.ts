@@ -12,6 +12,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
+import {inQuietHours,localParts} from './quiet-hours';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -2201,6 +2202,152 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
     woken++;
   }
   return woken;
+}
+
+/**
+ * A question that only he can answer is said again until it ends, instead of once (Tejas,
+ * 2026-10-30: "it's imperative that the notification gets repeated … Not 'I sent a notification,
+ * my job is done', and then sleep"). The schedule:
+ *
+ * - one hour and four hours after it was asked, that question alone, with how long it has waited
+ *   and the one thing it needs; the agent that asked is told at the same moment so it can refresh
+ *   anything that expires (a texted code is dead within minutes);
+ * - then once each morning, one notification for everything still waiting, newest first, opening
+ *   the Inbox where the Needs you filter lists all of them. One a day, not one per question,
+ *   because fifty-odd open questions each ringing daily would teach him to ignore all of them.
+ *
+ * It stops by itself: the same rule that puts a question in Needs you (`awaitingHim`) decides what
+ * is reminded, so an answer, a withdrawal, a set-aside or his reply that names it ends the
+ * reminders with nothing to cancel. Nothing rings during his night (the saved-work quiet hours,
+ * his one setting for when he sleeps) or before the morning reminder hour. Each reminder is a
+ * `needs_you` event shaped like the set-aside wake-up's, so thnkr.ing sends it on the same path;
+ * its identity names the step or the day, so a restart never repeats one.
+ */
+const REMINDER_HOUR_MS=60*60_000;
+const QUESTION_REMINDER_STEPS=[{step:'1h',afterMs:REMINDER_HOUR_MS},{step:'4h',afterMs:4*REMINDER_HOUR_MS}] as const;
+/** After a day a question is carried by the morning reminder instead of its own. */
+const OWN_REMINDERS_WITHIN_MS=24*REMINDER_HOUR_MS;
+/** 9 AM in his time zone: the morning reminder, and no reminder rings earlier. */
+const MORNING_REMINDER_HOUR=9;
+const MORNING_REMINDER_LISTS=3;
+
+/** The one thing a question asks of him, short enough for a Lock Screen. */
+function oneThingAsked(question:StoredQuestion):string {
+  const paragraphs=String(question.brief?.decision??'').split(/\n\s*\n/).map(part=>part.trim())
+    .filter(part=>part&&!/^escalated:/i.test(part));
+  const text=(paragraphs[0]??'').replace(/^tl;?dr:\s*/i,'').replace(/\s+/g,' ').trim();
+  if(text.length<=280)return text||'An agent is waiting on your answer.';
+  // Too long: the opening sentence says what it is about and the closing one usually asks.
+  const sentences=text.split(/(?<=[.!?])\s+/);
+  const cap=(words:string,limit:number)=>words.length<=limit?words:words.slice(0,limit).replace(/\s+\S*$/,'')+'…';
+  const first=sentences[0]!,last=sentences.at(-1)!;
+  return sentences.length>1&&first.length+last.length<=320?`${first} … ${last}`:cap(sentences.length>1?last:first,280);
+}
+const waitedFor=(ms:number)=>{
+  const hours=Math.floor(ms/REMINDER_HOUR_MS);
+  if(hours<24)return hours<=1?'an hour':`${hours} hours`;
+  const days=Math.floor(hours/24);
+  return days===1?'a day':`${days} days`;
+};
+const ownerEventExists=(eventId:string)=>!!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId);
+/** A due reminder held back by his unsettled reply is looked at again only this often, because the
+ * reply read walks his recent messages. */
+const HELD_BY_REPLY_RECHECK_MS=30*60_000;
+const heldByReply=new Map<string,number>();
+
+type ReminderAdmit=(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown;
+/** Runs inside the usage watch's callback, which swallows a throw and skips everything after it, so
+ * a failure here is logged and contained. */
+export function remindWaitingQuestions(now=Date.now(),admit?:ReminderAdmit):number {
+  try {return sendDueReminders(now,admit);}
+  catch(error) {log('error','question_reminders_failed',{error:error instanceof Error?error.message:String(error)});return 0;}
+}
+function sendDueReminders(now:number,admit?:ReminderAdmit):number {
+  const session=inboxSession();
+  if(!session)return 0;
+  const night=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string}|null;
+  if(!night)return 0;
+  const local=localParts(now,night);
+  if(inQuietHours(now,night)||local.hour<MORNING_REMINDER_HOUR)return 0;
+  // Cheap first: the open decisions and which reminder, if any, each is due. His replies are read
+  // only when something is due, because that read walks his recent messages.
+  // Only this Inbox's own topics, which is what Needs you lists; a question without a topic row
+  // is never reminded rather than failing every pass.
+  const open=(db.query("SELECT q.* FROM inbox_questions q JOIN inbox_topics t ON t.topic_id=q.topic_id WHERE t.session_id=? AND q.state IN ('open','partial') AND q.kind='decision'").all(session.id) as any[])
+    .map(toStoredQuestion).filter(question=>awaitingHim(question));
+  const own:{question:StoredQuestion;step:string;eventId:string;waited:number}[]=[];
+  const recentlyHeld=(eventId:string)=>(heldByReply.get(eventId)??-Infinity)>now-HELD_BY_REPLY_RECHECK_MS;
+  const day=`${local.year}-${String(local.month).padStart(2,'0')}-${String(local.day).padStart(2,'0')}`;
+  const morningId=`waiting-on-you:${day}`;
+  const morningDue=!ownerEventExists(morningId)&&open.length>0&&!recentlyHeld(morningId);
+  // The schedule counts from when he was last told about it (asked, back from set-aside, or made
+  // ready late), so a reminder never lands minutes after that push. The morning list carries every
+  // question, so a pass that sends it sends no single reminder beside it.
+  for(const question of morningDue?[]:open) {
+    const toldAt=Math.max(Date.parse(question.createdAt),Date.parse(question.updatedAt));
+    const since=now-toldAt;
+    if(!(since<OWN_REMINDERS_WITHIN_MS))continue;
+    const due=QUESTION_REMINDER_STEPS.filter(step=>since>=step.afterMs).at(-1);
+    if(!due)continue;
+    const eventId=`question-nudge:${question.questionId}:${new Date(toldAt).toISOString()}:${due.step}`;
+    if(!ownerEventExists(eventId)&&!recentlyHeld(eventId))own.push({question,step:due.step,eventId,waited:now-Date.parse(question.createdAt)});
+  }
+  if(!own.length&&!morningDue)return 0;
+  refreshRootMemo();
+  const read=readIndex(session.id);
+  // His reply that names a question is his answer, even before the agent settles it.
+  const stillWaiting=(question:StoredQuestion)=>
+    awaitingHim(questionDisplay(question,latestHumanReply(read,topicRoots(question.topicId)),[],[]));
+  const bumpGeneration=()=>{
+    const generation=(sessionMetadata(session).generation??0)+1;
+    updateSessionMetadata(session.id,{generation});
+    return generation;
+  };
+  let sent=0;
+  for(const {question,step,eventId,waited} of own) {
+    if(!stillWaiting(question)){heldByReply.set(eventId,now);continue;}
+    const topic=topicRow(question.topicId);
+    const inputId=(question.sources[0]?rootOf(session.id,question.sources[0]):null)??topicRoots(topic.topicId).at(-1)??null;
+    const asked=oneThingAsked(question);
+    const author=typeof question.owner?.sessionId==='string'?sessionAuthor(question.owner.sessionId):null;
+    // The event's input column takes the root only when it is an accepted input; a routed root is a
+    // message, and naming it there fails the foreign key. The payload always carries it.
+    const acceptedRoot=inputId&&db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId)?inputId:null;
+    recordSessionEvent({eventId,sessionId:session.id,inputId:acceptedRoot,kind:'needs_you',
+      payload:{outcome:'needs_you',question:`Still waiting on you, ${waitedFor(waited)} now: ${asked}`,inputId,generation:bumpGeneration(),
+        topicId:topic.topicId,questionId:question.questionId,reminder:{kind:'question',step,askedAt:question.createdAt},
+        ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{})}});
+    sent++;
+    // The asking agent hears once, at the first reminder, and the Inbox router not at all: each
+    // notice is a whole turn, and the router's are its largest.
+    const owner=step==='1h'?conciergeSessionNumber(question.owner?.sessionId):null;
+    const noticeId=`question-nudged:${eventId}`;
+    if(admit&&owner!==null&&owner!==session.id&&!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(noticeId)) {
+      try {
+        admit({sessionId:owner,inputId:noticeId,origin:'service',sourceInputId:eventId,sourceRunId:eventId,requestId:noticeId,
+          text:`Tejas has not answered your question in the Inbox thread "${topic.title}" yet, and he was just reminded of it (${waitedFor(waited)} after you asked): "${asked}". If anything it depends on has expired since (a texted or emailed code, a one-time link, a browser page that timed out), get a fresh one now and post the fresh words to that thread (sessions ask to the Inbox session with --thread ${inputId??'<root>'}), so what he opens works. If you no longer need his answer, settle the question so the reminders stop. You do not need to reply to this.`});
+      } catch { /* his reminder has gone out; the refresh is the owner session's to retry */ }
+    }
+  }
+  if(morningDue) {
+    const waiting=open.filter(stillWaiting).sort((first,second)=>second.createdAt.localeCompare(first.createdAt));
+    if(waiting.length) {
+      const lines=waiting.slice(0,MORNING_REMINDER_LISTS).map(question=>{
+        const title=topicRow(question.topicId).title;
+        const asked=oneThingAsked(question);
+        return `• ${title} (${waitedFor(now-Date.parse(question.createdAt))}): ${asked.length<=140?asked:asked.slice(0,140).replace(/\s+\S*$/,'')+'…'}`;
+      });
+      const more=waiting.length>MORNING_REMINDER_LISTS?`\nand ${waiting.length-MORNING_REMINDER_LISTS} more under Inbox → Needs you.`:'';
+      const count=waiting.length===1?'One thing is':`${waiting.length} things are`;
+      recordSessionEvent({eventId:morningId,sessionId:session.id,inputId:null,kind:'needs_you',
+        payload:{outcome:'needs_you',question:`${count} still waiting on you:\n${lines.join('\n')}${more}`,inputId:null,generation:bumpGeneration(),
+          reminder:{kind:'morning',day,count:waiting.length,questionIds:waiting.map(question=>question.questionId)},
+          agentName:'Concierge',taskTitle:'Your Inbox'}});
+      sent++;
+    } else heldByReply.set(morningId,now);
+  }
+  if(sent)log('info','question_reminders_sent',{sent,own:own.length,morning:morningDue,open:open.length});
+  return sent;
 }
 
 /* ------------------------------------------------------------------ agents' answers in threads */

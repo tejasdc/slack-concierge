@@ -8,6 +8,7 @@ import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
 import {savedStartAt} from './saved-start-time';
+import {inQuietHours,localParts} from './quiet-hours';
 export {savedStartAt} from './saved-start-time';
 
 export type SavedKind='scheduled'|'banked';
@@ -72,21 +73,11 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
   executionChanged();
 }
 
-function localParts(ms:number,settings:SavedWorkSettings) {
-  const clock=new Intl.DateTimeFormat('en-US',{timeZone:settings.time_zone,year:'numeric',month:'numeric',day:'numeric',hour:'numeric',hourCycle:'h23',minute:'numeric',second:'numeric'});
-  const parts=Object.fromEntries(clock.formatToParts(new Date(ms)).filter(part=>part.type!=='literal').map(part=>[part.type,Number(part.value)]));
-  return {year:parts.year!,month:parts.month!,day:parts.day!,hour:parts.hour!,minute:parts.minute!,second:parts.second!};
-}
 function localOffset(ms:number,settings:SavedWorkSettings) {
   const p=localParts(ms,settings);
   return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)-Math.floor(ms/1000)*1000;
 }
-function quiet(now:number,settings:SavedWorkSettings):boolean {
-  const hour=localParts(now,settings).hour;
-  return settings.quiet_start_hour<settings.quiet_end_hour
-    ?hour>=settings.quiet_start_hour&&hour<settings.quiet_end_hour
-    :hour>=settings.quiet_start_hour||hour<settings.quiet_end_hour;
-}
+const quiet=inQuietHours;
 function nextQuietStart(now:number,settings:SavedWorkSettings):number {
   const p=localParts(now,settings);
   for(let day=0;day<3;day++) {
