@@ -47,45 +47,13 @@ push. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
-### Reminders until he answers
+### No automatic reminders
 
-A question still waiting on him is said again (`remindWaitingQuestions` in
-`session-topics.ts`, on the owner's reading cadence in both runtime compositions;
-Tejas, 2026-10-30: "it's imperative that the notification gets repeated … Not 'I
-sent a notification, my job is done', and then sleep"). What is reminded is
-exactly what Needs you lists: the shared `awaitingHim` rule, with his reply that
-names the question counting as answered. So an answer, a withdrawal, a set-aside
-or his naming reply ends the reminders with nothing to cancel.
-
-- One hour and four hours after he was last told about a question (asked, back
-  from set-aside, or made ready late), that question alone: `needs_you` event
-  `question-nudge:<questionId>:<told-at>:<1h|4h>`, shaped like the
-  set-aside wake-up (thread root, `questionId`, agent and task), with words
-  "Still waiting on you, <how long> now: <the one thing it asks>" so the
-  notifier's same-question quiet rule does not swallow it. Only the latest due
-  step is sent. At the one-hour reminder the asking session (unless it is the
-  Inbox router, whose turns are its largest) receives a service notice to refresh
-  anything that expired (a texted code, a one-time link) or settle the question;
-  it owes no reply. A pass that sends the morning list sends no single reminder.
-- After its first day a question has no reminder of its own. Each morning one
-  `needs_you` event `waiting-on-you:<local date>` lists everything still waiting,
-  newest first (three named, then a count), with no thread root, so it opens the
-  Inbox where the Needs you filter shows them all. One a day rather than one per
-  question, because dozens of old questions each ringing daily would teach him to
-  ignore all of them.
-- Nothing rings during the saved-work quiet hours (his one setting for when he
-  sleeps) or before 9 AM in that time zone. Event identities make a restart
-  harmless, and a failure is logged without stopping the rest of the reading pass.
-
-The old per-input session promises, session watcher, peer replay, expiry,
-backfill, and service posts are retired. Their historical ledger rows remain
-inert, including any pending rows. They no longer create notifications or
-Timeline entries. This means an earlier marked request with no new arm does
-not silently ring later; Tejas can ask again in that thread or an agent can use
-`--notify` when it answers. The retired watcher had recorded sleeping-peer gaps
-and account holds, but could also treat an unrelated run finish as fulfillment;
-the replacement fires only from an agent message in the topic.
-
-For `scheduled`, Concierge still uses its durable scheduled wake and
-thnkr.ing's requested-notification capability with a stable key. A time reminder
-does not consume a thread result arm.
+On 2026-10-30 Concierge briefly reminded him of every question waiting on him
+(one and four hours after asking, then a morning list). He removed it the same
+evening: "It should only happen to things that I specifically say, hey, remind
+me of this … sometimes the agent will be waiting and I don't care about the
+feature that much." An agent waiting on him is therefore never a reason to
+notify again. A repeat belongs only to a notification he asked for, and only
+while he has not opened it; whether he opened one is known only to thnkr.ing,
+which owns that repeat.
