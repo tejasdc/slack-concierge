@@ -17,7 +17,7 @@ import {isTransientDatabaseError} from './database-retry';
 import {awaitingOutside,observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
 import {ownerGetPolicy} from './owner-get-policy';
-import {savedMessagePage,savedWorkPage} from './owner-collection-pages';
+import {savedMessagePage,savedWorkListPage} from './owner-collection-pages';
 import {boundedChangedMessageIds,HISTORY_CHANGE_LIMIT} from './bounded-history-changes';
 import {historyContent,previewHistoryMessage} from './history-message-preview';
 import {HistoryDetailCache} from './history-detail-cache';
@@ -89,7 +89,7 @@ import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-s
 import {PROJECT_FOLDERS_OPERATION,type ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile} from './todo-file';
-import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,type SavedTurn} from './saved-work';
+import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
@@ -1090,7 +1090,7 @@ export class SessionOwner {
   private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
     return sessionExecution(db,session,meta);
   }
-  view(session:SessionRow,knownSavedTurn?:Pick<SavedTurn,'saved_kind'|'status'|'dispatch_failure_class'|'dispatch_next_attempt_ms'|'saved_expires_at_ms'|'saved_account'|'saved_window'|'saved_repeat_ms'|'saved_sequence'>|null) {
+  view(session:SessionRow) {
     const meta=sessionMetadata(session);
     // Who the agent is and what it is doing come from the one presence rule the sidebar card
     // also uses, never from a second derivation here.
@@ -1124,7 +1124,7 @@ export class SessionOwner {
           nextCursor:preparedAttention.nextCursor,coverage:preparedAttention.coverage}:{} )},
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
-      savedWork:(()=>{const saved=knownSavedTurn===undefined?savedSessionTurn(session.id):knownSavedTurn;return saved?{kind:saved.saved_kind,
+      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
@@ -1405,19 +1405,7 @@ export class SessionOwner {
         .catch(error=>log('error','signin_renewal_not_sent',{provider,account,error:String((error as Error)?.message??error).slice(0,300)}));
     }
   }
-  savedWorkList(cursor:string|null=null){
-    const page=savedWorkPage(db,cursor);
-    const sessionIds=[...new Set(page.items.map(turn=>turn.session_id))];
-    const sessions=sessionIds.length?db.query(`SELECT * FROM sessions WHERE id IN (${sessionIds.map(()=>'?').join(',')}) LIMIT ?`)
-      .all(...sessionIds,sessionIds.length) as SessionRow[]:[];
-    const byId=new Map(sessions.map(session=>[session.id,session]));
-    return {items:page.items.map(turn=>({turnId:turn.id,session:this.view(byId.get(turn.session_id)!,turn),
-      savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:savedStartAt(turn),
-        savedAt:new Date(turn.saved_at_ms).toISOString(),
-        expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
-        account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}})),
-      nextCursor:page.nextCursor,coverage:{complete:true}};
-  }
+  savedWorkList(cursor:string|null=null){return savedWorkListPage(db,cursor);}
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
     return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
