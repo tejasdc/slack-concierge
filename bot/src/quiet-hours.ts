@@ -1,6 +1,6 @@
 /**
  * His night, as one setting: the saved-work quiet hours (Settings → Saved work) in his time zone.
- * Banked work spends them because he is asleep; reminders hold through them for the same reason.
+ * Banked work spends them because he is asleep.
  */
 export type QuietHours={quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
 
