@@ -89,7 +89,7 @@ import {receiptStatusFromFacts,type InputStatusDetail} from './session-receipt-s
 import {PROJECT_FOLDERS_OPERATION,type ProjectSetup} from './project-setup';
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile} from './todo-file';
-import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
+import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn,type SavedTurn} from './saved-work';
 import {usageBreakdown} from './usage-breakdown';
 import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-choice';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
@@ -1090,7 +1090,7 @@ export class SessionOwner {
   private executionOf(session:SessionRow,meta:ReturnType<typeof sessionMetadata>) {
     return sessionExecution(db,session,meta);
   }
-  view(session:SessionRow) {
+  view(session:SessionRow,knownSavedTurn?:Pick<SavedTurn,'saved_kind'|'status'|'dispatch_failure_class'|'dispatch_next_attempt_ms'|'saved_expires_at_ms'|'saved_account'|'saved_window'|'saved_repeat_ms'|'saved_sequence'>|null) {
     const meta=sessionMetadata(session);
     // Who the agent is and what it is doing come from the one presence rule the sidebar card
     // also uses, never from a second derivation here.
@@ -1124,7 +1124,7 @@ export class SessionOwner {
           nextCursor:preparedAttention.nextCursor,coverage:preparedAttention.coverage}:{} )},
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
-      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,
+      savedWork:(()=>{const saved=knownSavedTurn===undefined?savedSessionTurn(session.id):knownSavedTurn;return saved?{kind:saved.saved_kind,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
@@ -1407,7 +1407,11 @@ export class SessionOwner {
   }
   savedWorkList(cursor:string|null=null){
     const page=savedWorkPage(db,cursor);
-    return {items:page.items.map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
+    const sessionIds=[...new Set(page.items.map(turn=>turn.session_id))];
+    const sessions=sessionIds.length?db.query(`SELECT * FROM sessions WHERE id IN (${sessionIds.map(()=>'?').join(',')}) LIMIT ?`)
+      .all(...sessionIds,sessionIds.length) as SessionRow[]:[];
+    const byId=new Map(sessions.map(session=>[session.id,session]));
+    return {items:page.items.map(turn=>({turnId:turn.id,session:this.view(byId.get(turn.session_id)!,turn),
       savedWork:{kind:turn.saved_kind,status:turn.status,startsAt:savedStartAt(turn),
         savedAt:new Date(turn.saved_at_ms).toISOString(),
         expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
@@ -3978,7 +3982,11 @@ export class SessionOwner {
       const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
       return ownerJson(result,{status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
-      if(error instanceof StorageReadBudgetError)return ownerJson({error:{code:error.code,message:error.message}},{status:503});
+      if(error instanceof StorageReadBudgetError){
+        log('warn','owner_read_budget_refused',{admission_id:request.headers.get('x-concierge-admission-id'),
+          route:ownerRequestLabel(request.method,url.pathname),reason:error.reason});
+        return ownerJson({error:{code:error.code,message:error.message}},{status:503});
+      }
       if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
       // A busy ledger is a moment, not a refusal: a 4xx made the Mac drop a finished answer after one try (2026-10-04, 2026-10-08).
       if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
