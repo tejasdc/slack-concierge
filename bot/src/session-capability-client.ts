@@ -349,7 +349,9 @@ export class SessionCapabilityClient {
       req.on("error", () => reject(new SessionCapabilityError(signal?.aborted ? "CAPABILITY_OBSERVATION_ABORTED" : "CAPABILITY_DISCONNECTED",
         signal?.aborted ? "Local capability observation ended; native cancellation is unconfirmed." : "The private capability connection failed; no retry was attempted.", null, true)));
       const abort = () => {
-        reject(new SessionCapabilityError("CAPABILITY_OBSERVATION_ABORTED", "Local capability observation ended; native cancellation is unconfirmed.", null, true));
+        reject((signal?.reason as Error | undefined)?.name === "TimeoutError"
+          ? new SessionCapabilityError("CAPABILITY_READ_TIMEOUT", "thnkr.ing did not answer this read in time (it may be restarting); read it again.", 503, true)
+          : new SessionCapabilityError("CAPABILITY_OBSERVATION_ABORTED", "Local capability observation ended; native cancellation is unconfirmed.", null, true));
         req.destroy();
       };
       signal?.addEventListener("abort", abort, { once: true });
@@ -393,10 +395,10 @@ export class SessionCapabilityClient {
     return value;
   }
 
-  async sourceHistory(input: SourceRef & { cursor: string | null; limit: number; eventId?: string }) {
+  async sourceHistory(input: SourceRef & { cursor: string | null; limit: number; eventId?: string }, signal?: AbortSignal) {
     const value = await this.post<{ messages: CapabilityMessage[]; nextCursor: string | null; retainedEventId?:string }>("/sources/history",
       { sourceId: input.sourceId, sourceVersion: input.sourceVersion, branch: input.branch, cursor: input.cursor, limit: input.limit,
-        ...(input.eventId?{eventId:input.eventId}:{}) });
+        ...(input.eventId?{eventId:input.eventId}:{}) }, signal);
     verifyHistory(value, input);
     if(input.eventId)verify(value.retainedEventId===input.eventId,'Prepared history did not prove the requested archive event.');
     return value;
@@ -417,8 +419,8 @@ export class SessionCapabilityClient {
     return {kind:'search-proof',...value};
   }
 
-  async sourceHistoryMessage(input:SourceRef & {messageId:string}) {
-    const value=await this.post<{message:CapabilityMessage}>('/sources/history/message',input);
+  async sourceHistoryMessage(input:SourceRef & {messageId:string},signal?:AbortSignal) {
+    const value=await this.post<{message:CapabilityMessage}>('/sources/history/message',input,signal);
     verify(isRecord(value)&&isRecord(value.message)&&value.message.id===input.messageId
       &&typeof value.message.content==='string','Invalid exact source message response.');
     const evidence=value.message.source;
@@ -539,15 +541,15 @@ export class SessionCapabilityClient {
     return { sessionId: input.sessionId, bindingGeneration: input.bindingGeneration, binding: input.binding };
   }
 
-  async history(input: ChatGptReadRef & { cursor: string | null; limit: number }) {
+  async history(input: ChatGptReadRef & { cursor: string | null; limit: number }, signal?: AbortSignal) {
     const value = await this.post<{ messages: CapabilityMessage[]; nextCursor: string | null }>(providerPath + "history",
-      { ...this.readRef(input), cursor: input.cursor, limit: input.limit });
+      { ...this.readRef(input), cursor: input.cursor, limit: input.limit }, signal);
     verifyHistory(value);
     return value;
   }
 
-  async detail(input: ChatGptReadRef & { detailKey: string }) {
-    const value = await this.post<{ content: string }>(providerPath + "detail", { ...this.readRef(input), detailKey: input.detailKey });
+  async detail(input: ChatGptReadRef & { detailKey: string }, signal?: AbortSignal) {
+    const value = await this.post<{ content: string }>(providerPath + "detail", { ...this.readRef(input), detailKey: input.detailKey }, signal);
     verify(isRecord(value) && typeof value.content === "string", "Invalid native detail response.");
     return value;
   }

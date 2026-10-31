@@ -9,6 +9,14 @@ import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES} from './ali
 import {peerSettings} from './session-peers';
 import {readRequestReceipt} from './native-read-request-receipt';
 
+/**
+ * ChatGPT and imported conversations' history is held by thnkr.ing. While thnkr.ing restarted at
+ * 17:58 UTC on 2026-10-30, two reads of one ChatGPT conversation waited with no limit, held both
+ * read workers for the gateway's 20 s and were killed, so every other read queued behind them. A
+ * read here now waits at most this long and answers that thnkr.ing should be asked again.
+ */
+const CAPABILITY_READ_WAIT_MS=5000;
+
 /** Read composition reuses the owner's projection and validation, without a command host. */
 export function createNativeReadComposition(defaultCwd:string,capabilitySocket:string|undefined) {
   if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
@@ -45,7 +53,7 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
       if(session.provider_id==='chatgpt'){
         if(!sessionMetadata(session).nativeBinding)return null;
         if(!capabilityClient)throw new Error('ChatGPT history capability unavailable.');
-        return capabilityClient.history({...readRef(session),cursor,limit});
+        return capabilityClient.history({...readRef(session),cursor,limit},AbortSignal.timeout(CAPABILITY_READ_WAIT_MS));
       }
       const provider=providers[session.provider_id];
       if(!provider?.history||!session.agent_session_uuid)return null;
@@ -62,7 +70,7 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
     detail:async(session,detailKey)=>{
       if(session.provider_id==='chatgpt'){
         if(!capabilityClient)throw new Error('ChatGPT detail capability unavailable.');
-        return capabilityClient.detail({...readRef(session),detailKey});
+        return capabilityClient.detail({...readRef(session),detailKey},AbortSignal.timeout(CAPABILITY_READ_WAIT_MS));
       }
       const provider=providers[session.provider_id];
       if(!provider?.detail||!session.agent_session_uuid)throw new Error('Native detail capability unavailable.');
@@ -80,8 +88,8 @@ export function createNativeReadComposition(defaultCwd:string,capabilitySocket:s
     },
     sources:capabilityClient?{
       search:input=>capabilityClient.searchSources(input),context:input=>capabilityClient.sourceContext(input),
-      import:async()=>{throw new Error('READ_ONLY');},proof:input=>capabilityClient.sourceSearchProof(input),history:input=>capabilityClient.sourceHistory(input),
-      historyMessage:input=>capabilityClient.sourceHistoryMessage(input),
+      import:async()=>{throw new Error('READ_ONLY');},proof:input=>capabilityClient.sourceSearchProof(input),history:input=>capabilityClient.sourceHistory(input,AbortSignal.timeout(CAPABILITY_READ_WAIT_MS)),
+      historyMessage:input=>capabilityClient.sourceHistoryMessage(input,AbortSignal.timeout(CAPABILITY_READ_WAIT_MS)),
     }:undefined,
   };
   return {owner:new SessionOwner(runtime,defaultCwd,configuredPeers.peers.map(peer=>peer.name)),close:()=>historyPages.close()};
