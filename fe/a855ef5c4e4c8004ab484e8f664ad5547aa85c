@@ -1,0 +1,1 @@
+Website agents now start in the server browser and can use a separate background Mac browser after recording a server failure, without taking over your Chrome.
