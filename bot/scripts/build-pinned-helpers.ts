@@ -6,7 +6,7 @@
  * "The Mac"). The bundles are the same ones a server release carries (deployment-artifact-files.json).
  * Usage: bun scripts/build-pinned-helpers.ts <root>
  */
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, chmodSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import declaration from "../src/deployment-artifact-files.json";
@@ -28,6 +28,13 @@ if (!existsSync(join(final, "bot/scripts/router-sessions.js"))) {
     mkdirSync(dirname(output), { recursive: true });
     const result = await Bun.build({ entrypoints: [join(repository, source)], target: "bun", outdir: dirname(output), naming: basename(output) });
     if (!result.success) { console.error(`bundle failed for ${source}: ${result.logs.map(entry => entry.message).join("\n").slice(0, 2000)}`); process.exit(1); }
+  }
+  for (const [destination, source] of Object.entries(declaration.controlFiles as Record<string, string>)) {
+    if (destination !== "control/bot/scripts/mac-browser-fallback.sh") continue;
+    const output = join(building, destination.slice("control/".length));
+    mkdirSync(dirname(output), { recursive: true });
+    copyFileSync(join(repository, source), output);
+    chmodSync(output, 0o755);
   }
   // Appears whole or not at all; an existing folder for this commit is never replaced.
   if (existsSync(final)) rmSync(building, { recursive: true, force: true });

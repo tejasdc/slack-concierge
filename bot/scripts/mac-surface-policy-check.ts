@@ -7,6 +7,14 @@ const check=(command:string,need='',platform='darwin',toolName='Bash')=>
 
 assert.equal(parseMachineNeed('ios-native:iPhone Safari selection handles after touch').kind,'ios-native');
 assert.throws(()=>parseMachineNeed('browser:phone-size layout'));
+assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login'));
+assert.equal(parseMachineNeed('browser-fallback:Server portal blocked after login',{
+  url:'https://bosse.managebuilding.com/Resident/portal/login',
+  failure:'Observed a location-specific access refusal after the server sign-in completed.'
+}).serverAttempt?.url,'https://bosse.managebuilding.com');
+assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login',{
+  url:'https://bosse.managebuilding.com',failure:'it failed'
+}));
 assert.throws(()=>parseMachineNeed('Simulator'));
 assert.match(check('agent-browser open https://thnkr.ing')??'',/server/);
 assert.match(check('npx agent-browser open https://thnkr.ing')??'',/server/);
@@ -20,7 +28,11 @@ assert.equal(check('rg -n Chrome docs'),null);
 assert.match(check('rg -n Chrome docs | agent-browser open https://thnkr.ing')??'',/server/);
 assert.equal(check('agent-browser open https://thnkr.ing','','linux'),null);
 assert.match(macSurfaceRefusal({command:null,need:'ios-native',platform:'darwin',toolName:'mcp__plugin_playwright_playwright__browser_run_code_unsafe',toolInput:{code:'async page => page.goto("https://thnkr.ing")'}})??'',/server/);
+assert.match(macSurfaceRefusal({command:null,need:'browser-fallback',platform:'darwin',toolName:'mcp__chrome_devtools__navigate_page',toolInput:{url:'https://bosse.managebuilding.com'}})??'',/refused/);
+assert.match(macSurfaceRefusal({command:null,need:'browser-fallback',platform:'darwin',toolName:'functions.exec',toolInput:{code:'await tools.mcp__chrome_devtools__navigate_page({url:"https://bosse.managebuilding.com"})'}})??'',/refused/);
+assert.equal(check('bun run bot/scripts/mac-browser-fallback.sh open https://bosse.managebuilding.com','browser-fallback'),null);
 assert.match(check('ssh tejasdc@100.90.183.122 open -a "Google Chrome" https://thnkr.ing','','linux')??'',/refused/);
+assert.match(check('ssh tejasdc@100.90.183.122 agent-browser open https://thnkr.ing','','linux')??'',/recorded browser-fallback/);
 assert.equal(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'const patch="Google Chrome"; await tools.apply_patch(patch)'}}),null);
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'await tools.exec_command({cmd:"agent-browser open https://thnkr.ing"})'}})??'',/server/);
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'await tools.mcp__plugin_playwright_playwright__browser_navigate({url:"https://thnkr.ing"})'}})??'',/server/);

@@ -117,14 +117,29 @@ minutes is queued, not refused, and the gate is released when the installer fini
 `logs/update.log`. Before 2026-09-29 the Mac updated only when someone remembered, and sat four
 days behind main. `install-mac.sh` loads this job when it is missing and never reloads it, because the job runs the installer and booting it out would end that run (its first real run did exactly that on 2026-09-29).
 
-**What runs on the Mac.** New work runs on the server. Desktop browser, phone-sized viewport,
-and Linux WebKit checks run in a server browser. The Mac is reserved for native iOS Safari
-touch and selection, Xcode, Messages, a Mac-only file or app, its physical screen, or an
-explicit request from Tejas. New and addressed Mac work requires `--machine-need`
-`ios-native|mac-app|mac-file|mac-screen|messages|human-mac:<specific reason>`; the receiving
-Mac owner refuses an absent or malformed need. A provider tool hook refuses agent-browser,
-Chrome control, foreground application launches, and Simulator automation without the
-matching iOS need. Agent checks cannot take over Tejas's Chrome or desktop focus.
+**What runs on the Mac.** New work runs on the server. Website logins, desktop browser,
+phone-sized viewport, and Linux WebKit checks start in a server browser. An emailed sign-in
+approval or text code for that browser is handled there; it is not evidence of a blocked
+server. Native iOS Safari touch and selection, Xcode, Messages, a Mac-only file or app, its
+physical screen, and Tejas's explicit Mac requests can use the Mac. New and addressed Mac work
+requires `--machine-need` with a specific reason; the receiving owner checks it.
+
+When a website genuinely fails in the server browser, the requesting server agent records
+`--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>
+--server-attempt-failure "<observed failure>"`. The accepting Mac retains the failed origin
+and observation with that exact request. Its agent can run
+`$CONCIERGE_ROUTER_BOT_DIR/scripts/mac-browser-fallback.sh <agent-browser action>` without
+asking Tejas: the launcher checks the active accepted request with the local Mac owner, then
+uses a headless, request-specific profile and session. Environment variables name the request;
+they do not grant access by themselves. The launcher uses the Mac owner's fixed local socket and
+an empty browser configuration, so an agent's environment or browser preferences cannot replace
+the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open; later
+navigation may include a site's authentication providers and remains the agent's responsibility. Direct
+agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
+Chrome and app activation. This keeps the fallback separate from Tejas's Chrome and focus.
+The failure report is the agent's recorded observation; Concierge does not independently
+prove that it exhausted every server recovery. Do not move a browser after a timed-out submit
+until the destination is checked for an already-completed write.
 The hook covers provider tool calls, not arbitrary programs launched outside those providers;
 the owner gate covers Concierge peer work, not direct SSH. See [Mac agent awareness](../architecture/MAC-AGENT-AWARENESS.md).
 This implements the physical-need placement rule

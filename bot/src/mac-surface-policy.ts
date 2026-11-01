@@ -3,15 +3,15 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   const {command,toolName,toolInput,need,platform}=input;
   const raw=command??'';
   const tool=toolName.toLowerCase();
-  if(platform==='darwin'&&/playwright|agent.browser|browser_run_code|browser_navigate/i.test(tool))
-    return 'Agent browser use on Tejas’s Mac is refused. Run desktop and phone-size browser checks on the server.';
+  if(platform==='darwin'&&/playwright|agent.browser|browser_run_code|browser_navigate|chrome[_-]?devtools/i.test(tool))
+    return 'Direct agent browser control on Tejas’s Mac is refused. Use the server, or the isolated Mac browser after a recorded server failure.';
   const details=toolInput&&typeof toolInput==='object'?toolInput as Record<string,unknown>:{};
   const code=typeof details.code==='string'?details.code:'';
   if(/^(?:read|grep|glob|notebookread)$/i.test(toolName))return null;
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(raw.trim())
       && !/[;&|`\n]|\$\(/.test(raw))return null;
-  if(code&&/\btools\.[\w$]*(?:browser|playwright)[\w$]*\s*\(/i.test(code))
-    return 'Agent browser use on Tejas’s Mac is refused. Run desktop and phone-size browser checks on the server.';
+  if(code&&/\btools\.[\w$]*(?:browser|playwright|chrome[_-]?devtools)[\w$]*\s*\(/i.test(code))
+    return 'Direct agent browser control on Tejas’s Mac is refused. Use the server, or the isolated Mac browser after a recorded server failure.';
   const nestedCommands=code.match(/tools\.exec_command\s*\(/g)??[];
   if(code&&!nestedCommands.length)return null;
   const literalCommands=[...code.matchAll(/tools\.exec_command\s*\(\s*\{\s*cmd\s*:\s*(['"`])((?:\\.|(?!\1)[\s\S])*)\1/g)];
@@ -23,6 +23,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       && !/[;&|`\n]|\$\(/.test(source))return null;
   const remote=/\bssh\b[^\n]{0,400}\btejasdc@(?:100\.90\.183\.122|[\w.-]+)\b/i.test(source);
   if(platform!=='darwin'&&!remote)return null;
+  if(remote&&/\bagent-browser\s+(?!skills\b)(?:--[^\s]+\s+)*(?:open|click|fill|type|connect|tab|eval|snapshot|screenshot)\b|\bplaywright\s+(?:open|codegen|test)\b/i.test(source))
+    return 'Browser control through SSH to Tejas’s Mac is refused. Send a recorded browser-fallback request to the Mac owner.';
   const action='(?:^|[;&|]\\s*|\\n\\s*)(?:sudo\\s+|env\\s+[^;|\\n]*?\\s+)?';
   const browserCli=new RegExp(action+'(?:(?:(?:npx|bunx)\\s+)?(?:[^\\s;|]+/)?agent-browser\\b(?!\\s+skills\\b)|(?:(?:npx|bunx)\\s+)?playwright\\s+(?:open|codegen|test)\\b|(?:[^\\s;|]+/)?chrome(?:-canary)?\\b)','i');
   const chrome=/\b(?:Google Chrome\.app|Google Chrome|connectOverCDP|--remote-debugging-(?:port|pipe))\b/i;
@@ -33,7 +35,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   if(/computer|desktop|screen/i.test(tool)&&!/(?:screenshot|read)/i.test(tool))
     return 'Mac desktop control is refused because it can take focus. Use a background Mac capability for a specific Mac-only need.';
   if(browserCli.test(source)||chrome.test(source)||simulatorUi.test(source))
-    return 'Agent browser and foreground Chrome or Simulator use on Tejas’s Mac is refused. Run ordinary browser and phone-size checks on the server; use a background iOS check only for native Safari touch behavior.';
+    return 'Direct browser and foreground Chrome or Simulator use on Tejas’s Mac is refused. Run ordinary checks on the server; a recorded server failure can use the isolated Mac browser without desktop focus.';
   if(focus.test(source)||appControl.test(source)&&/\bactivate\b|\b(?:Chrome|Safari|Simulator)\b/i.test(source))
     return 'A Mac agent cannot take the foreground app or control Tejas’s browser. Use a background Mac action for the exact Mac-only task.';
   if(new RegExp(action+'(?:/usr/bin/)?open\\s+-g\\b','i').test(source)&&!need)
