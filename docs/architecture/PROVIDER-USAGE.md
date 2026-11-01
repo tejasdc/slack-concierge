@@ -847,6 +847,20 @@ The remaining amount is the grant minus that spend only while the organization h
 credits; the page says "about … left if nothing else was bought". The Console's own
 Settings > Billing > Promotional credits remains the authority for the balance and its expiry.
 
+A Codex row shows the ChatGPT credit balance its own usage reading reports (OpenAI's "Extra usage"
+pool, 62,500 granted on 2026-09-30 to the personal Pro account). The reading carries no expiry, so the
+line states none. Whether a spent Codex week continues on those credits is not yet observed, so
+dispatch still treats a full weekly window as no room. When OpenAI makes ChatGPT and Codex share one
+allowance (announced 2026-10-31, "in the coming weeks"), the same Codex reading will include ChatGPT
+use; nothing here counts ChatGPT separately, because a second count would be a second copy of the
+provider's meter.
+
+When claude-swap cannot read a Claude account (its own stored copy of the login has died, as the
+personal account's did from Oct 23 because claude-swap refreshes copies only from the default
+folder), the reader asks Anthropic's usage endpoint with the login in that account's own home,
+read-only and never refreshed, and uses those windows. A verified Ultra account reports no
+five-hour window there, and the reading is still complete.
+
 ## What he is told about accounts, and when he is not
 
 **Nothing, unless work has actually stopped.**

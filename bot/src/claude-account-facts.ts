@@ -219,6 +219,41 @@ async function oauthGet(token: string, path: string): Promise<any> {
   return response.json();
 }
 
+export type OwnLoginWindow = Readonly<{ name: string; usedPercent: number; resetsAt: string | null }>;
+
+/**
+ * The account's allowance windows, read with the login in its own home. claude-swap keeps a
+ * copy of each login and refreshes it only from the default folder, so once agents ran from
+ * their own homes (2026-10-07) the personal account's copy died at its next token rotation and
+ * read "needs signing in again" from Oct 23 to Nov 1 while the real login worked. A login is
+ * never copied; this reads it where it lives and never refreshes it.
+ */
+export async function claudeWindowsFromOwnLogin(account: string): Promise<OwnLoginWindow[] | null> {
+  const path = claudeCredentialFor(account);
+  const token = path ? liveAccessToken(path) : null;
+  if (!token) return null;
+  try {
+    const usage = await oauthGet(token, "/api/oauth/usage");
+    const windows: OwnLoginWindow[] = [];
+    const add = (name: string, used: unknown, resetsAt: unknown) => {
+      if (typeof used !== "number" || !Number.isFinite(used)) return;
+      windows.push({ name, usedPercent: used, resetsAt: typeof resetsAt === "string" ? resetsAt : null });
+    };
+    // A verified Ultra account reports no five-hour window at all (null), which is complete.
+    add("5-hour", usage?.five_hour?.utilization, usage?.five_hour?.resets_at);
+    add("Weekly", usage?.seven_day?.utilization, usage?.seven_day?.resets_at);
+    for (const limit of Array.isArray(usage?.limits) ? usage.limits : []) {
+      const model = limit?.scope?.model?.display_name;
+      if (limit?.kind === "weekly_scoped" && typeof model === "string" && model)
+        add(`Weekly · ${model} only`, limit.percent, limit.resets_at);
+    }
+    return windows.some(window => window.name === "Weekly") ? windows : null;
+  } catch (error) {
+    log("info", "claude_own_login_usage_unavailable", { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
 const cache = new Map<string, ClaudeAccountFacts>();
 
 /** Fresh facts when due and readable, else the last good ones, else null. Never throws. */
