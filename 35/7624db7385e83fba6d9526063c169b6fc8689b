@@ -1,0 +1,1 @@
+Inbox topic updates now write only the topics whose content changed, reducing disk pressure that delayed other apps on the server.
