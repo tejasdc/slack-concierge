@@ -20,6 +20,7 @@ const readiness = new Set<{ resolve: () => void; reject: (reason: Error) => void
 
 /** Read the separate cursor store once at startup. No serving owner transaction touches it. */
 export function loadWatchObservationCursors(openWatchIds: readonly string[]) {
+  cursors.clear();
   const path = join(realpathSync(process.env.CONCIERGE_STATE_DIR!), 'watch-observations.db');
   if (!existsSync(path)) return;
   const db = new Database(path, { readonly: true });

@@ -37,8 +37,10 @@ try {
   const cursor = observationForWatch(watch);
   assert.equal(cursor.lastObservedAt, 20_000);
   assert.deepEqual(JSON.parse(cursor.gapsJson), [{ fromMs: 0, toMs: 20_000 }]);
+  loadWatchObservationCursors(['watch-check']);
+  assert.deepEqual(observationForWatch(watch), cursor);
   console.log(JSON.stringify({ check: 'watch-observation-isolation', status: 'passed', wait_ms: Math.round(waited),
-    loop_ticks: ticks, owner_write_during_stall: true, conservative_gap: true }));
+    loop_ticks: ticks, owner_write_during_stall: true, conservative_gap: true, restart_cursor_recovered: true }));
 } finally {
   if (sidecar.inTransaction) sidecar.exec('ROLLBACK');
   clearInterval(timer);
