@@ -22,6 +22,7 @@ import { log, errorFields } from "./log";
 import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { recordWatchObservation, startWatchObservationWorker, stopWatchObservationWorker } from './watch-observation';
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
   hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
 
@@ -276,7 +277,7 @@ type Settlement = { observedAt: number | null; now: number; detail: string; obse
 function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
   if (!gaps.length) return `Observation gaps: none. Concierge polled every ${WATCH_POLL_MS / 1000} s from ${iso(row.created_at_ms)} to ${iso(endedAt)} with no silence longer than ${WATCH_GAP_MS / 1000} s.`;
   const list = gaps.map(gap => `${iso(gap.fromMs)} to ${iso(gap.toMs)} (${Math.round((gap.toMs - gap.fromMs) / 1000)} s)`).join("; ");
-  return `Observation gaps: ${gaps.length}. Nothing was observed during ${list}, because Concierge was restarting or the machine was asleep or unreachable. A change that was made and undone inside a gap cannot be known; what is stated here is what was found when observation resumed.`;
+  return `Observation gaps: ${gaps.length}. Coverage cannot be proven during ${list}; Concierge may have been restarting, the machine may have been asleep or unreachable, or an observation could not be recorded. A change that was made and undone inside a gap cannot be known; what is stated here is what was found when observation resumed.`;
 }
 
 /**
@@ -388,14 +389,11 @@ async function observeFile(row: WatchRow, now: number) {
   const change = versionChange(baseline, current);
   if (change) { settle(row.watch_id, "fired", { observedAt: now, now, detail: `${JSON.parse(row.condition_json).path}: ${change}`, observed: { version: current } }); return; }
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: `no change to ${JSON.parse(row.condition_json).path} was observed (still ${describeBaseline(baseline)})` }); return; }
-  markObserved(row, now);
+  await markObserved(row, now);
 }
 
 function markObserved(row: WatchRow, now: number) {
-  const gaps = gapsOf(row), last = row.last_observed_ms ?? row.created_at_ms;
-  if (now - last > WATCH_GAP_MS) gaps.push({ fromMs: last, toMs: now });
-  db.query("UPDATE watches SET state='observing', last_observed_ms=?, gaps_json=? WHERE watch_id=? AND state IN ('accepted','observing')")
-    .run(now, JSON.stringify(gaps), row.watch_id);
+  return recordWatchObservation(row.watch_id, now, WATCH_GAP_MS);
 }
 
 async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
@@ -412,13 +410,14 @@ async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) 
       environment: commandEnvironment(), initialInput: "" } });
     update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);
     log("info", "watch_command_started", { watch_id: row.watch_id, execution_id: executionId });
-    markObserved(row, now);
   } catch (error) {
     if (error instanceof HostNotStartedError) {
       update(row.watch_id, "host_state='gone'");
       settle(row.watch_id, "failed", { observedAt: now, now, detail: `the command could not be started: ${error.message}` });
     } else log("warn", "watch_command_start_unconfirmed", { watch_id: row.watch_id, ...errorFields(error) });
+    return;
   }
+  await markObserved(row, now);
 }
 
 /** What the host says about the command: its exit, still running, or not known this poll. */
@@ -470,7 +469,7 @@ async function observeCommand(row: WatchRow, deps: WatchWorkerDeps, now: number)
     return;
   }
   if (now >= row.deadline_ms) { settle(row.watch_id, "expired", { observedAt: now, now, detail: "the command had not finished by the deadline, so it was stopped" }); return; }
-  markObserved(row, now);
+  await markObserved(row, now);
 }
 
 /** After a watch ends: stop a command that is still running, then let its host go. */
@@ -573,6 +572,7 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
 
 /** Starts this machine's one watch worker; returns its stop function. */
 export function startWatchWorker(deps: WatchWorkerDeps): () => void {
+  startWatchObservationWorker();
   // A restart retries any delivery that had run out of attempts.
   db.query("UPDATE watches SET delivery_attempts=0, delivery_next_ms=NULL WHERE delivery_state='pending'").run();
   pruneRecords(Date.now());
@@ -590,7 +590,7 @@ export function startWatchWorker(deps: WatchWorkerDeps): () => void {
   wakeRequested = () => { void poll(); };
   void poll();
   arm();
-  return () => { stopped = true; if (timer) clearTimeout(timer); wakeRequested = null; };
+  return () => { stopped = true; if (timer) clearTimeout(timer); wakeRequested = null; stopWatchObservationWorker(); };
 }
 
 // ---- what a release must not remove ------------------------------------------------------------

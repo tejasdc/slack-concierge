@@ -10,6 +10,8 @@ An accepted input's live steering retry follows its recorded state and cannot en
 The Inbox capture space reads a bounded page of retained inputs, with attachment
 metadata separated from bytes. The owner contract and query are in
 [capture presentation](docs/architecture/CAPTURE-PRESENTATION.md).
+Routine watch observation cursors are written by a dedicated thread; watch outcomes remain
+owner transactions, and failed cursor writes produce conservative gaps. See [durable watches](docs/architecture/WATCHES.md#parts).
 Pre-custody human command identity conflicts retain a content-free reason and stream
 position for diagnosis. The authenticated status read exposes the original immutable
 envelope and body digest for exact saved-card recovery; see [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md).
