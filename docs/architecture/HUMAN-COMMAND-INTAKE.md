@@ -20,6 +20,28 @@ validation happens after custody, so an invalid command occupies its terminal st
 instead of leaving a missing predecessor. Browser cards
 distinguish device custody, server custody, and owner acceptance.
 
+## Terminal command observation
+
+The command itself owns ordered execution in the capture database. A terminal transition
+(`delivered`, `refused`, or `canceled`) adds one action-keyed outbox entry in the same transaction.
+This includes preparation refusals, pre-custody refusals, and cancellation before owner delivery.
+The Concierge command worker publishes each pending entry to the existing session-owner event
+stream, then acknowledges the outbox only after the owner ledger reports durable. A crash between
+the two commits replays the same event ID; the owner refuses a conflicting duplicate. The normal
+worker path wakes publication immediately after settlement. Startup and one-minute background
+reconciliation recover an interrupted publication or a terminal transition made directly at
+ingress. Neither the browser nor the owner event stream replays the command effect.
+
+The durable event is `kind:"human_command"`, with `operationId` equal to the action ID and
+`payload.command` equal to the authenticated terminal command status read, including
+`commandIdentity`, `decisionStage`, `ownerStatus`, and `ownerResponse`. It carries no original
+command body. The event's `sessionId` is the addressed local session, the containing Inbox
+session for a topic, or the Inbox session as a stream anchor for creation and global commands;
+the immutable `commandIdentity.sessionId` remains the browser's exact ordering scope.
+Consumers match their saved action ID and immutable identity before accepting an event. They
+read `/commands/:actionId` after a missed stream or a reconnect to resolve any remaining action;
+silence is never a refusal or success. Older consumers can continue using the status read.
+
 The authenticated `GET /commands/:actionId` status read also returns `commandIdentity`:
 `{version:1,actionId,clientId,sessionId,sequence,door,method,path,bodySha256}`. These are
 the original ingress row's immutable fields, not a new sequence or the owner's operation

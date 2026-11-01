@@ -9,7 +9,7 @@ import {
 } from "./capture-state";
 import { errorFields, log } from "./log";
 import type { ProcessIdentity } from "./runtime-identity";
-import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandHold, commandStatus, exhaustHumanCommand, prepareHumanCommand, recordHumanCommandConflict, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
+import { blockedHumanMessageStreams, CommandIdentityConflict, claimHumanCommand, commandHold, commandStatus, exhaustHumanCommand, markHumanCommandTerminalEventPublished, pendingHumanCommandTerminalEvents, prepareHumanCommand, recordHumanCommandConflict, releaseHeldLateHumanCommand, releaseMissingHumanCommandSlot, resumeExhaustedHumanCommand, retainHumanCommand, retainPreCustodyRefusal, retryHumanCommand, settleHumanCommand, withdrawPendingCreation, type HumanCommand } from "./human-command-state";
 
 export interface CaptureQueueServerConfig {
   host: string;
@@ -182,6 +182,14 @@ export function createCaptureQueueRequestHandler(
     }
     if(url.pathname==='/commands/blocked'&&request.method==='GET')
       return jsonResponse(200,{streams:blockedHumanMessageStreams()});
+    if(url.pathname==='/terminal-command-events'&&request.method==='GET')
+      return jsonResponse(200,{events:pendingHumanCommandTerminalEvents().map(row=>({command:commandReply(row.action_id,true)}))});
+    if(url.pathname==='/terminal-command-events/published'&&request.method==='POST'){
+      try{
+        const actionId=requiredString((await requestBody(request)).actionId,'actionId',200);
+        return markHumanCommandTerminalEventPublished(actionId)?jsonResponse(200,{ok:true}):jsonResponse(409,{error:'terminal_event_unknown'});
+      }catch{return jsonResponse(400,{error:'invalid_terminal_event_ack'});}
+    }
     if(url.pathname==='/commands/release-held-late'&&request.method==='POST'){
       try{
         const body=await requestBody(request);

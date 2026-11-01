@@ -7,6 +7,12 @@ import {nextRetry} from './retry-core';
 import {RETRY_POLICIES} from './retry-policies';
 
 export type CommandDelivery = Readonly<{status:number;value:unknown}>;
+export type TerminalHumanCommandStatus = Readonly<{
+  custody:'server';actionId:string;status:'delivered'|'refused'|'canceled';
+  decisionStage:'preparation'|'owner'|null;ownerStatus:number|null;ownerResponse:unknown;
+  commandIdentity:Readonly<{version:1;actionId:string;clientId:string;sessionId:string;sequence:number;
+    door:string;method:'POST';path:string;bodySha256:string}>;
+}>;
 
 /** The already root-private Thinkering capability socket runs its existing mutation preparation. */
 export function callThinkeringCommand(path:string,command:unknown,socketPath:string):Promise<CommandDelivery>{
@@ -40,6 +46,9 @@ export class HumanCommandWorker {
   private running=false;
   private timer:ReturnType<typeof setTimeout>|null=null;
   private active:Promise<void>|null=null;
+  private terminalActive:Promise<void>|null=null;
+  private terminalTimer:ReturnType<typeof setTimeout>|null=null;
+  private terminalAgain=false;
   private nextPollMs=250;
   private queueFailures=0;
   private queueFailureSince=0;
@@ -56,15 +65,50 @@ export class HumanCommandWorker {
     queueStopped?:(reason:string)=>Promise<void>|void;
     blocked?:(stream:{clientId:string;sessionId:string;headSequence:number;headActionId:string|null;
       headReason:string;waitingMessages:number;oldestWaitingAt:string})=>Promise<void>|void;
+    publishTerminal?:(command:TerminalHumanCommandStatus)=>Promise<void>|void;
     fetch?:typeof fetch;
   }>){ }
 
-  start(){if(this.running)return;this.running=true;this.wake();}
-  async stop(){this.running=false;if(this.timer)clearTimeout(this.timer);this.timer=null;await this.active;}
+  start(){if(this.running)return;this.running=true;this.wake();this.wakeTerminalEvents();}
+  async stop(){this.running=false;if(this.timer)clearTimeout(this.timer);this.timer=null;
+    if(this.terminalTimer)clearTimeout(this.terminalTimer);this.terminalTimer=null;
+    await Promise.all([this.active,this.terminalActive]);}
   wake(){if(!this.running||this.active)return;if(this.timer)clearTimeout(this.timer);this.timer=null;this.active=this.drain()
     .catch(error=>{log("error","human_command_worker_failed",errorFields(error));})
     .finally(()=>{this.active=null;if(this.running)this.schedule(this.nextPollMs);});}
   private schedule(ms:number){if(!this.running||this.timer)return;this.timer=setTimeout(()=>{this.timer=null;this.wake();},ms);}
+  private wakeTerminalEvents(){
+    if(!this.running||!this.options.publishTerminal)return;
+    if(this.terminalActive){this.terminalAgain=true;return;}
+    if(this.terminalTimer)clearTimeout(this.terminalTimer);
+    this.terminalTimer=null;
+    this.terminalActive=this.publishPendingTerminalEvents()
+      .catch(error=>log('warn','human_command_terminal_event_publish_failed',errorFields(error)))
+      .finally(()=>{
+        this.terminalActive=null;
+        if(!this.running)return;
+        if(this.terminalAgain){this.terminalAgain=false;this.wakeTerminalEvents();}
+        else this.terminalTimer=setTimeout(()=>{this.terminalTimer=null;this.wakeTerminalEvents();},60_000);
+      });
+  }
+  private async publishPendingTerminalEvents(){
+    for(;;){
+      const response=await (this.options.fetch??fetch)(`${this.options.queueUrl}/terminal-command-events`,{
+        headers:{authorization:`Bearer ${this.options.queueToken}`},signal:AbortSignal.timeout(10_000),
+      });
+      if(!response.ok)throw new Error(`Terminal command outbox answered ${response.status}`);
+      const body=await response.json() as {events:Array<{command:TerminalHumanCommandStatus}>};
+      if(!Array.isArray(body.events))throw new Error('Invalid terminal command outbox page.');
+      for(const event of body.events){
+        const command=event.command;
+        if(!command||typeof command.actionId!=='string'||command.commandIdentity?.actionId!==command.actionId
+          ||!['delivered','refused','canceled'].includes(command.status))throw new Error('Invalid terminal command event.');
+        await this.options.publishTerminal!(command);
+        await this.queue('/terminal-command-events/published',{actionId:command.actionId});
+      }
+      if(body.events.length===0)return;
+    }
+  }
   private async queue(path:string,body:unknown):Promise<Response>{
     const response=await (this.options.fetch??fetch)(`${this.options.queueUrl}${path}`,{
       method:"POST",headers:{authorization:`Bearer ${this.options.queueToken}`,"content-type":"application/json"},
@@ -151,6 +195,7 @@ export class HumanCommandWorker {
       await this.queue(`/commands/${encodeURIComponent(command.actionId)}/settle`,{
         claimId,ownerStatus:result.status,ownerResponse:result.value,decisionStage,
       });
+      this.wakeTerminalEvents();
       log(result.status<300?"info":"warn","human_command_owner_settled",{
         action_id:command.actionId,owner_status:result.status,attempts:payload.attempts,
         delivery_ms:Math.round(performance.now()-deliveryStarted),

@@ -16,6 +16,9 @@ gaps. See [durable watches](docs/architecture/WATCHES.md#parts).
 Pre-custody human command identity conflicts retain a content-free reason and stream
 position for diagnosis. The authenticated status read exposes the original immutable
 envelope and body digest for exact saved-card recovery; see [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md).
+Terminal human commands publish a durable action-keyed session-owner event from the capture
+outbox; the authenticated status read repairs a missed event. The same custody contract owns
+the cross-database handoff and event payload.
 
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
