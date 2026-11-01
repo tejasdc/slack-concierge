@@ -54,9 +54,20 @@ const MAX_BYTES = 8 * 1024 * 1024;
 
 const SENSITIVE_NAMES = /^(?:credentials?|secrets?|tokens?|service[-_.]?account|client[-_.]?secret|api[-_.]?key|private[-_.]?key|google-services|id_(?:rsa|dsa|ecdsa|ed25519))(?:[-_.]|$)/i;
 
+/**
+ * Folders agents keep their working copies in: `wt` makes `.wt/<task>` and older checkouts use
+ * `.worktrees/<task>`. They hold the same project files as the checkout, and the documents an
+ * agent asks him to read are written there, so the folder is passed through while every other
+ * dot part (`.env`, `.git`, `.ssh`) and the folder itself as a listed entry stay hidden.
+ */
+const WORKING_COPY_FOLDERS = new Set(['.wt', '.worktrees']);
+
 /** Filesystem reads are a human browsing surface, never a way to inspect hidden configuration. */
 export function isSensitiveWorkspacePath(path: string): boolean {
-  return path.split(/[\\/]+/).some(part => part.startsWith('.') || SENSITIVE_NAMES.test(part));
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.some((part, index) =>
+    SENSITIVE_NAMES.test(part)
+    || part.startsWith('.') && !(index < parts.length - 1 && WORKING_COPY_FOLDERS.has(part)));
 }
 
 /** `~` is this machine's home. Every other path is taken as written. */
