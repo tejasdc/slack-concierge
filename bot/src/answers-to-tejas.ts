@@ -128,5 +128,22 @@ export function completionWithCheck(input: { text: string; checked?: string; not
   const checked = input.checked?.trim() ?? '', notChecked = input.notChecked?.trim() ?? '';
   if (checked && notChecked) throw new Error('Give either --checked or --not-checked, not both.');
   if (!checked && !notChecked) throw new Error(CHECK_REQUIRED);
-  return `${input.text.trim()}\n\n${checked ? `Checked on the real system: ${checked}` : `Not checked live: ${notChecked}`}`;
+  return `${input.text.trim()}\n\n${checked ? `Checked on the real system: ${checked}` : `${NOT_CHECKED_LIVE}${notChecked}`}`;
+}
+
+const NOT_CHECKED_LIVE = 'Not checked live: ';
+const COMPLETED_CLOSING = 'Completed · ';
+/** The line that closes a final reply, kept on its stored result so later readers know how it ended. */
+export function finalClosingLine(disposition: string, checked?: string, notChecked?: string): string {
+  return disposition === 'completed'
+    ? `${COMPLETED_CLOSING}${checked ? `Checked on the real system: ${checked.trim()}` : `${NOT_CHECKED_LIVE}${notChecked?.trim() ?? ''}`}`
+    : disposition === 'failed' ? 'Failed' : 'Needs your decision';
+}
+/**
+ * Why completed work has not been seen working, or null when it was checked live. Read from the
+ * closing line this file wrote, on local and peer results alike.
+ */
+export function notSeenWorking(closingLine: unknown): string | null {
+  const prefix = `${COMPLETED_CLOSING}${NOT_CHECKED_LIVE}`;
+  return typeof closingLine === 'string' && closingLine.startsWith(prefix) ? closingLine.slice(prefix.length).trim() || null : null;
 }

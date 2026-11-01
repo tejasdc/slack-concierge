@@ -14,7 +14,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
-import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
+import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
@@ -2458,16 +2458,22 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  * - A closed thread reopens when he writes in it or new work is placed there.
  */
 const OWNER_BY:TopicBy={kind:'owner'};
-type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number};
+type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number;
+  /** Completed without a live check: what its worker said has not been seen working yet. */
+  notSeenWorking?:string|null};
 const dispositionOf=(resultJson:string|null)=>{
   if(!resultJson)return null;
   try{const value=JSON.parse(resultJson).workDisposition;return typeof value==='string'?value:null;}catch{return null;}
 };
+const notSeenWorkingOf=(resultJson:string|null)=>{
+  if(!resultJson)return null;
+  try{return notSeenWorking(JSON.parse(resultJson).closingLine);}catch{return null;}
+};
 function workRow(id:string):Work|null {
   const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as any;
-  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms};
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,notSeenWorking:notSeenWorkingOf(local.result_json)};
   const peer=db.query('SELECT peer,remote_session_id,outcome,result_json,created_at_ms FROM session_peer_requests WHERE request_id=?').get(id) as any;
-  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms}:null;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,notSeenWorking:notSeenWorkingOf(peer.result_json)}:null;
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
@@ -2623,7 +2629,11 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
     let disposition:string|null=null,why='';
     if(latest.outcome==='answered'&&(latest.disposition===null||latest.disposition==='completed')) {
       try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
-      disposition='completed';why='The work sent for it answered as done.';
+      // Work done but never seen working says so, not "done": on 2026-10-31 a phone repair closed
+      // as done 45 seconds after its answer said his phone had not run the fix yet (aaaad41d).
+      disposition='completed';why=latest.notSeenWorking
+        ?`Shipped, but not yet seen working: ${latest.notSeenWorking.slice(0,600)}`
+        :'The work sent for it answered as done.';
     } else if(latest.disposition==='failed'&&!waitingOnHim) {
       disposition='failed';why='The agent answered that it could not finish; that answer is in this thread.';
     } else if(latest.outcome==='canceled'&&!waitingOnHim) {

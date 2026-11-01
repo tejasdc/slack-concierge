@@ -309,7 +309,8 @@ interface AgentSessionStatusProjectionResult {
   error: string | null;
 }
 
-function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatchAttempt:number,message:string):boolean {
+function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatchAttempt:number,message:string,
+  reason:'model_capacity_refusal'|'usage_refusal'='model_capacity_refusal'):boolean {
   if(input.presentation!=='native'||!sessionMetadata(input.session).automaticProviderChoice||
     input.providerId==='chatgpt')return false;
   let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
@@ -345,7 +346,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
       provider_started_at=NULL,provider_input_acknowledged_at=NULL,provider_turn_id=NULL WHERE id=?`)
       .run(input.turnId);
     recordSessionEvent({eventId:`capacity-reroute:${input.turnId}`,sessionId:session.id,turnId:input.turnId,
-      kind:'provider',payload:{from:input.providerId,to:other,reason:'model_capacity_refusal'}});
+      kind:'provider',payload:{from:input.providerId,to:other,reason}});
     return true;
   })();
 }
@@ -1194,6 +1195,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // later fresh allowance reading proves room; a guessed timer could replay it early.
       const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
         &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+      // A first turn the owner placed on this provider by itself, refused for allowance before any
+      // work, goes to a provider with room instead of waiting for this one's reset. On 2026-10-31 his
+      // 4 AM afterparties request was placed on Google with 65 hours left on its quota and ended.
+      if((heldUntilMs!==null||googleUsageWait)&&
+        moveAutomaticFirstTurnOffRefusingModel(input,dispatchAttempt,message,'usage_refusal')) {
+        await progressController?.pauseForRetry();
+        await statusController?.stop();
+        log('warn','automatic_usage_refusal_rerouted',{turn_id:input.turnId,session_id:input.session.id,
+          provider:input.providerId,model:capacityModel});
+        return {status:'retry_queued',turnId:input.turnId};
+      }
       if(isRefreshableAuthFailure(message)){
         markClaudeHomeRefused(runningClaudeHome);
         // An expired login on an account's own home is renewed by the Mac's browser agent, once per episode.

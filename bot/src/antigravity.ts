@@ -201,10 +201,13 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
     if (event.event === "step_update" && event.step_update) {
       const step = event.step_update;
       if (step.step_type === "user_input" && step.state === "DONE") pickedUp();
+      // Google writes its own refusal as an `error_message` step. It is the provider speaking,
+      // not the agent working: counting it as a tool made the quota refusal of 2026-10-31 look
+      // like a worked-on turn, so the request ended instead of waiting or moving.
       if (step.step_type === "agent_response" && step.text_delta) {
         observedOutput = true;
         input.onProgress?.({ type: "commentary", text: step.text_delta });
-      } else if (step.step_type && !["agent_response", "user_input"].includes(step.step_type)) {
+      } else if (step.step_type && !["agent_response", "user_input", "error_message"].includes(step.step_type)) {
         const toolName = step.tool_name || step.step_type;
         const itemId=Number.isSafeInteger(step.step_index)?`step:${step.step_index}`:toolName;
         if(!activeSteps.has(itemId)){activeSteps.add(itemId);input.onProgress?.({type:'tool_started',toolName,itemId});}
@@ -330,7 +333,9 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
   if (terminal.status !== "SUCCESS") {
     // ERROR says the run ended, not that it had no effects. Only zero-turn refusals are
     // replay-safe; an error after Google began a turn stays unconfirmed for inspection.
-    const beforeTurn = terminal.num_turns === 0 && terminal.usage?.total_tokens === 0
+    // Zero tokens is the proof: a quota refusal reports `num_turns: 1` for its own error step
+    // while no model call happened.
+    const beforeTurn = terminal.usage?.total_tokens === 0
       && !observedOutput && toolsUsed.size === 0;
     const quotaRefusal = /RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(terminal.error ?? "");
     let clearsAtMs: number | null = null;
