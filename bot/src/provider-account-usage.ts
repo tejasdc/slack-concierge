@@ -405,6 +405,23 @@ async function readAntigravity(): Promise<ProviderUsage> {
       willLastToReset: null, runsOutAt: null });
   }
   if (windows.length !== 2) return unavailable("Google did not report both Gemini allowance windows.");
+  // Gemini 4 Argon has its own allowance group ("Argon quota is separate"), with bucket ids like
+  // `gemini-argon-wtu-weekly`. The shared Gemini group above covers Flash and Pro only. On
+  // 2026-10-31 the Argon weekly limit was spent while the shared group showed 0.75% used, so every
+  // small task went to Google and was refused. The selected model's own buckets count too.
+  const family = /^gemini-[\d.]+-([a-z]+)/.exec(selectedModel)?.[1];
+  if (family && !["flash", "pro"].includes(family)) {
+    const own = buckets.filter((item: any) => typeof item?.id === "string" && item.id.startsWith(`gemini-${family}-`));
+    if (!own.length) return unavailable(`Google reported no allowance for ${selectedModel}.`);
+    for (const bucket of own) {
+      const remaining = bucket?.remaining_fraction;
+      if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 1)
+        return unavailable(`Google returned an unreadable allowance for ${selectedModel}.`);
+      const label = family[0].toUpperCase() + family.slice(1);
+      windows.push({ name: `${label} · ${bucket.window === "5h" ? "5-hour" : bucket.window === "weekly" ? "weekly" : String(bucket.window ?? "limit")}`,
+        usedPercent: (1 - remaining) * 100, resetsAt: iso(bucket?.reset_time), willLastToReset: null, runsOutAt: null });
+    }
+  }
   // An account label must come from Google's own reply. Guessing from the browser's
   // Google account would let a different CLI login inherit this account's capacity.
   let statusIdentity: { email?: unknown; plan?: unknown; observedAt?: unknown } = {};
@@ -596,7 +613,7 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // A refusal Google gave after this reading's kind of "room" outranks the reading (see
       // rememberModelCapacityRefusal in turn execution); its memory expires on its own.
       const { anyModelRefused } = await import("./provider-model-capacity");
-      if (accountReadingFresh(provider,usage,account) && account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)
+      if (accountReadingFresh(provider,usage,account) && account.windows.length >= 2 && account.windows.every(window => window.usedPercent < 100)
         && !anyModelRefused(provider)) {
         releaseUsageContinuationHolds(provider);
         releaseUsageHeldWork(provider, "usable_account_observed");

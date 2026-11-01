@@ -351,6 +351,16 @@ export async function runAntigravityTurn(input: AntigravityRun): Promise<RunResu
           .map(window => Date.parse(window.resetsAt ?? "")).filter(Number.isFinite);
         if (spent.length) clearsAtMs = Math.max(...spent);
       }
+      // The refusal is the truth. A reading that still shows room is itself broken, and on
+      // 2026-10-31 that went unnoticed for days; the repair agent hears of it once per day.
+      if (clearsAtMs === null) {
+        try {
+          const [{ db }, { publishProviderFreeNotice }] = await Promise.all([import("./state-database"), import("./provider-free-notice")]);
+          publishProviderFreeNotice(db, { key: `usage-reading-disagrees:antigravity:${new Date().toISOString().slice(0, 10)}`,
+            kind: "usage_reading_disagrees",
+            text: `Google refused a turn for quota ("${(terminal.error ?? "").slice(0, 200)}") while Concierge's own Google allowance reading shows room. Find which allowance Google is enforcing and make the reading show it.` });
+        } catch {}
+      }
     }
     throw new ProviderDispatchError({ message: (terminal.error || `Google ended with ${terminal.status ?? "unknown status"}.`).slice(0, MAX_ERROR_TEXT),
       terminalConfirmed: beforeTurn, assistantOutput: observedOutput, providerSessionId: conversationId,
