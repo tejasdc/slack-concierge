@@ -1,0 +1,1 @@
+If file-watch check history is damaged, Concierge stays available and reports the unproven interval as a possible gap.
