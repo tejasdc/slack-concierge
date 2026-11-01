@@ -1,0 +1,1 @@
+Concierge now records and broadcasts each finished action, so the app can confirm it directly and recover from a missed update.
