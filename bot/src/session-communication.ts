@@ -1063,6 +1063,8 @@ export class SessionCommunicationCoordinator {
         peer?:string;
         /** What only the peer machine can do for this work; required to create a session there. */
         machine_need?:string;
+        /** Exact site and observed reason the always-on server browser could not finish. */
+        server_attempt?:{url?:string;failure?:string};
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
@@ -1191,8 +1193,10 @@ export class SessionCommunicationCoordinator {
         if(input.peer!==undefined) {
             if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
             const machineNeed=input.peer==='mac'&&(input.provider!==undefined||input.requestedEffect==='work')
-                ?parseMachineNeed(input.machine_need):undefined;
+                ?parseMachineNeed(input.machine_need,input.server_attempt):undefined;
             if(input.machine_need!==undefined&&input.peer!=='mac')throw new Error('--machine-need is for Mac work.');
+            if(input.server_attempt!==undefined&&input.peer!=='mac')throw new Error('--server-attempt is for Mac browser fallback.');
+            if(input.server_attempt!==undefined&&machineNeed?.kind!=='browser-fallback')throw new Error('--server-attempt needs a Mac browser-fallback work request.');
             if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
@@ -1208,8 +1212,10 @@ export class SessionCommunicationCoordinator {
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if(input.machine_need!==undefined&&process.platform!=='darwin')throw new Error('--machine-need is for Mac work.');
+        if(input.server_attempt!==undefined&&process.platform!=='darwin')throw new Error('--server-attempt is for Mac browser fallback.');
         const localMachineNeed=process.platform==='darwin'&&(input.provider!==undefined||input.requestedEffect==='work')
-            ?parseMachineNeed(input.machine_need):undefined;
+            ?parseMachineNeed(input.machine_need,input.server_attempt):undefined;
+        if(localMachineNeed?.kind==='browser-fallback')throw new Error('Mac browser fallback must follow a recorded server attempt from a server session.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
             throw new Error('after must contain exact existing request IDs.');
         const after = [...new Set(input.after ?? [])].sort();

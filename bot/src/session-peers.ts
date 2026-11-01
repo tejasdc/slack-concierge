@@ -1073,7 +1073,7 @@ export class SessionPeers {
     let machineNeed:MachineNeed|undefined;
     if(this.self==='mac'&&(typeof input.provider==='string'||input.requestedEffect==='work'&&!input.forwardedReply)) {
       try { machineNeed=parseMachineNeed(typeof input.machineNeed?.kind==='string'&&typeof input.machineNeed?.why==='string'
-        ? `${input.machineNeed.kind}:${input.machineNeed.why}`:undefined); }
+        ? `${input.machineNeed.kind}:${input.machineNeed.why}`:undefined,input.machineNeed?.serverAttempt); }
       catch(error) { throw new SessionOwnerError(error instanceof Error?error.message:'Mac-only need required.',400,'MACHINE_NEED_REQUIRED'); }
     }
     if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))

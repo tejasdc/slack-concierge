@@ -77,8 +77,9 @@ Blocking questions to Tejas notify by default through that same path; see the
 Mac agent actions that can surface a permission prompt, background item, browser debugger,
 screen capture or install publish one retained activity event per action kind and turn;
 see [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
-Mac work needs a specific physical capability named at peer admission; managed provider tools
-refuse ordinary browser checks and foreground control on his Mac. See
+Mac work needs a specific physical capability named at peer admission; a recorded failed
+server browser attempt unlocks an isolated headless Mac fallback without per-use approval.
+Managed provider tools refuse direct browser and foreground control on his Mac. See
 [Mac placement](docs/runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
 
 The coordinated responsiveness release follows the dependency checkpoints in

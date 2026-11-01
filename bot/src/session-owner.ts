@@ -1,5 +1,6 @@
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
+import {parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
@@ -2371,6 +2372,20 @@ export class SessionOwner {
     this.runtime.steer(notice);
   }
   readAdmission(inputId:string) {const input=getAcceptedSessionInput(inputId);return input?{input,...readInputExecution(input)}:null;}
+  private macBrowserFallback(input:unknown) {
+    if(process.platform!=='darwin')throw new SessionOwnerError('Mac browser fallback is available only on the Mac.',403,'MAC_BROWSER_FALLBACK_REFUSED');
+    const request=object(input);only(request,['sourceInputId','sourceRunId']);
+    if(typeof request.sourceInputId!=='string'||typeof request.sourceRunId!=='string')
+      throw new SessionOwnerError('The exact accepted Mac input and run are required.',400,'MAC_BROWSER_FALLBACK_REFUSED');
+    const accepted=getAcceptedSessionInput(request.sourceInputId);
+    const turn=db.query(`SELECT status,stop_requested_at FROM turns
+      WHERE accepted_input_id=? AND native_run_id=? LIMIT 1`).get(request.sourceInputId,request.sourceRunId) as {status:string;stop_requested_at:number|null}|null;
+    const need=accepted?JSON.parse(accepted.payload_json)?.machineNeed:null;
+    if(!turn||turn.status!=='running'||turn.stop_requested_at!==null||need?.kind!=='browser-fallback')
+      throw new SessionOwnerError('No active recorded server failure permits this Mac browser.',403,'MAC_BROWSER_FALLBACK_REFUSED');
+    const verified=parseMachineNeed(`${need.kind}:${need.why}`,need.serverAttempt);
+    return {origin:verified.serverAttempt!.url};
+  }
   action(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','value','generation']);
@@ -3652,6 +3667,7 @@ export class SessionOwner {
         return this.stream(request,url);
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      else if(request.method==='POST'&&parts[0]==='mac-browser-fallback'&&parts.length===1)result=this.macBrowserFallback(body);
       else if(request.method==='GET'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldStatus();
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts.length===1)result=await this.focusHoldControl(body);
       else if(request.method==='POST'&&parts[0]==='focus-hold'&&parts[1]==='release'&&parts.length===2)result=await this.releaseHeldCaptures(body);
