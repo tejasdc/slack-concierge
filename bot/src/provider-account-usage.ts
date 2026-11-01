@@ -12,7 +12,7 @@ import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
-import { claudeAccountFacts, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
+import { claudeAccountFacts, claudeWindowsFromOwnLogin, type ApiCreditsFacts, type UsageCreditsFacts } from "./claude-account-facts";
 import type { ResetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 import { resolveProviderAlias } from "./aliases";
@@ -92,7 +92,7 @@ export type AccountUsage = Readonly<{
    * attached at read time by `withResetAdvice`, never stored, because it says how long is left.
    */
   resetAdvice?: ResetAdvice | null;
-  /** Claude only: the pay-as-you-go usage credits, from the same reading as the bars. */
+  /** Pay-as-you-go credits from the same reading as the bars: Claude usage credits, or the Codex credit balance. */
   usageCredits?: UsageCreditsFacts | null;
   /** Claude only: the monthly API credits a Max plan grants its linked Console organization. */
   apiCredits?: ApiCreditsFacts | null;
@@ -247,7 +247,17 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   add("Weekly", usage.secondary, pace.secondary);
   return { label, plan: plan ?? (usage.loginMethod ? (CODEX_PLAN[usage.loginMethod] ?? usage.loginMethod) : null),
     current: agents, windows, problem: null, readAt: iso(usage.updatedAt),
-    resetCredits: resetCredits(usage.codexResetCredits) };
+    resetCredits: resetCredits(usage.codexResetCredits), usageCredits: codexCredits(row?.credits) };
+}
+
+/** The ChatGPT credit balance the same reading reports (OpenAI's "Extra usage" pool). The
+ * reading carries no expiry, so none is stated; a grant's expiry lives only in OpenAI's email. */
+function codexCredits(block: any): UsageCreditsFacts | null {
+  if (block?.balanceReadSucceeded !== true || typeof block?.remaining !== "number" || !Number.isFinite(block.remaining)) return null;
+  const left = Math.floor(block.remaining).toLocaleString("en-US");
+  const enabled = block.creditsAvailable === true;
+  return { line: enabled ? `Codex credits: ${left} left for use beyond the plan's limits.` : `Codex credits: ${left} left, not currently usable.`,
+    enabled, usedUsd: null, capUsd: null, balanceUsd: null };
 }
 
 /** Only the grants that can still be used; a spent or lapsed one is not an opportunity. */
@@ -310,16 +320,27 @@ async function readClaude(): Promise<ProviderUsage> {
     for (const window of Array.isArray(usage?.scoped) ? usage.scoped : [])
       add(`Weekly · ${typeof window?.name === "string" && window.name ? `${window.name} only` : "one model"}`, window);
     const status = String(account?.usageStatus ?? "");
-    const problem = status === "ok" ? null
+    let problem: string | null = status === "ok" ? null
       : status === "relogin_required" || status === "token_expired" ? "This account needs signing in again."
         : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.";
     // The address is the stable join between the login, its home and these readings.
     // A claude-swap alias is only a display name and can differ from the home name.
     const label = String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`);
+    let readAtNow = readAt;
+    if (status !== "ok") {
+      // claude-swap's own copy of this login can die while the real one works; read the real one.
+      const own = await claudeWindowsFromOwnLogin(label);
+      if (own) {
+        windows.splice(0, windows.length, ...own.map(window => ({ ...window, resetsAt: iso(window.resetsAt),
+          willLastToReset: null, runsOutAt: null })));
+        problem = null;
+        readAtNow = new Date().toISOString();
+      }
+    }
     // Plan tier and credits ride on the same login the bars come from; a login whose token
     // has lapsed keeps its last facts, and a never-read one simply has none yet.
     const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
-    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt,
+    accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: readAtNow,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
