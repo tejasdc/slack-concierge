@@ -23,6 +23,7 @@ function snippet(text:string,terms:string[]){
 }
 
 export class PreparedSearchIndex {
+ private indexedChangesSinceMerge=0;
  constructor(private readonly db:Database,initialize=true){
   if(!initialize)return;
   db.exec(`CREATE TABLE IF NOT EXISTS prepared_search_documents(
@@ -32,9 +33,22 @@ export class PreparedSearchIndex {
   CREATE INDEX IF NOT EXISTS prepared_search_session ON prepared_search_documents(session_id,id);
   CREATE VIRTUAL TABLE IF NOT EXISTS prepared_search_text USING fts5(folded,tokenize='trigram');
   CREATE VIRTUAL TABLE IF NOT EXISTS prepared_search_short USING fts5(tokens,detail=none);`);
+  // FTS5's default crisis merge rewrites whole, accumulated segments inside the
+  // insertion that crosses its threshold. This index is large; give merging its
+  // own bounded worker budget instead of charging an arbitrary source event.
+  db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('automerge',0)").run();
+  db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('crisismerge',2147483647)").run();
+ }
+ /** Called between replay batches, after a fixed interval or indexed change count. */
+ get mergeDue(){return this.indexedChangesSinceMerge>=250;}
+ maintain(pageBudget:number){
+  if(!Number.isSafeInteger(pageBudget)||pageBudget<1)throw new Error('INVALID_SEARCH_MERGE_BUDGET');
+  this.db.query("INSERT INTO prepared_search_text(prepared_search_text,rank) VALUES('merge',?)").run(pageBudget);
+  this.indexedChangesSinceMerge=0;
  }
  upsert(document:PreparedSearchDocument){
   const {text,...metadata}=document,folded=text.toLocaleLowerCase(),encoded=JSON.stringify(metadata);
+  let indexed=false;
   this.db.transaction(()=>{
    const prior=this.db.query('SELECT id,text,metadata FROM prepared_search_documents WHERE document_key=?').get(document.key) as {id:number;text:string;metadata:string}|null;
    if(prior?.text===text&&prior.metadata===encoded)return;
@@ -52,19 +66,24 @@ export class PreparedSearchIndex {
      .run(document.sessionId,document.kind,document.role,text,folded,encoded,id);
    }
    this.db.query('INSERT INTO prepared_search_text(rowid,folded) VALUES(?,?)').run(id,folded);
+   indexed=true;
    // Native trigram indexing cannot search one/two-character strings (including “AI”).
    // A compact set of encoded short substrings preserves that behavior without a scan.
    this.db.query('INSERT INTO prepared_search_short(rowid,tokens) VALUES(?,?)').run(id,shortTokens(folded));
   })();
+  if(indexed)this.indexedChangesSinceMerge++;
  }
  remove(key:string){
+  let removed=false;
   this.db.transaction(()=>{
    const row=this.db.query('SELECT id FROM prepared_search_documents WHERE document_key=?').get(key) as {id:number}|null;
    if(!row)return;
    this.db.query('DELETE FROM prepared_search_text WHERE rowid=?').run(row.id);
    this.db.query('DELETE FROM prepared_search_short WHERE rowid=?').run(row.id);
    this.db.query('DELETE FROM prepared_search_documents WHERE id=?').run(row.id);
+   removed=true;
   })();
+  if(removed)this.indexedChangesSinceMerge++;
  }
  search(query:string,limit:number,includeTools=false){
   if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('INVALID_SEARCH_WINDOW');

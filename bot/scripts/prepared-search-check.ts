@@ -27,9 +27,14 @@ assert.equal(large.eventId,'id:3');
 search.upsert({...document(4,'Private tool output'),role:'tool'});
 assert.equal(search.search('Private',20).hits.length,0);
 assert.equal(search.search('Private',20,true).hits.length,1);
-const fixture=(from:number,to:number)=>db.transaction(()=>{
- for(let id=from;id<to;id++)search.upsert(document(id,`Unrelated archival text number ${id}`));
-})();
+const fixture=(from:number,to:number)=>{
+ for(let start=from;start<to;start+=250){
+  db.transaction(()=>{
+   for(let id=start;id<Math.min(to,start+250);id++)search.upsert(document(id,`Unrelated archival text number ${id}`));
+  })();
+  if(search.mergeDue)search.maintain(512);
+ }
+};
 fixture(10,1010);
 const small=search.search('naïve',20);
 fixture(1010,10010);

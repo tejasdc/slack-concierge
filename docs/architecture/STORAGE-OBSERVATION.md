@@ -63,6 +63,39 @@ The canonical ledger connection remains physically readonly, and lease acquisiti
 page processing and ready checkpoints retain their existing boundaries. Neither
 SQLite durability settings nor lifecycle deadlines change.
 
+### Presentation search write budget
+
+The large trigram search index uses explicit FTS5 maintenance. Its automatic
+incremental and immediate crisis merges are disabled; the presentation worker
+merges at most about 512 FTS pages after 250 indexed changes or ten seconds,
+whichever comes first, between replay batches.
+This keeps a source event's search write proportional to its changed document.
+The worker owns the maintenance transaction and lease, so a stopped worker does
+not create a separate writer. The crisis threshold is set beyond practical
+segment counts; the periodic bounded merge owns maintenance. Inspect the worker
+process's `/proc/<pid>/io` `write_bytes`
+before and after installation, with the owner journal's per-minute write totals
+as the longer-window check. A database file's stable size does not imply low I/O:
+FTS can rewrite existing pages and its WAL can checkpoint them.
+
+On November 1, a bounded seek into `prepared_search_text_data` found a live
+trigram segment with 646,284 FTS pages (about 2.5 GiB). The corresponding
+topic-search segment was under 100 pages, and recent changed topics held at
+most hundreds of KiB of chunks in the sampled window. At 20:59 UTC, 41 new
+ledger messages held only 0.05 MiB of text while the worker was in a reported
+4.8 GiB/min burst. The precise source-event to disk-write attribution was not
+available from the live worker, so an isolated FTS5 reproduction held input
+constant: inserting 2,500 distinct 4 KiB documents wrote 675,004,416 bytes
+with default merge settings, versus 193,249,280 bytes in insertion calls with
+automatic merging disabled and a bounded merge every 20 documents. The bounded
+maintenance itself wrote 443,445,248 bytes, for 636,694,528 bytes in total:
+this moves work out of event insertion, rather than eliminating it. The largest
+single insertion wrote 7,909,376 versus 1,908,736 bytes. SQLite's FTS5 contract
+explains the mechanism: automatic merge work runs inside index mutations, and
+the default crisis merge completes whole segments immediately. These numbers
+identify the search index as the observed amplification path; they do not claim
+that every byte in the original incident came from it.
+
 Candidate `17db53ff96cad321132414617d30cae5f040a1db` reached owner-loaded at
 2,669 ms, started the worker at 2,704 ms, then exhausted the 20-second first-checkpoint
 wait at 22,715 ms. The retained journal error was `Projection did not reach canonical
