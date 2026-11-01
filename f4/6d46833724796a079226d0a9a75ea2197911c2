@@ -1,0 +1,1 @@
+Routine file-watch checks now use a separate store, so a stalled check cannot hold Concierge’s main ledger while conversations continue.
