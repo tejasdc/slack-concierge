@@ -70,6 +70,14 @@ incremental and immediate crisis merges are disabled; the presentation worker
 merges at most about 512 FTS pages after 250 indexed changes or ten seconds,
 whichever comes first, between replay batches.
 This keeps a source event's search write proportional to its changed document.
+Topic projections follow the same rule. One router-session update can dirty
+hundreds of dependent topics, but the worker first computes the complete topic
+row, child rows, dependencies, attention, and retained detail references. A
+stored fingerprint of that result suppresses all SQLite writes when the result
+is identical. A changed topic replaces its child rows; its FTS rows change only
+if searchable text changes. The fingerprint is a derived-store optimization,
+not a source-ledger revision or a reason to skip dependency evaluation. Old
+rows are fingerprinted as they are next visited.
 The worker owns the maintenance transaction and lease, so a stopped worker does
 not create a separate writer. The crisis threshold is set beyond practical
 segment counts; the periodic bounded merge owns maintenance. Inspect the worker

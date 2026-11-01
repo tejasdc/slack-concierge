@@ -25,6 +25,7 @@ const questionSet=(q:any,state:string)=>state==='open'?q.waiting&&q.kind==='deci
  * list query into a large response or silently lose its text. */
 export class PreparedTopics {
  private retainedBy:{generation:number;owner:string}|null=null;
+ private stagedRetains:Map<string,string>|null=null;
  private collectAfter='';
  constructor(private source:Database,private prepared:Database){
   const columns=prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[];
@@ -127,6 +128,8 @@ export class PreparedTopics {
     patch.run(orderKey(0,at,row.topic_id),at,json({count:roots.count??0,lastAt:roots.last}),row.generation,row.topic_id);
    }
   })();
+  if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='projection_hash'))
+   prepared.exec("ALTER TABLE presentation_topics ADD COLUMN projection_hash TEXT NOT NULL DEFAULT ''");
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topics_started ON presentation_topics(generation,session_id,state,started_sort_key);
    CREATE INDEX IF NOT EXISTS presentation_topics_started_all ON presentation_topics(generation,session_id,started_sort_key);`);
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_topic_question_topic_page ON presentation_topic_questions(generation,topic_id,selected,created_at DESC,question_id);
@@ -279,20 +282,17 @@ export class PreparedTopics {
   const generation=context.generation;
   const owner=(this.source.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(topicId) as {session_id:number}|null)?.session_id??context.sessionId;
   this.retainedBy={generation,owner:`topic:${topicId}`};
-  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(generation,this.retainedBy.owner);
-  const previous=this.prepared.query('SELECT summary_json,detail_hash,session_id FROM presentation_topics WHERE generation=? AND topic_id=?')
-   .get(generation,topicId) as {summary_json:string;detail_hash:string;session_id:number}|null;
-  this.prepared.query('DELETE FROM presentation_topic_questions WHERE generation=? AND topic_id=?').run(generation,topicId);
-  this.prepared.query('DELETE FROM presentation_topic_items WHERE generation=? AND topic_id=?').run(generation,topicId);
-  this.prepared.query('DELETE FROM presentation_topic_dependencies WHERE generation=? AND topic_id=?').run(generation,topicId);
-  this.prepared.query('DELETE FROM presentation_topic_request_links WHERE generation=? AND topic_id=?').run(generation,topicId);
-  this.prepared.query('DELETE FROM presentation_inbox_attention WHERE generation=? AND topic_id=?').run(generation,topicId);
-  const depend=(kind:string,key:string)=>this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dependencies VALUES(?,?,?,?)').run(generation,kind,key,topicId);
+  const previous=this.prepared.query('SELECT summary_json,detail_hash,session_id,search_text,projection_hash FROM presentation_topics WHERE generation=? AND topic_id=?')
+   .get(generation,topicId) as {summary_json:string;detail_hash:string;session_id:number;search_text:string;projection_hash:string}|null;
+  const retains=new Map<string,string>(),items:any[][]=[],questions:any[][]=[],dependencies:any[][]=[],requestLinks:any[][]=[],attentions:any[]=[];
+  this.stagedRetains=retains;
+  try{
+  const depend=(kind:string,key:string)=>dependencies.push([generation,kind,key,topicId]);
   const itemDigest=createHash('sha256');
   const writeItem=(item:any,kind:string,index?:number)=>{
    const id=String(item.id??index),key=kind==='history'?String(index).padStart(8,'0'):`${item.createdAt}:${id}`;
    const compact=this.compactItem(item,kind);itemDigest.update(json(item));
-   this.prepared.query('INSERT INTO presentation_topic_items VALUES(?,?,?,?,?,?)').run(generation,topicId,kind,id,key,json(compact));
+   items.push([generation,topicId,kind,id,key,json(compact)]);
    return compact;
   };
   const value=preparedTopicValue({...context,boundedReads:true},topicId,{
@@ -300,24 +300,25 @@ export class PreparedTopics {
     const compact=writeItem(question,'questions');
     if(question.owner?.sessionId)depend('session',question.owner.sessionId);
    if(question.kind==='asked'&&question.owner?.dispatchRequestId)depend('request',question.owner.dispatchRequestId);
-    if(question.waiting)this.writeAttention(generation,'questions',topicId,{inputId:question.sources[0]??topicId,
+    if(question.waiting)attentions.push({inputId:question.sources[0]??topicId,
      outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',generation:question.generation??0,
      at:question.createdAt,runId:question.owner?.runId??'',eventId:question.id,...(question.reads.length?{reads:question.reads}:{})});
     for(const selected of ['asked','open','reading','checking','deferred','history'])if(questionSet(question,selected))
-     this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?,?)')
-      .run(generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),owner);
+     questions.push([generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),owner]);
    },
    request:request=>{
     writeItem(request,'requests');
     for(const dispatch of request.dispatches){
      depend('request',String(dispatch.requestId));
      if(dispatch.targetSessionId)depend('session',dispatch.targetSessionId.replace(/^([\w-]+):concierge:/,'$1:'));
-     if(dispatch.sourceInputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(generation,topicId,dispatch.sourceInputId,request.id);
+     if(dispatch.sourceInputId)requestLinks.push([generation,topicId,dispatch.sourceInputId,request.id]);
     }
-    for(const source of request.sources)if(source.inputId)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(generation,topicId,source.inputId,request.id);
+    for(const source of request.sources)if(source.inputId)requestLinks.push([generation,topicId,source.inputId,request.id]);
    }
   });
   if(!value){
+   this.stagedRetains=null;
+   this.deleteTopicChildren(generation,topicId);
    for(const table of ['presentation_topic_search','presentation_topic_short'])this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM presentation_topics WHERE generation=? AND topic_id=?)`).run(generation,topicId);
    this.prepared.query('DELETE FROM presentation_topics WHERE generation=? AND topic_id=?').run(generation,topicId);
    if(previous&&previous.session_id===context.sessionId)this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,NULL)').run(generation,topicId,previous.summary_json);
@@ -339,29 +340,47 @@ export class PreparedTopics {
    {topicId,runId:value.detail.focus.runId,summary:preview(value.detail.focus.summary??''),detailRef:this.retain(value.detail.focus)}:value.detail.focus;
   const questionCounts=value.questionCounts;
   const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.requestCount};
-   this.prepared.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
-    search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-   ON CONFLICT(generation,topic_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state,started_sort_key=excluded.started_sort_key,
-    background=excluded.background,band=excluded.band,recency=excluded.recency,closed_recency=excluded.closed_recency,
-    summary_json=excluded.summary_json,detail_hash=excluded.detail_hash,search_text=excluded.search_text,sort_key=excluded.sort_key,closed_sort_key=excluded.closed_sort_key,reply_targets_json=excluded.reply_targets_json,overview_json=excluded.overview_json`)
-   .run(generation,topicId,owner,value.summary.state,
-    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
-    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
-    orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
-    json(replyTargets),json(overview),orderKey(0,startedAt,topicId));
   for(const root of value.summary.roots)depend('root',root);
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  const row=[generation,topicId,owner,value.summary.state,
+   value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
+   value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
+   orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
+   json(replyTargets),json(overview),orderKey(0,startedAt,topicId)];
+  const projectionHash=createHash('sha256').update(json([row,items,questions,dependencies,requestLinks,attentions])).digest('hex');
+  this.stagedRetains=null;
+  if(previous?.projection_hash===projectionHash)return;
+  this.deleteTopicChildren(generation,topicId);
+  this.flushRetains(retains);
+  for(const item of items)this.prepared.query('INSERT INTO presentation_topic_items VALUES(?,?,?,?,?,?)').run(...item);
+  for(const question of questions)this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?,?)').run(...question);
+  for(const dependency of dependencies)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dependencies VALUES(?,?,?,?)').run(...dependency);
+  for(const link of requestLinks)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(...link);
+  for(const need of attentions)this.writeAttention(generation,'questions',topicId,need);
+  this.prepared.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
+    search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key,projection_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+   ON CONFLICT(generation,topic_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state,started_sort_key=excluded.started_sort_key,
+    background=excluded.background,band=excluded.band,recency=excluded.recency,closed_recency=excluded.closed_recency,
+    summary_json=excluded.summary_json,detail_hash=excluded.detail_hash,search_text=excluded.search_text,sort_key=excluded.sort_key,closed_sort_key=excluded.closed_sort_key,reply_targets_json=excluded.reply_targets_json,overview_json=excluded.overview_json,projection_hash=excluded.projection_hash`)
+   .run(...row,projectionHash);
   const searchId=(this.prepared.query('SELECT rowid AS id FROM presentation_topics WHERE generation=? AND topic_id=?').get(generation,topicId) as {id:number}).id;
-  this.prepared.query('DELETE FROM presentation_topic_search WHERE rowid=?').run(searchId);
-  this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(searchId);
-  this.prepared.query('INSERT INTO presentation_topic_search(rowid,text) VALUES(?,?)').run(searchId,value.search);
-  this.prepared.query('INSERT INTO presentation_topic_short(rowid,tokens) VALUES(?,?)').run(searchId,shortTokens(value.search));
+  if(!previous||previous.search_text!==value.search){
+   this.prepared.query('DELETE FROM presentation_topic_search WHERE rowid=?').run(searchId);
+   this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(searchId);
+   this.prepared.query('INSERT INTO presentation_topic_search(rowid,text) VALUES(?,?)').run(searchId,value.search);
+   this.prepared.query('INSERT INTO presentation_topic_short(rowid,tokens) VALUES(?,?)').run(searchId,shortTokens(value.search));
+  }
   if(owner===context.sessionId&&(previous?.summary_json!==json(summary)||previous?.detail_hash!==ref.hash))
    this.prepared.query('INSERT INTO presentation_topic_changes(generation,topic_id,before_json,after_json) VALUES(?,?,?,?)')
     .run(generation,topicId,previous?.summary_json??null,json(summary));
-
+  }finally{this.stagedRetains=null;}
+ }
+ private deleteTopicChildren(generation:number,topicId:string){
+  this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(generation,`topic:${topicId}`);
+  for(const table of ['presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_request_links','presentation_inbox_attention'])
+   this.prepared.query(`DELETE FROM ${table} WHERE generation=? AND topic_id=?`).run(generation,topicId);
  }
  private compactItem(item:any,kind:string):any{
   if(Buffer.byteLength(json(item))<=4096)return item;
@@ -386,6 +405,7 @@ export class PreparedTopics {
  private retain(value:unknown){
   const text=json(value),hash=createHash('sha256').update(text).digest('hex');
   if(!this.retainedBy)throw new Error('Topic detail has no retaining projection');
+  if(this.stagedRetains){this.stagedRetains.set(hash,text);return {hash,chunks:this.chunkCount(text),bytes:Buffer.byteLength(text)};}
   this.prepared.query('INSERT OR IGNORE INTO presentation_topic_blobs VALUES(?)').run(hash);
   this.prepared.query('INSERT OR IGNORE INTO presentation_topic_chunk_refs VALUES(?,?,?)').run(this.retainedBy.generation,this.retainedBy.owner,hash);
   const pieces:string[]=[];let part='',bytes=0;
@@ -393,6 +413,10 @@ export class PreparedTopics {
   if(part)pieces.push(part);
   for(let i=0;i<pieces.length;i++)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_chunks VALUES(?,?,?,?)').run(hash,i,pieces[i],pieces.length);
   return {hash,chunks:pieces.length,bytes:Buffer.byteLength(text)};
+ }
+ private chunkCount(text:string){let chunks=0,bytes=0;for(const char of text){const size=Buffer.byteLength(char);if(bytes+size>CHUNK_BYTES){chunks++;bytes=0;}bytes+=size;}return chunks+(bytes?1:0);}
+ private flushRetains(retains:Map<string,string>){
+  for(const text of retains.values())this.retain(JSON.parse(text));
  }
  /** Rebuildable bytes live only while a current projection references them. Old revision
   * cursors get an explicit reset after seven days; canonical history is never deleted. */
