@@ -2,7 +2,7 @@
 failure: The presentation worker rewrote gigabytes of its search database in a minute and delayed other services' logs.
 date: 2026-11-01
 fix_commits: []
-cause_status: best-explanation
+cause_status: measured-projection-amplification
 ---
 
 # Presentation search disk write bursts
@@ -27,7 +27,20 @@ insertion. An isolated FTS5 reproduction with 2,500 fixed 4 KiB documents wrote
 675 MB under defaults and reached 7.9 MB in a single insertion. Bounded explicit
 merges reduced the largest insertion to 1.9 MB; they moved much of the total
 write volume to maintenance. The exact share of the live bursts due to FTS
-merges was not measured directly, so this is the best supported explanation.
+merges was not measured directly.
+
+The first installed search-merge change did not resolve sustained writes: six
+20-second worker samples still measured 98–228 MB/min. A bounded indexed lookup
+then found that 516 of the 1,038 retained topics depend on the Inbox router
+session. One change to that session marks all 516 topics dirty. Those topics
+hold 80,891 bytes of search text, 1,609,685 bytes of topic summaries and
+overviews, 5,931,326 bytes of item rows, 3,508,795 bytes of question rows,
+and 4,525,660 bytes of retained chunks: about 15.7 MB of logical content.
+Before this repair, every dirty topic deleted and recreated its children and
+both FTS entries even when its projected content did not change. This is a
+measured per-event amplification path; the precise WAL share of each child
+table remains unknown. Recent change notifications named only individual
+topics, confirming most dependency revisits were not visible changes.
 
 ## Fix
 
@@ -36,6 +49,12 @@ for the large trigram search index. It performs a 512-page merge between replay
 batches after 250 indexed changes or ten seconds, whichever comes first. The
 change-count trigger keeps a fast rebuild from accumulating too many segments.
 Search content, source custody, and the single worker writer are unchanged.
+The topic writer now stages a topic's projected rows and retained detail,
+compares a fingerprint of the full result with the last stored projection, and
+performs no SQLite mutation for an identical result. Changed topics retain the
+same children and references. Their topic FTS entries are replaced only when
+the searchable text changes. Existing rows receive a fingerprint on their
+first subsequent visit; this can cause one initial child rewrite after deploy.
 
 ## Acceptance scenario
 

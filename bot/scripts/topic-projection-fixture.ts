@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {Database} from 'bun:sqlite';
+import {PreparedTopics} from '../src/prepared-topics';
 import {runFixtureChild} from './fixture-child';
 
 /** Actual canonical mutations and a separate production projection worker, all under /tmp.
@@ -101,6 +102,9 @@ async function lifecycle(root:string){
   const row=prepared!.query('SELECT summary_json,detail_hash FROM presentation_topics WHERE generation=? AND topic_id=?').get(generation,topicId) as {summary_json:string;detail_hash:string};assert.ok(row);
   const items=prepared!.query("SELECT value_json FROM presentation_topic_items WHERE generation=? AND topic_id=? AND kind='history' ORDER BY sort_key").all(generation,topicId) as {value_json:string}[];assert.ok(items.length>0);
   const chunks=prepared!.query('SELECT text AS content FROM presentation_topic_chunks WHERE hash=? ORDER BY chunk').all(row.detail_hash) as {content:string}[];
+  assert.ok(prepared!.query('SELECT 1 FROM presentation_topic_chunk_refs WHERE generation=? AND owner=? AND hash=?').get(generation,`topic:${topicId}`,row.detail_hash));
+  const search=prepared!.query('SELECT text FROM presentation_topic_search WHERE rowid=(SELECT rowid FROM presentation_topics WHERE generation=? AND topic_id=?)').get(generation,topicId) as {text:string};
+  assert.ok(search.text.includes(JSON.parse(row.summary_json).title.toLowerCase()));
   const detail=JSON.parse(chunks.map(row=>row.content).join(''));
   // This topic has no request or question items. Its revision must include every history item.
   const digest=createHash('sha256');for(const item of items)digest.update(item.value_json);
@@ -117,6 +121,18 @@ async function lifecycle(root:string){
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-rename',action:{kind:'rename',title:'After rename'}});
   phase('renamed-checkpoint');const updated=await checkpoint(),second=snapshot(topicId,updated.generation);assert.equal(second.summary.title,'After rename');assert.notEqual(second.hash,first.hash);assert.ok(second.history.length>first.history.length);phase('renamed-ready');
   phase('stopping-worker');await stop();phase('worker-stopped');
+  // A dependency can revisit a topic without changing anything it displays. It must not
+  // rewrite its questions, retained chunks, or search indexes in that case.
+  const writable=new Database(join(root,'presentation.db'));
+  try{
+   const topics=new PreparedTopics(db,writable);
+   const sessionId=(writable.query('SELECT session_id FROM presentation_topics WHERE generation=? AND topic_id=?').get(updated.generation,topicId) as {session_id:number}).session_id;
+   const context=topics.context(updated.generation,sessionId);
+   const before=(writable.query('SELECT total_changes() AS n').get() as {n:number}).n;
+   writable.transaction(()=>topics.write(context,topicId))();
+   const after=(writable.query('SELECT total_changes() AS n').get() as {n:number}).n;
+   assert.equal(after,before,'Revisiting an unchanged topic must perform no database writes');
+  }finally{writable.close();}
   await mutate('/inbox/topics/'+encodeURIComponent(topicId)+'/actions',{clientActionId:'projection-closed',action:{kind:'close',reason:'Synthetic closure while worker stopped'}});
   start();phase('restarted-checkpoint');const resumed=await checkpoint(),third=snapshot(topicId,resumed.generation);assert.equal(third.summary.state,'closed');assert.notEqual(third.hash,second.hash);assert.ok(third.history.length>second.history.length);phase('restarted-ready');
   assert.ok(resumed.source_head>updated.source_head);console.log(JSON.stringify({fixture:'topic-projection-lifecycle',createdHead:initial.source_head,updatedHead:updated.source_head,restartedHead:resumed.source_head,historyRows:third.history.length}));
