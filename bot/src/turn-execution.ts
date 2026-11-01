@@ -1116,7 +1116,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const structuredFailure = providerDispatchError(error);
     const capacityModel=input.model??sessionMetadata(input.session).model;
-    if(structuredFailure?.modelAtCapacity&&capacityModel)
+    // Google's quota reading said 0.75% used on 2026-10-31 while Google refused every turn with
+    // "Individual quota reached", so the reading alone would keep choosing Google for new work and
+    // release its held turns into the same refusal once a minute. Its refusal is remembered like
+    // a model at capacity: automatic placement skips it and the reading cannot release it meanwhile.
+    const googleQuotaRefusal=input.providerId==='antigravity'
+      &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(String(error));
+    if((structuredFailure?.modelAtCapacity||googleQuotaRefusal)&&capacityModel)
       rememberModelCapacityRefusal(input.providerId,capacityModel);
     const providerIdentityCompatible = !structuredFailure?.providerSessionId
       || !input.session.agent_session_uuid
