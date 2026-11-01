@@ -25,10 +25,11 @@ import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdr
 import { isHisChatGpt } from './aliases';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
-import { completionWithCheck, questionForTejas } from './answers-to-tejas';
+import { completionWithCheck, finalClosingLine, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
+import { endedWorkInPlainWords } from './provider-failures';
 import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './session-roles';
 import {standingAgent,standingAgentProject,standingAgentSession,bindStandingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
 import {sessionProject} from './session-projects';
@@ -1555,9 +1556,7 @@ export class SessionCommunicationCoordinator {
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
-                closingLine:input.final&&input.workDisposition?(input.workDisposition==='completed'
-                    ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
-                    :input.workDisposition==='failed'?'Failed':'Needs your decision'):undefined,
+                closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,input.checked,input.not_checked):undefined,
                 final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
@@ -1644,9 +1643,7 @@ export class SessionCommunicationCoordinator {
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),
             ...(input.answer_group?{answerGroup:input.answer_group}:{}),
-            ...(input.final&&input.workDisposition?{closingLine:input.workDisposition==='completed'
-                ?`Completed · ${input.checked?`Checked on the real system: ${input.checked.trim()}`:`Not checked live: ${input.not_checked?.trim()??''}`}`
-                :input.workDisposition==='failed'?'Failed':'Needs your decision'}:{}),
+            ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,input.checked,input.not_checked)}:{}),
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.notify?{notify:true}:{}),
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
@@ -2054,10 +2051,11 @@ export class SessionCommunicationCoordinator {
                 { ...output, ...(stop ? { stoppedBy: 'tejas', stoppedAtMs: stop.atMs, stopInputId: stop.inputId } : { stoppedBy: 'not-tejas' }) });
             return;
         }
-        // The provider's own words say why, so the requester can tell a refused API call from an
-        // interrupted run; a bare "ended with error" was read as the release cutting two runs off
-        // when Anthropic had refused them for rate limits (September 23, 2026).
-        this.settle(request, turn.status === 'cancelled' ? 'canceled' : 'failed', `The recipient execution ended with ${turn.status}${turn.status !== 'cancelled' && turn.agent_text ? `: ${String(turn.agent_text).slice(0, 400)}` : ''}.`, output);
+        // Plain words say why, so the requester can tell a refused account from an interrupted run
+        // (a bare "ended with error" was read as the release cutting two runs off, September 23,
+        // 2026); the provider's own text stays with the request for diagnosis.
+        this.settle(request, 'failed', endedWorkInPlainWords(turn.agent_text),
+            { ...output, ...(turn.agent_text ? { providerError: String(turn.agent_text).slice(0, 2000) } : {}) });
     }
     private async deliver(event: EventRow) {
         if (this.stopped)

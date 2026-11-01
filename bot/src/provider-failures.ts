@@ -138,6 +138,22 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
 }
 
 /**
+ * Why a request's work ended in error, in words he reads. The provider's own text stays in the
+ * request's diagnostics: "ProviderDispatchError: Individual quota reached" reached his phone at
+ * 4:17 AM on 2026-10-31 as the whole answer to his message.
+ */
+export function endedWorkInPlainWords(error:string|null|undefined,where=''):string {
+  const message=String(error??'');
+  const refusal=providerRefusalContinuationReason(message,null,0,0)?.refusal
+    ??(/individual quota reached|quota exhausted|RESOURCE_EXHAUSTED/i.test(message)?'usage':null);
+  const why=refusal==='usage'?'its AI account ran out of allowance'
+    :refusal==='rate_limit'?'its AI provider turned the work away as too busy'
+    :refusal==='sign_in'?'its AI account needs signing in again'
+    :'its run stopped with an error';
+  return `Not done: the agent${where} could not finish because ${why}. Nothing will retry this by itself; ask again or send it to another agent.`;
+}
+
+/**
  * A Codex run that was cut off from outside it rather than refused: its app server restarted
  * (a self-update drains running turns for about a minute, then ends them "interrupted"), or it
  * produced nothing for the no-activity limit (its connection died while a Mac slept). Both are

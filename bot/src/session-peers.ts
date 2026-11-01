@@ -26,6 +26,7 @@ import {sessionAuthor} from './session-message-author';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
+import {endedWorkInPlainWords} from './provider-failures';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -804,7 +805,8 @@ export class SessionPeers {
         {...output,...(at!==null?{stoppedBy:'tejas',stoppedAtMs:at}:{stoppedBy:'not-tejas'})});
       return;
     }
-    this.settle(row,execution.status==='cancelled'?'canceled':'failed',`The recipient execution on ${row.peer} ended with ${execution.status}${execution.status!=='cancelled'&&execution.error?`: ${String(execution.error).slice(0,400)}`:''}.`,output);
+    this.settle(row,'failed',endedWorkInPlainWords(execution.error,` on ${row.peer}`),
+      {...output,...(execution.error?{providerError:String(execution.error).slice(0,2000)}:{})});
   }
   private async deliver(event:PeerEventRow) {
     if(this.stopped)return;

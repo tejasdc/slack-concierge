@@ -424,6 +424,14 @@ queue. The session, input and request IDs do not change. This applies to native 
 agent-request creation; the Automatic origin and small-task mark stay with the session. A bound
 conversation with earlier turns never changes provider. Saved work retains its chosen
 provider and time. Choosing a model on an Automatic session removes its eligibility.
+An allowance refusal of that same first turn moves the same way (`usage_refusal` in the
+session's provider event) before any wait is considered: his 4 AM request on 2026-10-31
+was placed on Google with 65 hours left on its quota. Google reports that refusal as one
+turn with zero tokens and an `error_message` step; zero tokens with no tool or output is
+the zero-work proof, and the error step is not a tool. When no move is possible the turn
+waits on its own provider's reset as before. A request whose work still ends in error is
+told so in plain words (allowance, too busy, sign-in or an error, and that nothing retries
+it); the provider's own text is kept on the request as `providerError`.
 Every other capacity refusal (an explicit choice, a later turn, or no alternative with
 room) waits and retries on its own provider instead of failing. The first version of this
 fix (October 13) required the input to be unacknowledged, so it moved none of the refusals
