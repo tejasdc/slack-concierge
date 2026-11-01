@@ -1,0 +1,1 @@
+Inbox search now spreads index maintenance across small steps, reducing the disk bursts that delayed other apps’ logs.
