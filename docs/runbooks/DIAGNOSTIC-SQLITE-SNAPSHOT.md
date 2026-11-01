@@ -33,6 +33,11 @@ The copy still reads the whole database through the shared disk and still writes
 disk's (or the caller's cgroup's) pace; under the agent write cap the ledger takes about
 three minutes, so pass `--max-seconds 300` or more for it. Killing a copy does not take back
 the pieces already written; with write-through there is at most one piece left to drain.
+So the command reads the caller's cgroup write cap first and refuses, before writing anything,
+a `--max-seconds` that cap cannot meet, printing the limit to pass. On 2026-11-01 an agent copied
+the 6.26 GB ledger twice under 120 s and 110 s limits to read one row, and both copies died after
+writing gigabytes (supervisor incident 64f98475). To read one record, use the owner's read
+routes or `sessions get`; a snapshot is for offline investigation of many rows.
 
 The output is staged in a private directory beside the requested destination, with file mode
 0600. A complete copy is published atomically without replacing an existing path. Failure

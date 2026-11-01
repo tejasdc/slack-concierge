@@ -29,6 +29,33 @@ class SnapshotError(Exception):
     pass
 
 
+def caller_write_cap():
+    """The tightest cgroup v2 write-bandwidth cap (bytes/s) on this process or its ancestors,
+    or None when uncapped or unknown. Agents run under a 30 MB/s cap; a copy that cannot
+    finish under it is refused before it writes anything. Caps are set on the backing device,
+    which differs from a destination file's own device number, so any wbps cap counts."""
+    try:
+        group = next(line.split("::", 1)[1] for line in open("/proc/self/cgroup").read().splitlines()
+                     if line.startswith("0::")).strip()
+    except (OSError, StopIteration):
+        return None
+    caps = []
+    path = Path("/sys/fs/cgroup") / group.lstrip("/")
+    while True:
+        try:
+            for line in (path / "io.max").read_text().splitlines():
+                for field in line.split()[1:]:
+                    key, _, value = field.partition("=")
+                    if key == "wbps" and value.isdigit():
+                        caps.append(int(value))
+        except OSError:
+            pass
+        if path == Path("/sys/fs/cgroup"):
+            break
+        path = path.parent
+    return min(caps) if caps else None
+
+
 def positive_int(value):
     result = int(value)
     if result <= 0:
@@ -98,6 +125,18 @@ def snapshot(source_path, destination_path, max_seconds, max_bytes):
         total_bytes = page_size * page_count
         if total_bytes > max_bytes:
             raise SnapshotError("source snapshot exceeds byte limit")
+        # A copy killed by its deadline keeps every byte it already wrote, so a deadline the
+        # caller's write cap cannot meet is refused before writing. On 2026-11-01 an agent ran
+        # the 6.26 GB ledger copy twice under 120 s and 110 s at 30 MB/s; both died after
+        # writing gigabytes and raised host disk pressure (supervisor incident 64f98475).
+        cap = caller_write_cap()
+        if cap:
+            needed = total_bytes / cap
+            if needed > max_seconds:
+                raise SnapshotError(
+                    f"{total_bytes} bytes at this process's {cap} B/s write cap need about "
+                    f"{needed:.0f}s; pass --max-seconds {int(needed * 1.3) + 30} or more, or read the "
+                    "one record you need through the owner's read routes instead of copying the ledger")
         if time.monotonic() >= deadline:
             raise SnapshotError("snapshot deadline exceeded")
 
