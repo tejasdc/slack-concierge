@@ -2629,11 +2629,12 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
     let disposition:string|null=null,why='';
     if(latest.outcome==='answered'&&(latest.disposition===null||latest.disposition==='completed')) {
       try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
-      // Work done but never seen working says so, not "done": on 2026-10-31 a phone repair closed
-      // as done 45 seconds after its answer said his phone had not run the fix yet (aaaad41d).
-      disposition='completed';why=latest.notSeenWorking
-        ?`Shipped, but not yet seen working: ${latest.notSeenWorking.slice(0,600)}`
-        :'The work sent for it answered as done.';
+      // Work done but never seen working is not done: on 2026-10-31 a phone repair closed as done,
+      // and its thread with it, 45 seconds after its answer said his phone had not run the fix yet
+      // (aaaad41d). It stays open, with that answer in the thread, until someone who has seen it
+      // working (or he) closes it.
+      if(latest.notSeenWorking)continue;
+      disposition='completed';why='The work sent for it answered as done.';
     } else if(latest.disposition==='failed'&&!waitingOnHim) {
       disposition='failed';why='The agent answered that it could not finish; that answer is in this thread.';
     } else if(latest.outcome==='canceled'&&!waitingOnHim) {

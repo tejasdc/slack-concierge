@@ -37,8 +37,9 @@ checked live.
   with fresh room (the same move capacity refusals use), else waits on its own reset.
 - A request whose work ends in error says why in plain words and that nothing retries it; the
   provider text is kept on the request as `providerError`.
-- A completed final recorded "Not checked live" closes its thread request with "Shipped, but not
-  yet seen working: …" instead of "answered as done".
+- A completed final recorded "Not checked live" no longer closes its thread request (or the
+  thread) by itself: it stays open with that answer in the thread until the router, the worker or
+  he closes it once it has been seen working.
 
 ## Acceptance scenario
 

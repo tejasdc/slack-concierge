@@ -136,7 +136,7 @@ const COMPLETED_CLOSING = 'Completed · ';
 /** The line that closes a final reply, kept on its stored result so later readers know how it ended. */
 export function finalClosingLine(disposition: string, checked?: string, notChecked?: string): string {
   return disposition === 'completed'
-    ? `${COMPLETED_CLOSING}${checked ? `Checked on the real system: ${checked.trim()}` : `${NOT_CHECKED_LIVE}${notChecked?.trim() ?? ''}`}`
+    ? `${COMPLETED_CLOSING}${checked?.trim() ? `Checked on the real system: ${checked.trim()}` : `${NOT_CHECKED_LIVE}${notChecked?.trim() ?? ''}`}`
     : disposition === 'failed' ? 'Failed' : 'Needs your decision';
 }
 /**
