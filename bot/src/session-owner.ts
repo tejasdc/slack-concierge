@@ -3498,7 +3498,9 @@ export class SessionOwner {
       const root=owner&&sessionMetadata(owner).inbox&&inputId&&['message','accepted','inbox_capture','result','post'].includes(row.kind)
         ?inboxThreadRoot(row.session_id,String(inputId)):null;
       const topicId=root?topicOfRoot(root):null;
-      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),
+      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,
+        operationId:row.kind==='human_command'?payload.command?.actionId:inputId,inputId,
+        runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),
         payload:{...(projected?{...payload,message:projected.message}:payload),...(root?{root,topicId}:{} )}};
     }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runIds||runIds.includes(row.runId!)));
     // The page boundary is the last row this read scanned, not the last row it kept,

@@ -294,6 +294,7 @@ import {
   loadCaptureQueueTokenFromPath,
 } from "./capture-delivery-worker";
 import { HumanCommandWorker, callThinkeringCommand } from "./human-command-worker";
+import { publishHumanCommandTerminalEvent } from './human-command-events';
 import {publishProviderFreeNotice} from './provider-free-notice';
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
@@ -4137,6 +4138,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
       humanCommandWorker = new HumanCommandWorker({
         queueUrl: runtime.profile === "sandbox" ? runtime.captureQueueUrl! : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
+        publishTerminal: publishHumanCommandTerminalEvent,
         prepare: command=>callThinkeringCommand("/session/command-prepare",command,
           process.env.THINKERING_SESSION_CAPABILITY_SOCKET || "/run/thinkering/session-capabilities.sock"),
         deliver: (command,prepared)=>callThinkeringCommand("/session/command-deliver-prepared",{

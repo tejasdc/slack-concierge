@@ -75,6 +75,13 @@ CREATE INDEX IF NOT EXISTS human_commands_ready
   ON human_commands(status,next_attempt_ms,created_at);
 CREATE INDEX IF NOT EXISTS human_commands_stream
   ON human_commands(client_id,session_id,sequence,status);
+CREATE TABLE IF NOT EXISTS human_command_terminal_events(
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  action_id TEXT NOT NULL UNIQUE REFERENCES human_commands(action_id),
+  published_at TEXT
+);
+CREATE INDEX IF NOT EXISTS human_command_terminal_events_pending
+  ON human_command_terminal_events(sequence) WHERE published_at IS NULL;
 CREATE TABLE IF NOT EXISTS human_command_streams(
   client_id TEXT NOT NULL,session_id TEXT NOT NULL,next_sequence INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(client_id,session_id)
@@ -134,6 +141,23 @@ function row(actionId: string): HumanCommandRow | null {
 }
 
 export function commandStatus(actionId: string): HumanCommandRow | null { return row(actionId); }
+
+function retainTerminalEvent(actionId: string) {
+  captureDb.query('INSERT OR IGNORE INTO human_command_terminal_events(action_id) VALUES(?)').run(actionId);
+}
+
+/** An outbox in the custody database bridges a crash between settlement and owner publication. */
+export function pendingHumanCommandTerminalEvents(limit=4): HumanCommandRow[] {
+  return captureDb.query(`SELECT command.* FROM human_command_terminal_events event
+    JOIN human_commands command ON command.action_id=event.action_id
+    WHERE event.published_at IS NULL ORDER BY event.sequence LIMIT ?`).all(limit) as HumanCommandRow[];
+}
+
+export function markHumanCommandTerminalEventPublished(actionId: string): boolean {
+  return captureDb.query(`UPDATE human_command_terminal_events SET published_at=CURRENT_TIMESTAMP
+    WHERE action_id=? AND published_at IS NULL`).run(actionId).changes===1
+    || !!captureDb.query('SELECT 1 FROM human_command_terminal_events WHERE action_id=? AND published_at IS NOT NULL').get(actionId);
+}
 
 export type HumanCommandHold = Readonly<{
   reason: 'missing_predecessor' | 'predecessor_exhausted' | 'predecessor_active' | 'held_after_gap';
@@ -297,7 +321,8 @@ export function retainHumanCommand(command: HumanCommand): HumanCommandRow {
       // Transport custody may still hold the target. Freeze it here, in the same transaction
       // that retains the owner's cancellation intent, so a worker cannot import it afterward.
       if(target?.session_id===command.sessionId){
-        captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending'").run(targetId);
+        if(captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending'").run(targetId).changes)
+          retainTerminalEvent(targetId);
         advanceStream(target.client_id,target.session_id);
       }
       // An exact cancellation can overtake the original network request. Retain it even
@@ -350,6 +375,7 @@ export function retainPreCustodyRefusal(command:HumanCommand,status:404|413):Hum
      ?{code:'COMMAND_TOO_LARGE',message:'This command was too large to send.'}
      :{code:'COMMAND_ROUTE_INVALID',message:'This command could not be sent from this page.'}}));
   advanceStream(command.clientId,command.sessionId);
+  retainTerminalEvent(command.actionId);
   return row(command.actionId)!;
  }).immediate();
 }
@@ -395,6 +421,7 @@ export function settleHumanCommand(actionId:string,claimId:string,ownerStatus:nu
     captureDb.query(`UPDATE human_commands SET status=?,owner_status=?,owner_response_json=?,decision_stage=?,claim_id=NULL,next_attempt_ms=NULL,
       updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='delivering'`).run(
       ownerStatus>=200&&ownerStatus<300?'delivered':'refused',ownerStatus,JSON.stringify(response),decisionStage,actionId);
+    retainTerminalEvent(actionId);
     advanceStream(current.client_id,current.session_id);
     return row(actionId)!;
   }).immediate();
@@ -472,8 +499,8 @@ export function releaseHeldLateHumanCommand(input:Readonly<{actionId:string;reco
 /** A pending action is canceled locally, before the canonical owner has ever seen it. */
 export function cancelPendingHumanCommand(actionId:string):HumanCommandRow|null {
   return captureDb.transaction(() => {
-    captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending'")
-      .run(actionId);
+    if(captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND status='pending'")
+      .run(actionId).changes)retainTerminalEvent(actionId);
     const current=row(actionId);if(current)advanceStream(current.client_id,current.session_id);return current;
   }).immediate();
 }
@@ -481,8 +508,8 @@ export function cancelPendingHumanCommand(actionId:string):HumanCommandRow|null 
 /** A session creation still held only by ingress can be withdrawn with no invented owner effect. */
 export function withdrawPendingCreation(actionId:string):HumanCommandRow|null {
   return captureDb.transaction(()=>{
-    captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND path='/sessions/v1/sessions' AND status='pending'")
-      .run(actionId);
+    if(captureDb.query("UPDATE human_commands SET status='canceled',updated_at=CURRENT_TIMESTAMP WHERE action_id=? AND path='/sessions/v1/sessions' AND status='pending'")
+      .run(actionId).changes)retainTerminalEvent(actionId);
     const current=row(actionId);
     if(current)advanceStream(current.client_id,current.session_id);
     return current?.path==='/sessions/v1/sessions'?current:null;
