@@ -11,6 +11,11 @@ export function modelCapacityRefused(provider:ProviderId, model:string, now=Date
   return !!row&&row.expires_at_ms>now;
 }
 
+/** Whether any model of this provider is remembered as refusing now. */
+export function anyModelRefused(provider:ProviderId, now=Date.now()):boolean {
+  return !!db.query('SELECT 1 FROM provider_model_capacity WHERE provider_id=? AND expires_at_ms>? LIMIT 1').get(provider,now);
+}
+
 export function rememberModelCapacityRefusal(provider:ProviderId, model:string, now=Date.now()):void {
   db.query(`INSERT INTO provider_model_capacity(provider_id,model,refused_at_ms,expires_at_ms)
     VALUES(?,?,?,?) ON CONFLICT(provider_id,model) DO UPDATE SET

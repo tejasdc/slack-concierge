@@ -572,7 +572,11 @@ export async function refreshProviderAccountUsage(): Promise<void> {
     if (account) {
       const { releaseAuthHold } = await import("./provider-activation");
       releaseAuthHold(provider, "interval");
-      if (accountReadingFresh(provider,usage,account) && account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)) {
+      // A refusal Google gave after this reading's kind of "room" outranks the reading (see
+      // rememberModelCapacityRefusal in turn execution); its memory expires on its own.
+      const { anyModelRefused } = await import("./provider-model-capacity");
+      if (accountReadingFresh(provider,usage,account) && account.windows.length === 2 && account.windows.every(window => window.usedPercent < 100)
+        && !anyModelRefused(provider)) {
         releaseUsageContinuationHolds(provider);
         releaseUsageHeldWork(provider, "usable_account_observed");
       } else {
