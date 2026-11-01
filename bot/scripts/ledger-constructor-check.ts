@@ -7,6 +7,7 @@ import ts from 'typescript';
 const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'src/capture-state.ts': ['new Database(`${canonicalCaptureStateDir}/state.db`, { create: true, strict: true })'],
   'src/meaning-index.ts': ['new Database(path,{create:true})'],
+  'src/watch-observation-worker.ts': ['new Database(path,{create:true})'],
   // The ledger's checkpoint thread writes no rows; it sets its lock wait before ledgerWriteResults prepares.
   'src/ledger-durability-worker.ts': ['new Database(setup.databasePath)'],
   'src/presentation-message-worker.ts': ["new Database(join(stateDir,'presentation.db'),{create:true})"],
@@ -15,7 +16,7 @@ const NON_LEDGER_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/usage-breakdown-reader.ts': ['new Database(cachePath)'],
 };
 const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
-  'scripts/watch-observation-acceptance.ts': ['new Database(path)'],
+  'scripts/watch-observation-acceptance.ts': ["new Database(join(dir,'state.db'))", "new Database(join(dir,'watch-observations.db'))", "new Database(join(dir,'watch-observations.db'))"],
   'scripts/check-presentation-worker.ts': ["new Database(join(dir,'state.db'),{create:true})", "new Database(join(dir,'state.db'))"],
   'scripts/release-application-compatibility.ts': ["new Database(join(workerState,'presentation.db'))", "new Database(join(workerState,'state.db'))"],
   'scripts/presentation-message-growth-fixtures.ts': ["new Database(':memory:')"],

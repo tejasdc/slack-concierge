@@ -44,7 +44,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
     const owners = new Set(['index', 'migrate-deployment-repair', 'deploy-state', 'release-manager', 'deployment-repair',
       'recover-deployment', 'session-turn-queue', 'native-pipeline-continuation',
       'clear-stale-account-notices', 'repair-inbox-needs', 'native-read-worker',
-      'provider-history-page-worker', 'provider-history-sync-worker', 'watch-observation-worker']);
+      'provider-history-page-worker', 'provider-history-sync-worker']);
     // Bundles keep the reviewed entrypoint name. Source helpers must be this package's own
     // entrypoint, not an ad-hoc script importing its modules from a rehearsal directory.
     const source = /\.ts$/.test(main);

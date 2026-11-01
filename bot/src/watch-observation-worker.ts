@@ -1,34 +1,36 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Database } from 'bun:sqlite';
-import { realpathSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { ledgerAccess } from './ledger-access-policy';
-import { ledgerWriteResults } from './ledger-write-results';
+import { join } from 'node:path';
 
-/** Routine poll cursors are evidence for gap reporting, not watch outcomes. They may wait on
- * SQLite or disk here, but never on the accepting owner's event loop. */
-type Request = { id: number; watchId: string; observedAt: number; gapMs: number };
-const databasePath = workerData.databasePath as string;
-ledgerAccess(realpathSync(dirname(databasePath)), Bun.main, false);
-const db = ledgerWriteResults(new Database(databasePath, { readwrite: true }));
-// A scratch-state acceptance probe can hold the writer for two seconds. Production cursors
-// refuse lock contention immediately; their next successful poll records the possible gap.
-const controlledStall = process.env.CONCIERGE_TEST_MODE === '1' && realpathSync(databasePath).startsWith('/tmp/')
+type Cursor = { watch_id: string; last_observed_ms: number; gaps_json: string };
+type Request = { id: number; watchId: string; observedAt: number; gapMs: number;
+  initialAt: number; initialGaps: string };
+const path = join(workerData.stateDir as string, 'watch-observations.db');
+const db = new Database(path, { create: true });
+const controlledStall = process.env.CONCIERGE_TEST_MODE === '1' && path.startsWith('/tmp/')
   && process.env.CONCIERGE_WATCH_OBSERVATION_STALL_CHECK === '1';
-db.exec(`PRAGMA busy_timeout=${controlledStall ? 2500 : 0}; PRAGMA synchronous=NORMAL`);
-const update = db.query(`UPDATE watches SET state='observing', last_observed_ms=?,
-  gaps_json=CASE WHEN ?-COALESCE(last_observed_ms,created_at_ms)>?
-    THEN json_insert(gaps_json,'$[#]',json_object('fromMs',COALESCE(last_observed_ms,created_at_ms),'toMs',?))
-    ELSE gaps_json END
-  WHERE watch_id=? AND state IN ('accepted','observing')
-    AND ? > COALESCE(last_observed_ms,created_at_ms)`);
+db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=${controlledStall ? 2500 : 0};
+  CREATE TABLE IF NOT EXISTS cursors(watch_id TEXT PRIMARY KEY, last_observed_ms INTEGER NOT NULL, gaps_json TEXT NOT NULL)`);
+const get = db.query('SELECT watch_id,last_observed_ms,gaps_json FROM cursors WHERE watch_id=?');
+const put = db.query(`INSERT INTO cursors(watch_id,last_observed_ms,gaps_json) VALUES(?,?,?)
+  ON CONFLICT(watch_id) DO UPDATE SET last_observed_ms=excluded.last_observed_ms,gaps_json=excluded.gaps_json`);
+// A watch expires within 30 days. Older cursors are no longer needed even if an expired
+// watch has not yet been settled; dropping one only widens its eventual gap.
+if (!controlledStall) db.query('DELETE FROM cursors WHERE last_observed_ms<?').run(Date.now() - 31 * 24 * 60 * 60_000);
+parentPort!.postMessage({ type: 'ready' });
 
 parentPort!.on('message', (request: Request) => {
   const started = performance.now();
   try {
-    update.run(request.observedAt, request.observedAt, request.gapMs, request.observedAt,
-      request.watchId, request.observedAt);
-    parentPort!.postMessage({ id: request.id, durationMs: performance.now() - started });
+    const prior = get.get(request.watchId) as Cursor | null;
+    const last = Math.max(prior?.last_observed_ms ?? request.initialAt, request.initialAt);
+    const gaps = JSON.parse(prior?.gaps_json ?? request.initialGaps) as { fromMs: number; toMs: number }[];
+    if (request.observedAt > last) {
+      if (request.observedAt - last > request.gapMs) gaps.push({ fromMs: last, toMs: request.observedAt });
+      put.run(request.watchId, request.observedAt, JSON.stringify(gaps));
+    }
+    parentPort!.postMessage({ id: request.id, durationMs: performance.now() - started,
+      cursor: { watch_id: request.watchId, last_observed_ms: Math.max(last, request.observedAt), gaps_json: JSON.stringify(gaps) } });
   } catch (error) {
     parentPort!.postMessage({ id: request.id, durationMs: performance.now() - started,
       error: error instanceof Error ? error.message : String(error) });

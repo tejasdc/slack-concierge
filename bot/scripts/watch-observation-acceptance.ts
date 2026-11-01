@@ -4,41 +4,46 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 
-// Exercise the real worker and SQLite lock on owned scratch state. A locked poll must leave
-// the accepting JavaScript loop free and the next poll must report its missing coverage.
+// Hold the cursor store's writer, then prove the accepting loop and main ledger can proceed.
 const dir = mkdtempSync(join(tmpdir(), 'watch-observation-'));
 process.env.CONCIERGE_STATE_DIR = dir;
 process.env.CONCIERGE_TEST_MODE = '1';
 process.env.CONCIERGE_WATCH_OBSERVATION_STALL_CHECK = '1';
-const path = join(dir, 'state.db');
-const db = new Database(path);
-db.exec(`PRAGMA journal_mode=WAL;
-  CREATE TABLE watches(watch_id TEXT PRIMARY KEY,state TEXT,last_observed_ms INTEGER,
-    created_at_ms INTEGER NOT NULL,gaps_json TEXT NOT NULL);
-  INSERT INTO watches VALUES('watch-check','accepted',0,0,'[]')`);
-const { recordWatchObservation, stopWatchObservationWorker } = await import('../src/watch-observation');
+const main = new Database(join(dir, 'state.db'));
+main.exec('PRAGMA journal_mode=WAL; CREATE TABLE owner_check(value INTEGER); INSERT INTO owner_check VALUES(0)');
+const partial = new Database(join(dir, 'watch-observations.db'));
+partial.close();
+const { loadWatchObservationCursors, startWatchObservationWorker, waitForWatchObservationWorker, recordWatchObservation,
+  observationForWatch, stopWatchObservationWorker } = await import('../src/watch-observation');
+loadWatchObservationCursors(['watch-check']);
+startWatchObservationWorker();
+await waitForWatchObservationWorker();
+const sidecar = new Database(join(dir, 'watch-observations.db'));
+const watch = { watch_id: 'watch-check', created_at_ms: 0, last_observed_ms: 0, gaps_json: '[]' };
 let ticks = 0;
 const timer = setInterval(() => { ticks++; }, 50);
 try {
-  db.exec('BEGIN IMMEDIATE');
+  sidecar.exec('BEGIN IMMEDIATE');
   const started = performance.now();
-  await assert.rejects(recordWatchObservation('watch-check', 5_000, 15_000), /locked|busy/i);
+  const blocked = recordWatchObservation(watch, 5_000, 15_000);
+  main.query('UPDATE owner_check SET value=1').run();
+  await assert.rejects(blocked, /locked|busy/i);
   const waited = performance.now() - started;
-  assert(waited >= 2_000 && waited < 4_500, `controlled lock wait ${waited}ms`);
-  assert(ticks >= 20, `accepting loop advanced only ${ticks} times while worker waited`);
-  db.exec('ROLLBACK');
-  await recordWatchObservation('watch-check', 20_000, 15_000);
-  const row = db.query('SELECT state,last_observed_ms,gaps_json FROM watches WHERE watch_id=?').get('watch-check') as
-    { state: string; last_observed_ms: number; gaps_json: string };
-  assert.equal(row.state, 'observing');
-  assert.equal(row.last_observed_ms, 20_000);
-  assert.deepEqual(JSON.parse(row.gaps_json), [{ fromMs: 0, toMs: 20_000 }]);
-  console.log(JSON.stringify({ check: 'watch-observation-isolation', status: 'passed', wait_ms: Math.round(waited), loop_ticks: ticks,
-    conservative_gap: true }));
+  assert(waited >= 2_000 && waited < 4_500, `controlled sidecar wait ${waited}ms`);
+  assert(ticks >= 20, `accepting loop advanced only ${ticks} times while cursor store waited`);
+  assert.equal((main.query('SELECT value FROM owner_check').get() as { value: number }).value, 1);
+  sidecar.exec('ROLLBACK');
+  await recordWatchObservation(watch, 20_000, 15_000);
+  const cursor = observationForWatch(watch);
+  assert.equal(cursor.lastObservedAt, 20_000);
+  assert.deepEqual(JSON.parse(cursor.gapsJson), [{ fromMs: 0, toMs: 20_000 }]);
+  console.log(JSON.stringify({ check: 'watch-observation-isolation', status: 'passed', wait_ms: Math.round(waited),
+    loop_ticks: ticks, owner_write_during_stall: true, conservative_gap: true }));
 } finally {
-  if (db.inTransaction) db.exec('ROLLBACK');
+  if (sidecar.inTransaction) sidecar.exec('ROLLBACK');
   clearInterval(timer);
   stopWatchObservationWorker();
-  db.close();
+  sidecar.close();
+  main.close();
   rmSync(dir, { recursive: true, force: true });
 }

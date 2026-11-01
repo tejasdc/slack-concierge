@@ -22,7 +22,8 @@ import { log, errorFields } from "./log";
 import { nextRetry } from "./retry-core";
 import { RETRY_POLICIES } from "./retry-policies";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
-import { recordWatchObservation, startWatchObservationWorker, stopWatchObservationWorker } from './watch-observation';
+import { forgetWatchObservation, loadWatchObservationCursors, observationForWatch, recordWatchObservation,
+  startWatchObservationWorker, stopWatchObservationWorker, waitForWatchObservationWorker } from './watch-observation';
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
   hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
 
@@ -193,13 +194,16 @@ export type WatchRegistration = { sessionId: number; originInputId: string; orig
 
 export function watchView(row: WatchRow) {
   const condition = JSON.parse(row.condition_json);
+  const observation = isOpen(row) ? observationForWatch(row) :
+    { lastObservedAt: row.last_observed_ms ?? row.created_at_ms, gapsJson: row.gaps_json };
   return {
-    id: row.watch_id, kind: row.kind, condition, state: row.state,
+    id: row.watch_id, kind: row.kind, condition,
+    state: isOpen(row) && observation.lastObservedAt > row.created_at_ms ? 'observing' : row.state,
     baseline: { mode: row.baseline_mode, ...(row.kind === "file" ? { description: describeBaseline(JSON.parse(row.baseline_json)) } : {}) },
     registeredAt: iso(row.created_at_ms), deadline: iso(row.deadline_ms),
-    lastObservedAt: row.last_observed_ms ? iso(row.last_observed_ms) : null,
+    lastObservedAt: observation.lastObservedAt ? iso(observation.lastObservedAt) : null,
     renewEveryMs: row.renew_ms, seriesId: row.series_id,
-    gaps: gapsOf(row).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
+    gaps: (JSON.parse(observation.gapsJson) as Gap[]).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
     terminalEvent: row.terminal_event, endedAt: row.terminal_at_ms ? iso(row.terminal_at_ms) : null,
     delivery: row.delivery_state, deliveredAs: row.delivery_input_id,
   };
@@ -286,12 +290,13 @@ function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
  * event, and the event exists before anything is delivered.
  */
 function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancelled", settlement: Settlement): boolean {
-  return db.transaction(() => {
+  const settled = db.transaction(() => {
     const row = db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow | null;
     if (!row || !isOpen(row)) return false;
-    const gaps = gapsOf(row);
+    const observation = observationForWatch(row);
+    const gaps = JSON.parse(observation.gapsJson) as Gap[];
     const resumedAt = settlement.observedAt ?? settlement.now;
-    const last = row.last_observed_ms ?? row.created_at_ms;
+    const last = observation.lastObservedAt;
     if (resumedAt - last > WATCH_GAP_MS) gaps.push({ fromMs: last, toMs: resumedAt });
     const condition = JSON.parse(row.condition_json);
     const what = row.kind === "file" ? `${condition.path}` : `the command ${JSON.stringify(condition.argv)} in ${condition.cwd}`;
@@ -310,7 +315,7 @@ You do not need to reply to this.`;
         last_observed_ms=?, delivery_state='pending', delivery_input_id=?, delivery_attempts=0, delivery_next_ms=NULL
       WHERE watch_id=? AND state IN ('accepted','observing')`)
       .run(event, event, settlement.now, JSON.stringify({ detail: settlement.detail, observedAt: settlement.observedAt ? iso(settlement.observedAt) : null, ...(settlement.observed ? { observed: settlement.observed } : {}) }),
-        text, JSON.stringify(gaps), settlement.observedAt ?? row.last_observed_ms, `watch:${watchId}:${event}`, watchId);
+        text, JSON.stringify(gaps), settlement.observedAt ?? last, `watch:${watchId}:${event}`, watchId);
     if (result.changes !== 1) return false;
     if (event !== "cancelled" && row.renew_ms !== null) {
       const nextId = randomBytes(6).toString("hex");
@@ -325,6 +330,8 @@ You do not need to reply to this.`;
     }
     return true;
   })();
+  if (settled) forgetWatchObservation(watchId);
+  return settled;
 }
 
 // ---- the worker --------------------------------------------------------------------------------
@@ -393,7 +400,7 @@ async function observeFile(row: WatchRow, now: number) {
 }
 
 function markObserved(row: WatchRow, now: number) {
-  return recordWatchObservation(row.watch_id, now, WATCH_GAP_MS);
+  return recordWatchObservation(row, now, WATCH_GAP_MS);
 }
 
 async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) {
@@ -572,6 +579,9 @@ export async function runWatchTick(deps: WatchWorkerDeps, now = Date.now()) {
 
 /** Starts this machine's one watch worker; returns its stop function. */
 export function startWatchWorker(deps: WatchWorkerDeps): () => void {
+  const openWatchIds = db.query("SELECT watch_id FROM watches WHERE state IN ('accepted','observing')")
+    .all() as { watch_id: string }[];
+  loadWatchObservationCursors(openWatchIds.map(row => row.watch_id));
   startWatchObservationWorker();
   // A restart retries any delivery that had run out of attempts.
   db.query("UPDATE watches SET delivery_attempts=0, delivery_next_ms=NULL WHERE delivery_state='pending'").run();
@@ -588,7 +598,8 @@ export function startWatchWorker(deps: WatchWorkerDeps): () => void {
   };
   const arm = () => { timer = setTimeout(() => { void poll().finally(() => { if (!stopped) arm(); }); }, WATCH_POLL_MS); };
   wakeRequested = () => { void poll(); };
-  void poll();
+  void waitForWatchObservationWorker().then(() => poll()).catch(error =>
+    log('warn', 'watch_observation_worker_unavailable', errorFields(error)));
   arm();
   return () => { stopped = true; if (timer) clearTimeout(timer); wakeRequested = null; stopWatchObservationWorker(); };
 }

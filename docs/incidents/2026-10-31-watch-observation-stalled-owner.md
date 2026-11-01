@@ -28,28 +28,34 @@ simultaneous history reads in SQLite WAL mode. Shared storage, checkpoint work, 
 worker handoff and scheduler pressure remain possible contributors to the broader delay;
 see [ledger durability](../architecture/LEDGER-DURABILITY.md). This record attributes
 the owner-loop stall to the synchronous watch call, not the overall thread-read p95 to
-that call or the one-row update itself as the root storage cause.
+that call or the one-row update itself as the root storage cause. The 08:24:47 stall
+ended four milliseconds before a 2,608 ms checkpoint ended; this supports shared
+storage pressure for that event but still does not reveal the statement's wait site.
 
 ## Fix
 
-Unchanged-poll cursors now write on a sealed thread with its own ledger connection. The
+Unchanged-poll cursors now write on a sealed thread to a separate SQLite store. The
 interactive owner awaits the result asynchronously, so a slow cursor statement cannot
-occupy its JavaScript loop. The cursor thread refuses SQLite writer-lock contention
-immediately in production; a failed observation leaves the prior cursor unchanged and
-the next successful poll records the interval as a possible gap. Registration, terminal
-settlement, renewal and delivery keep their existing durable owner path. A cursor write
-can still briefly hold SQLite's shared writer lock, and this fix does not claim to cure
-all storage stalls or the independent history latency.
+occupy its JavaScript loop or hold the main ledger's writer lock. At startup the owner
+loads confirmed cursor evidence once; while serving it uses in-memory confirmed values.
+The cursor thread refuses lock contention in its own store immediately in production.
+A failed observation leaves the prior cursor unchanged and the next successful poll
+records the interval as a possible gap. Registration, terminal settlement, renewal and
+delivery keep their existing durable owner path; terminal settlement copies the cursor
+and gaps into that transaction. Shared disk pressure can still affect other ledger
+operations, so this fix does not claim to cure all storage stalls or history latency.
 
 ## Acceptance scenario
 
-- **Seed:** a scratch WAL-mode SQLite ledger with one accepted watch at time zero; a
-  separate connection holds an immediate writer transaction.
+- **Seed:** a scratch main ledger and a valid but table-less watch cursor store, as an
+  interrupted first creation might leave; after initialization a connection holds an
+  immediate writer transaction on the cursor store.
 - **Action:** ask the actual watch observation thread to record an unchanged poll under
   a test-only 2.5-second SQLite busy timeout, count main-loop timer ticks, release the
   lock, then record the next observation at 20 seconds.
-- **Expected:** the first call waits about 2.5 seconds and fails while the main loop
-  continues to tick; the next call succeeds and the watch records a possible gap from
-  zero to 20 seconds.
+- **Expected:** startup initializes the table-less store; the first call waits about
+  2.5 seconds and fails while the main loop
+  continues to tick and an independent main-ledger write succeeds; the next call
+  succeeds and the watch records a possible gap from zero to 20 seconds.
 - **Replayable offline:** yes (`bot/scripts/watch-observation-acceptance.ts`, using only
   scratch state under `/tmp`).
