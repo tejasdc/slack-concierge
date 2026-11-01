@@ -148,7 +148,13 @@ const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,rea
   .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
-async function yieldProgress(delay=0){observation.advance();await Bun.sleep(delay);}
+let lastSearchMaintenance=0;
+function maintainSearchIfDue(){
+  if(!search.mergeDue&&Date.now()-lastSearchMaintenance<10_000)return;
+  prepared.transaction(()=>{keepLease();search.maintain(512);})();
+  lastSearchMaintenance=Date.now();
+}
+async function yieldProgress(delay=0){observation.advance();maintainSearchIfDue();await Bun.sleep(delay);}
 const insert=prepared.query(`INSERT INTO presentation_messages(generation,session_id,root_input_id,topic_id,event_sequence,message_id,input_id,created_at,entry_kind)
   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET
   root_input_id=excluded.root_input_id,topic_id=excluded.topic_id,message_id=excluded.message_id,
@@ -740,6 +746,7 @@ while(true){
       checkedDisplay=true;
     }
     await catchUp();observation.succeeded();
+    maintainSearchIfDue();
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
