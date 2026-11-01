@@ -21,17 +21,22 @@ const readiness = new Set<{ resolve: () => void; reject: (reason: Error) => void
 /** Read the separate cursor store once at startup. No serving owner transaction touches it. */
 export function loadWatchObservationCursors(openWatchIds: readonly string[]) {
   cursors.clear();
-  const path = join(realpathSync(process.env.CONCIERGE_STATE_DIR!), 'watch-observations.db');
-  if (!existsSync(path)) return;
-  const db = new Database(path, { readonly: true });
   try {
-    if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cursors'").get()) return;
-    const find = db.query('SELECT watch_id,last_observed_ms,gaps_json FROM cursors WHERE watch_id=?');
-    for (const watchId of openWatchIds) {
-      const cursor = find.get(watchId) as Cursor | null;
-      if (cursor) cursors.set(watchId, cursor);
-    }
-  } finally { db.close(); }
+    const path = join(realpathSync(process.env.CONCIERGE_STATE_DIR!), 'watch-observations.db');
+    if (!existsSync(path)) return;
+    const db = new Database(path, { readonly: true });
+    try {
+      if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cursors'").get()) return;
+      const find = db.query('SELECT watch_id,last_observed_ms,gaps_json FROM cursors WHERE watch_id=?');
+      for (const watchId of openWatchIds) {
+        const cursor = find.get(watchId) as Cursor | null;
+        if (cursor) cursors.set(watchId, cursor);
+      }
+    } finally { db.close(); }
+  } catch (error) {
+    cursors.clear();
+    log('error', 'watch_observation_cursor_load_failed', { error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export function observationForWatch(row: WatchSeed): { lastObservedAt: number; gapsJson: string } {

@@ -98,7 +98,9 @@ ledger. It never opens the main ledger or takes its writer lock. The owner reads
 cursors from the separate store once at startup and keeps confirmed cursors in memory while serving;
 the thread removes cursor rows older than 31 days at startup, past the maximum watch lifetime.
 An interrupted first creation with no cursor table is treated as an empty store and initialized
-by the thread. Terminal settlement
+by the thread. A damaged sidecar cannot hold the accepting owner in a startup crash loop: it logs
+the failed read and uses the ledger's earlier cursor, widening possible gaps while preserving the
+damaged file for diagnosis. Terminal settlement
 copies the confirmed cursor and gaps into the main ledger transaction with the terminal event,
 renewal and delivery intent. A failed cursor write leaves the prior cursor in place, so the next
 successful poll reports possible missing coverage rather than claiming unrecorded observation.

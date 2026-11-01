@@ -49,11 +49,13 @@ operations, so this fix does not claim to cure all storage stalls or history lat
 
 - **Seed:** a scratch main ledger and a valid but table-less watch cursor store, as an
   interrupted first creation might leave; after initialization a connection holds an
-  immediate writer transaction on the cursor store.
+  immediate writer transaction on the cursor store. First present a damaged cursor file
+  and verify the owner-side load returns before replacing it with the table-less store.
 - **Action:** ask the actual watch observation thread to record an unchanged poll under
   a test-only 2.5-second SQLite busy timeout, count main-loop timer ticks, release the
   lock, then record the next observation at 20 seconds.
-- **Expected:** startup initializes the table-less store; the first call waits about
+- **Expected:** a damaged cursor file logs a failure without stopping owner startup;
+  startup initializes the table-less store; the first call waits about
   2.5 seconds and fails while the main loop
   continues to tick and an independent main-ledger write succeeds; the next call
   succeeds and the watch records a possible gap from zero to 20 seconds.

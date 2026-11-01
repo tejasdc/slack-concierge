@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -11,10 +11,14 @@ process.env.CONCIERGE_TEST_MODE = '1';
 process.env.CONCIERGE_WATCH_OBSERVATION_STALL_CHECK = '1';
 const main = new Database(join(dir, 'state.db'));
 main.exec('PRAGMA journal_mode=WAL; CREATE TABLE owner_check(value INTEGER); INSERT INTO owner_check VALUES(0)');
-const partial = new Database(join(dir, 'watch-observations.db'));
-partial.close();
 const { loadWatchObservationCursors, startWatchObservationWorker, waitForWatchObservationWorker, recordWatchObservation,
   observationForWatch, stopWatchObservationWorker } = await import('../src/watch-observation');
+const sidecarPath = join(dir, 'watch-observations.db');
+writeFileSync(sidecarPath, 'incomplete sqlite header');
+loadWatchObservationCursors(['watch-check']);
+rmSync(sidecarPath);
+const partial = new Database(sidecarPath);
+partial.close();
 loadWatchObservationCursors(['watch-check']);
 startWatchObservationWorker();
 await waitForWatchObservationWorker();
@@ -40,7 +44,8 @@ try {
   loadWatchObservationCursors(['watch-check']);
   assert.deepEqual(observationForWatch(watch), cursor);
   console.log(JSON.stringify({ check: 'watch-observation-isolation', status: 'passed', wait_ms: Math.round(waited),
-    loop_ticks: ticks, owner_write_during_stall: true, conservative_gap: true, restart_cursor_recovered: true }));
+    loop_ticks: ticks, owner_write_during_stall: true, conservative_gap: true, restart_cursor_recovered: true,
+    damaged_cursor_kept_owner_alive: true }));
 } finally {
   if (sidecar.inTransaction) sidecar.exec('ROLLBACK');
   clearInterval(timer);
