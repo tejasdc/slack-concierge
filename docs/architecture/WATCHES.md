@@ -36,6 +36,7 @@ was seen.
 | Part | Where | Owns |
 | --- | --- | --- |
 | `bot/src/watches.ts` | inside Concierge, both runtime compositions (`startMachineWatchWorker`) | the `watches` table, the poll, settlement, delivery |
+| Watch observation thread | inside the same Concierge process, using `watch-observations.db` beside the ledger | the unchanged-poll cursor and recorded gap, without acquiring the ledger's writer lock or waiting on the interactive owner's event loop |
 | `sessions watch` route (`SessionCommunicationCoordinator.watch`) | the owner socket only | validating the registering run exactly as other `sessions` commands do; never forwarded to a peer, never on a public route |
 | Execution host (command kind) | `concierge-exec-<id>` on Linux, a launchd job on the Mac | running the command and journaling its exit (`x` frame) |
 
@@ -90,6 +91,33 @@ The design describes a separately supervised worker. This is one polling worker 
 silence over 15 s (a Concierge restart, a sleeping Mac) the next poll rechecks every condition
 against its baseline and records the pause as a gap; the terminal message lists the gaps and says
 that a change made and undone inside one cannot be known. Nothing pretends to have watched throughout.
+
+Every unchanged poll advances a persistent cursor so a restart can identify the last observation.
+The dedicated thread writes this cursor and its gaps to a separate SQLite database beside the
+ledger. It never opens the main ledger or takes its writer lock. The owner reads only open watches'
+cursors from the separate store once at startup and keeps confirmed cursors in memory while serving;
+the thread removes cursor rows older than 31 days at startup, past the maximum watch lifetime.
+An interrupted first creation with no cursor table is treated as an empty store and initialized
+by the thread. A damaged sidecar cannot hold the accepting owner in a startup crash loop: it logs
+the failed read and uses the ledger's earlier cursor, widening possible gaps while preserving the
+damaged file for diagnosis. Terminal settlement
+copies the confirmed cursor and gaps into the main ledger transaction with the terminal event,
+renewal and delivery intent. A failed cursor write leaves the prior cursor in place, so the next
+successful poll reports possible missing coverage rather than claiming unrecorded observation.
+The thread has no SQLite lock-wait budget in production and reports slow writes. A power loss may
+widen the gap if a recent cursor had not reached disk. Restoring a ledger backup without the
+separate cursor store likewise widens coverage gaps, never invents observation. The sidecar is
+derived watch evidence; registrations and terminal outcomes are authoritative in the ledger.
+
+On 2026-10-31 at 08:16:55 UTC, an unchanged file watch's one-row update occupied the owner loop
+for 1,975 ms with 143 ms of process CPU over the lag interval. Similar calls occupied 1,041 and
+1,144 ms at 08:22 and 08:24. Two independent history reads ended 118 ms after the first lag;
+their measured read-worker SQLite calls were under 0.1 ms. These records confirm the loop was
+blocked by a synchronous watch update. They do not show what the update waited on: no lock-holder
+or kernel stack was retained for those seconds, and minute-level host I/O cannot distinguish an
+SQLite writer from a filesystem wait. At 08:24:47 a 2,608 ms checkpoint ended four milliseconds
+after the watch stall; that overlap is evidence of shared disk pressure, not proof of the exact
+wait site. The broader history-read p95 has its own investigation.
 
 Checked on a scratch ledger: file change, command exit code with output, expiry, cancel, a simulated
 10-minute pause, racing deadline and change, directory entries, deletion, a held session then

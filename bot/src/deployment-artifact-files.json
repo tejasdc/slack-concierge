@@ -41,7 +41,8 @@
     "control/application/speech-job-worker.js": "bot/src/speech-job-worker.ts",
     "control/application/foreground-gateway-worker.js": "bot/src/foreground-gateway-worker.ts",
     "control/application/native-read-worker.js": "bot/src/native-read-worker.ts",
-    "control/application/ledger-durability-worker.js": "bot/src/ledger-durability-worker.ts"
+    "control/application/ledger-durability-worker.js": "bot/src/ledger-durability-worker.ts",
+    "control/application/watch-observation-worker.js": "bot/src/watch-observation-worker.ts"
   },
   "controlFiles": {
     "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
@@ -76,6 +77,7 @@
     "control/application/speech-job-worker.js",
     "control/application/foreground-gateway-worker.js",
     "control/application/native-read-worker.js",
-    "control/application/ledger-durability-worker.js"
+    "control/application/ledger-durability-worker.js",
+    "control/application/watch-observation-worker.js"
   ]
 }
