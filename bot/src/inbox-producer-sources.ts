@@ -18,16 +18,31 @@ export const FIXED_PRODUCER_DOORS:Readonly<Record<string,string>>={
 };
 
 /**
- * Reader hands the Inbox saves nobody typed into his phone: an agent's save, a Readwise import or
- * a watched playlist. His own iPhone share keeps the `thinkering` kind and stays his. A `reader`
- * capture is recorded as the agent whose verified run saved it, or as the service with its real
- * source named, and still reaches the Inbox router to be filed (2026-11-02: before this every
- * Reader handoff was recorded as Tejas, so Thinkering refused all but his shares).
+ * Reader hands the Inbox any save its sorting agent decides is a capture rather than an article,
+ * with the door the save came through as `readerOrigin`. The author follows the door: his own doors
+ * (the Reader app, the Chrome extension, a share, a file he uploaded) are his, exactly as thnkr.ing
+ * vouches for his iPhone share, which keeps the `thinkering` kind; an agent's save is the agent whose
+ * verified run saved it, or an unnamed agent for saves kept before Reader retained the run; Readwise,
+ * a watched playlist and a feed are the service, named by their source. Every Reader capture still
+ * reaches the Inbox router to be filed (2026-11-02: before this every Reader handoff was recorded as
+ * Tejas, so Thinkering refused all but his shares).
  */
-export const READER_CAPTURE_ORIGINS=['agent','readwise','playlist'] as const;
-export type ReaderCaptureOrigin=typeof READER_CAPTURE_ORIGINS[number];
-const READER_DEFAULT_LABELS:Record<ReaderCaptureOrigin,string>={agent:'agent save',readwise:'Readwise',playlist:'playlist'};
+const READER_ORIGINS={
+  app:{author:'human',label:'Reader app'},
+  extension:{author:'human',label:'Chrome extension'},
+  share:{author:'human',label:'share'},
+  file:{author:'human',label:'file upload'},
+  agent:{author:'agent',label:'agent save'},
+  'youtube-playlist':{author:'service',label:'YouTube playlist'},
+  playlist:{author:'service',label:'playlist'},
+  readwise:{author:'service',label:'Readwise'},
+  feed:{author:'service',label:'feed'},
+} as const satisfies Record<string,{author:'human'|'agent'|'service';label:string}>;
+export type ReaderCaptureOrigin=keyof typeof READER_ORIGINS;
+export const READER_CAPTURE_ORIGINS=Object.keys(READER_ORIGINS) as ReaderCaptureOrigin[];
 export const READER_METADATA_KEYS=['readerOrigin','sourceLabel','link','note','readerIntake','agentSource'] as const;
+/** Who a Reader capture from this door is recorded as. */
+export const readerCaptureAuthor=(origin:ReaderCaptureOrigin)=>READER_ORIGINS[origin].author;
 
 /** Why a `reader` capture's metadata is refused, or null when it is the exact contract. */
 export function readerCaptureRefusal(metadata:Record<string,unknown>|undefined):string|null {
@@ -35,7 +50,7 @@ export function readerCaptureRefusal(metadata:Record<string,unknown>|undefined):
   const extra=Object.keys(metadata).filter(key=>!(READER_METADATA_KEYS as readonly string[]).includes(key));
   if(extra.length)return `A Reader capture does not take ${extra.join(', ')}.`;
   const origin=metadata.readerOrigin;
-  if(!(READER_CAPTURE_ORIGINS as readonly unknown[]).includes(origin))return 'A Reader capture names its origin: agent, readwise or playlist.';
+  if(!(READER_CAPTURE_ORIGINS as readonly unknown[]).includes(origin))return `A Reader capture names its origin: ${READER_CAPTURE_ORIGINS.join(', ')}.`;
   if(metadata.sourceLabel!==undefined&&(typeof metadata.sourceLabel!=='string'||!metadata.sourceLabel.trim()||metadata.sourceLabel.length>120))
     return 'A Reader source label is 1 to 120 characters.';
   if(typeof metadata.link!=='string'||metadata.link.length>4096||!/^https?:\/\//i.test(metadata.link)||!URL.canParse(metadata.link))
@@ -43,18 +58,19 @@ export function readerCaptureRefusal(metadata:Record<string,unknown>|undefined):
   if(metadata.note!==undefined&&metadata.note!==null&&(typeof metadata.note!=='string'||metadata.note.length>8000))return 'A Reader note is text up to 8000 characters.';
   if(metadata.readerIntake!==undefined&&(typeof metadata.readerIntake!=='string'||!metadata.readerIntake||metadata.readerIntake.length>200))
     return 'A Reader intake ID is text up to 200 characters.';
-  if(origin==='agent'&&metadata.agentSource===undefined)return 'An agent\'s Reader save names the run that saved it.';
   if(origin!=='agent'&&metadata.agentSource!==undefined)return 'Only an agent\'s Reader save may name an agent run.';
   return null;
 }
 
-/** What his Inbox shows beside a Reader capture: "Reader · Readwise", "Reader · agent save". */
+/** What his Inbox shows beside a Reader capture: "Reader · Readwise", "Reader · Chrome extension". */
 export function readerCaptureVia(source:{kind?:unknown;metadata?:Record<string,unknown>}|null|undefined):string|null {
   if(source?.kind!=='reader')return null;
   const origin=source.metadata?.readerOrigin as ReaderCaptureOrigin;
   const label=typeof source.metadata?.sourceLabel==='string'&&source.metadata.sourceLabel.trim()
-    ?source.metadata.sourceLabel.trim():READER_DEFAULT_LABELS[origin]??'Reader';
-  return `Reader · ${label}`;
+    ?source.metadata.sourceLabel.trim():READER_ORIGINS[origin]?.label??'Reader';
+  // Older agent saves were kept before Reader retained the saving run: still an agent's, named as such.
+  const runUnknown=origin==='agent'&&source.metadata?.agentSource===undefined;
+  return `Reader · ${label}${runUnknown?' (run not recorded)':''}`;
 }
 
 /**

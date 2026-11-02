@@ -72,28 +72,31 @@ and deliberately starts no Inbox turn. The stable ID is the retry identity: the
 same name, ID and content returns the original retained capture without a second
 router turn, while changed content conflicts. Omitting it creates a fresh random ID.
 
-### Reader handoffs that are not his
+### Reader handoffs
 
-Thinkering's Reader hands the Inbox saves he did not make himself (an agent's save, a Readwise
-import, a watched playlist) with the `reader` source kind at `POST /sessions/v1/inbox`. His own
-iPhone share keeps kind `thinkering` with producer `ios-share-extension` and stays his.
+Thinkering's Reader hands the Inbox any save its sorting agent decides is a capture, with the
+`reader` source kind at `POST /sessions/v1/inbox` and the door the save came through. The legacy
+iPhone share path keeps kind `thinkering` with producer `ios-share-extension`.
 
 ```json
 {"source":{"kind":"reader","id":"<stable Reader source ID>","recordedAt":"<ISO time>","title":"<optional>",
-  "metadata":{"readerOrigin":"agent|readwise|playlist","link":"https://…","note":"<optional>",
-    "sourceLabel":"<optional, e.g. YouTube · Watch later>","readerIntake":"<optional intake ID>",
-    "agentSource":{"inputId":"…","runId":"…"}}},
+  "metadata":{"readerOrigin":"app|extension|share|file|agent|youtube-playlist|playlist|readwise|feed",
+    "link":"https://…","note":"<optional, null allowed>","sourceLabel":"<optional, e.g. YouTube · Watch later>",
+    "readerIntake":"<optional intake ID>","agentSource":{"inputId":"…","runId":"…"}}},
  "text":"<link and note as the router should read them>","files":[]}
 ```
 
-`agentSource` is required for `agent` and refused otherwise; the owner verifies that input and run
-exist (403 `AGENT_SOURCE_UNKNOWN`) and records the capture as that agent. `readwise` and `playlist`
-are recorded with service origin. Any other metadata key, a missing link, urgency or a Focus review
-flag is refused (400 `READER_CAPTURE_INVALID`). The Inbox shows `Reader · <label>` (default
-`Readwise`, `playlist` or `agent save`). Unlike a test capture, a Reader capture enters the Inbox
-router like his own unless `importOnly` is set, and it raises no attention for him. The source ID
-is the retry identity, as for every producer: same bytes return the original, changed bytes 409.
-The contract lives in `bot/src/inbox-producer-sources.ts`.
+The author follows the door. `app`, `extension`, `share` and `file` are his doors, recorded as
+him on thnkr.ing's authenticated word exactly like the iPhone share. `agent` is the agent:
+`agentSource`, when present, must name an existing input and run (403 `AGENT_SOURCE_UNKNOWN`) and
+the capture is that agent's; without it (saves kept before Reader retained the run) it is an
+unnamed agent's, shown with "(run not recorded)". `youtube-playlist`, `playlist`, `readwise` and
+`feed` are recorded with service origin. `agentSource` on any other origin, any other metadata key,
+a missing or non-http(s) `link`, urgency or a Focus review flag is refused (400
+`READER_CAPTURE_INVALID`). The Inbox shows `Reader · <sourceLabel or the door's name>`. Every
+Reader capture enters the Inbox router unless `importOnly` is set; only his own doors raise
+attention for him. The source ID is the retry identity, as for every producer: same bytes return
+the original, changed bytes 409. The contract lives in `bot/src/inbox-producer-sources.ts`.
 
 ## Durable receipt
 

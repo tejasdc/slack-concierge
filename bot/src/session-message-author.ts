@@ -142,6 +142,8 @@ export function doorOf(input:AcceptedSessionInput):string|null {
     const wait=pebbleArrivalWaitMs(source,input.created_at);
     return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(source.recordedAt))}, reached the server ${minutesText(wait)} later`;
   }
+  const readerDoor=readerCaptureVia(source);
+  if(readerDoor)return readerDoor;
   const fixedDoor=FIXED_PRODUCER_DOORS[source?.kind as InboxProducerKind];
   if(fixedDoor)return fixedDoor;
   if(source?.kind==='outside-agent'&&typeof source.metadata?.outsideAgent==='string')return `Outside agent · ${source.metadata.outsideAgent}`;

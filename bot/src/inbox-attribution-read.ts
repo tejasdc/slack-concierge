@@ -125,6 +125,8 @@ export function inboxAttribution(db:Database){
       const wait=pebbleWait(capture,input.created_at);
       return wait===null?'Pebble':`Pebble · recorded ${noticeTime(db,Date.parse(capture.recordedAt))}, reached the server ${minutesText(wait)} later`;
     }
+    const readerDoor=readerCaptureVia(capture);
+    if(readerDoor)return readerDoor;
     const fixedDoor=FIXED_PRODUCER_DOORS[capture?.kind as InboxProducerKind];
     if(fixedDoor)return fixedDoor;
     if(capture?.kind==='outside-agent'&&typeof capture.metadata?.outsideAgent==='string')return `Outside agent · ${capture.metadata.outsideAgent}`;
