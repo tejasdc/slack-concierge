@@ -4,7 +4,7 @@ import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicCha
 import {PreparedAreas,readPreparedAreas,readPreparedArea} from '../src/prepared-areas';
 import {observedDatabase,withStorageReadBudget,observeStorageOperation} from '../src/storage-observation';
 import {readPreparedThreadCoordinationKeys} from '../src/presentation-message-reader';
-import {readPrivateCoordinationRows} from '../src/thread-coordination-read';
+import {readCanceledSourceOrigins,readCoordinationActivity,readPrivateCoordinationRows,readPublicRequestRows} from '../src/thread-coordination-read';
 
 async function coordinationGrowth(){
  for(const count of [100,1000,10000]){
@@ -44,12 +44,42 @@ async function coordinationGrowth(){
   raw.transaction(()=>{for(let i=0;i<count;i++)insertPrivate.run(`other-${i}`,i,'{}','source',1,2,'pending',null,`root:other:${i}`,null);
     for(let i=0;i<60;i++)insertPrivate.run(`selected-${i}`,count+i,'{}','source',1,2,'pending',null,'root:selected',null);
     insertPeer.run('peer-selected',count+61,'{}','source',1,'mac','concierge:12','pending',null,'root:selected',null);
+    for(let i=40;i<60;i++)raw.query('UPDATE session_communication_requests SET payload_json=? WHERE request_id=?')
+      .run(JSON.stringify({summary:'s'.repeat(30_000),text:'t'.repeat(30_000)}),`selected-${i}`);
   })();
   const privateFirst=observeStorageOperation('thread-private-coordination-growth',()=>withStorageReadBudget({maxCalls:8,maxRows:42,maxResultBytes:16384},
     ()=>readPrivateCoordinationRows(db,'selected',null,20)));
   assert.equal(privateFirst.rows.length,20);assert.equal(privateFirst.rows[0]?.id,'peer-selected');assert.ok(privateFirst.nextCursor);
+  assert.equal(privateFirst.rows[1]?.preview,null);
+  assert.equal(privateFirst.rows[1]?.summary?.length,200);
   const privateSecond=readPrivateCoordinationRows(db,'selected',privateFirst.nextCursor,20);
   assert.equal(privateSecond.rows.length,20);assert.ok(privateSecond.rows[0]!.at<privateFirst.rows.at(-1)!.at);
+  raw.exec('CREATE TABLE session_inputs(id TEXT PRIMARY KEY,origin TEXT);');
+  const requestIds=Array.from({length:20},(_,i)=>`selected-${i}`);
+  raw.transaction(()=>{for(const id of requestIds){
+    raw.query('UPDATE session_communication_requests SET source_input_id=? WHERE request_id=?').run(`source-${id}`,id);
+    raw.query('UPDATE session_communication_requests SET payload_json=? WHERE request_id=?')
+      .run(JSON.stringify({summary:'s'.repeat(30_000),text:'t'.repeat(30_000)}),id);
+    raw.query('INSERT INTO session_inputs VALUES(?,?)').run(`source-${id}`,'service');
+  }})();
+  const publicPage=observeStorageOperation('thread-public-coordination-growth',()=>withStorageReadBudget({maxCalls:3,maxRows:40,maxResultBytes:16384},()=>{
+    const requests=readPublicRequestRows(db,requestIds);
+    const origins=readCanceledSourceOrigins(db,requestIds.map(id=>`source-${id}`));
+    return {requests,origins};
+  }));
+  assert.equal(publicPage.requests.local.size,20);assert.equal(publicPage.requests.peer.size,0);
+  assert.equal(publicPage.origins.size,20);
+  assert.equal(publicPage.requests.local.get('selected-0')?.preview,null);
+  assert.equal(publicPage.requests.local.get('selected-0')?.summary?.length,200);
+  raw.exec('CREATE TABLE session_communication_events(event_id TEXT,request_id TEXT,kind TEXT,payload_json TEXT,created_at_ms INTEGER);');
+  raw.transaction(()=>{for(const id of requestIds)for(let i=0;i<3;i++)
+    raw.query('INSERT INTO session_communication_events VALUES(?,?,?,?,?)')
+      .run(`${id}-${i}`,id,i===2?'final':'progress',JSON.stringify({summary:'s'.repeat(30_000),text:'t'.repeat(30_000)}),i+1);
+  })();
+  const activityPages=observeStorageOperation('thread-public-activity-growth',()=>withStorageReadBudget({maxCalls:20,maxRows:60,maxResultBytes:65536},
+    ()=>requestIds.map(id=>readCoordinationActivity(db,id,'session_communication_events'))));
+  assert.equal(activityPages.length,20);assert.equal(activityPages[0]?.length,3);
+  assert.equal(activityPages[0]?.[0]?.text,null);
   raw.close();
  }
 }
