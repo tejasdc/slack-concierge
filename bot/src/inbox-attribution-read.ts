@@ -150,6 +150,9 @@ export function inboxAttribution(db:Database){
     const captureSource=JSON.parse(input.payload_json).capture?.source,capture=captureSource?.metadata?.outsideAgent;
     if(captureSource?.kind==='outside-agent'&&typeof capture==='string')return withProvenance(input,
       {author:{kind:'agent',outsideAgent:{name:capture,label:`Outside agent · ${capture}`}}});
+    if(captureSource?.kind==='agent-report'&&captureSource.metadata?.agentSource?.peer==='mac')return {
+      author:{kind:'agent',session:sessionAuthor(`mac:${captureSource.metadata.agentSource.sessionId}`),
+        inputId:captureSource.metadata.agentSource.inputId,runId:captureSource.metadata.agentSource.runId}};
     const corrected=input.origin==='human'?correction(db,input.id):null;
     if(corrected)return withProvenance(input,{author:{kind:'agent',...(corrected.author_session_id!==null?{session:authorSession(corrected.author_session_id)}:{}),
       correction:{reason:corrected.reason,at:corrected.created_at}}});

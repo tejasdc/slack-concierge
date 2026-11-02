@@ -80,7 +80,7 @@ import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -514,7 +514,7 @@ function validateCanvasContext(input:Record<string,any>) {
 /**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
  * input its run started from and the run id, exactly as agent commands name their source. Agents
- * test the real delivery paths with this so the result is recorded as theirs, never as his
+ * report issues and test delivery paths with this so the result is recorded as theirs, never as his
  * (2026-09-23). A queued delivery can arrive after the run ended, so the run need only exist;
  * naming a run can only label something as an agent's, never as his.
  */
@@ -1818,7 +1818,22 @@ export class SessionOwner {
     const original=this.upload({clientActionId:`capture-original:${captureId}`,name:'inbox-capture.txt',contentType:'text/plain',base64:Buffer.from(body.text).toString('base64')}).attachment.id;
     return [original,...(body.attachments??[])];
   }
-  acceptInboxCapture(body:unknown) {
+  async reportAgentIssue(body:unknown) {
+    const input=object(body);only(input,['source','actionId','title','text','files']);
+    const source=object(input.source);only(source,['inputId','runId']);
+    const agent=agentTestSource(source)!;
+    if(typeof input.actionId!=='string'||!input.actionId.trim()||input.actionId.length>200
+      ||typeof input.title!=='string'||!input.title.trim()||input.title.length>200
+      ||typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('An agent report needs a stable action, short title and observation.',400,'AGENT_REPORT_INVALID');
+    const id=createHash('sha256').update(JSON.stringify([agent.inputId,agent.runId,input.actionId])).digest('hex');
+    const capture={source:{kind:'agent-report',id,recordedAt:new Date().toISOString(),title:input.title,
+      metadata:{agentSource:{inputId:agent.inputId,runId:agent.runId,
+        ...(this.selfMachine==='cloud'?{}:{peer:this.selfMachine,sessionId:agent.sessionId})}}},text:input.text,files:input.files??[]};
+    if(this.selfMachine==='cloud')return this.acceptInboxCapture(capture);
+    if(!this.peers)throw new SessionOwnerError('The server Inbox is unreachable.',503,'INBOX_PEER_UNAVAILABLE');
+    return this.peers.client('cloud').request('POST','/sessions/v1/inbox',capture);
+  }
+  acceptInboxCapture(body:unknown,verifiedPeer=false) {
     const input=object(body);only(input,['source','text','files','importOnly','urgency','holdForReview']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
     if(!isInboxProducerKind(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
@@ -1828,6 +1843,8 @@ export class SessionOwner {
     if(source.kind==='outside-agent'&&!/^[a-z][a-z0-9-]{2,40}$/.test(String(outsideAgent??'')))throw new SessionOwnerError('An outside-agent capture needs its valid outside agent name.');
     if(source.kind!=='outside-agent'&&outsideAgent!==undefined)throw new SessionOwnerError('Only an outside-agent capture may name an outside agent.');
     if(source.kind==='outside-agent'&&(source.metadata as Record<string,unknown>|undefined)?.agentSource!==undefined)throw new SessionOwnerError('An outside-agent capture cannot cite a Concierge run.');
+    if(source.kind==='agent-report'&&(typeof source.title!=='string'||!source.title.trim()||source.title.length>200))
+      throw new SessionOwnerError('An agent report needs a short title.',400,'AGENT_REPORT_INVALID');
     // Reader's non-human handoffs: their author is the saving agent's verified run, or the service
     // that fed Reader, never him (inbox-producer-sources.ts holds the contract).
     const reader=source.kind==='reader'?(source.metadata as Record<string,unknown>|undefined):undefined;
@@ -1846,22 +1863,27 @@ export class SessionOwner {
     if(input.urgency!==undefined&&input.importOnly===true)
       throw new SessionOwnerError('An urgent capture must enter the Inbox router.',400,'CAPTURE_URGENCY_INVALID');
     if(source.kind==='outside-agent'&&input.importOnly===true)throw new SessionOwnerError('An outside-agent capture always enters the Inbox router.');
-    // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
-    // starting the Inbox's own turn.
-    const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);
-    if(input.urgency!==undefined&&(outsideAgent||agent||reader))
+    // A marked test is shown without starting the router; a real agent report starts it.
+    const agentSource=(source.metadata as Record<string,unknown>|undefined)?.agentSource as Record<string,unknown>|undefined;
+    const remoteAgent=source.kind==='agent-report'&&verifiedPeer&&this.selfMachine==='cloud'&&agentSource?.peer==='mac'
+      &&typeof agentSource.inputId==='string'&&typeof agentSource.runId==='string'
+      &&Number.isSafeInteger(agentSource.sessionId)&&Number(agentSource.sessionId)>0;
+    const agent=remoteAgent?null:agentTestSource(agentSource);
+    if(source.kind==='agent-report'&&!agent&&!remoteAgent)throw new SessionOwnerError('An agent report needs its verified source input and run.',403,'AGENT_REPORT_SOURCE_REQUIRED');
+    if(input.urgency!==undefined&&(outsideAgent||agent||remoteAgent||reader))
       throw new SessionOwnerError('Only a human capture may choose urgent delivery.',403,'CAPTURE_URGENCY_FORBIDDEN');
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
-    // An agent naming its run on any other door is testing that door; on Reader it is the author.
-    const importOnly=input.importOnly===true||!!agent&&!reader;
-    const origin=reader?readerCaptureAuthor(reader.readerOrigin as ReaderCaptureOrigin):agent||outsideAgent?'agent':'human';
+    // A marked capture on another door is a test; Reader and issue reports enter the router as agents.
+    const importOnly=input.importOnly===true||!!agent&&!reader&&source.kind!=='agent-report';
+    if(source.kind==='agent-report'&&input.importOnly===true)throw new SessionOwnerError('An agent report must enter the Inbox router.',400,'AGENT_REPORT_INVALID');
+    const origin=reader?readerCaptureAuthor(reader.readerOrigin as ReaderCaptureOrigin):agent||remoteAgent||outsideAgent?'agent':'human';
     const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[],...(input.urgency?{urgency:input.urgency}:{}),...(input.holdForReview?{holdForReview:true}:{})}));
     const digest=digestFor(input.source);
     const accepted=db.transaction(()=>{
       const prior=getAcceptedSessionInput(`capture:${captureId}`);
       if(prior) {
         const priorCapture=JSON.parse(prior.payload_json).capture;
-        const comparedDigest=source.kind==='outside-agent'&&priorCapture?.source?.recordedAt
+        const comparedDigest=(source.kind==='outside-agent'||source.kind==='agent-report')&&priorCapture?.source?.recordedAt
           ?digestFor({...source,recordedAt:priorCapture.source.recordedAt}):digest;
         if(priorCapture?.digest!==comparedDigest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
         return prior;
@@ -1892,6 +1914,7 @@ export class SessionOwner {
       if(origin==='human'&&!holdForReview)recordSessionInputAttention(retained.id);
       if(!db.query('SELECT 1 FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId))
         recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
+      if(source.kind==='agent-report')openAgentReport(session.id,retained.id,String(source.title).trim(),String(input.text));
       return getAcceptedSessionInput(retained.id)!;
     })();
     // Delivery follows the durable capture/attachment/intent transaction. A duplicate or
@@ -1902,7 +1925,8 @@ export class SessionOwner {
     this.runtime.wake();
     const current=getAcceptedSessionInput(accepted.id)!;
     const session=getSessionById(current.session_id)!;
-    return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(current),id:current.id}};
+    return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(current),id:current.id},
+      ...(source.kind==='agent-report'?{report:{topicId:topicOfRoot(current.id),requestId:`req:agent-report:${current.id}`}}:{})};
   }
   async releaseHeldCaptures(body:unknown) {
     const input=object(body);only(input,['captureIds','clientActionId']);
@@ -3738,7 +3762,9 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts.length===1)result=await this.globalPauseControl(true,body);
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='resume'&&parts.length===2)result=await this.globalPauseControl(false,body);
       else if(request.method==='POST'&&parts[0]==='pause-all'&&parts[1]==='peer'&&parts.length===2)result=this.globalPausePeer(body);
-      else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)
+        result=this.acceptInboxCapture(body,request.headers.get('x-concierge-verified-peer')==='1');
+      else if(request.method==='POST'&&parts[0]==='agent-report'&&parts.length===1)result=await this.reportAgentIssue(body);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='captures'&&parts.length===2)
