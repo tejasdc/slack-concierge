@@ -223,16 +223,16 @@ files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 
 ## Durable project setup
 
-The project lists can differ deliberately. `router-actions.sh projects new` creates a
-private GitHub project on the current machine and retains an order for the other machine;
+The project lists can differ deliberately. `router-actions.sh projects new` runs on the
+server, creates a private GitHub project there, and retains an order for the Mac;
 `projects share` asks a named peer to set up an existing pushed project. Neither command
 mirrors the whole workspace. `projects status` reads the retained order locally.
 
 `project.setup` is a typed durable operation beside session requests on the authenticated
 peer listener. Its body contains only order ID, operation kind, project name, origin
-identity and, for an agent project, `folder: "agents"`. An order naming that folder waits as
-needing an update until the peer advertises `project.setup.folders`, so an older peer never
-places an agent project at the top of its workspace. A project the receiver already holds
+identity and the organizer's accepted one-level grouping folder, if any. Every new order waits as
+needing an update until the peer advertises the placement contract, so an older peer never
+places a grouped project at the top of its workspace. A project the receiver already holds
 in the other placement is reported present and left where it is. The receiver builds the fixed `tejasdc` HTTPS URL and local workspace destination.
 It clones with an argument list, disabled hooks, submodules, non-HTTPS transports, LFS
 smudge and fsmonitor, into hidden `.project-setup` storage and moves the completed checkout
@@ -258,7 +258,8 @@ retried on the same peer timer until the cloud owner confirms receipt.
 To investigate one project, start with `router-actions.sh projects status <name>` on the
 machine that created or shared it. The owner ledger retains the order, state, result and
 creation time in `project_setup_orders`; local creations are recorded in
-`project_creations`, and the peer retains its received order and outcome in
+`project_creations` and the consultation reservation in `project_placement_receipts`;
+the peer retains its received order and outcome in
 `project_setup_receipts`. A terminal order with an undelivered agent return or notice
 remains on the same wake timer. Service logs on
 each machine record `project_created`, `project_setup_order_recorded`,

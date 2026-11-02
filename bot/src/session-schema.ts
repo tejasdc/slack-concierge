@@ -449,6 +449,10 @@ export function initializeSessionOwnerSchema(db: Database) {
           project TEXT PRIMARY KEY, purpose TEXT NOT NULL, commit_sha TEXT NOT NULL,
           here_only INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_placement_receipts (
+          request_id TEXT PRIMARY KEY, project TEXT NOT NULL, purpose TEXT NOT NULL,
+          template TEXT, group_name TEXT, reserved_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS project_setup_receipts (
           order_id TEXT PRIMARY KEY, body_json TEXT NOT NULL, result_json TEXT
         );

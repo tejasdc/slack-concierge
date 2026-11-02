@@ -1552,7 +1552,16 @@ export class SessionCommunicationCoordinator {
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
-        if((input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined)&&input.workDisposition!=='needs_decision')
+        const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
+        // "Could not finish" that names what only he can do is waiting on him, not finished: it is
+        // recorded as the question it is, so it reaches his device. A failed reply files only a quiet
+        // reading item, and that is how the Uber Eats agent's photo request reached nobody (2026-11-02).
+        let convertedNotice:string|null=null;
+        if(asksHim&&input.workDisposition==='failed'&&input.final&&input.hand_back===undefined){
+            input={...input,workDisposition:'needs_decision'};
+            convertedNotice='Recorded as needs_decision: a failed reply that names what only Tejas can do is a question to him, and it now reaches his device.';
+        }
+        if(asksHim&&input.workDisposition!=='needs_decision')
             throw new Error('Question fields belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
@@ -1560,7 +1569,7 @@ export class SessionCommunicationCoordinator {
         // An answer is never refused for how it was marked: a flag that does not fit is dropped,
         // the reply is recorded as written, and the worker is told why in its receipt. Refusing
         // it left an urgent answer to his question unmarked for hours (2026-10-21, request 39914136).
-        let answerNotice:string|null=null;
+        let answerNotice:string|null=convertedNotice;
         const dropAnswerMark=(why:string)=>{answerNotice=why;input={...input,answers_question:false};};
         if(input.answers_question&&input.final)
             dropAnswerMark('--answers-question was ignored: a final reply already answers the request. Your reply was recorded.');
