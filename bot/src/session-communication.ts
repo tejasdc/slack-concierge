@@ -341,7 +341,7 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
-    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
         const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
@@ -349,7 +349,7 @@ export class SessionCommunicationCoordinator {
         const committed=priorKey?db.query('SELECT * FROM session_external_replies WHERE action_key=?').get(priorKey) as any:null;
         if(committed){
             const saved=JSON.parse(committed.payload_json);
-            if(committed.request_id!==input.request_id||saved.text!==input.text||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
+            if(committed.request_id!==input.request_id||saved.text!==input.text||saved.replyBody!==input.reply_body||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
                 throw new Error('Idempotency conflict: outside reply changed.');
             return this.externalGet(request.agent_name,request.request_id);
         }
@@ -367,7 +367,7 @@ export class SessionCommunicationCoordinator {
         if(request.outcome)throw new Error('This outside request already has a final reply.');
         const sourceInputId=actor.inputId??this.peerActor(actor).inputId;
         const attachments=this.retainAttachments(sourceInputId,input.action_id,'reply-file',input);
-        const payload={text:input.text,final:input.final,responding_session_id:`concierge:${actor.session}`,
+        const payload={text:input.text,...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),final:input.final,responding_session_id:`concierge:${actor.session}`,
             ...(input.workDisposition?{workDisposition:input.workDisposition}:{}),...(attachments.length?{attachments}:{}),
             ...(input.evidence?{evidence:input.evidence}:{})};
         const eventId=randomUUID();

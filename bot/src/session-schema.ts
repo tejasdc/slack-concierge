@@ -182,6 +182,31 @@ export function initializeSessionOwnerSchema(db: Database) {
           WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
         CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS canvas_project_policies (
+          revision_id TEXT PRIMARY KEY,
+          group_name TEXT NOT NULL,
+          template TEXT NOT NULL,
+          consultation_request_id TEXT NOT NULL UNIQUE REFERENCES session_communication_requests(request_id),
+          source_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          source_input_id TEXT NOT NULL UNIQUE,
+          source_run_id TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS canvas_project_ensures (
+          board_id TEXT PRIMARY KEY,
+          client_action_id TEXT NOT NULL UNIQUE,
+          project TEXT NOT NULL,
+          inside TEXT,
+          title TEXT NOT NULL,
+          purpose TEXT NOT NULL,
+          template TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('awaiting_policy','creating','ready','failed')),
+          policy_revision_id TEXT REFERENCES canvas_project_policies(revision_id),
+          created_project INTEGER NOT NULL DEFAULT 0,
+          error TEXT,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);
         CREATE INDEX IF NOT EXISTS session_inputs_surface_recovery ON session_inputs(scope)
           WHERE kind='input' AND turn_id IS NULL AND steering_id IS NULL AND request_id IS NULL;
