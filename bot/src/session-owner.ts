@@ -15,6 +15,7 @@ import {log} from './log';
 import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
 import {boundSearchResponse} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
+import {SessionCapabilityError} from './session-capability-client';
 import {awaitingOutside,observeStorageOperation,storageObservationFailures,withStorageReadBudget,StorageReadBudgetError,type StorageWork} from './storage-observation';
 import {startStorageIntervals,takeStorageInterval} from './storage-interval';
 import {ownerGetPolicy} from './owner-get-policy';
@@ -575,9 +576,12 @@ export class SessionOwner {
       view.refresh=Array.isArray(value?.refresh)?value.refresh:null;
       return value;
     },error=>{
+      const failure=error instanceof SessionCapabilityError&&(error.status===null||error.status>=500)
+        ?new SessionOwnerError('Thinkering did not answer the source refresh; its availability may be changing.',503,'SOURCE_REFRESH_UNAVAILABLE')
+        :error;
       view.settledAt=new Date().toISOString();
-      view.error={code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:(error instanceof Error?error.message:String(error)).slice(0,500)};
-      throw error;
+      view.error={code:failure instanceof SessionOwnerError?failure.code:'OWNER_ERROR',message:(failure instanceof Error?failure.message:String(failure)).slice(0,500)};
+      throw failure;
     });
     this.sourceRefreshPass={view,settled};
     return settled;
