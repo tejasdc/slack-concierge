@@ -18,6 +18,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/usage/breakdown',purpose:'two bounded accounting periods',maxResponseBytes:MiB,kind:'control'},
  {path:'/projects',purpose:'registered project choices; finite owner catalogue',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/projects/:id/status',purpose:'one project setup status',maxResponseBytes:MiB,kind:'control'},
+ {path:'/canvas-projects/:id',purpose:'one Canvas project provisioning status',maxResponseBytes:MiB,kind:'control'},
  {path:'/projects/:id/instructions',purpose:'one exact project instructions file',maxResponseBytes:8*MiB,kind:'control'},
  {path:'/projects/:id/todos',purpose:'one exact project task file',maxResponseBytes:8*MiB,kind:'control'},
  {path:'/projects/:id/files',purpose:'one bounded folder inside a registered project',maxResponseBytes:2*MiB,kind:'control'},

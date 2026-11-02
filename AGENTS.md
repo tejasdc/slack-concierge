@@ -411,6 +411,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `tejasdc` repository before retaining a peer setup order. One-level grouping folders such
   as `canvases/` carry the same accepted placement to the peer; the child name remains the
   registered project identity. See [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+  Thinkering's Canvas uses the owner-side ensure operation: the board identity retains one
+  project choice, creation reads the current organizer-owned Canvas placement policy, and the
+  browser sees pending or confirmed server/Mac paths without choosing a folder.
   `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the

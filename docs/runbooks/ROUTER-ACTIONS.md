@@ -173,6 +173,22 @@ their current paths because sessions and transcripts retain that identity.
 If the organizer has not answered or is not bound, creation refuses before making a folder;
 the caller can retry after the consultation is complete.
 
+Thinkering's Canvas does not impersonate an agent turn or ask the person to choose a project.
+The bound workspace organizer answers one consultation with the exact JSON object
+`{"group":"<group>","template":"<template>"}`. `projects canvas-policy --consultation <request>`
+derives the policy only from that retained answer; the caller cannot substitute values. Each
+revision keeps that organizer reply and its input and run. `POST /sessions/v1/canvas-projects/ensure` accepts a stable board
+identity and current title, freezes the first project choice, and creates from the policy revision
+available at that moment. A default title uses a stable board-derived folder name; later renaming
+does not move the project. `GET /sessions/v1/canvas-projects/:board` returns `pending`, `ready`, or
+`failed`. `ready` means the server scaffold exists and the Canvas can use it; private GitHub setup
+and the durable Mac order continue after that local boundary. A Mac path appears only after that Concierge confirms
+the registered peer project. A later remote failure stays visible without making the local Canvas unusable. Reusing an existing project requires its explicit registered name and
+optional inside folder; title similarity never attaches a board to a project.
+For a deliberate retrofit, `projects canvas-bind <board-id> --title <title> --existing <project>
+[--inside <folder>]` records that exact association without creating or moving a project;
+`projects canvas-status <board-id>` reads its retained setup state.
+
 `--template brainstorm|writing|design` lays a project template into the new project before its
 first commit: a threads file, research dossiers and an `agents/` folder of standing agent
 specifications (research, co-writer as a fork of research, interface), growing with each template.
