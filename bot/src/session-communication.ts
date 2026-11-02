@@ -1075,6 +1075,7 @@ export class SessionCommunicationCoordinator {
         title?: string;
         text: string;
         after?: string[];
+        pace?: string[];
         attachments?:string[];
         files?:{name:string;contentType:string;base64:string}[];
         captureId?:string;
@@ -1225,7 +1226,7 @@ export class SessionCommunicationCoordinator {
             if(input.machine_need!==undefined&&input.peer!=='mac')throw new Error('--machine-need is for Mac work.');
             if(input.server_attempt!==undefined&&input.peer!=='mac')throw new Error('--server-attempt is for Mac browser fallback.');
             if(input.server_attempt!==undefined&&machineNeed?.kind!=='browser-fallback')throw new Error('--server-attempt needs a Mac browser-fallback work request.');
-            if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
+            if(input.after?.length||input.pace?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
             if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
             if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
             if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
@@ -1247,6 +1248,14 @@ export class SessionCommunicationCoordinator {
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
             throw new Error('after must contain exact existing request IDs.');
         const after = [...new Set(input.after ?? [])].sort();
+        // Pacing is not a prerequisite: a paced request waits until each named request settles,
+        // whatever its outcome, and is then delivered. --after-request means the earlier work must
+        // succeed, so a nightly review that used it only to keep two repairs in flight had every
+        // later finding in a lane refused when one unrelated repair settled failed (2026-11-01 and
+        // -02: 14 and 15 requests never reached their owners).
+        if (input.pace !== undefined && (!Array.isArray(input.pace) || input.pace.some(id => typeof id !== 'string')))
+            throw new Error('pace must contain exact existing request IDs.');
+        const pace = [...new Set(input.pace ?? [])].sort();
         if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
         if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
             throw new Error('An informational request cannot delegate work; preserve its originating scope.');
@@ -1257,7 +1266,7 @@ export class SessionCommunicationCoordinator {
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
-            ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
+            ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.return_to_requester?{returnToRequester:true}:{}),
@@ -1302,6 +1311,9 @@ export class SessionCommunicationCoordinator {
         for (const dependency of after)
             if (this.row(dependency).source_session_id !== actor.session)
                 throw new Error('A continuation may depend only on this session’s accepted requests.');
+        for (const earlier of pace)
+            if (this.row(earlier).source_session_id !== actor.session)
+                throw new Error('A request may be paced only behind this session’s own requests.');
         const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
         if(consultation) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1958,9 +1970,12 @@ export class SessionCommunicationCoordinator {
         const payload = JSON.parse(request.payload_json) as {
             text: string;
             after: string[];
+            pace?: string[];
         };
         const dependencies = payload.after.map(id => this.row(id));
         if (dependencies.some(value => !value.outcome))
+            return;
+        if ((payload.pace ?? []).some(id => !this.row(id).outcome))
             return;
         // Missing confirmation is a decision needed by the requester, not proof
         // that the prerequisite work failed. Keep its continuation unadmitted.
