@@ -3,6 +3,56 @@ import {Database} from 'bun:sqlite';
 import {PreparedTopics,readPreparedTopics,readPreparedTopic,readPreparedTopicChanges,readPreparedTopicOverview,readPreparedTopicItems,readPreparedQuestions,readPreparedTopicResolution,readPreparedTopicChunk,readPreparedInboxAttention,readPreparedTopicEvents,readPreparedIncoming} from '../src/prepared-topics';
 import {PreparedAreas,readPreparedAreas,readPreparedArea} from '../src/prepared-areas';
 import {observedDatabase,withStorageReadBudget,observeStorageOperation} from '../src/storage-observation';
+import {readPreparedThreadCoordinationKeys} from '../src/presentation-message-reader';
+import {readPrivateCoordinationRows} from '../src/thread-coordination-read';
+
+async function coordinationGrowth(){
+ for(const count of [100,1000,10000]){
+  const raw=new Database(':memory:');
+  raw.exec(`CREATE TABLE presentation_message_meta(singleton INTEGER PRIMARY KEY,generation INTEGER,event_watermark INTEGER,ready INTEGER);
+    INSERT INTO presentation_message_meta VALUES(1,1,100000,1);
+    CREATE TABLE presentation_messages(generation INTEGER,topic_id TEXT,message_id TEXT,event_sequence INTEGER);
+    CREATE INDEX presentation_messages_topic_identity ON presentation_messages(generation,topic_id,message_id,event_sequence DESC);`);
+  const insert=raw.query('INSERT INTO presentation_messages VALUES(?,?,?,?)');
+  raw.transaction(()=>{
+   for(let i=0;i<count;i++)insert.run(1,'selected',`message:${i}`,i+1);
+   for(let i=0;i<60;i++)insert.run(1,'selected',i%2?`request:${i}`:`post:earlier-work:${i}`,count+i+1);
+  })();
+  const db=observedDatabase(raw);
+  const first=observeStorageOperation('thread-coordination-growth',()=>withStorageReadBudget({maxCalls:8,maxRows:42,maxResultBytes:16384},
+   ()=>readPreparedThreadCoordinationKeys(db,'selected',20,null,100000)));
+  assert.equal(first.keys.length,20);assert.ok(first.nextCursor);
+  const second=readPreparedThreadCoordinationKeys(db,'selected',20,first.nextCursor,100000);
+  assert.equal(second.keys.length,20);assert.ok(second.keys[0]!.sequence<first.keys.at(-1)!.sequence);
+  raw.query('UPDATE presentation_message_meta SET ready=0').run();
+  assert.equal(readPreparedThreadCoordinationKeys(db,'selected',20,null,100000).coverage.code,'presentation_indexing');
+  raw.query('UPDATE presentation_message_meta SET ready=1').run();
+  raw.exec(`CREATE TABLE inbox_topic_roots(topic_id TEXT,root_input_id TEXT);
+    INSERT INTO inbox_topic_roots VALUES('selected','root:selected');
+    CREATE TABLE session_communication_requests(request_id TEXT,created_at_ms INTEGER,payload_json TEXT,
+      source_input_id TEXT,source_session_id INTEGER,target_session_id INTEGER,status TEXT,outcome TEXT,
+      topic_root_input_id TEXT,thread_root_input_id TEXT);
+    CREATE TABLE session_peer_requests(request_id TEXT,created_at_ms INTEGER,payload_json TEXT,
+      source_input_id TEXT,source_session_id INTEGER,peer TEXT,remote_session_id TEXT,status TEXT,outcome TEXT,
+      topic_root_input_id TEXT,thread_root_input_id TEXT);
+    CREATE INDEX fixture_private_coordination ON session_communication_requests(topic_root_input_id,created_at_ms DESC,request_id)
+      WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL;
+    CREATE INDEX fixture_peer_coordination ON session_peer_requests(topic_root_input_id,created_at_ms DESC,request_id)
+      WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL;`);
+  const insertPrivate=raw.query('INSERT INTO session_communication_requests VALUES(?,?,?,?,?,?,?,?,?,?)');
+  const insertPeer=raw.query('INSERT INTO session_peer_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+  raw.transaction(()=>{for(let i=0;i<count;i++)insertPrivate.run(`other-${i}`,i,'{}','source',1,2,'pending',null,`root:other:${i}`,null);
+    for(let i=0;i<60;i++)insertPrivate.run(`selected-${i}`,count+i,'{}','source',1,2,'pending',null,'root:selected',null);
+    insertPeer.run('peer-selected',count+61,'{}','source',1,'mac','concierge:12','pending',null,'root:selected',null);
+  })();
+  const privateFirst=observeStorageOperation('thread-private-coordination-growth',()=>withStorageReadBudget({maxCalls:8,maxRows:42,maxResultBytes:16384},
+    ()=>readPrivateCoordinationRows(db,'selected',null,20)));
+  assert.equal(privateFirst.rows.length,20);assert.equal(privateFirst.rows[0]?.id,'peer-selected');assert.ok(privateFirst.nextCursor);
+  const privateSecond=readPrivateCoordinationRows(db,'selected',privateFirst.nextCursor,20);
+  assert.equal(privateSecond.rows.length,20);assert.ok(privateSecond.rows[0]!.at<privateFirst.rows.at(-1)!.at);
+  raw.close();
+ }
+}
 
 async function readerGrowth(reader:'incoming'|'window'|'overview'|'items'|'questions'|'resolution'|'detail'|'changes'|'attention'|'events'){
  for(const count of [100,1000,10000]){
@@ -101,6 +151,7 @@ async function areaGrowth(kind:'window'|'detail'){
  }
 }
 export const READ_GROWTH_FIXTURES={
+ 'thread-coordination-growth':coordinationGrowth,
  'areas-window-growth':()=>areaGrowth('window'),'areas-detail-growth':()=>areaGrowth('detail'),
  'topics-window-growth':()=>readerGrowth('window'),'topics-detail-growth':()=>readerGrowth('detail'),'topics-changes-growth':()=>readerGrowth('changes'),
  'topics-overview-growth':()=>readerGrowth('overview'),'topics-items-growth':()=>readerGrowth('items'),'topics-questions-growth':()=>readerGrowth('questions'),

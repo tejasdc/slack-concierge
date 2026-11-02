@@ -2313,6 +2313,26 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInp
     respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
   return post;
 }
+/** The server owns the Inbox decision for an exact Mac request; the Mac sends only its outcome fact. */
+export function filePeerWorkerNeedInThread(input:{requestId:string;inboxSessionId:number;threadRootInputId:string|null;
+  sourceInputId:string;respondingSessionId:string;runId:string;eventId:string;text:string}):string|null {
+  const inbox=getSessionById(input.inboxSessionId),source=getAcceptedSessionInput(input.sourceInputId);
+  const human=source?(sessionInputProvenance(source)?.originatingHuman
+    ??(humanAuthored(source)?{sessionId:`concierge:${source.session_id}`,inputId:source.id}:null)):null;
+  if(!inbox||!sessionMetadata(inbox).inbox||!human||conciergeSessionNumber(human.sessionId)!==inbox.id
+    ||!input.threadRootInputId||!input.respondingSessionId||!input.runId||!input.text?.trim())return null;
+  const root=inboxRequestRoot(db,input.requestId,input.threadRootInputId)??input.threadRootInputId;
+  refreshRootMemo();
+  const topicId=topicOfRoot(root);
+  if(!topicId||topicQuestions(topicId).some(question=>sameAsk(question,input.respondingSessionId,input.runId)))return null;
+  const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:input.requestId,root,
+    inboxInputId:input.threadRootInputId,respondingSessionId:input.respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
+  if(!post)return null;
+  fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:input.requestId,
+    respondingSessionId:input.respondingSessionId,respondingTitle:sessionAuthor(input.respondingSessionId)?.title??null,
+    disposition:'needs_decision',text:input.text,askedInRun:input.runId});
+  return post;
+}
 /** One run's reply and outcome are one ask; a later run, or the same run asking again in other words
  * on another day, may ask for something different and keeps its own question. */
 const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|null)=>!!runId&&question.kind==='decision'

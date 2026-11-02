@@ -502,11 +502,31 @@ or later router post on that root. The prompt's `<topic>` block names it as `unr
 Since 2026-10-14 every request naming an Inbox thread posts each fresh reply there directly,
 whether the request is work or informational. Work finals keep their existing attention filing;
 informational finals close their linked request quietly unless the asking human input explicitly
-requested a result. Progress posts stay quiet. The owner also returns the final to the requester with an explicit
-already-posted marker; that copy enters the requester's run and remains in the request record,
-but its accepted input is omitted from the Inbox Conversation and its `result_waiting` calculation.
-The `<topic>` block lists the direct posts as `agentAnswers`. This keeps the router informed
-without requiring it to relay or creating a second visible answer.
+requested a result. Progress remains quiet. A named-thread request does not wake its requester
+unless it explicitly chose a requester return. The request receipt still retains the full brief,
+all progress, the final disposition and stall evidence. The `<topic>` block lists direct posts as
+`agentAnswers` when the router is next asked to act; it does not read the worker's session.
+
+### Thread work lane
+
+The thread's work lane reads `GET /sessions/v1/inbox/topics/:topic/coordination` in pages of at
+most 20. Each handoff has a stable request identity, named recipient, one-line summary, current
+request state, source input, original brief (up to 8 KiB inline), and the three latest retained
+request events. The exact `GET /sessions/v1/requests/:id` read carries any longer brief or older
+progress on explicit opening. Automatic earlier-work posts are separate `suggestion` items with
+their exact retained text. The source capture remains its own message in the conversation;
+clients show handoff and suggestion identities in the work lane rather than repeating them as
+conversation messages. The work page seeks indexed request and suggestion identities in the
+prepared Inbox ledger, so old unrelated conversation does not extend a page read.
+Opening the private coordination view uses the same route with `mode=private`. It pages local and peer requests
+that inherited this topic from their originating human task but did not ask to post a public
+thread answer. Each item names the sending and receiving sessions, summary, state and exact
+receipt for full detail. It does not post or notify Tejas on its own; he opens it when he wants
+to inspect how the agents coordinated. The topic association is retained at request admission,
+including when the agent did not name a thread on its private request.
+When Tejas addresses a reply directly to an agent, its internal delivery request is excluded
+from the conversation projection, including existing prepared rows on upgrade. His source
+message remains once with its route receipt and the agent's eventual answer still posts there.
 
 Human Inbox inputs and agent-marked captures carry their thread in the prompt: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned

@@ -69,6 +69,7 @@ import {isInboxProducerKind} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
+import {threadCoordination} from './thread-coordination';
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
@@ -3728,6 +3729,12 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=await this.workThreadFor(url);
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='coordination'&&parts.length===4)
+        {
+          const mode=url.searchParams.get('mode')??'visible';
+          if(mode!=='visible'&&mode!=='private')throw new SessionOwnerError('Coordination mode must be visible or private.',400,'INVALID_COORDINATION_MODE');
+          result=threadCoordination(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20,mode);
+        }
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
         result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20));
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);
@@ -3780,7 +3787,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[1]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[2]!,url.searchParams.get('peer')??undefined);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[1]!,url.searchParams.get('peer')??undefined);
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));

@@ -452,15 +452,34 @@ export function recoverProviderRefusalContinuations():Array<{turnId:number;provi
   }
   return created;
 }
+/**
+ * Whether an earlier live hand-off of this message could have reached the provider: sent, being
+ * sent or uncertain. Only such an attempt stands in the way of another. A failed attempt with no
+ * send time is the owner's own proof nothing was written, the same proof that returned it to the
+ * queue, so the message may join the next live run. Treating it as a permanent barrier left his
+ * thread reply waiting 87 minutes behind a 2h20m turn while later messages went straight in
+ * (docs/incidents/2026-11-02-reply-queued-after-restart-missed-handoff.md).
+ */
+const STEERING_MAY_HAVE_REACHED_PROVIDER="NOT (status='failed' AND provider_sent_at IS NULL)";
+export function steeringMayHaveReachedProvider(inputId:string):boolean {
+  return !!db.query(`SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? AND ${STEERING_MAY_HAVE_REACHED_PROVIDER} LIMIT 1`).get(inputId);
+}
+/**
+ * A message's first hand-off keeps its plain record names; a later attempt, which may join another
+ * run, gets its own, because a recorded event never changes turn. Reusing the names refused the
+ * second attempt and stranded two reminders after a restart (2026-11-02).
+ */
+export function steeringAttemptEventId(base:string,inputId:string,steeringId:number):string {
+  const earlier=db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? AND id<? LIMIT 1').get(inputId,steeringId);
+  return earlier?`${base}:attempt:${steeringId}`:base;
+}
 export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
     if (!input) throw new Error('Unknown accepted input.');
     if (input.steering_id!==null) return input;
-    // A failed, unsent steering attempt can be detached for queue recovery, but
-    // its row remains the permanent record for this accepted identity.
-    if(db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=?').get(input.id))
-      return input;
+    // Every attempt keeps its row as history; one that may have reached the provider is never repeated.
+    if(steeringMayHaveReachedProvider(input.id))return input;
     if (input.turn_id!==null) {
       // An explicit Inbox "work together" action can move a never-received
       // queued capture into this run without replacing its accepted identity.
@@ -488,7 +507,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
     const steeringId=Number(added.lastInsertRowid);
     db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId,steeringId,input.id);
     reopenDoneSessionForExecutableInput(getSessionById(input.session_id)!,input,turnId);
-    recordSessionEvent({eventId:`input:${input.id}`,sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text}});
+    recordSessionEvent({eventId:steeringAttemptEventId(`input:${input.id}`,input.id,steeringId),sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text}});
     return getAcceptedSessionInput(input.id)!;
   })();
 }
@@ -503,13 +522,24 @@ export function attachSessionSteering(inputId:string,turnId:number) {
  * a choice marker did not prove that choice. Saved work retains its chosen time.
  */
 export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string):AcceptedSessionInput[] {
+  const later=getAcceptedSessionInput(laterInputId);
+  if(!later)return [];
+  const laterBody=JSON.parse(later.payload_json);
+  if(laterBody.delivery==='queue'&&laterBody.queueChosen===true)return [];
+  return releaseWaiting(sessionId,laterInputId);
+}
+/**
+ * The same messages, when a run taken back after a restart can accept messages again. A restart
+ * discards the run's not-yet-sent hand-offs and returns them to the queue; without this they waited
+ * for the next message to the session, or for the whole turn to end (2026-11-02).
+ */
+export function releaseWaitingInputs(sessionId:number):AcceptedSessionInput[] {
+  return releaseWaiting(sessionId,null);
+}
+function releaseWaiting(sessionId:number,laterInputId:string|null):AcceptedSessionInput[] {
   return db.transaction(()=>{
-    const later=getAcceptedSessionInput(laterInputId);
-    if(!later)return [];
-    const laterBody=JSON.parse(later.payload_json);
-    if(laterBody.delivery==='queue'&&laterBody.queueChosen===true)return [];
     const rows=db.query(`SELECT input.id AS id,turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
-      WHERE input.session_id=? AND input.id<>? AND input.kind='input' AND input.steering_id IS NULL
+      WHERE input.session_id=? AND (? IS NULL OR input.id<>?) AND input.kind='input' AND input.steering_id IS NULL
         AND json_extract(input.receipt_json,'$.state') IS NULL
         AND json_extract(input.receipt_json,'$.forwardTarget') IS NULL
         AND (json_extract(input.payload_json,'$.delivery') IS NULL
@@ -520,10 +550,11 @@ export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string
         AND turn.owner_instance_id IS NULL AND turn.provider_started_at IS NULL
         AND turn.provider_admission_intended_at IS NULL AND turn.provider_turn_id IS NULL
         AND turn.provider_input_acknowledged_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages prior WHERE prior.accepted_input_id=input.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages prior WHERE prior.accepted_input_id=input.id
+          AND ${STEERING_MAY_HAVE_REACHED_PROVIDER})
         AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id)
-        AND input.rowid<(SELECT rowid FROM session_inputs WHERE id=?)
-      ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
+        AND (? IS NULL OR input.rowid<(SELECT rowid FROM session_inputs WHERE id=?))
+      ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
     for(const row of rows) {
       db.query("UPDATE turns SET accepted_input_id=NULL WHERE id=? AND status='queued'").run(row.turn_id);
       finishTurn(row.turn_id,'cancelled','Joined the running work with his next message.');
@@ -564,8 +595,9 @@ export function recoverUnsentSteeredInput(inputId:string) {
   return db.transaction(()=>{
     const input=getAcceptedSessionInput(inputId);
     if(!input)return input;
+    // A message can have several attempts; the latest decides where it stands.
     const prior=db.query(`SELECT id,turn_id,status,provider_sent_at FROM turn_steering_messages
-      WHERE accepted_input_id=?`).get(input.id) as {id:number;turn_id:number;status:string;provider_sent_at:string|null}|null;
+      WHERE accepted_input_id=? ORDER BY id DESC LIMIT 1`).get(input.id) as {id:number;turn_id:number;status:string;provider_sent_at:string|null}|null;
     if(input.steering_id===null){
       // A previous recovery may have detached the failed attempt before it could
       // put the same accepted input in the queue. Finish that durable next step.

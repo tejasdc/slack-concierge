@@ -9,13 +9,14 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
-import {enqueueSessionInput,getAcceptedSessionInput, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {acceptedInputForTurn,enqueueSessionInput,getAcceptedSessionInput, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
-import {expireQuestionsForFinalReply,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
+import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply,messageRouteForSource} from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
+import {topicRootFor} from './session-fit';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
@@ -487,8 +488,8 @@ export class SessionPeers {
       const raced=prior();
       if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
       const now=this.now();
-      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null);
+      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id,topic_root_input_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null,input.routedFrom?.root??topicRootFor(input.threadRoot,actor.inputId)??'');
       const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
         payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
           ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
@@ -605,6 +606,20 @@ export class SessionPeers {
   /** Whether this instance now holds the reply: recorded, already held, or refused with the reason. */
   private recordReply(row:PeerRequestRow,input:Record<string,any>):{recorded:'recorded'|'duplicate'|'refused';reason?:string} {
     const requestId=row.request_id;
+    if(input.turnOutcome==='needs_you'){
+      if(typeof input.eventId!=='string'||!input.eventId.startsWith('turn_outcome:action:')||input.kind!=='progress'
+        ||typeof input.text!=='string'||!input.text.trim()||input.files!==undefined
+        ||input.responder?.sessionId!==row.remote_session_id||typeof input.responder?.runId!=='string'||!input.responder.runId
+        ||typeof input.responder?.inputId!=='string'||!input.responder.inputId)
+        throw new SessionOwnerError('A peer turn question needs its exact outcome, session, input and run.');
+      return db.transaction(()=>{
+        if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate' as const};
+        this.event(row,'progress',{text:input.text.trim().slice(0,2000),turnOutcome:'needs_you',
+          source:{peer:row.peer,input_id:input.responder.inputId,run_id:input.responder.runId},
+          responding_session_id:this.presentedSession(row.peer,row.remote_session_id)},input.eventId);
+        return {recorded:'recorded' as const};
+      })();
+    }
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     // A reply carrying files is a message even without words.
     if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length&&!(input.kind==='final'&&input.replyBody==='')))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
@@ -687,7 +702,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -812,6 +827,14 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
+    if(declared.turnOutcome==='needs_you'){
+      filePeerWorkerNeedInThread({requestId:row.request_id,inboxSessionId:row.source_session_id,
+        threadRootInputId:row.thread_root_input_id,sourceInputId:row.source_input_id,
+        respondingSessionId:declared.responding_session_id,runId:declared.source?.run_id,
+        eventId:event.event_id,text:declared.text});
+      db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(event.event_id);
+      return;
+    }
     const requestPayload=JSON.parse(row.payload_json);
     const routedMessage=requestPayload.routedMessage;
     const forwardedRoute=requestPayload.forwardedReply?.inboxInputId?messageRouteForSource(requestPayload.forwardedReply.inboxInputId):null;
@@ -1154,7 +1177,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1196,7 +1219,7 @@ export class SessionPeers {
     const files=payload.attachments?.length
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
-    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+    return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
@@ -1240,6 +1263,21 @@ export class SessionPeers {
     return {canceled:true};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
+  /** A Mac turn outcome is retained beside its request and travels through the reply channel. */
+  recordTurnNeed(actor:PeerActor,eventId:string,text:string) {
+    const input=acceptedInputForTurn(actor.turn)??getAcceptedSessionInput(actor.inputId);
+    const provenance=input?sessionInputProvenance(input):null;
+    if(!provenance?.requestId||!provenance.peer||!provenance.originatingHuman)return;
+    const row=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=? AND target_session_id=?')
+      .get(provenance.requestId,actor.session) as DeliveryRow|null;
+    if(!row||row.peer!==provenance.peer)return;
+    const key=`turn-need:${eventId}`;
+    if(db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(key))return;
+    db.query(`INSERT INTO session_peer_replies(event_id,request_id,action_key,kind,payload_json,created_at_ms)
+      VALUES(?,?,?,'progress',?,?)`).run(eventId,row.request_id,key,JSON.stringify({text,turnOutcome:'needs_you',
+        source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`}),this.now());
+    this.wake();
+  }
   reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
@@ -1287,9 +1325,12 @@ export class SessionPeers {
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
+      const turnNeed=JSON.parse(reply.payload_json).turnOutcome==='needs_you';
       try {
         const answer=await withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
-          startedAtMs:reply.created_at_ms,
+          // A final reply may already have closed the origin's request, so it will not poll
+          // this status again. Keep a turn question eligible for later bounded retry windows.
+          startedAtMs:turnNeed?this.now():reply.created_at_ms,
           run:async()=>{
             const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
             if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused'].includes(response.recorded??''))
@@ -1313,6 +1354,10 @@ export class SessionPeers {
         log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
       } catch(error) {
         this.note(row.peer,error);
+        if(turnNeed){
+          log('warn','session_peer_turn_need_retry_later',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,...errorFields(error)});
+          continue;
+        }
         const deadline=error instanceof RetryBudgetExhaustedError&&error.reason==='deadline';
         const status=deadline?'failed_deadline':'failed_budget';
         db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(status,error instanceof Error?error.message:String(error),reply.event_id);

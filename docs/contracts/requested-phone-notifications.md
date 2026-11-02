@@ -56,8 +56,11 @@ Inbox started to the Inbox, so before this the declaration reached no device; on
 Eats agent's request for a photo was lost that way after its "could not finish" reply filed only a
 reading item. The thread is the one his originating message belongs to (the turn's provenance); a
 session he started himself keeps its own notification. A reply and an outcome from the same agent run
-are one ask and ring once; a later run's ask keeps its own question. A Mac worker's turn outcome is not
-yet carried this way; its `needs_decision` reply is.
+are one ask and ring once; a later run's ask keeps its own question. A Mac worker retains its declared
+outcome with the exact peer request and forwards it through the existing durable reply channel, even
+when a final reply already closed the request. The server checks that request's Inbox origin and thread,
+then posts and files the decision there. The same event ID makes a repeated send harmless; an offline
+Mac keeps the event pending and retries later until the server acknowledges it.
 
 ### No automatic reminders
 

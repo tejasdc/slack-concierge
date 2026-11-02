@@ -5,7 +5,7 @@ run when it can accept steering. Human Queue requires a current explicit-choice
 marker because older pages and share replies wrote Queue as their default;
 outside-agent requests do not silently Queue. The retry, Mac parity and addressed Inbox boundaries are in the
 [session owner wire contract](docs/contracts/session-owner-v1.md#human-message-delivery-choice).
-An accepted input's live steering retry follows its recorded state and cannot enqueue the same provider message twice; failed unsent steering recovers into the session queue. See [session ownership](docs/architecture/SESSION-OWNER.md).
+An accepted input's live steering retry follows its recorded state and cannot enqueue the same provider message twice; failed unsent steering recovers into the session queue and joins the next live hand-off, or the run a restart takes back once it is ready; only an attempt that could have reached the provider blocks another ([incident](docs/incidents/2026-11-02-reply-queued-after-restart-missed-handoff.md)). See [session ownership](docs/architecture/SESSION-OWNER.md).
 
 The Inbox capture space reads a bounded page of retained inputs, with attachment
 metadata separated from bytes. The owner contract and query are in
@@ -23,6 +23,9 @@ the cross-database handoff and event payload.
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Named-thread handoffs and automatic earlier-work suggestions have a bounded work lane beside
+the conversation; exact request receipts retain the full brief and progress. See
+[native Inbox](docs/contracts/native-inbox.md#thread-work-lane).
 Human thread read marks validate the exact displayed conversation entry and advance
 the retained read position without rebuilding a thread summary on the owner loop;
 message routing checks prior routes through the indexed source-message read;
@@ -77,6 +80,8 @@ and their watchers are inert;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 Blocking questions to Tejas notify by default through that same path; see the
 [requested phone delivery](docs/contracts/requested-phone-notifications.md) contract.
+Mac agents' end-of-turn questions for peer-delivered Inbox thread work cross the retained peer reply
+channel and become that thread's decision and alert; see [requested phone delivery](docs/contracts/requested-phone-notifications.md#a-thread-worker-waiting-on-him).
 Mac agent actions that can surface a permission prompt, background item, browser debugger,
 screen capture or install publish one retained activity event per action kind and turn;
 see [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
@@ -248,11 +253,11 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Standing agents and their project folders are declared once in Concierge; use
   `sessions agents` or Thinkering's owner read to see bindings, repeating schedules, watches,
-  last runs, unowned schedules and host timers. Create their projects with `projects new --owner agents`,
+  last runs, unowned schedules and host timers. Consult the workspace organizer before creating their projects,
   write the project `AGENTS.md`, add the role row, then use `sessions agents bind`, `sessions ask --role`
   or `sessions schedule --role` to address the continuing session.
-  New repeating schedules and renewing watches belong only in agent, router or
-  lab projects. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
+  New repeating schedules and renewing watches belong to registered projects regardless of
+  grouping folder; new project placement goes through the workspace organizer. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
 
 - Grafana health alerts queue the standing repair agent without a human Inbox thread; the external work-flow supervisor owns
   host resource pressure plus responsive-owner/speech memory and latency repair. Webhook acceptance alone does not
@@ -401,10 +406,12 @@ previews with phase timing for slow calls and a compact exact archive proof; see
 - Opening a link in his browser on the Mac is `sessions open <link>`, an order between the two
   Concierges, never a new Mac session; queued while the Mac sleeps. See
   [peer instances](docs/runbooks/PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
-- Project folders are machine-local. `projects new` creates the canonical scaffold and a
-  private `tejasdc` repository before retaining a peer setup order; its required `--owner`
-  puts his projects at the top of the workspace and agents' own or maintenance projects in
-  `workspace/agents/` ([router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing)); `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
+- Project folders are machine-local. `projects new` requires a completed placement consultation
+  from the bound workspace organizer, then creates the canonical scaffold and a private
+  `tejasdc` repository before retaining a peer setup order. One-level grouping folders such
+  as `canvases/` carry the same accepted placement to the peer; the child name remains the
+  registered project identity. See [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+  `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the
   other. See [peer instances](docs/runbooks/PEER-INSTANCES.md#durable-project-setup).
