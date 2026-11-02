@@ -1,0 +1,1 @@
+Think-aloud actions from a Mac now keep the Codex session as their verified author. TL;DR: A Mac think-aloud session now carries its source identity intact when it acts on the Canvas. Its work no longer loses attribution while crossing to the server; nothing to do.
