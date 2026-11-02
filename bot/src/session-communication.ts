@@ -1211,7 +1211,7 @@ export class SessionCommunicationCoordinator {
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,returnToRequester:input.return_to_requester,
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId:input.thread,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),
                 ...(routedFrom?{routedFrom}:{})});
         }
@@ -1337,7 +1337,7 @@ export class SessionCommunicationCoordinator {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInput}`,actionId:input.action_id,kind:'request',origin:'agent',
                     payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
-                recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`}});
+                recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`,...(threadRoot?{threadSourceMessageId:input.thread}:{})}});
                 if(routedFrom)recordSessionMessageRoute({sourceMessageId:routedFrom.messageId,destinationSessionId:`concierge:${selected.session}`,
                     destinationMessageId:`request:${id}`,requestId:id,actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId!,runId:nativeRunId(actor.turn)}});
             }

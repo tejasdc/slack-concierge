@@ -121,6 +121,7 @@ the main-thread recipient rule remains unchanged. See the same prompt-answer con
 Requests naming an Inbox thread deliver answers and terminal notices to that thread without
 waking the requester, unless the ask explicitly chooses a requester return; see
 [requests and returns](docs/architecture/SESSION-OWNER.md#requests-and-returns).
+The request itself is shown in that thread with the router's brief and Tejas's source words when present; its retained dispatch adds the agent to reply choices. The same contract owns this thread handoff.
 Decision replies returned to an ordinary requester create one requester-owned blocking
 attention item at return admission, for local and peer workers; the same contract owns
 its notification identity and human-answer settlement.
