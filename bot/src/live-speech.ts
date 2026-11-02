@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
+import { ScreenshotRefusal, takeLocalScreenshot } from "./local-screenshot";
 import { log } from "./log";
 import { speechEngine } from "./speech-engine";
 import { transcribeWholeRecording } from "./transcription";
@@ -133,6 +134,7 @@ async function handle(request: Request): Promise<Response> {
   const cors = { "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-allow-private-network": "true", "access-control-max-age": "600", vary: "origin" };
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   const parts = new URL(request.url).pathname.split("/").filter(Boolean);
+  if (parts[0] === "screen" && parts[1] === "v1") return screenshotRoute(request, parts, cors);
   try {
     if (parts[0] !== "speech" || parts[1] !== "v1") throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
     let result: unknown;
@@ -159,6 +161,22 @@ async function handle(request: Request): Promise<Response> {
     return Response.json(result, { headers: cors });
   } catch (error) {
     const refusal = error instanceof SpeechRefusal ? error : new SpeechRefusal("SPEECH_FAILED", 500);
+    return Response.json({ error: refusal.code }, { status: refusal.status, headers: cors });
+  }
+}
+
+// A bug report's screenshot taken on this Mac (local-screenshot.ts). The picture comes back as its
+// own bytes; anything else is a small JSON answer, so the page tells them apart by content type.
+async function screenshotRoute(request: Request, parts: string[], cors: Record<string, string>): Promise<Response> {
+  try {
+    if (request.method === "GET" && parts[2] === "status" && parts.length === 3) return Response.json({ version: 1 }, { headers: cors });
+    if (request.method !== "POST" || parts[2] !== "shots" || parts.length !== 3) throw new ScreenshotRefusal("SCREENSHOT_NOT_FOUND", 404);
+    const body = (await request.json().catch(() => ({}))) as { kind?: unknown };
+    const shot = await takeLocalScreenshot(body.kind === "screen" ? "screen" : "area", request.signal);
+    if ("png" in shot) return new Response(shot.png, { headers: { ...cors, "content-type": "image/png", "cache-control": "no-store" } });
+    return Response.json(shot, { headers: cors });
+  } catch (error) {
+    const refusal = error instanceof ScreenshotRefusal ? error : new ScreenshotRefusal("SCREENSHOT_FAILED", 500);
     return Response.json({ error: refusal.code }, { status: refusal.status, headers: cors });
   }
 }
