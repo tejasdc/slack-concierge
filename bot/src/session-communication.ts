@@ -606,7 +606,8 @@ export class SessionCommunicationCoordinator {
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
         })();
     }
-    title(input:{source:CommunicationSource;action_id:string;title:string}) {
+    /** Any agent may name any session here; a title Tejas set himself always wins [decision: agents-are-never-handcuffed]. */
+    title(input:{source:CommunicationSource;action_id:string;title:string;address?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source)),title=normalizeSessionTitle(input.title);
         action(input.action_id);
@@ -615,14 +616,15 @@ export class SessionCommunicationCoordinator {
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
             this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            const session=input.address?resolveSessionAddress(input.address):getSessionById(actor.session)!;
+            if(!session)throw new Error('That session address is unknown here.');
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'self-title',title},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
-            if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(actor.session)!),applied:JSON.parse(saved.input.receipt_json??'{}').applied===true};
-            const session=getSessionById(actor.session)!;
+                kind:'action',origin:'agent',payload:{kind:'self-title',title,...(session.id===actor.session?{}:{session:session.id})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(session.id)!),applied:JSON.parse(saved.input.receipt_json??'{}').applied===true};
             const applied=!humanNamedSession(session.id);
             if(applied&&sessionMetadata(session).title?.trim()!==title) {
                 updateSessionMetadata(session.id,{title});
-                recordSessionEvent({eventId:`title:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,turnId:actor.turn,kind:'title',payload:{title}});
+                recordSessionEvent({eventId:`title:${saved.input.id}`,sessionId:session.id,...(session.id===actor.session?{inputId:saved.input.id,turnId:actor.turn}:{}),kind:'title',payload:{title,...(session.id===actor.session?{}:{by:`concierge:${actor.session}`})}});
             }
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',applied}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(session.id)!),applied};

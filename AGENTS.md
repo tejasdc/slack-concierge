@@ -559,8 +559,8 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.
 - Thinkering-created Codex sessions retain the owner's selected default model and
-  effort at creation. An admitted agent may name only its own session
-  through `sessions title` with its exact source input/run and stable action ID; it
+  effort at creation. An admitted agent may name its own session, or any other with
+  `--session <address>` [decision: agents-are-never-handcuffed], through `sessions title` with its exact source input/run and stable action ID; it
   may also correct that name later, because a session stuck with a bad name had no
   way to fix what he was reading (September 22, 2026). A title Tejas set himself
   through the app's Rename control always wins and is never overwritten. That is how a session
