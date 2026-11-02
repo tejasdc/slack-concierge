@@ -208,6 +208,10 @@ export function initializeSessionOwnerSchema(db: Database) {
           updated_at_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);
+        -- A source-scoped retry checks its exact source and action at HTTP admission.
+        -- The common surface action already uses the UNIQUE(scope, action_id) index.
+        CREATE INDEX IF NOT EXISTS session_inputs_source_action ON session_inputs(source_input_id,action_id)
+          WHERE source_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_surface_recovery ON session_inputs(scope)
           WHERE kind='input' AND turn_id IS NULL AND steering_id IS NULL AND request_id IS NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_capture_recovery ON session_inputs(kind)
