@@ -476,6 +476,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   independent supervised speech worker, with the owner alone committing its result;
   [speech fallback jobs](docs/architecture/SPEECH-FALLBACK-JOBS.md) owns the protocol,
   recovery and live checks. `audio_transcribed` names the engine (and the peer) and never text.
+  The same loopback listener exposes the native ⌃Space helper's leased foreground-capture state
+  to already-open thnkr.ing pages; [Mac speech operations](docs/runbooks/PEER-INSTANCES.md#speech-to-text-on-the-mac)
+  owns its native write, browser snapshot/event stream, expiry and origin boundary.
 
   whisper.cpp remains only as a logged fallback on the box and is scheduled for removal.
   `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements

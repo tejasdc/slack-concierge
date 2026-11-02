@@ -375,6 +375,24 @@ outbox. Finish returns every final segment for the caller to select the unsaved 
 browser sends only saved words to the canvas agent on the server. This Mac listener streams
 through ffmpeg and Apple's engine without creating a recording file.
 
+The same loopback listener carries only the native ⌃Space helper's foreground-capture state so
+an already-open thnkr.ing page can route its one microphone stream without restarting capture.
+The helper sends `POST /capture/v1/state` with `{active, captureId, leaseMs, sentAt}` and no
+`Origin`; an Origin-bearing write is refused so a web page cannot claim native capture. It renews
+an active claim about every two seconds with a five-second lease and sends an inactive state when
+it stops. The listener accepts only a matching stop and ignores an update older than the last
+accepted helper timestamp. If the helper exits or sleeps, the lease expires and publishes the
+inactive state automatically. No audio or recognized words enter this state.
+
+An allowed browser origin reads the current `{version, revision, active, captureId, expiresAt}` at
+`GET /capture/v1/status` or subscribes at `GET /capture/v1/events`. The event stream sends the
+current state immediately, sends a new revision when a heartbeat extends the lease or capture
+changes, and sends the current state again after reconnect. `expiresAt` is the helper's epoch
+millisecond deadline while active and `null` while inactive, so a page can fail closed even if its
+event stream disconnects. Both browser routes retain the speech listener's existing origin and private
+network CORS checks; the native write remains loopback-only because the listener itself binds only
+to `127.0.0.1` or `localhost`.
+
 - **Safari** uses `https://127.0.0.1:8791`. WebKit 26 blocks an https page's requests to plain
   http loopback, and no Safari setting changes that. `install-mac.sh` creates a certificate for
   127.0.0.1/localhost only (`speech/tls/` in the state directory, 800 days, renewed a month

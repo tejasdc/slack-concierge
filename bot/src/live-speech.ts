@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScreenshotRefusal, takeLocalScreenshot } from "./local-screenshot";
+import { LocalCaptureState, localCaptureId } from "./local-capture-state";
 import { log } from "./log";
 import { speechEngine } from "./speech-engine";
 import { transcribeWholeRecording } from "./transcription";
@@ -35,6 +36,7 @@ const ENGINE_VERSION = `darwin ${release()}`;
 
 type Recording = { stream: string; started: Promise<void>; decoder: ChildProcessWithoutNullStreams; decoded: Promise<number>; remainder: Buffer; frames: number; touchedAt: number; startedAt: number };
 const recordings = new Map<string, Recording>();
+const localCapture = new LocalCaptureState();
 
 class SpeechRefusal extends Error {
   constructor(readonly code: string, readonly status: number) { super(code); }
@@ -129,11 +131,36 @@ const recordingId = (value: string | undefined) => {
 };
 
 async function handle(request: Request): Promise<Response> {
+  const parts = new URL(request.url).pathname.split("/").filter(Boolean);
   const origin = request.headers.get("origin") ?? "";
+  if (parts[0] === "capture" && parts[1] === "v1" && parts[2] === "state" && parts.length === 3 && request.method === "POST") {
+    // Browser requests carry Origin. Only a native process on this Mac may publish the helper's
+    // bounded state; pages can observe it through the origin-checked routes below.
+    if (origin) return new Response(null, { status: 403 });
+    try {
+      const body = (await request.json().catch(() => ({}))) as { active?: unknown; captureId?: unknown; leaseMs?: unknown; sentAt?: unknown };
+      if (typeof body.active !== "boolean") throw new Error("CAPTURE_INVALID_ACTIVE");
+      if (typeof body.leaseMs !== "number") throw new Error("CAPTURE_INVALID_LEASE");
+      if (typeof body.sentAt !== "number") throw new Error("CAPTURE_INVALID_SENT_AT");
+      const result = localCapture.update({
+        active: body.active,
+        captureId: localCaptureId(body.captureId),
+        leaseMs: body.leaseMs,
+        sentAt: body.sentAt,
+      });
+      return Response.json({ accepted: result.accepted, ...result.state }, { headers: { "cache-control": "no-store" } });
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "CAPTURE_BAD_REQUEST" }, { status: 400, headers: { "cache-control": "no-store" } });
+    }
+  }
   if (!ORIGINS.has(origin)) return new Response(null, { status: 403 });
   const cors = { "access-control-allow-origin": origin, "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-allow-private-network": "true", "access-control-max-age": "600", vary: "origin" };
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-  const parts = new URL(request.url).pathname.split("/").filter(Boolean);
+  if (parts[0] === "capture" && parts[1] === "v1" && parts.length === 3) {
+    if (request.method === "GET" && parts[2] === "status") return Response.json(localCapture.snapshot(), { headers: { ...cors, "cache-control": "no-store" } });
+    if (request.method === "GET" && parts[2] === "events") return new Response(localCapture.events(), { headers: { ...cors, "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" } });
+    return Response.json({ error: "CAPTURE_NOT_FOUND" }, { status: 404, headers: cors });
+  }
   if (parts[0] === "screen" && parts[1] === "v1") return screenshotRoute(request, parts, cors);
   try {
     if (parts[0] !== "speech" || parts[1] !== "v1") throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
@@ -196,5 +223,7 @@ export function startLiveSpeechListener() {
   const sweep = setInterval(() => { for (const [id, recording] of recordings) if (Date.now() - recording.touchedAt > IDLE_MS) cancel(id); }, 60_000);
   sweep.unref?.();
   log("info", "live_speech_listener_online", { hostname: match[1], port: Number(match[2]), https_port: servers[1] ? Number(match[2]) + 1 : null, origins: [...ORIGINS] });
-  return { stop: async () => { clearInterval(sweep); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
+  return { stop: async () => { clearInterval(sweep); localCapture.close(); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
 }
+
+export const handleLiveSpeechRequest = handle;
