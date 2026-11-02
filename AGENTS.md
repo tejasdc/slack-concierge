@@ -5,7 +5,7 @@ run when it can accept steering. Human Queue requires a current explicit-choice
 marker because older pages and share replies wrote Queue as their default;
 outside-agent requests do not silently Queue. The retry, Mac parity and addressed Inbox boundaries are in the
 [session owner wire contract](docs/contracts/session-owner-v1.md#human-message-delivery-choice).
-An accepted input's live steering retry follows its recorded state and cannot enqueue the same provider message twice; failed unsent steering recovers into the session queue. See [session ownership](docs/architecture/SESSION-OWNER.md).
+An accepted input's live steering retry follows its recorded state and cannot enqueue the same provider message twice; failed unsent steering recovers into the session queue and joins the next live hand-off, or the run a restart takes back once it is ready; only an attempt that could have reached the provider blocks another ([incident](docs/incidents/2026-11-02-reply-queued-after-restart-missed-handoff.md)). See [session ownership](docs/architecture/SESSION-OWNER.md).
 
 The Inbox capture space reads a bounded page of retained inputs, with attachment
 metadata separated from bytes. The owner contract and query are in
