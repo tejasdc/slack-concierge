@@ -760,7 +760,7 @@ export class SessionCommunicationCoordinator {
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
-                try{fileWorkerNeedInThread({respondingSessionId:actor.session,turnInputId:actor.inputId!,eventId:saved.input.id,text:stated});}
+                try{fileWorkerNeedInThread({respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:stated});}
                 catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
             }
             return {...receipt,duplicate:false};
