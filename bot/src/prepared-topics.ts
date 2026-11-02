@@ -604,14 +604,17 @@ export function readPreparedTopicOverview(db:Database,topicId:string,canonicalHe
  const requests=readPreparedTopicItems(db,{topicId,kind:'requests',canonicalHead});
  const history=readPreparedTopicItems(db,{topicId,kind:'history',canonicalHead});
  const overview=JSON.parse(row.overview_json);
- const branches=(db.query(`SELECT child.summary_json,branch.kind FROM presentation_topic_branches branch
+ const branchRow=db.query(`SELECT json_group_array(json_object('topic',json(summary_json),'kind',kind)) AS value FROM (
+  SELECT child.summary_json AS summary_json,branch.kind AS kind FROM presentation_topic_branches branch
   JOIN presentation_topics child ON child.generation=branch.generation AND child.topic_id=branch.child_id
-  WHERE branch.generation=? AND branch.parent_id=? ORDER BY branch.first_at,branch.child_id`)
-  .all(current.generation,topicId) as {summary_json:string;kind:string}[]).map(item=>({topic:JSON.parse(item.summary_json),kind:item.kind}));
- const parents=(db.query(`SELECT parent.summary_json,branch.kind FROM presentation_topic_branches branch
+  WHERE branch.generation=? AND branch.parent_id=? ORDER BY branch.first_at,branch.child_id)`)
+  .get(current.generation,topicId) as {value:string|null};
+ const parentRow=db.query(`SELECT json_group_array(json_object('topic',json(summary_json),'kind',kind)) AS value FROM (
+  SELECT parent.summary_json AS summary_json,branch.kind AS kind FROM presentation_topic_branches branch
   JOIN presentation_topics parent ON parent.generation=branch.generation AND parent.topic_id=branch.parent_id
-  WHERE branch.generation=? AND branch.child_id=? ORDER BY branch.first_at,branch.parent_id`)
-  .all(current.generation,topicId) as {summary_json:string;kind:string}[]).map(item=>({topic:JSON.parse(item.summary_json),kind:item.kind}));
+  WHERE branch.generation=? AND branch.child_id=? ORDER BY branch.first_at,branch.parent_id)`)
+  .get(current.generation,topicId) as {value:string|null};
+ const branches=JSON.parse(branchRow.value??'[]'),parents=JSON.parse(parentRow.value??'[]');
  return {...overview,topic:{...overview.topic,history:history.items},questions:questions.items,requests:requests.items,
   branches,parents,
   questionFilter:filter,nextQuestionsCursor:questions.nextCursor,nextRequestsCursor:requests.nextCursor,
