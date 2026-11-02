@@ -924,7 +924,11 @@ if (import.meta.main) {
     else {
       request = parseRouterSessionsArgs(args);
       const response = await runRouterSessions(request);
-      if (response.ok) console.log(JSON.stringify(response.result));
+      if (response.ok) {
+        console.log(JSON.stringify(response.result));
+        const warning=(response.result as {warning?:unknown}|null)?.warning;
+        if (typeof warning==='string') console.error(`warning: ${warning}`);
+      }
       else {
         console.error(JSON.stringify(response.result));
         process.exitCode = 1;
