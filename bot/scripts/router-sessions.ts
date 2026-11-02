@@ -29,7 +29,7 @@ router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-ti
 router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
-router-actions.sh sessions note <captureId> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name> | --journal entry|checkin]
+router-actions.sh sessions note <captureId | his Inbox message input id> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name> | --journal entry|checkin]
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
@@ -144,7 +144,7 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; inputId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string } }
@@ -738,7 +738,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation,body:{source,action_id:actionId,input_id:identity!,...(thread?{thread}:{detach:true})}};
   }
   if(operation==='note') {
-    if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');
+    if(separator>=0)invalid('note accepts a capture ID or his Inbox message ID, not replacement source text.');
+    // A message he sent in an Inbox thread is named by its input id; the owner reads his words.
+    const message=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identity??'');
     // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
     // "you should not dump my whole transcript here ... create like a nice bulleted list").
     const summaryFile=flags.get('--summary-file');
@@ -759,7 +761,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const journal=flags.get('--journal');
     if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
     if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
-    return {operation,body:{source,action_id:actionId,captureId:identity!,summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
+    return {operation,body:{source,action_id:actionId,...(message?{inputId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');
