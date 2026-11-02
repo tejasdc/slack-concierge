@@ -484,6 +484,11 @@ bytes conflict rather than sending a second copy. A reply or post carrying at le
 may omit its text; with neither text nor a file it is refused. This is how a result with
 mockups reaches the thread it belongs to instead of arriving as a new request.
 
+A `post` or `reply` whose text names an absolute or `~/` file path the file viewer would refuse
+(missing, a hidden or secret file, outside the workspace) is still sent, and its result carries
+`unopenable_links` and a `warning` printed on stderr, judged by the same read the viewer makes.
+Act on it: move the file somewhere it opens, or send the corrected path.
+
 Use `sessions` to discover and communicate with exact Concierge-owned sessions.
 The service chooses how to deliver into the destination's current lifecycle;
 callers do not choose steering, resumption, a provider ID, or a Slack root.

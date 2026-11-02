@@ -112,3 +112,31 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
     content: readFileSync(real, 'utf8'),
   };
 }
+
+// An absolute or home path that ends in a file kind, not inside a web address.
+const LINKED_PATH = /(?<![\w:/.~-])(?:~\/|\/)[^\s`'"<>()[\]{}|*]+\.[A-Za-z0-9]+/g;
+
+export type UnopenableLink = { path: string; code: string; reason: string };
+
+/**
+ * The file paths in an agent's message to Tejas that the file viewer would refuse, judged by the
+ * same read the viewer makes. thnkr.ing turns these into links he can press, so a path that will
+ * not open is a link that says "cannot be opened" the moment he trusts it (the .wt design
+ * document, 2026-11-01). The post still goes; the posting agent is told, so it can move the file
+ * or send a path that opens.
+ */
+export function unopenableLinks(text: string, workspaceRoot: string): UnopenableLink[] {
+  const seen = new Set<string>();
+  const refused: UnopenableLink[] = [];
+  for (const match of text.matchAll(LINKED_PATH)) {
+    const path = match[0].replace(/[.,;:!?]+$/, '');
+    const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
+    if (seen.has(path) || !VIEWABLE_EXTENSIONS[extension]) continue;
+    seen.add(path);
+    try { readWorkspaceFile({ machine: 'local', workspaceRoot, path }); }
+    catch (error) {
+      if (error instanceof WorkspaceFileError) refused.push({ path, code: error.code, reason: error.message });
+    }
+  }
+  return refused;
+}

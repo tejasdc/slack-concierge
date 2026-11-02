@@ -1,7 +1,7 @@
 ---
 failure: The file viewer refused a Markdown design document an agent asked him to read, because it sat in the agent's .wt working copy
 date: 2026-11-01
-fix_commits: []
+fix_commits: [89d29fa9]
 cause_status: confirmed
 ---
 
@@ -25,6 +25,12 @@ agent wrote in its own working copy was refused as a hidden file.
 
 `.wt` and `.worktrees` pass as directory parts only. Every other dot part (`.env`, `.git`, `.ssh`)
 and the folder itself as a listed entry in the Files browser stay refused, as do the sensitive names.
+
+## Safeguard (2026-11-02 nightly review)
+
+So an agent learns of a link that will not open before he presses it, `post` and `reply` read
+every absolute or `~/` file path in their text through the viewer's own read and return the
+refused ones as `unopenable_links` with a warning on stderr. The message is still sent.
 
 ## Acceptance scenario
 

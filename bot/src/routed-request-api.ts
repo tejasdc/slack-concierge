@@ -6,6 +6,7 @@ import { dirname,join } from "node:path";
 import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
+import {unopenableLinks} from './workspace-files';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
@@ -44,6 +45,18 @@ const release=(()=>{
   try {const commit=JSON.parse(readFileSync(process.env.CONCIERGE_RELEASE_MANIFEST??'', 'utf8')).git_commit;
     return /^[0-9a-f]{40}$/.test(commit)?commit:null;} catch{return null;}
 })();
+/**
+ * A post or reply that names files he cannot open tells its author at once, beside the receipt,
+ * so the agent sends a path that opens; nothing is refused (agents are never handcuffed).
+ */
+function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):T|(T&{unopenable_links:unknown[];warning:string}){
+  if(!owner||typeof input?.text!=='string'||!result||typeof result!=='object')return result;
+  const refused=unopenableLinks(input.text,owner.defaultCwd);
+  if(!refused.length)return result;
+  return {...result,unopenable_links:refused,
+    warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
+}
+
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request: Request): Promise<Response> {
     try {
@@ -92,14 +105,14 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(sessions.move(input));
-        if (operation === 'post') return Response.json(sessions.post(input));
+        if (operation === 'post') return Response.json(withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
         if (operation === 'topics') return Response.json(sessions.topics(input));
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(await sessions.reply(input));
+        if (operation === 'reply') return Response.json(withLinkCheck(await sessions.reply(input),input,owner));
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
