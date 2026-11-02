@@ -111,7 +111,7 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ### Standing agents
 
-Create a continuing job with `projects new <name> --owner agents --purpose "<one sentence>"`,
+Consult the workspace organizer, then create a continuing job with `projects new <name> --purpose "<one sentence>" --consultation <request-id> <source-flags>`,
 write its project's `AGENTS.md`, and add one role row to the standing-agent list. `sessions agents`
 then shows every role's job, folder, bound session (title and provider/model), repeating schedule,
 armed watches and last run. It also shows unowned repeating schedules and this machine's systemd
@@ -131,39 +131,47 @@ binding. The role table in `bot/src/standing-agents.ts` is the sole home for the
 queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
-with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available under the existing
-agent-project restriction. The read caps repeating schedules at 32, watches per role at 20, and host
+with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
+registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
 
 New repeating schedules and renewing file watches require both the requesting session and
-the scheduled session, where applicable, to be in `workspace/agents/`, a declared top-level
-agent project, or the existing agent lab. `life-logistics` and `skills` are product projects
-for this rule. Existing queued firings and armed watches continue. Move a continuing job
-to an agent project made with `projects new <name> --owner agents`, then use
-`sessions ask --role` for a declared standing role. Until the existing roles are bound, journal
+the scheduled session, where applicable, to belong to a registered project. Placement under
+`agents/`, `canvases/` or the workspace root does not change eligibility. A continuing role
+still has its own declared project and bound session. Place a new project with the workspace
+organizer, then use `sessions ask --role` for a declared standing role. Until the existing roles are bound, journal
 observations use the known keeper `concierge:4571`, and repair notices use the exact-title repair
 session in `agents/concierge-repair`. Neither fallback chooses the newest session in a folder;
 both stop once their roles have a binding. Bind the existing roles after installation rather
 than sending their first request through an unbound role.
 
-Project setup uses the same local owner socket on either machine:
+New project creation runs on the server, where the workspace organizer's consultation
+is retained. Share and status use the local Concierge socket on either machine:
 
 ```bash
-router-actions.sh projects new command-line-tools --owner tejas --purpose "Shared commands for Tejas's machines."
-router-actions.sh projects new disk-usage-watch --owner agents --purpose "A maintenance agent's disk checks." --here-only
-router-actions.sh projects new third-places-online --owner tejas --template writing --purpose "An essay asking whether third places can exist online."
+router-actions.sh sessions ask --role workspace-organizer --requested-effect work --summary "Place a writing project" --action-id <stable-action> -- "Place canvas-essay-notes for this purpose and writing template: An essay exploring how Canvas changes drafting."
+router-actions.sh projects new canvas-essay-notes --purpose "An essay exploring how Canvas changes drafting." --template writing --consultation <completed-request-id> --source-input <current-input> --source-run <current-run>
 router-actions.sh projects share life-logistics --to mac
 router-actions.sh projects status life-logistics --to mac
 router-actions.sh projects cancel life-logistics --to mac  # only while still recorded
 ```
 
-`--owner` is required on `new` and decides where the folder goes. `tejas` is for his own
-projects, ones he follows and ones he asked for: they sit at the top of the workspace.
-`agents` is for a project an agent makes for its own work or for maintenance: it sits in
-`workspace/agents/<name>`, so the top level stays the list he navigates (Tejas, 2026-10-21).
-The session project list finds both by the same name, a name is one project wherever it sits,
-and the other machine's setup puts it in the same place. Existing projects are not moved,
-because sessions and transcripts are recorded against their folder path.
+The workspace organizer is a bound standing session on the server. Ask it for a placement
+before creating a project. Its completed work reply is one JSON object with the exact
+`project`, `purpose`, optional `template`, and `group` (a one-level folder name or `null`
+for the workspace root). For the example above, a grouped answer is
+`{"project":"canvas-essay-notes","purpose":"An essay exploring how Canvas changes drafting.","template":"writing","group":"canvases"}`.
+Pass that request ID with `--consultation` and the creator's current source input and run. The creation API checks that the bound organizer
+answered the asking session, completed the request, and accepted these exact fields before
+creating any folder. It reserves that exact answer for one project, allows retries of the
+same unfinished creation, and refuses a new attempt with an answer older than a day. It
+refuses missing, unfinished, used or mismatched answers. The peer order
+carries only the group name, so each machine derives its own path. A peer with the older
+setup contract waits for an update rather than putting the project in the wrong place.
+The child name is the registered project name on both machines. Existing projects stay at
+their current paths because sessions and transcripts retain that identity.
+If the organizer has not answered or is not bound, creation refuses before making a folder;
+the caller can retry after the consultation is complete.
 
 `--template brainstorm|writing|design` lays a project template into the new project before its
 first commit: a threads file, research dossiers and an `agents/` folder of standing agent
