@@ -3,7 +3,7 @@ import {authorSessionOf} from './session-presence';
 import {preparedInboxDisplays,preparedThreadCoordinationKeys} from './presentation-message-reader';
 import {readPrivateCoordinationRows} from './thread-coordination-read';
 
-type RequestRow={payload_json:string;source_input_id:string|null;status:string;outcome:string|null};
+type RequestRow={payload_json:string;source_input_id:string|null;source_session_id:number;status:string;outcome:string|null};
 type ActivityRow={event_id:string;kind:string;payload_json:string;created_at_ms:number};
 const stamp=(value:string)=>/(?:Z|[+-]\d\d:?\d\d)$/i.test(value)?value:value+'Z';
 const activity=(requestId:string,table:'session_communication_events'|'session_peer_events')=>
@@ -50,16 +50,18 @@ export function threadCoordination(topicId:string,cursor:string|null,limit:numbe
     const event=db.query('SELECT payload_json,created_at FROM session_owner_events WHERE event_id=?')
       .get(key.messageId) as {payload_json:string;created_at:string}|null;
     const eventBody=event?JSON.parse(event.payload_json):{};
-    const localRequest=db.query('SELECT payload_json,source_input_id,status,outcome FROM session_communication_requests WHERE request_id=?')
+    const localRequest=db.query('SELECT payload_json,source_input_id,source_session_id,status,outcome FROM session_communication_requests WHERE request_id=?')
       .get(requestId) as RequestRow|null;
-    const request=localRequest??db.query('SELECT payload_json,source_input_id,status,outcome FROM session_peer_requests WHERE request_id=?')
+    const request=localRequest??db.query('SELECT payload_json,source_input_id,source_session_id,status,outcome FROM session_peer_requests WHERE request_id=?')
       .get(requestId) as RequestRow|null;
     const body=request?JSON.parse(request.payload_json):{};
     const recipient=typeof eventBody.targetSessionId==='string'?authorSessionOf(db,eventBody.targetSessionId):null;
+    const sender=request?authorSessionOf(db,`concierge:${request.source_session_id}`):null;
     const name=recipient?.title??recipient?.agentName??'Agent';
     const fullText=typeof body.text==='string'?body.text:'';
     return {id:key.messageId,at:display.createdAt??(event?stamp(event.created_at):null),kind:'handoff' as const,
       actor:{name,sessionId:eventBody.targetSessionId??null},
+      requestedBy:sender?{name:sender.title??sender.agentName??'Agent',sessionId:sender.id}:null,
       summary:typeof body.summary==='string'&&body.summary.trim()?body.summary:display.content,
       requestId,sourceInputId:request?.source_input_id??null,
       state:request?.outcome??request?.status??'unknown',

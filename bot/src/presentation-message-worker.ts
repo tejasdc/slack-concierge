@@ -4,7 +4,7 @@ import {Database} from 'bun:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
 import {realpathSync} from 'node:fs';
 import {join} from 'node:path';
-import {inboxRootResolver,sourceMessagePage} from './presentation-message-source';
+import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
@@ -216,7 +216,7 @@ async function upgradeAnswerClosures(generation:number){
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
   const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
-  if(version>=5)return;
+  if(version>=6)return;
   const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
   let after=0;
   while(true){
@@ -233,6 +233,15 @@ async function upgradeRequestRoots(generation:number){
       for(const row of rows){
         const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
           .get(generation,row.sequence) as {root:string}|null;
+        if(row.kind==='post'&&canceledRequestNotice(source,row.messageId)){
+          if(prior){
+            changedRoots.add(prior.root);
+            prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+            prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+            prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+          }
+          continue;
+        }
         if(row.kind==='request'){
           const requestId=row.messageId.slice('request:'.length);
           const alreadyShown=source.query(`SELECT 1 FROM session_communication_requests WHERE request_id=?
@@ -261,7 +270,7 @@ async function upgradeRequestRoots(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=5 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=6 WHERE singleton=1').run();})();
 }
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
@@ -499,7 +508,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=5,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);

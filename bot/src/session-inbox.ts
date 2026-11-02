@@ -322,7 +322,22 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
+  if(opening.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)return null;
   return inboxThreadRoot(session.id,openingInputId);
+}
+/** The canonical request ledger, including Mac requests, determines whether this topic is with a worker. */
+export function topicHasOpenWorker(topicId:string,inboxSessionId:number):boolean {
+  const local=db.query(`SELECT 1 FROM session_communication_requests request
+    JOIN inbox_topic_roots roots ON roots.root_input_id=coalesce(nullif(request.topic_root_input_id,''),request.thread_root_input_id)
+    WHERE roots.topic_id=? AND request.outcome IS NULL AND request.stalled_at_ms IS NULL
+      AND request.status NOT LIKE '%uncertain%' AND request.target_session_id<>?
+      AND json_extract(request.payload_json,'$.requestedEffect')='work' LIMIT 1`).get(topicId,inboxSessionId);
+  if(local)return true;
+  return !!db.query(`SELECT 1 FROM session_peer_requests request
+    JOIN inbox_topic_roots roots ON roots.root_input_id=coalesce(nullif(request.topic_root_input_id,''),request.thread_root_input_id)
+    WHERE roots.topic_id=? AND request.outcome IS NULL AND request.stalled_at_ms IS NULL
+      AND request.status NOT LIKE '%uncertain%'
+      AND json_extract(request.payload_json,'$.requestedEffect')='work' LIMIT 1`).get(topicId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' AND input_id=? LIMIT 1")
@@ -341,9 +356,12 @@ export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;input
   if(!root||!result.text.trim()||turnPostedInto(result.sessionId,result.turnId,root))return null;
   const eventId=`post:relay:${result.turnId}`;
   if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return root;
+  const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null;
+  const workerActive=topic&&topicHasOpenWorker(topic.topic_id,session.id);
+  const text=workerActive?'The Inbox did not answer this request before its turn ended. Another agent is still working in this thread.':result.text;
   recordSessionEvent({eventId,sessionId:result.sessionId,inputId:root,turnId:result.turnId,kind:'post',
-    payload:{text:result.text,replyToMessage:{kind:'message',sessionId:`concierge:${result.sessionId}`,messageId:result.inputId},
-      postedBy:'owner-relay',relayed:true,...(result.attachments?.length?{attachments:result.attachments}:{})}});
+    payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${result.sessionId}`,messageId:result.inputId},
+      postedBy:'owner-relay',relayed:true,...(!workerActive&&result.attachments?.length?{attachments:result.attachments}:{})}});
   return root;
 }
 /**
