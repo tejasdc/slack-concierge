@@ -75,6 +75,8 @@ export interface DeploymentDesiredStateRow {
   desired_commit: string;
   github_delivery_id: string;
   observed_at: string;
+  /** When the oldest push that is not yet installed arrived; see `automaticDeploymentStartsAtMs`. */
+  pending_since: string | null;
   updated_at: string;
 }
 
@@ -502,6 +504,13 @@ if (!deploymentTurnReactionColumns.has("slack_message_ts")) {
         updated_at=CURRENT_TIMESTAMP`);
 }
 
+const deploymentDesiredStateColumns = new Set(
+  (db.query("PRAGMA table_info(deployment_desired_state)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!deploymentDesiredStateColumns.has("pending_since")) {
+  db.exec("ALTER TABLE deployment_desired_state ADD COLUMN pending_since DATETIME");
+}
+
 const deploymentWakeColumns = new Set(
   (db.query("PRAGMA table_info(deployment_wakes)").all() as Array<{ name: string }>).map((column) => column.name),
 );
@@ -799,8 +808,8 @@ export function observeDeploymentDesiredCommit(input: {
     const current = getDeploymentDesiredState(target);
     if (!current) {
       db.query(`INSERT INTO deployment_desired_state (
-        target, desired_commit, github_delivery_id
-      ) VALUES (?, ?, ?)`)
+        target, desired_commit, github_delivery_id, pending_since
+      ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`)
         .run(target, desiredCommit, input.githubDeliveryId);
       return { state: getDeploymentDesiredState(target)!, reason: "recorded" as const };
     }
@@ -808,11 +817,14 @@ export function observeDeploymentDesiredCommit(input: {
       return { state: current, reason: "duplicate" as const };
     }
     if (input.isAncestor(current.desired_commit, desiredCommit)) {
+      // A push onto an installed main starts a new burst; one onto pending work keeps its start.
+      const startsBurst = current.desired_commit === getLastKnownGoodRelease()?.git_commit ? 1 : 0;
       db.query(`UPDATE deployment_desired_state
         SET desired_commit=?, github_delivery_id=?, observed_at=CURRENT_TIMESTAMP,
+            pending_since=CASE WHEN ?=1 OR pending_since IS NULL THEN CURRENT_TIMESTAMP ELSE pending_since END,
             updated_at=CURRENT_TIMESTAMP
         WHERE target=?`)
-        .run(desiredCommit, input.githubDeliveryId, target);
+        .run(desiredCommit, input.githubDeliveryId, startsBurst, target);
       const active = getActiveDeploymentRun(target);
       if (active && active.activation_state === null && active.repair_state === null) {
         db.query(`UPDATE deployment_runs SET desired_commit=?, updated_at=CURRENT_TIMESTAMP
@@ -1825,6 +1837,38 @@ export function failControlRecovery(runId: string, error: string) {
     }
     return getDeploymentRun(runId);
   })();
+}
+
+/**
+ * Every update restarts Concierge, and each restart costs him: requests refused while it is down,
+ * then minutes of catch-up lag. On 2026-11-01/02, 27 merges in four hours restarted it about 20
+ * times while he worked. So an automatic update starts only once main has been quiet, and Concierge
+ * itself settled, for `DEPLOYMENT_QUIET_MS`; a burst that never pauses still installs once
+ * `DEPLOYMENT_BURST_CAP_MS` after it began. Replayed against that night's real merge times, today's
+ * start-at-once rule gives 24 restarts; 10 quiet minutes with a 30-minute cap give 7, the newest
+ * push waiting at most 34 minutes (5 minutes gave 15; 15 minutes gave 4 but waits of an hour).
+ * Quiet stays under the never-started report's 15 minutes. Operator and repair runs are not held.
+ */
+export const DEPLOYMENT_QUIET_MS = 10 * 60_000;
+export const DEPLOYMENT_BURST_CAP_MS = 30 * 60_000;
+
+const deploymentSqlTimeMs = (time: string | null | undefined) =>
+  time ? Date.parse(time.endsWith("Z") ? time : `${time.replace(" ", "T")}Z`) : Number.NaN;
+
+/** When an automatic update for the current desired commit may start, or null when none is pending. */
+export function automaticDeploymentStartsAtMs(target = "concierge"): number | null {
+  const desired = getDeploymentDesiredState(target);
+  if (!desired) return null;
+  const lastPushMs = deploymentSqlTimeMs(desired.observed_at);
+  const pendingSinceMs = deploymentSqlTimeMs(desired.pending_since ?? desired.observed_at);
+  const lastHandover = db.query(`SELECT MAX(completed_at) AS at FROM deployment_runs WHERE target=?`)
+    .get(target) as { at: string | null } | null;
+  const lastHandoverMs = deploymentSqlTimeMs(lastHandover?.at) || Number.NEGATIVE_INFINITY;
+  const settledAfter = (ms: number) => (Number.isFinite(ms) ? Math.max(ms, lastHandoverMs) : lastHandoverMs);
+  return Math.min(
+    settledAfter(lastPushMs) + DEPLOYMENT_QUIET_MS,
+    settledAfter(pendingSinceMs) + DEPLOYMENT_BURST_CAP_MS,
+  );
 }
 
 export function requestAutomaticDeployment(

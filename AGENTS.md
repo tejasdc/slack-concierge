@@ -97,6 +97,8 @@ remote-box, server Concierge, Thinkering, then the Mac, with installed-revision 
 Concierge release commits enter `main` only after GitHub's required build and
 candidate check pass. The installed controller owns candidate-check timeouts and
 failure evidence; parked autonomous repairs go to the standing repair agent.
+An automatic update starts after 10 quiet minutes on `main` (or 30 minutes into a burst),
+so a burst of merges is one restart; expect your merge to go live 10+ minutes later.
 See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 Terminal repair claims whose runners have died are parked by the deployment owner
