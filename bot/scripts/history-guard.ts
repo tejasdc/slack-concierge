@@ -20,6 +20,10 @@
  * such copy wrote 52.8 GB and stalled his pages on 2026-10-10; copies go through
  * scripts/diagnostic-sqlite-snapshot.py.
  *
+ * It refuses a Claude Code command that waits on a shared host build slot unless it runs in the
+ * background (bot/src/foreground-build-policy.ts): a foreground build froze an urgent repair for
+ * ten minutes on 2026-11-01 while Tejas waited.
+ *
  * The same pass, when it refuses nothing, tells an agent about to open a website in a browser
  * where that website's runbook is (bot/src/site-runbook-notice.ts), as `additionalContext` beside
  * the call. It rides this hook because both machines already run it before every call, so no new
@@ -33,6 +37,7 @@ import { messagesDatabaseRefusal } from '../src/messages-database-policy';
 import { recordMessagesRead } from '../src/messages-read-log';
 import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
 import { macSurfaceRefusal } from '../src/mac-surface-policy';
+import { foregroundBuildRefusal } from '../src/foreground-build-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
   const loop = /\b(?:until|while)\b[\s\S]*\b(?:do|sleep)\b|\bfor\b[\s\S]*\bdo\b/i.test(command);
@@ -101,6 +106,12 @@ try {
   if (command && !reason) {
     reason = (process.env.CONCIERGE_CURRENT_LIVE_COPY_CHECKED === '1' ? null : liveStoreCopyRefusal(command, start))
       ?? selfMatchingWaitRefusal(command) ?? historyRewriteRefusal(command, start, probe);
+    // Claude Code's Bash tool blocks the agent until the command ends; Codex's yields after seconds.
+    const claude = hook.tool_name === 'Bash' && typeof input.command === 'string'
+      && !(typeof hook.transcript_path === 'string' && hook.transcript_path.includes('/.codex/'));
+    if (!reason && claude) {
+      try { reason = foregroundBuildRefusal(command, input, start); } catch { reason = null; }
+    }
     if (!reason) {
       const launch = writableCodexLaunchDirectory(command, start);
       if (launch) {
