@@ -23,6 +23,9 @@ the cross-database handoff and event payload.
 The Inbox topic owner records questions Tejas asks separately from agents' decisions
 and reading items. Their source, reply linkage, partial answers and follow-up contract
 are in [human questions](docs/architecture/HUMAN-QUESTIONS.md).
+Named-thread handoffs and automatic earlier-work suggestions have a bounded work lane beside
+the conversation; exact request receipts retain the full brief and progress. See
+[native Inbox](docs/contracts/native-inbox.md#thread-work-lane).
 Human thread read marks validate the exact displayed conversation entry and advance
 the retained read position without rebuilding a thread summary on the owner loop;
 message routing checks prior routes through the indexed source-message read;
