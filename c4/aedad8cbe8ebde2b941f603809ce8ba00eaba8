@@ -1,0 +1,1 @@
+Messages you send now avoid a full database scan while Concierge checks whether it has already received them.
