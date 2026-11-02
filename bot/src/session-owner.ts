@@ -65,7 +65,7 @@ import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
-import {capturesEnterRouter,isInboxProducerKind,readerCaptureRefusal} from './inbox-producer-sources';
+import {capturesEnterRouter,isInboxProducerKind,readerCaptureAuthor,readerCaptureRefusal,type ReaderCaptureOrigin} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
@@ -1850,7 +1850,7 @@ export class SessionOwner {
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
     // An agent naming its run on any other door is testing that door; on Reader it is the author.
     const importOnly=input.importOnly===true||!!agent&&!reader;
-    const origin=reader?(agent?'agent':'service'):agent||outsideAgent?'agent':'human';
+    const origin=reader?readerCaptureAuthor(reader.readerOrigin as ReaderCaptureOrigin):agent||outsideAgent?'agent':'human';
     const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[],...(input.urgency?{urgency:input.urgency}:{}),...(input.holdForReview?{holdForReview:true}:{})}));
     const digest=digestFor(input.source);
     const accepted=db.transaction(()=>{
