@@ -80,6 +80,8 @@ and their watchers are inert;
 see [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 Blocking questions to Tejas notify by default through that same path; see the
 [requested phone delivery](docs/contracts/requested-phone-notifications.md) contract.
+Mac agents' end-of-turn questions for peer-delivered Inbox thread work cross the retained peer reply
+channel and become that thread's decision and alert; see [requested phone delivery](docs/contracts/requested-phone-notifications.md#a-thread-worker-waiting-on-him).
 Mac agent actions that can surface a permission prompt, background item, browser debugger,
 screen capture or install publish one retained activity event per action kind and turn;
 see [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md).
