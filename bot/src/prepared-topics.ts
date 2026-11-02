@@ -88,6 +88,12 @@ export class PreparedTopics {
     PRIMARY KEY(generation,kind,dependency,topic_id));
    CREATE INDEX IF NOT EXISTS presentation_topic_dependencies_topic ON presentation_topic_dependencies(generation,topic_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_dirty(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,PRIMARY KEY(generation,topic_id));`);
+  if(!prepared.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_topic_branches'").get())prepared.transaction(()=>{
+   prepared.exec(`CREATE TABLE presentation_topic_branches(generation INTEGER NOT NULL,parent_id TEXT NOT NULL,child_id TEXT NOT NULL,
+    kind TEXT NOT NULL,first_at TEXT NOT NULL,PRIMARY KEY(generation,parent_id,child_id));
+    CREATE INDEX presentation_topic_branches_child ON presentation_topic_branches(generation,child_id);`);
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   prepared.exec('CREATE TABLE IF NOT EXISTS presentation_topic_sorting_dirty(generation INTEGER NOT NULL,session_id INTEGER NOT NULL,PRIMARY KEY(generation,session_id))');
   // Stored reply choices came from the prepared read's own copy of the rule until 2026-10-09; recompute each thread once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='one_reply_rule'))prepared.transaction(()=>{
@@ -159,7 +165,7 @@ export class PreparedTopics {
  }
  beginRebuild(generation:number){
   for(const table of ['presentation_topic_search','presentation_topic_short'])this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM presentation_topics WHERE generation=?)`).run(generation);
-  for(const table of ['presentation_topics','presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_dirty',
+  for(const table of ['presentation_topics','presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_dirty','presentation_topic_branches',
    'presentation_topic_request_links','presentation_topic_sorting_dirty','presentation_topic_event_display','presentation_question_counts'])this.prepared.query(`DELETE FROM ${table} WHERE generation=?`).run(generation);
   this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=?').run(generation);
   this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=?').run(generation);
@@ -316,6 +322,16 @@ export class PreparedTopics {
     for(const source of request.sources)if(source.inputId)requestLinks.push([generation,topicId,source.inputId,request.id]);
    }
   });
+  const branchEvents=this.source.query(`SELECT kind,payload_json,created_at FROM session_owner_events
+   WHERE session_id=? AND kind IN ('topic','topic_route') AND json_extract(payload_json,'$.topicId')=? ORDER BY sequence`).all(owner,topicId) as {kind:string;payload_json:string;created_at:string}[];
+  const branchMap=new Map<string,[number,string,string,string,string]>();
+  for(const row of branchEvents){const payload=JSON.parse(row.payload_json);
+   const parent=row.kind==='topic_route'?payload.sourceTopicId:payload.change==='created'?(payload.parentTopicId??payload.splitFrom):['linked','unlinked'].includes(payload.change)?payload.parentTopicId:null;
+   if(typeof parent!=='string'||!parent||parent===topicId)continue;
+   if(payload.change==='unlinked')branchMap.delete(parent);
+   else if(!branchMap.has(parent))branchMap.set(parent,[generation,parent,topicId,row.kind==='topic_route'?'routed':payload.change==='linked'?'related':'created',instant(row.created_at)]);
+  }
+  const branches=[...branchMap.values()];
   if(!value){
    this.stagedRetains=null;
    this.deleteTopicChildren(generation,topicId);
@@ -349,7 +365,7 @@ export class PreparedTopics {
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,orderKey(value.band,value.summary.lastEntryAt,topicId),
    orderKey(0,value.summary.closedAt??value.summary.lastEntryAt,topicId),
    json(replyTargets),json(overview),orderKey(0,startedAt,topicId)];
-  const projectionHash=createHash('sha256').update(json([row,items,questions,dependencies,requestLinks,attentions])).digest('hex');
+  const projectionHash=createHash('sha256').update(json([row,items,questions,dependencies,requestLinks,attentions,branches])).digest('hex');
   this.stagedRetains=null;
   if(previous?.projection_hash===projectionHash)return;
   this.deleteTopicChildren(generation,topicId);
@@ -358,6 +374,7 @@ export class PreparedTopics {
   for(const question of questions)this.prepared.query('INSERT INTO presentation_topic_questions VALUES(?,?,?,?,?,?,?,?)').run(...question);
   for(const dependency of dependencies)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dependencies VALUES(?,?,?,?)').run(...dependency);
   for(const link of requestLinks)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_request_links VALUES(?,?,?,?)').run(...link);
+  for(const branch of branches)this.prepared.query('INSERT OR IGNORE INTO presentation_topic_branches VALUES(?,?,?,?,?)').run(...branch);
   for(const need of attentions)this.writeAttention(generation,'questions',topicId,need);
   this.prepared.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
     search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key,projection_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -379,8 +396,8 @@ export class PreparedTopics {
  }
  private deleteTopicChildren(generation:number,topicId:string){
   this.prepared.query('DELETE FROM presentation_topic_chunk_refs WHERE generation=? AND owner=?').run(generation,`topic:${topicId}`);
-  for(const table of ['presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_request_links','presentation_inbox_attention'])
-   this.prepared.query(`DELETE FROM ${table} WHERE generation=? AND topic_id=?`).run(generation,topicId);
+  for(const table of ['presentation_topic_questions','presentation_topic_items','presentation_topic_dependencies','presentation_topic_request_links','presentation_inbox_attention','presentation_topic_branches'])
+   this.prepared.query(`DELETE FROM ${table} WHERE generation=? AND ${table==='presentation_topic_branches'?'child_id':'topic_id'}=?`).run(generation,topicId);
  }
  private compactItem(item:any,kind:string):any{
   if(Buffer.byteLength(json(item))<=4096)return item;
@@ -429,7 +446,7 @@ export class PreparedTopics {
    this.prepared.query('DELETE FROM presentation_topic_short WHERE rowid=?').run(id);
    this.prepared.query('DELETE FROM presentation_topics WHERE rowid=?').run(id);
   }
-  for(const table of ['presentation_topic_items','presentation_topic_questions','presentation_topic_dependencies','presentation_topic_dirty',
+  for(const table of ['presentation_topic_items','presentation_topic_questions','presentation_topic_dependencies','presentation_topic_dirty','presentation_topic_branches',
    'presentation_topic_sorting_dirty','presentation_topic_request_links','presentation_topic_roots','presentation_topic_sorting','presentation_question_counts','presentation_topic_event_display',
    'presentation_inbox_attention','presentation_inbox_attention_counts'])
    this.prepared.query(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE generation<? LIMIT 100)`).run(current.generation);
@@ -587,7 +604,19 @@ export function readPreparedTopicOverview(db:Database,topicId:string,canonicalHe
  const requests=readPreparedTopicItems(db,{topicId,kind:'requests',canonicalHead});
  const history=readPreparedTopicItems(db,{topicId,kind:'history',canonicalHead});
  const overview=JSON.parse(row.overview_json);
+ const branchRow=db.query(`SELECT json_group_array(json_object('topic',json(summary_json),'kind',kind)) AS value FROM (
+  SELECT child.summary_json AS summary_json,branch.kind AS kind FROM presentation_topic_branches branch
+  JOIN presentation_topics child ON child.generation=branch.generation AND child.topic_id=branch.child_id
+  WHERE branch.generation=? AND branch.parent_id=? ORDER BY branch.first_at,branch.child_id)`)
+  .get(current.generation,topicId) as {value:string|null};
+ const parentRow=db.query(`SELECT json_group_array(json_object('topic',json(summary_json),'kind',kind)) AS value FROM (
+  SELECT parent.summary_json AS summary_json,branch.kind AS kind FROM presentation_topic_branches branch
+  JOIN presentation_topics parent ON parent.generation=branch.generation AND parent.topic_id=branch.parent_id
+  WHERE branch.generation=? AND branch.child_id=? ORDER BY branch.first_at,branch.parent_id)`)
+  .get(current.generation,topicId) as {value:string|null};
+ const branches=JSON.parse(branchRow.value??'[]'),parents=JSON.parse(parentRow.value??'[]');
  return {...overview,topic:{...overview.topic,history:history.items},questions:questions.items,requests:requests.items,
+  branches,parents,
   questionFilter:filter,nextQuestionsCursor:questions.nextCursor,nextRequestsCursor:requests.nextCursor,
   nextHistoryCursor:history.nextCursor,coverage:coverage(current,canonicalHead)};
 }

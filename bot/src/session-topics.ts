@@ -544,7 +544,7 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
   }
 }
 /** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
-function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:(actionInputId:string)=>{change:Change;result:T}):T&{duplicate?:boolean} {
+function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:(actionInputId:string)=>{change:Change;result:T},eventSessionId=actor.sessionId):T&{duplicate?:boolean} {
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
@@ -563,7 +563,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
       resultForTrace=result;
       changeTopicId=typeof change.payload?.topicId==='string'?change.payload.topicId:null;
       phaseStart=performance.now();phaseName='record';
-      record(actor.sessionId,saved.input.id,actor.turnId,change);
+      record(eventSessionId,saved.input.id,actor.turnId,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
@@ -1346,7 +1346,7 @@ function parseSources(values:unknown):{inputId:string;passage?:string}[] {
   });
 }
 
-function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null;areaIds?:string[]}) {
+function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null;parentTopicId?:string|null;areaIds?:string[]}) {
   const at=nowIso();
   const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:session.id,title:fields.title,summary:fields.summary??'',state:'open',
     setAside:null,aliases:[],revision:1,recovered:!!fields.recovered,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
@@ -1354,7 +1354,8 @@ function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?
     roots:rootRecords(topic.topicId,fields.roots,by,fields.reason??null),
     areaLinks:(fields.areaIds??[]).map(areaId=>({areaId,topicId:topic.topicId,origin:by.kind==='human'?'human':'agent',reason:fields.reason??'',at})),
     by,reason:fields.reason??null,revision:topic.revision,
-    ...(fields.splitFrom?{splitFrom:fields.splitFrom}:{})}} as Change};
+    ...(fields.splitFrom?{splitFrom:fields.splitFrom}:{}),
+    ...(fields.parentTopicId?{parentTopicId:fields.parentTopicId}:{})}} as Change};
 }
 
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
@@ -1631,8 +1632,8 @@ export function topicsCommand(actor:TopicActor,body:any) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':guard();return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
-    case 'read':guard(String(body?.topic_id??''));return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
+    case 'list':return preparedTopicsReady()?preparedTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor}):directTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
     case 'questions-read':guard();return preparedQuestions({state:body?.state??'open',cursor:body?.cursor,limit:body?.limit});
     case 'items':{
@@ -1647,15 +1648,34 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return preparedTopicDetail(hash,part,topicId);
     }
     case 'create':{
-      assertInbox(session);
-      const roots=body?.roots===undefined?[]:placementRoots(session,body.roots);
+      const topicOwner=inboxOrThrow();
+      const roots=body?.roots===undefined?[]:placementRoots(topicOwner,body.roots);
       const title=text(body?.title,'--title',200),summary=optionalText(body?.summary,'--summary',2000);
-      const areaIds=checkedAreaIds(body?.area_ids);
-      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,areaIds,reason:reason()},()=>{
+      const namedParent=body?.parent_topic_id===undefined?null:text(body.parent_topic_id,'--from',200);
+      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,areaIds:body?.area_ids,parentTopicId:namedParent,reason:reason()},()=>{
         for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}; use topics place to move it.`,409,'ROOT_PLACED');}
-        const created=createTopic(session,by,{title,summary,roots,areaIds,reason:reason()});
+        const forwarded=!inbox?db.query(`SELECT source_input_id,thread_root_input_id FROM session_communication_requests
+          WHERE target_session_id=? AND target_input_id=? ORDER BY created_at_ms DESC LIMIT 1`).get(actor.sessionId,actor.inputId) as {source_input_id:string|null;thread_root_input_id:string|null}|null:null;
+        const sourceRoot=inbox?rootOf(session.id,actor.inputId)??actor.inputId:
+          forwarded?.thread_root_input_id??(forwarded?.source_input_id?rootOf(topicOwner.id,forwarded.source_input_id)??forwarded.source_input_id:null);
+        const parentTopicId=namedParent??(sourceRoot?topicOfRoot(sourceRoot):null);
+        if(parentTopicId)topicRow(parentTopicId);
+        const inheritedAreas=parentTopicId?(db.query('SELECT area_id FROM inbox_area_threads WHERE topic_id=? ORDER BY created_at,area_id LIMIT 8').all(parentTopicId) as {area_id:string}[]).map(row=>row.area_id):[];
+        const areaIds=checkedAreaIds(body?.area_ids??inheritedAreas);
+        const created=createTopic(topicOwner,by,{title,summary,roots,areaIds,reason:reason(),parentTopicId});
         return {change:created.change,result:{topic:created.topic}};
-      });
+      },topicOwner.id);
+    }
+    case 'link':case 'unlink':{
+      const parentId=text(body?.parent_topic_id,'--into',200);
+      const why=text(body?.reason,'--reason');
+      return agentMutation(actor,actionId(),{kind:`topic-${verb}`,child:body?.topic_id,parent:parentId,reason:why},()=>{
+        const child=topicFor(body?.topic_id),parent=topicRow(parentId);
+        if(child.topicId===parent.topicId)throw new TopicError('A thread cannot link to itself.',409,'TOPIC_SELF_LINK');
+        const next=bumped(child);
+        return {change:{kind:'topic',payload:{change:verb==='link'?'linked':'unlinked',topicId:child.topicId,
+          parentTopicId:parent.topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next,parentTopicId:parent.topicId}};
+      },inboxOrThrow().id);
     }
     case 'place':{
       assertInbox(session);
