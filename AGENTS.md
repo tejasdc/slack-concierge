@@ -463,6 +463,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   and the wider voice design are in Thinkering's
   `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
 - Ambient canvas sessions retain finalized device-speech words and browser action outcomes as passive observations, without launching a second provider turn. Their admission and provenance are in [the session owner wire contract](docs/contracts/session-owner-v1.md#ambient-canvas-observations).
+- Canvas think-aloud uses an ordinary continuing Codex session; the owner passes board context beside each exact speech input so the agent can inspect, organize, research, and delegate while the browser performs visible Canvas and Reader actions. See [Canvas think-aloud](docs/architecture/canvas-think-aloud.md).
 - An agent on the Mac may photograph a window or a screen, which Tejas asked for on
   September 22, 2026. One command, `~/.local/bin/mac-screenshot` (absolute path: provider
   children have no `~/.local/bin` on PATH), built from `bot/native/mac-capture.swift`. It uses
