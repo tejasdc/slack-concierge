@@ -3678,7 +3678,7 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
         || result.reactionsStarted) {
         log("info", "deployment_work_reconciled", { reason, ...result });
       }
-      armDeploymentSettleWake(result.settlesAtMs);
+      if (result.settlesAtMs !== undefined) armDeploymentSettleWake(result.settlesAtMs);
     } catch (error) {
       log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
     }

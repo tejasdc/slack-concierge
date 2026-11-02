@@ -182,8 +182,8 @@ export async function reconcileDeploymentWork(input: {
   recoveredNotices: number;
   recoveredReactions: number;
   automaticDeploymentPrepared: boolean;
-  /** A pending update is waiting for main to go quiet until this instant; wake the worker then. */
-  settlesAtMs: number | null;
+  /** A pending update is waiting for main to go quiet until this instant; wake the worker then. Undefined when this pass could not tell. */
+  settlesAtMs: number | null | undefined;
   launched: number;
   repairsLaunched: number;
   reactionsStarted: number;
@@ -194,10 +194,11 @@ export async function reconcileDeploymentWork(input: {
   const supersededRepairs = retireSupersededDeploymentRepairs(input.isOwnerAlive);
   if (supersededRepairs) log("info", "deployment_repairs_superseded", { count: supersededRepairs });
   let automaticDeploymentPrepared = false;
-  let settlesAtMs: number | null = null;
+  let settlesAtMs: number | null | undefined = undefined;
   if (!input.shouldStop()) {
     try {
       const desired = await installableDesiredCommit();
+      settlesAtMs = null;
       const startsAtMs = automaticDeploymentStartsAtMs();
       if (desired && !getActiveDeploymentRun() && desired !== getLastKnownGoodRelease()?.git_commit
         && startsAtMs !== null && startsAtMs > Date.now()) {
@@ -207,6 +208,7 @@ export async function reconcileDeploymentWork(input: {
         automaticDeploymentPrepared = automatic.reason === "prepared";
       }
     } catch (error) {
+      settlesAtMs = undefined; // unknown: keep any wake already armed
       log("error", "automatic_deployment_request_failed", errorFields(error));
     }
   }
