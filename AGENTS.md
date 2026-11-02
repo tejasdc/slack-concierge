@@ -38,6 +38,8 @@ Areas of interest are named groups above Inbox threads. A thread can belong to s
 areas; neighboring areas are explicit links. New Inbox threads name an area at creation;
 the router can list or suggest areas before filing. Concierge owns the associations and
 Thinkering reads bounded prepared pages. See [areas of interest](docs/architecture/AREAS-OF-INTEREST.md).
+Threads also join theme areas by meaning when they change, and each new message gets one quiet post
+linking his strongest earlier sessions, notes and threads; see the same document's filing-by-meaning sections.
 Routing one message out of an Inbox conversation keeps its original root and records
 linked source and destination views; whole-conversation placement requires the root.
 Placement refuses moving a root with a forwarded human reply bound to its current topic;

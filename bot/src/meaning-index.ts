@@ -124,7 +124,8 @@ export class MeaningIndex {
         this.store.exec('PRAGMA synchronous=OFF');this.store.exec('PRAGMA temp_store=MEMORY');
         this.store.exec(`PRAGMA journal_mode=WAL;
           CREATE TABLE IF NOT EXISTS passages(key TEXT PRIMARY KEY,target_json TEXT NOT NULL,text TEXT NOT NULL,at TEXT,scale REAL NOT NULL,vector BLOB NOT NULL) STRICT;
-          CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;`);
+          CREATE TABLE IF NOT EXISTS watermarks(name TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
+          CREATE TABLE IF NOT EXISTS documents(key TEXT PRIMARY KEY,digest TEXT NOT NULL,vector BLOB NOT NULL) STRICT;`);
         if(this.watermark('ledger-format')!==LEDGER_FORMAT){
           // Ledger passages are a rebuildable cache; re-read them under the current crediting rule.
           this.store.exec("DELETE FROM passages WHERE key LIKE 'input:%' OR key LIKE 'said:%'");
@@ -145,6 +146,37 @@ export class MeaningIndex {
     }
   }
   get installed(){return this.engine.installed();}
+  /**
+   * Vectors for short texts other features compare by meaning (Inbox threads against areas),
+   * cached here by key and exact words so an unchanged text is never embedded twice, even across
+   * restarts. Same batches and the same courtesy to waiting searches as indexing.
+   */
+  /** Vectors for texts used as questions, prefixed as the session search prefixes its query. */
+  async queryVectors(texts:string[]):Promise<Float32Array[]> {
+    const out:Float32Array[]=[];
+    for(let start=0;start<texts.length;start+=INDEX_BATCH){
+      while(this.searching>0)await Bun.sleep(50);
+      out.push(...await this.engine.embed(texts.slice(start,start+INDEX_BATCH).map(text=>QUERY_PREFIX+text.slice(0,PASSAGE_CHARS))));
+    }
+    return out;
+  }
+  async documentVectors(items:{key:string;text:string}[]):Promise<Map<string,Float32Array>> {
+    const out=new Map<string,Float32Array>(),missing:{key:string;text:string;digest:string}[]=[];
+    const read=this.store.query('SELECT digest,vector FROM documents WHERE key=?');
+    for(const item of items){
+      const digest=hash(item.text),row=read.get(item.key) as {digest:string;vector:Uint8Array}|null;
+      if(row?.digest===digest)out.set(item.key,new Float32Array(row.vector.buffer.slice(row.vector.byteOffset,row.vector.byteOffset+row.vector.byteLength)));
+      else missing.push({...item,digest});
+    }
+    const write=this.store.query('INSERT OR REPLACE INTO documents(key,digest,vector) VALUES(?,?,?)');
+    for(let start=0;start<missing.length;start+=INDEX_BATCH){
+      while(this.searching>0)await Bun.sleep(50);
+      const batch=missing.slice(start,start+INDEX_BATCH);
+      const vectors=await this.engine.embed(batch.map(item=>DOCUMENT_PREFIX+item.text.slice(0,PASSAGE_CHARS)));
+      this.store.transaction(()=>{for(const [index,item] of batch.entries()){write.run(item.key,item.digest,new Uint8Array(vectors[index]!.buffer));out.set(item.key,vectors[index]!);}})();
+    }
+    return out;
+  }
   private remember(key:string,target:MeaningHit['target'],text:string,at:string|null,values:Int8Array,scale:number) {
     if(this.count*DIMENSIONS>=this.matrix.length){const grown=new Int8Array(this.matrix.length*2);grown.set(this.matrix);this.matrix=grown;}
     this.matrix.set(values,this.count*DIMENSIONS);this.rowOf.set(key,this.count);this.keys.push(key);this.scales.push(scale);this.targets.push(target);this.texts.push(text);this.times.push(at);this.count++;

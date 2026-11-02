@@ -33,6 +33,7 @@ import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} f
 import {interruptOrphanedTurn} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
+import {startAreaFiling} from './area-filing';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -78,6 +79,7 @@ export async function startSessionRuntime() {
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
   codexSessionObserver=new CodexSessionObserver();
+  startAreaFiling(admission=>host.owner.admit(admission),body=>host.owner.search(body));
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};
   const isOwnerAlive=(owner:string)=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);};
   const onError=(error:unknown)=>log('error','session_communication_failed',errorFields(error));
