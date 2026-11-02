@@ -3683,6 +3683,11 @@ export class SessionOwner {
     }
   }
   /** The isolated execution entrance has no owner loop monitor or mutation dispatch. */
+  /** The conversation's kind as its history is read: the Inbox, or the provider that holds it. */
+  private conversationKind(id:string):string {
+    const session=this.session(id);
+    return sessionMetadata(session).inbox?'inbox':session.provider_id;
+  }
   async handleRead(request:Request):Promise<Response|null> {
     const url=new URL(request.url);
     if(request.method!=='GET')return ownerJson({error:{code:'METHOD_NOT_ALLOWED',message:'Only GET reads are served here.'}},{status:405});
@@ -3719,6 +3724,7 @@ export class SessionOwner {
       const prior=typeof body?.clientActionId==='string'?db.query(`SELECT 1 FROM session_inputs WHERE action_id=?
         AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
       let result:unknown;
+      const answerHeaders:Record<string,string>={};
       if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){
         if(this.streamsClosed)throw new SessionOwnerError('The session owner is restarting.',503,'OWNER_DRAINING');
         return this.stream(request,url);
@@ -3913,9 +3919,13 @@ export class SessionOwner {
         const after=url.searchParams.get('after');
         const activity=url.searchParams.get('activity')==='true';
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
+        const want={dialogue:Math.min(40,Math.max(0,Math.floor(Number(url.searchParams.get('dialogue'))||0))),untilInput:url.searchParams.get('untilInput')==='true'};
         result=after!==null?await this.historyDelta(parts[1]!,after,activity)
-          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity,
-            {dialogue:Math.min(40,Math.max(0,Math.floor(Number(url.searchParams.get('dialogue'))||0))),untilInput:url.searchParams.get('untilInput')==='true'});
+          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(HISTORY_WINDOW,Math.max(1,Number(url.searchParams.get('limit'))||HISTORY_WINDOW)),activity,want);
+        // Which kind of conversation and read this was, so a history timing can be split by them:
+        // the nightly review could not tell ChatGPT history apart (2026-11-02).
+        answerHeaders['x-concierge-conversation-kind']=this.conversationKind(parts[1]!);
+        answerHeaders['x-concierge-history-read']=after!==null?'changes':url.searchParams.get('cursor')!==null?'older':want.dialogue||want.untilInput?'window':'page';
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts[3]==='messages'&&parts[5]==='detail'&&parts.length===6){
         const part=url.searchParams.has('part')?Number(url.searchParams.get('part')):null;
@@ -4054,7 +4064,7 @@ export class SessionOwner {
       else throw new SessionOwnerError('Unknown session owner route.',404);
       if(!prior&&(result as any)?.operation?.kind==='bind'&&(result as any).operation.state==='failed')return ownerJson({error:(result as any).operation.error},{status:409});
       const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
-      return ownerJson(result,{status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
+      return ownerJson(result,{headers:answerHeaders,status:request.method==='POST'&&((parts[0]==='attachments'&&parts[2]==='transcription'&&parts[3]==='start')||(!readOnly&&!prior))?202:200});
     } catch(error) {
       if(error instanceof StorageReadBudgetError){
         log('warn','owner_read_budget_refused',{admission_id:request.headers.get('x-concierge-admission-id'),

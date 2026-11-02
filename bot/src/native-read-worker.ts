@@ -206,13 +206,17 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   requests.maxDurationMs=Math.max(requests.maxDurationMs,durationMs);
   if(response.status>=400)requests.failed++;
   if(durationMs>=2000)requests.slow++;
-  // A history read over thnkr.ing's 300 ms budget names its conversation and size: two 1.2-1.4 s
-  // reads on 2026-10-30 could not be attributed because neither side logged which one it was.
-  const slowHistory=route.pattern==='/sessions/:id/history'&&durationMs>=300;
-  if(response.status>=400||durationMs>=2000||slowHistory||requests.completed%100===0)
+  // Every history read is logged with its conversation, the conversation's kind and the kind of
+  // read, so its timing can be split by them: two 1.2-1.4 s reads on 2026-10-30 could not be
+  // attributed, and the 2026-11-02 review could not measure ChatGPT history apart from the rest.
+  // About 3,000 reads a day; slow ones (300 ms, thnkr.ing's budget) are warnings.
+  const history=route.pattern==='/sessions/:id/history';
+  const slowHistory=history&&durationMs>=300;
+  if(response.status>=400||durationMs>=2000||history||requests.completed%100===0)
     log(response.status>=400||durationMs>=2000||slowHistory?'warn':'info','native_read_request_completed',{
       admission_id:admissionId,route:route.pattern,status:response.status,duration_ms:durationMs,...(work??{}),
-      ...(slowHistory?{session_id:decodeURIComponent(/\/sessions\/([^/]+)\/history$/.exec(url.pathname)?.[1]??''),bytes:Number(response.headers.get('content-length'))||null,
+      ...(history?{session_id:decodeURIComponent(/\/sessions\/([^/]+)\/history$/.exec(url.pathname)?.[1]??''),bytes:Number(response.headers.get('content-length'))||null,
+        conversation_kind:response.headers.get('x-concierge-conversation-kind'),history_read:response.headers.get('x-concierge-history-read'),
         window:url.searchParams.has('dialogue')||url.searchParams.has('untilInput')}:{}),
     });
   else requests.logSampledOut++;
