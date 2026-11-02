@@ -762,6 +762,7 @@ export class SessionCommunicationCoordinator {
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
                 try{fileWorkerNeedInThread({respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:stated});}
                 catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                this.dependencies.peers?.recordTurnNeed(this.peerActor(actor),`turn_outcome:action:${saved.input.id}`,stated);
             }
             return {...receipt,duplicate:false};
         })();
