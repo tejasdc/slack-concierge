@@ -9,9 +9,10 @@ layer to a presentation layer."
 
 ## What is built
 
-`project new <name> --owner tejas --purpose "…" --template brainstorm|writing|design` lays a
-template into the new project before its first commit, so the project's private GitHub repository,
-and the Mac's copy cloned from it, start with the same folders. The templates live in one place,
+`project new <name> --purpose "…" --template brainstorm|writing|design --consultation <request-id> --source-input <current-input> --source-run <current-run>` lays a
+template into the organizer-placed project before its first commit, so the project's private GitHub repository,
+and the Mac's copy cloned from it, start with the same folders. The completed consultation binds the name, purpose,
+template and grouping folder; Canvas creation uses the organizer's standing Canvas policy. The templates live in one place,
 `bot/src/project-templates.ts`, shipped inside the release; each extends the previous one:
 
 | Template | Adds |
