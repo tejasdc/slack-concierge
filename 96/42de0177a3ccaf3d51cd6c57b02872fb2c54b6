@@ -1,0 +1,1 @@
+Threads routed from or opened beside another thread now stay linked, and agents can open and connect related threads without moving their conversations.
