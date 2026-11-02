@@ -1,0 +1,1 @@
+An agent can no longer freeze itself on a build: a long build must run in the background, so the agent stays free to read your messages while it waits.
