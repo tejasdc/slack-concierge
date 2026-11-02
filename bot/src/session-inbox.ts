@@ -152,13 +152,13 @@ export function inboxMessage(row:any) {
     ??db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(eventPayload.requestId)) as {payload_json:string}|null:null;
   const requestPayload=requestRow?JSON.parse(requestRow.payload_json):null;
   const requestSummary=typeof requestPayload?.summary==='string'?requestPayload.summary.trim():'';
-  const requestWords=typeof requestPayload?.text==='string'?requestPayload.text.trim():payload.text??'';
+  const requestWords=typeof requestPayload?.text==='string'?requestPayload.text:payload.text??'';
   const sourceMessage=typeof eventPayload.threadSourceMessageId==='string'?getAcceptedSessionInput(eventPayload.threadSourceMessageId):null;
   const retainedSource=sourceMessage?.origin==='human'?JSON.parse(sourceMessage.payload_json):null;
   const sourcePayload=retainedSource?.firstInput??retainedSource;
-  const sourceWords=typeof sourcePayload?.text==='string'?sourcePayload.text.trim():'';
+  const sourceWords=typeof sourcePayload?.text==='string'?sourcePayload.text:'';
   const recipient=typeof eventPayload.targetSessionId==='string'?authorSessionOf(db,eventPayload.targetSessionId):null;
-  const requestContent=[recipient?`For ${recipient.title??recipient.agentName??'the working agent'}`:'',requestSummary,sourceWords&&!requestWords.includes(sourceWords)?`Tejas wrote:\n${sourceWords}`:'',requestWords]
+  const requestContent=[recipient?`For ${recipient.title??recipient.agentName??'the working agent'}`:'',requestSummary,sourceWords.trim()&&!requestWords.includes(sourceWords)?`Tejas wrote:\n${sourceWords}`:'',requestWords]
     .filter(Boolean).join('\n\n');
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
