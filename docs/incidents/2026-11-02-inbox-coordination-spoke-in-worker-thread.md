@@ -19,6 +19,10 @@ The conversation projection treated a generated cancellation notice as a message
 
 Keep requester cancellation as request state and remove its generated service post from live and already prepared conversations, while preserving Tejas's own Stop acknowledgment. Keep genuine agent answers and prompt-answer overdue notices. When local or Mac work is open for another agent on the topic, allow the Inbox router only a short one-line post it already owes that thread; its automatic handoff receipt remains the ordinary routing mark. Refuse relaying a service return the agent already posted. Expose both requesting and receiving sessions on a work item for correct attribution.
 
+The public work item also identifies a proven canceling actor and a direct human source when
+there is one. A canceled internal thread-upkeep handoff is withheld from the public work pane;
+the exact request and cancellation remain retained by request ID.
+
 ## Acceptance scenario
 
 - **Seed:** An Inbox topic has an open work request to another agent. A separate request in the topic was canceled and generated a Service notice.
