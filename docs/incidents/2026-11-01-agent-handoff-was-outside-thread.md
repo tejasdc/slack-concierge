@@ -1,7 +1,7 @@
 ---
 failure: An agent handoff appeared separately from the Inbox thread where Tejas and the working agent were talking.
 date: 2026-11-01
-fix_commits: []
+fix_commits: [f6f71d19]
 cause_status: confirmed
 ---
 
