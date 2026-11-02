@@ -10,7 +10,8 @@
 // to transcribe (bot/src/live-speech.ts):
 //   stdin:  <stream id>\tbegin\n
 //           <stream id>\tappend\t<base64 raw 16 kHz mono float32 PCM>\n   any number, in order
-//           <request id>\tdrain\t<stream id>\t<retained cursor>\n   final segments after cursor
+//           <request id>\tdrain\t<stream id>\t<retained cursor>\n   final segments after cursor,
+//                                         and as "partial" the words not yet final
 //           <stream id>\tfinish\n    answered like a request, computeMs counted from finish
 //           <stream id>\tcancel\n
 //
@@ -44,6 +45,16 @@ guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: request
 
 func makeTranscriber() -> SpeechTranscriber {
     SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
+}
+
+// A followed recording also runs this second transcriber on the same audio, only to say what he
+// is saying before the accurate one finalizes it, so a spoken command can act at once. Apple's
+// fast option uses "a smaller context window" for "faster but also less accurate results", so it
+// never produces a final segment or the finished text. Measured on this Mac, November 1, 2026:
+// alone, the accurate transcriber reports every ~4 s (volatile reporting added nothing), while
+// this one shows a phrase ~1 s before it would become final.
+func makeQuickTranscriber() -> SpeechTranscriber {
+    SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults, .fastResults], attributeOptions: [])
 }
 
 // The first run on a Mac downloads the locale's model through the system; later runs find it
@@ -134,6 +145,25 @@ func samples(fromBase64 text: String) throws -> AVAudioPCMBuffer {
 // so finishing waits only for what was said since the last one.
 final class LiveSegments {
     var final: [String] = []
+    var finalEnd = CMTime.zero
+    // The quick transcriber's words, each for its stretch of audio, newest replacing whatever
+    // stretch it overlaps.
+    var ahead: [(range: CMTimeRange, text: String)] = []
+
+    func heard(_ range: CMTimeRange, _ text: String) {
+        ahead.removeAll { $0.range.intersection(range).duration > .zero || CMTimeRangeContainsTime(range, time: $0.range.start) }
+        ahead.append((range, text))
+        ahead.sort { CMTimeCompare($0.range.start, $1.range.start) < 0 }
+    }
+
+    // The words after the last final segment: quick results lying mostly after its end. Their
+    // boundaries can differ from the accurate transcriber's; judging by the middle neither repeats
+    // a final phrase nor drops one.
+    var partial: String {
+        ahead.removeAll { CMTimeCompare($0.range.end, finalEnd) <= 0 }
+        return ahead.filter { CMTimeCompare(CMTimeAdd($0.range.start, CMTimeMultiplyByRatio($0.range.duration, multiplier: 1, divisor: 2)), finalEnd) > 0 }
+            .map(\.text).joined()
+    }
 }
 
 final class LiveStream {
@@ -141,14 +171,15 @@ final class LiveStream {
     let analyzer: SpeechAnalyzer
     let continuation: AsyncStream<AnalyzerInput>.Continuation
     let collector: Task<String, Error>
+    let lookahead: Task<Void, Never>
     let segments: LiveSegments
     var frames: AVAudioFrameCount = 0
     var pieces = 0
     var failure: String?
 
-    init(_ transcriber: SpeechTranscriber) async throws {
+    init(_ transcriber: SpeechTranscriber, quick: SpeechTranscriber) async throws {
         self.transcriber = transcriber
-        analyzer = SpeechAnalyzer(modules: [transcriber])
+        analyzer = SpeechAnalyzer(modules: [transcriber, quick])
         let segments = LiveSegments()
         self.segments = segments
         collector = Task { @MainActor in
@@ -157,8 +188,15 @@ final class LiveStream {
                 let segment = String(result.text.characters)
                 text += segment
                 segments.final.append(segment)
+                segments.finalEnd = result.range.end
             }
             return text
+        }
+        // Early words are a convenience: if the quick transcriber fails, drains just carry none.
+        lookahead = Task { @MainActor in
+            do {
+                for try await result in quick.results { segments.heard(result.range, String(result.text.characters)) }
+            } catch {}
         }
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.continuation = continuation
@@ -175,7 +213,7 @@ func errorCode(_ error: Error) -> String {
 @MainActor func handleLive(_ id: String, _ command: String, _ payload: String?) async {
     switch command {
     case "begin":
-        do { live[id] = try await LiveStream(makeTranscriber()) } catch { emit(["id": id, "error": errorCode(error)]) }
+        do { live[id] = try await LiveStream(makeTranscriber(), quick: makeQuickTranscriber()) } catch { emit(["id": id, "error": errorCode(error)]) }
     case "append":
         guard let stream = live[id], stream.failure == nil, let payload else { return }
         do {
@@ -190,7 +228,7 @@ func errorCode(_ error: Error) -> String {
         let cursor = max(0, Int(parts.count > 1 ? parts[1] : "0") ?? 0)
         let next = Array(stream.segments.final.dropFirst(cursor))
         let encoded = (try? JSONSerialization.data(withJSONObject: next)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        emit(["id": id, "text": encoded])
+        emit(["id": id, "text": encoded, "partial": stream.segments.partial])
     case "finish":
         guard let stream = live.removeValue(forKey: id) else { emit(["id": id, "error": "UNKNOWN_STREAM"]); return }
         let began = Date()
@@ -208,6 +246,7 @@ func errorCode(_ error: Error) -> String {
         stream.continuation.finish()
         await stream.analyzer.cancelAndFinishNow()
         stream.collector.cancel()
+        stream.lookahead.cancel()
     default:
         emit(["id": id, "error": "UNKNOWN_COMMAND"])
     }

@@ -79,7 +79,9 @@ async function drain(id: string, cursor: number) {
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw new SpeechRefusal("SPEECH_INVALID_CURSOR", 400);
   recording.touchedAt = Date.now();
   await recording.started;
-  return { segments: await speechEngine.drainStream(recording.stream, cursor) };
+  // `partial` is Apple's still-changing guess at what follows the last final segment, so a spoken
+  // command can act about a second sooner; it never enters `segments` or the finished text.
+  return await speechEngine.drainStream(recording.stream, cursor);
 }
 
 async function finish(id: string) {
