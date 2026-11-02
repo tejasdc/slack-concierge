@@ -1,7 +1,7 @@
 /** One-shot canonical Claude history import. Runs in a child process, never in the owner. */
 import { getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, open, rename, rm, stat, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rename, rm, stat, truncate, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
@@ -74,13 +74,18 @@ async function compactedSegments(sessionUuid: string, cwd: string, sourcePath: s
     const projectDir = join(root, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
     await mkdir(projectDir, { recursive: true, mode: 0o700 });
     const segmentPath = join(projectDir, `${sessionUuid}.jsonl`);
-    const rows: SessionMessage[] = [];
+    // Copy once up to the last boundary, then shorten that copy for each earlier boundary.
+    // Copying every prefix separately wrote the sum of all prefixes: a 471 MB Inbox router
+    // transcript with 34 compactions wrote about 8 GB per import and held other services' log
+    // lines for seconds (2026-11-01). Segments are still listed oldest first.
+    const segments: SessionMessage[][] = [];
     process.env.CLAUDE_CONFIG_DIR = root;
-    for (const end of offsets) {
-      await copyPrefix(sourcePath, segmentPath, end);
-      rows.push(...await getSessionMessages(sessionUuid, { dir: cwd }));
+    await copyPrefix(sourcePath, segmentPath, offsets[offsets.length - 1]!);
+    for (const end of [...offsets].reverse()) {
+      await truncate(segmentPath, end);
+      segments.unshift(await getSessionMessages(sessionUuid, { dir: cwd }));
     }
-    return { compactions: offsets.length, rows };
+    return { compactions: offsets.length, rows: segments.flat() };
   } finally {
     if (configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = configDir;
     await rm(root, { recursive: true, force: true });
