@@ -12,7 +12,7 @@ const mutationPaths=[
  '/auth/refresh','/auth/refresh/complete','/auth/profiles/save','/auth/profiles/switch','/auth/reset-credit/use','/auth/usage/retry',
  '/requests','/requests/:id/replies','/requests/:id/cancel',
  '/saved-work/settings','/saved-work/:id/start','/saved-work/:id/time','/saved-work/:id/schedule','/saved-work/:id/drop',
- '/projects/new','/projects/share','/projects/cancel','/projects/:id/default','/projects/:id/todos',
+ '/projects/new','/projects/share','/projects/cancel','/projects/canvas-policy','/projects/:id/default','/projects/:id/todos','/canvas-projects/ensure',
  '/consultations','/resurrections','/resurrections/native',
 ] as const;
 

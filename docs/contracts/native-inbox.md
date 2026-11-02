@@ -532,6 +532,18 @@ does not inherit the requesting model's label as if it were the speaker in the c
 A canceled request's generated service notice stays in the exact request record and work state;
 it is excluded from the conversation projection, including older prepared rows on upgrade.
 Prompt-answer reminders, overdue notices and genuine agent answers remain conversation posts.
+The public work item gives a canceled handoff `communicationKind: cancellation`, its retained
+canceling actor when one is proven, and the exact human input when it directly sent the request.
+Canceled internal thread-upkeep work is omitted from the public work lane; it has no message
+from this conversation to attach to. Its exact request and cancellation remain available by
+request ID through `sessions get`; this is not the private work-mode page. Cross-thread requests
+remain in the thread they addressed. A missing actor or human source remains unknown, not
+inferred from request prose.
+The 20-item public page reads local and Mac request identities in two batches and canceled
+source origins in one batch. Each batch has a page-sized SQL limit. The public read projects
+only a short summary and at-most-8-KiB request preview, and short activity text in both
+public and on-demand private coordination. Exact full request and result bodies remain available by request ID. Its storage budget includes those
+bounded rows and bytes.
 
 When an agent has open, non-stalled work on a topic, the Inbox router's manual post permits only
 a one-line answer of at most 200 characters when that turn already owes the thread a post. Its

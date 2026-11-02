@@ -97,6 +97,8 @@ remote-box, server Concierge, Thinkering, then the Mac, with installed-revision 
 Concierge release commits enter `main` only after GitHub's required build and
 candidate check pass. The installed controller owns candidate-check timeouts and
 failure evidence; parked autonomous repairs go to the standing repair agent.
+An automatic update starts after 10 quiet minutes on `main` (or 30 minutes into a burst),
+so a burst of merges is one restart; expect your merge to go live 10+ minutes later.
 See [ordinary delivery](docs/runbooks/DEPLOYMENT.md#ordinary-delivery) and
 [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
 Terminal repair claims whose runners have died are parked by the deployment owner
@@ -411,6 +413,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `tejasdc` repository before retaining a peer setup order. One-level grouping folders such
   as `canvases/` carry the same accepted placement to the peer; the child name remains the
   registered project identity. See [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+  Thinkering's Canvas uses the owner-side ensure operation: the board identity retains one
+  project choice, creation reads the current organizer-owned Canvas placement policy, and the
+  browser sees pending or confirmed server/Mac paths without choosing a folder.
   `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the

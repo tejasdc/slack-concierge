@@ -32,7 +32,7 @@ import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
 import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
-import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
+import {automaticDeploymentStartsAtMs,getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
@@ -1614,10 +1614,12 @@ export class SessionOwner {
     ].filter(Boolean));
     if(!installed.size||installed.has(desired))return null;
     const observed=iso(desiredState.observed_at);
-    if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
+    // A pending update deliberately waits for main to go quiet; it is late only after it may start.
+    const startsAtMs=automaticDeploymentStartsAtMs(target)??Date.parse(observed??'');
+    if(!observed||!Number.isFinite(startsAtMs)||Date.now()-startsAtMs<NEVER_STARTED_MS)return null;
     const holds=await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
     return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
-      tries:0,since:observed,failedAt:null,repair:null,stopped:null};
+      tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');
@@ -3783,6 +3785,11 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
       else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='canvas-policy'&&parts.length===2&&this.projectSetup) result=this.projectSetup.setCanvasPolicy(body);
+      else if(request.method==='POST'&&parts[0]==='canvas-projects'&&parts[1]==='ensure'&&parts.length===2&&this.projectSetup) result=await this.projectSetup.ensureCanvas(body);
+      else if(request.method==='GET'&&parts[0]==='canvas-projects'&&parts.length===2&&this.projectSetup){
+        const canvas=await this.projectSetup.canvas(parts[1]!);if(!canvas)throw new SessionOwnerError('This Canvas has no project setup yet.',404,'CANVAS_PROJECT_NOT_FOUND');result=canvas;
+      }
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='files'&&parts.length===3) result=await this.projectFiles(parts[1]!,url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);

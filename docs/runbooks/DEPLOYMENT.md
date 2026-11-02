@@ -4,7 +4,8 @@
 copy or edit project files on the service peer. A signed GitHub `push` webhook
 for `tejasdc/slack-concierge` `main` advances one durable desired-state record,
 and the event-driven worker creates at most one active deployment run when that
-commit differs from the immutable last-known-good release. The detached runner
+commit differs from the immutable last-known-good release, once merges have
+settled (see [ordinary delivery](#ordinary-delivery)). The detached runner
 waits for active provider and capture work (not for runs that carry on through a
 restart: hosted Claude runs, shared Codex turns and ChatGPT requests, see
 [execution host](../architecture/EXECUTION-HOST.md)), fetches the recorded pushed commit
@@ -354,6 +355,18 @@ trusted bot. The bot fetches `origin/main` once for that receipt, proves both
 the event commit and last-known-good release are ancestors of the fetched tip,
 records the monotonic desired commit, and wakes a coalescing worker. An event
 arriving during a worker pass guarantees one further pass. The worker creates a
+run only once `main` has been quiet, and Concierge settled since its last update
+run ended, for 10 minutes, or 30 minutes after the oldest uninstalled push
+(`automaticDeploymentStartsAtMs`; the desired-state row keeps that push's time as
+`pending_since`). Until then it logs `deployment_settling` with the start time and
+arms one timer for it. A burst of merges therefore costs one restart instead of one
+per merge: on 2026-11-01/02 27 merges in four hours restarted Concierge about twenty
+times, and replaying those merge times gives 7 under this rule (see
+[the failure record](../incidents/2026-11-02-merge-burst-restarted-concierge-twenty-times.md)).
+Operator `deploy.sh` and repair runs do not wait. The never-started report counts its
+15 minutes from that start time. A fix pushed after a failed update keeps the failed
+burst's start, so once that is 30 minutes old the fix starts without a quiet window; this
+is deliberate, since the fix is what ends the failure. The worker creates a
 fixed transient systemd unit. The
 runner tests provider admission atomically. If any provider work owns the
 system, the runner immediately releases its trial gate and sleeps; Concierge
