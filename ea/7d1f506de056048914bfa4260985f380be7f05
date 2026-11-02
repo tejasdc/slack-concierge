@@ -1,0 +1,1 @@
+Thread Work now loads reliably even when agent requests are long, while the full request stays available when you open its details.
