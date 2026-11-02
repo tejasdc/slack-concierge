@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { bindSessionProvider, carryingTurn, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -2122,20 +2122,11 @@ export class SessionCommunicationCoordinator {
         // room, and the eventual answer was refused as already settled.
         let ended: { id: number; status: string } = { id: turn.id, status: turn.status };
         if (turn.status === 'error') {
-            const continuationOf = (id: number) => db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?").get(`turn-continuation:${id}`) as {id:number;status:string}|null;
-            let next = continuationOf(turn.id);
-            const seen = new Set<number>([turn.id]);
             // Follow the whole chain of refusals; each continuation either carries on or ends.
-            while (next && next.status === 'error' && !seen.has(next.id)) {
-                seen.add(next.id);
-                const after = continuationOf(next.id);
-                if (!after) break;
-                next = after;
-            }
-            const terminal = new Set(['done', 'error', 'cancelled']);
-            if (next && !terminal.has(next.status)) return;
-            if (next && next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
-            if (next) ended = next;
+            const next = carryingTurn(turn.id) ?? ended;
+            if (!['done', 'error', 'cancelled'].includes(next.status)) return;
+            if (next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
+            ended = next;
         }
         if (ended.status === 'cancelled') {
             // His own Stop is his choice, not news; any other cancellation is work someone must follow up.

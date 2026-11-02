@@ -60,6 +60,8 @@ export interface ProviderHistoryMessage {
   reasoningEffort?: string;
   reasoningEffortSource?: "provider" | "requested";
   submissionId?: string;
+  /** Written by the provider itself (Claude Code's `<synthetic>` rows, such as a usage-limit notice), not by the agent. */
+  providerNotice?: true;
   /** Owner-projected: the accepted input this message belongs to, for any role. */
   inputId?: string;
   /** The exact message a deliberate thread post answers. */
@@ -797,6 +799,7 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   const identity = { id: row.uuid, turnId: row.uuid,
     ...(timestamp ? { createdAt: timestamp, timestampSource: "provider" as const } : {}),
     ...(model ? { model, modelSource: "provider" as const } : {}),
+    ...(synthetic ? { providerNotice: true as const } : {}),
     ...(row.type === "user" ? { submissionId: row.uuid } : {}) };
   if (typeof content === "string") {
     // Same rule as the parts below: what is left after the marker, and no message at all

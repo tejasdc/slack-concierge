@@ -754,3 +754,15 @@ archive still do. When the dispatcher would place work on another account now, t
 runs at once and no hold notice is sent. The request the refused turn served stays open while any
 continuation in its chain is still going, so the continuation's reply settles it. The refusal text
 names the account and never promises a retry; what happens next is decided after it.
+
+Claude Code writes its own usage-limit notice as an assistant row with the model `<synthetic>`.
+That row is not the agent working: it never makes a refused turn count as worked-on, so a fresh
+turn refused for usage takes the zero-work path and is retried in place, its input and request
+unchanged, on another account the dispatcher can launch, or held for a sign-in or the first
+reset when none can. Claude's in-process model fallbacks (Opus, then Sonnet, then Haiku on the
+same account) keep the account's reset as first stated, because a fallback model's refusal can
+name none, and a refusal with no reset could neither wait nor move. A Mac recipient reports a
+peer request's progress from the turn now carrying its work (`carryingTurn`), the same chain the
+server follows for its own requests, so the cloud keeps the request open while a continuation
+waits or runs, and hears that continuation's hold. Before 2026-11-02 the Mac reported the first
+refused turn as failed and an app-blocker request closed while its continuation was still queued.
