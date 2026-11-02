@@ -13,11 +13,11 @@ While discussing Canvas voice mode, Tejas saw the Inbox router explain another a
 
 ## Cause
 
-The request owner retained the correct thread address for answers, overdue notices and final outcomes, but the outbound request message itself was projected as a separate thread root. That left the router's handoff outside the conversation. The router's choice to inspect another agent's working transcript is a separate instruction issue owned by the Inbox router.
+The request owner retained the correct thread address for answers, overdue notices and final outcomes, but the outbound request message itself was projected as a separate thread root. That left the router's handoff outside the conversation. The first live check also showed that the prepared reader used a separate display rule: it placed the request in the thread but still showed only the old brief. The router's choice to inspect another agent's working transcript is a separate instruction issue owned by the Inbox router.
 
 ## Fix
 
-Project an ordinary named-thread request into the retained thread and display its destination, summary, full brief and exact source words when available. Keep its immutable request identity and deadlines. The Inbox router owns the companion instruction to use the thread and avoid another agent's working transcript.
+Project an ordinary named-thread request into the retained thread and display its destination, summary, full brief and exact source words when available. The owner and prepared reader now use the same display rule, and the prepared reader refreshes existing requests after installation. Keep the request's immutable identity and deadlines. The Inbox router owns the companion instruction to use the thread and avoid another agent's working transcript.
 
 ## Acceptance scenario
 
