@@ -355,6 +355,29 @@ export type TurnContinuationReason =
   | {kind:'interrupted'; detail:string; waitUntilMs?:number|null};
 
 /**
+ * The turn now carrying a refused turn's work: follow each `turn-continuation:<id>` while the
+ * turn before it ended in error, and return the last one. A turn that never failed carries itself.
+ * One answer for every reader of a request's progress, local or on a peer: the Mac's report
+ * followed only the first turn, so a request the server would have kept open for its continuation
+ * closed as failed on 2026-11-02.
+ */
+export function carryingTurn(turnId:number):{id:number;status:string}|null {
+  const turn=db.query('SELECT id,status FROM turns WHERE id=?').get(turnId) as {id:number;status:string}|null;
+  if(!turn)return null;
+  const continuationOf=(id:number)=>db.query("SELECT t.id,t.status FROM session_inputs i JOIN turns t ON t.id=i.turn_id WHERE i.id=?")
+    .get(`turn-continuation:${id}`) as {id:number;status:string}|null;
+  let current=turn;
+  const seen=new Set<number>([turn.id]);
+  while(current.status==='error'){
+    const next=continuationOf(current.id);
+    if(!next||seen.has(next.id))break;
+    seen.add(next.id);
+    current=next;
+  }
+  return current;
+}
+
+/**
  * One continuation for one interrupted turn. The failed turn stays immutable; this is
  * new service-authored guidance in its own run. Call inside the failure transaction so
  * a crash cannot retain a failure without its owed continuation.

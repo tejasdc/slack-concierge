@@ -242,6 +242,7 @@ export class ClaudeOutputAccumulator {
   private sessionModel: string | undefined;
   private model: string | undefined;
   private messageParts: string[] = [];
+  private agentSpoke = false;
   private toolsUsed: string[] = [];
   private sawAcknowledgedUserInput = false;
   private awaitingInitialPrompt: boolean;
@@ -267,6 +268,7 @@ export class ClaudeOutputAccumulator {
         // segment. This covers interrupted tools, interrupted streaming, and
         // the race where the prior response completes before interrupt ack.
         this.messageParts.length = 0;
+        this.agentSpoke = false;
         this.responseChars = 0;
         this.finalResult = "";
         this.isError = false;
@@ -291,6 +293,7 @@ export class ClaudeOutputAccumulator {
         ? ev.duration_ms : undefined;
       if (typeof ev.terminal_reason === "string" && ev.terminal_reason.startsWith("aborted_")) {
         this.messageParts.length = 0;
+        this.agentSpoke = false;
         this.responseChars = 0;
         this.finalResult = "";
         this.durationMs = undefined;
@@ -301,9 +304,15 @@ export class ClaudeOutputAccumulator {
     if (ev.parent_tool_use_id == null && typeof ev.message?.model === "string"
         && ev.message.model.trim() && !ev.message.model.startsWith("<")) this.model = ev.message.model.trim();
     const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    // Claude Code writes its own notices (a usage limit, an API error) as assistant rows with
+    // the model `<synthetic>`. They are not the agent working, so they never make a refused
+    // turn look worked-on: one did on the Mac on 2026-11-02 and a fresh request failed instead
+    // of moving to the other account.
+    const synthetic = ev.message?.model === "<synthetic>";
     for (const block of content) {
       if (block?.type === "text" && typeof block.text === "string") {
         this.messageParts.push(block.text);
+        if (!synthetic && block.text.trim()) this.agentSpoke = true;
         this.responseChars += block.text.length;
       } else if (block?.type === "tool_use") {
         this.toolsUsed.push(String(block.name || "tool"));
@@ -318,7 +327,7 @@ export class ClaudeOutputAccumulator {
     const { text, mark: turnOutcome } = splitTurnOutcomeMarker(this.finalResult.trim() || this.messageParts.join("\n\n").trim() || (!this.seenEvents ? unstructuredOutput.trim() : ""));
     const sessionUUID = !this.seenEvents && unstructuredOutput.trim()
       ? this.sessionUUID || extractUuid(unstructuredOutput) : this.sessionUUID;
-    return { text, sessionUUID, toolsUsed: [...this.toolsUsed], assistantOutput: this.messageParts.some(part => part.trim().length > 0),
+    return { text, sessionUUID, toolsUsed: [...this.toolsUsed], assistantOutput: this.agentSpoke,
       isError: this.isError, ...(turnOutcome ? { turnOutcome } : {}), ...(this.model ? { model: this.model } : {}),
       ...(this.durationMs !== undefined ? { durationMs: this.durationMs } : {}) };
   }
@@ -535,6 +544,10 @@ export async function runClaudeCodeTurn(input: {
   const initialUsageAttempt = usageAttempt("claude-code", selectedModel ?? "unresolved", input.accountLabel);
   let currentUsageAttempt: UsageAttempt | null = selectedModel ? initialUsageAttempt : null;
   let usageResetAt: number | null = null;
+  // The account's reset as Claude last stated it during this request's fallback attempts. Each fallback
+  // model's refusal may name none (Haiku's did not on 2026-11-02), and that must not erase the
+  // account's known reset: without it the refusal could neither wait nor move, and was final.
+  let accountUsageResetAt: number | null = null;
   // The host journal keeps the original stream. Only malformed/unstructured output needs a
   // diagnostic tail here; a valid stream is reduced as each event arrives.
   let unstructuredOutput = "";
@@ -1032,6 +1045,7 @@ export async function runClaudeCodeTurn(input: {
       providerProducedResult = false;
       usageRejected = false;
       usageResetAt = null;
+      accountUsageResetAt = null;
     }
     input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
     settleAcknowledgement(followUp);
@@ -1106,6 +1120,7 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "rate_limit_event") {
       usageRejected = event.rate_limit_info?.status === "rejected";
       usageResetAt = usageRejected ? resetEpochMilliseconds(event.rate_limit_info?.resetsAt) : null;
+      if (usageResetAt !== null) accountUsageResetAt = usageResetAt;
     }
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
@@ -1207,6 +1222,7 @@ export async function runClaudeCodeTurn(input: {
         // A resumed CLI may finish a queued notification before echoing this request.
         usageRejected = false;
         usageResetAt = null;
+        accountUsageResetAt = null;
         log("info", "claude_code_unowned_result_ignored", {
           session_uuid: typeof event.session_id === "string" ? event.session_id : input.sessionUUID,
           phase: "initial_input_acknowledgement", is_error: event.is_error === true,
@@ -1448,12 +1464,13 @@ export async function runClaudeCodeTurn(input: {
     // failure is that refusal: reported as usage exhaustion, the turn moves to an account with
     // room. Reported as a plain error ("429 … model not changed"), it failed on the full account
     // while the other had room (2026-10-07, 9:02 PM).
-    const waitsForReset = usageResetAt !== null && usageResetAt > Date.now();
+    const resetAt = usageResetAt ?? accountUsageResetAt;
+    const waitsForReset = resetAt !== null && resetAt > Date.now();
     throw new ProviderDispatchError({
-      message: `Claude usage is exhausted on ${input.accountLabel ?? 'this Claude account'}${usageResetAt ? ` until ${new Date(usageResetAt).toISOString()}` : ''}. This is one account's limit, not a stop: Concierge sends the work to another Claude account with room, and holds it for the reset only when no account has room. ${modelSwitchError.message}`,
+      message: claudeUsageExhaustedMessage(input.accountLabel, resetAt, modelSwitchError.message),
       failureClass: "parked_terminal", terminalConfirmed: true,
       toolsUsed: failed.toolsUsed, assistantOutput: failed.assistantOutput, providerSessionId: failed.sessionUUID,
-      ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
+      ...(waitsForReset ? { clearsAtMs: resetAt } : {}),
     });
   }
   if (!initialPromptAcknowledged) {
@@ -1480,17 +1497,18 @@ export async function runClaudeCodeTurn(input: {
     // A usage rejection with a reported reset is a wait, not a death: Claude refused the
     // request outright, so the input can keep its place and be tried again then. Without a
     // reported reset there is nothing to wait for, and it stays terminal.
-    const waitsForReset = usageExhausted && usageResetAt !== null && usageResetAt > Date.now();
+    const resetAt = usageExhausted ? usageResetAt ?? accountUsageResetAt : null;
+    const waitsForReset = resetAt !== null && resetAt > Date.now();
     throw new ProviderDispatchError({
       message: usageExhausted
-        ? `Claude usage is exhausted on ${input.accountLabel ?? 'this Claude account'}${usageResetAt ? ` until ${new Date(usageResetAt).toISOString()}` : ''}. This is one account's limit, not a stop: Concierge sends the work to another Claude account with room, and holds it for the reset only when no account has room. ${parsed.text}`
+        ? claudeUsageExhaustedMessage(input.accountLabel, resetAt, parsed.text)
         : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,
       toolsUsed: parsed.toolsUsed,
       assistantOutput: parsed.assistantOutput,
       providerSessionId: parsed.sessionUUID,
-      ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
+      ...(waitsForReset ? { clearsAtMs: resetAt } : {}),
     });
   }
   if (currentUsageAttempt) recordUsageSuccess(currentUsageAttempt);
@@ -1504,6 +1522,18 @@ export async function runClaudeCodeTurn(input: {
     ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
     ...(parsed.turnOutcome ? { turnOutcome: parsed.turnOutcome } : {}),
   };
+}
+
+/**
+ * What a usage refusal says, wherever it is read (the turn's record, a continuation, a request's
+ * provider error). It must start "Claude usage is exhausted": the dispatcher recognizes the refusal
+ * by that. It says only what happens next: the earlier wording promised another account "with room"
+ * even when the only other account needed a sign-in, and the request it described had failed.
+ */
+export function claudeUsageExhaustedMessage(account: string | null | undefined, resetAt: number | null, detail: string): string {
+  return `Claude usage is exhausted on ${account ?? 'this Claude account'}${resetAt ? ` until ${new Date(resetAt).toISOString()}` : ''}. `
+    + `This is one account's limit: the work moves to another Claude account on this machine that can take it, `
+    + `and when none can (each is out of room or needs signing in), it waits here for the first reset or sign-in. ${detail}`;
 }
 
 export async function forkClaudeCodeSession(input: {

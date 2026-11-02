@@ -674,7 +674,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
       ),
       onProviderMessage: (message) => {
-        if(message.role==='assistant' && message.content.trim())observedAssistantOutput=true;
+        // The provider's own notice (Claude's usage-limit row) is not the agent working on the input.
+        if(message.role==='assistant' && !message.providerNotice && message.content.trim())observedAssistantOutput=true;
         try { projectSessionProviderMessage(input.turnId,message); }
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
