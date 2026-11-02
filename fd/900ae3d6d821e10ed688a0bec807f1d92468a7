@@ -1,0 +1,1 @@
+A handoff in an ongoing thread now shows the specific message you just sent, even when the thread began earlier.
