@@ -9,7 +9,7 @@ import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, mes
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
@@ -757,6 +757,12 @@ export class SessionCommunicationCoordinator {
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,refuseUnreadable:true,quiet:quiet||null});
             const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
+            // A worker on an Inbox thread waiting on him reaches him through that thread; its own
+            // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
+            if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
+                try{fileWorkerNeedInThread({respondingSessionId:actor.session,eventId:saved.input.id,text:stated});}
+                catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+            }
             return {...receipt,duplicate:false};
         })();
     }

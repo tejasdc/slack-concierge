@@ -2276,6 +2276,31 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   }
   return post;
 }
+/**
+ * An agent working on an Inbox thread that ends its turn waiting on him is a decision in that
+ * thread, with the thread's blocking notification. Its own needs_you cannot reach him: thnkr.ing
+ * leaves a turn the Inbox started to the Inbox, and nothing carried it there, so the Uber Eats
+ * agent's "send a photo of the biryani" on 2026-11-02 reached no device (its failed reply had
+ * filed only a reading item). The question is posted as the agent's words in the thread it was
+ * last sent work for, then filed exactly as a needs_decision reply is.
+ */
+export function fileWorkerNeedInThread(input:{respondingSessionId:number;eventId:string;text:string}):string|null {
+  const request=db.query(`SELECT request.request_id,request.source_session_id,request.thread_root_input_id FROM session_communication_requests request
+    WHERE request.target_session_id=? AND request.thread_root_input_id IS NOT NULL ORDER BY request.created_at_ms DESC LIMIT 1`)
+    .get(input.respondingSessionId) as {request_id:string;source_session_id:number;thread_root_input_id:string}|null;
+  if(!request)return null;
+  const inbox=getSessionById(request.source_session_id);
+  if(!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
+  const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
+  const respondingSessionId=`concierge:${input.respondingSessionId}`;
+  const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:request.request_id,root,
+    inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
+  if(!post)return null;
+  fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:request.request_id,
+    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text});
+  return post;
+}
+
 /** Close completed topic requests whose retained answer was originally filed under another root. */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
