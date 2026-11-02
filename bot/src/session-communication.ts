@@ -1263,8 +1263,14 @@ export class SessionCommunicationCoordinator {
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
         if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
         if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
-        if (target?.session === actor.session)
+        if (target?.session === actor.session) {
+            // A standing agent arming its own schedule is not asking itself for an answer: its
+            // firing is a plain scheduled input in its own session, like every later repeat
+            // (saved-work.ts), so no request to itself is opened and nothing returns to it.
+            // saveQueuedTurn keeps the role's identity and refuses a second queued repeat.
+            if(input.saved&&requestedRole&&actor.inputId)return this.scheduleOwnRole(actor,input.saved,requestedRole,input.action_id,input.text,digest);
             throw new Error('A session cannot ask itself to produce a separate answer.');
+        }
         // A session given a topic it does not handle yet is told so, with the other topics it is on,
         // so it can judge fit and hand the request back (session-fit.ts). Facts, never a refusal.
         const topicRoot=routedFrom?.root??topicRootFor(threadRoot,actor.inputId);
@@ -1347,6 +1353,27 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return this.receipt(this.row(id));
+    }
+    private scheduleOwnRole(actor:{session:number;turn:number;inputId?:string|null},
+        saved:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number},
+        role:string,actionId:string,text:string,digest:string) {
+        const inputId=`saved-self:${hash(`${actor.inputId}:${actionId}`)}`;
+        const existing=getAcceptedSessionInput(inputId);
+        if(existing){
+            if(JSON.parse(existing.payload_json).digest!==digest)
+                throw new Error('Idempotency conflict: this source/action already scheduled different work.');
+            return {state:'scheduled',role,sessionId:`concierge:${actor.session}`,inputId,turnId:existing.turn_id};
+        }
+        const turnId=db.transaction(()=>{
+            const retained=retainSessionInput({id:inputId,sessionId:actor.session,scope:`saved-self:${actor.inputId}`,actionId,
+                kind:'input',origin:'agent',payload:{text,digest},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn)}).input;
+            const queued=enqueueSessionInput(retained.id);
+            if(queued.turn_id===null)throw new Error('Scheduled input could not be queued.');
+            saveQueuedTurn(queued.turn_id,saved.kind,saved.atMs,saved.expiresAtMs,saved.repeatEveryMs,undefined,role);
+            return queued.turn_id;
+        })();
+        this.wake();
+        return {state:'scheduled',role,sessionId:`concierge:${actor.session}`,inputId,turnId};
     }
     /**
      * His reply inside an Inbox thread, carried to the agent working on it as a request rather than
