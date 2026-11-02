@@ -464,6 +464,15 @@ const STEERING_MAY_HAVE_REACHED_PROVIDER="NOT (status='failed' AND provider_sent
 export function steeringMayHaveReachedProvider(inputId:string):boolean {
   return !!db.query(`SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? AND ${STEERING_MAY_HAVE_REACHED_PROVIDER} LIMIT 1`).get(inputId);
 }
+/**
+ * A message's first hand-off keeps its plain record names; a later attempt, which may join another
+ * run, gets its own, because a recorded event never changes turn. Reusing the names refused the
+ * second attempt and stranded two reminders after a restart (2026-11-02).
+ */
+export function steeringAttemptEventId(base:string,inputId:string,steeringId:number):string {
+  const earlier=db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? AND id<? LIMIT 1').get(inputId,steeringId);
+  return earlier?`${base}:attempt:${steeringId}`:base;
+}
 export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
@@ -498,7 +507,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
     const steeringId=Number(added.lastInsertRowid);
     db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId,steeringId,input.id);
     reopenDoneSessionForExecutableInput(getSessionById(input.session_id)!,input,turnId);
-    recordSessionEvent({eventId:`input:${input.id}`,sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text}});
+    recordSessionEvent({eventId:steeringAttemptEventId(`input:${input.id}`,input.id,steeringId),sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text}});
     return getAcceptedSessionInput(input.id)!;
   })();
 }

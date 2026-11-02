@@ -53,3 +53,14 @@ session, which the app renders as "Unknown agent".
 - **Expected:** the waiting message joins the running turn within seconds and is acknowledged by the
   provider; its byline names him when it is his forwarded thread reply.
 - **Replayable offline:** no (needs a live Claude run and an owner restart).
+
+## Follow-up: the first live run of the pull (2026-11-02 06:07 UTC)
+
+After the fix installed, the canvas run was taken back and its pull ran for real. It put two stale
+"Tejas is still waiting for an answer" reminders from 04:20 (whose hand-offs the 04:24 restart had
+dropped) back in line and tried to hand them to the run. Their "accepted" and "delivery" records are
+named by message only and a recorded event never changes turn, so the second hand-off was refused
+("Event identity conflict"); the pull had already taken them out of the queue, which left both
+detached and shown as held. Fixes: a later hand-off attempt gets its own record names; one message
+that cannot join is returned to the queue without stopping the others; a reminder whose request is
+already answered is withdrawn rather than delivered (the next takeover of that run settles the two).
