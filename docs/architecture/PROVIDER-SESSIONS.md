@@ -626,6 +626,16 @@ why the Inbox router states the escalation directive in the forwarded request
 itself when a trigger applies. `scripts/model-use-audit.py` counts delegation and
 escalation per session from the transcript archive.
 
+### His thesaurus in every turn
+
+Before a native turn starts, `bot/src/thesaurus-context.ts` posts the turn's words to
+Thinkering's `/thesaurus/mentions` on the capability socket (through `ssh remote-box` on the
+Mac) and the answer goes first in the per-turn context: Tejas's meanings for his own terms in
+the message, sound-alikes included ("Kodiak" for CoDIAK), and how to look up or add any other.
+Matching and wording belong to Thinkering (`docs/architecture/thesaurus.md` there); Concierge
+only carries the text. A lookup that fails or outlasts its bound (1.5 s here, 6 s from the Mac)
+never holds the turn; it starts with a line saying the thesaurus could not be read.
+
 ### Resuming with a selected provider
 
 `post`, `resume`, and `upload` accept `--provider <alias>`; [the router runbook](../runbooks/ROUTER-ACTIONS.md) gives syntax. A selected new request owns an isolated session, including in shared-session channels. A same-provider resume stays in its native session and queues a separate turn with the selected model. It cannot become steering that silently keeps the old model.
