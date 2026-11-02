@@ -3745,8 +3745,12 @@ export class SessionOwner {
         const successor=supersededBy(target.session_id);
         if(successor)throw new SessionOwnerError(`This session continues in ${successor}. Send the action to ${supersededAddress(target.session_id)}.`,409,'SESSION_SUPERSEDED');
       }
-      const prior=typeof body?.clientActionId==='string'?db.query(`SELECT 1 FROM session_inputs WHERE action_id=?
-        AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
+      let prior:unknown=null;
+      if(typeof body?.clientActionId==='string'){
+        prior=db.query("SELECT 1 FROM session_inputs WHERE scope='surface:thinkering' AND action_id=? LIMIT 1").get(body.clientActionId);
+        if(!prior&&body.sourceInputId!=null)
+          prior=db.query('SELECT 1 FROM session_inputs WHERE source_input_id=? AND action_id=? LIMIT 1').get(body.sourceInputId,body.clientActionId);
+      }
       let result:unknown;
       const answerHeaders:Record<string,string>={};
       if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){
