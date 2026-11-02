@@ -1,13 +1,35 @@
 #!/usr/bin/env bun
 import {requestApiResponse} from './router-request-client';
+import {createHash} from 'node:crypto';
 
 const usage=`router-actions.sh projects new <name> --purpose "<one sentence>" --consultation <completed organizer request id> --source-input <id> --source-run <id> [--template brainstorm|writing|design] [--here-only]
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
-router-actions.sh projects cancel <name> --to <machine>`;
+router-actions.sh projects cancel <name> --to <machine>
+router-actions.sh projects canvas-policy --consultation <completed organizer request id>
+router-actions.sh projects canvas-bind <board-id> --title <canvas title> --existing <registered project> [--inside <folder>]
+router-actions.sh projects canvas-status <board-id>`;
 
 async function main(args:string[]){
   if(args.length===1&&['help','--help'].includes(args[0]!)){console.log(usage);return;}
+  if(args[0]==='canvas-policy'){
+    const flags=flagsOf(args.slice(1),['--consultation']);
+    if(!flags.get('--consultation'))throw new Error(usage);
+    const answer=await requestApiResponse('/sessions/v1/projects/canvas-policy',{consultation:flags.get('--consultation')});
+    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+  }
+  if(args[0]==='canvas-bind'){
+    const board=args[1],flags=flagsOf(args.slice(2),['--title','--existing','--inside']);
+    if(!board||!flags.get('--title')||!flags.get('--existing'))throw new Error(usage);
+    const digest=createHash('sha256').update(board).digest('hex').slice(0,24);
+    const answer=await requestApiResponse('/sessions/v1/canvas-projects/ensure',{clientActionId:`canvas-project:${digest}`,boardId:board,boardTitle:flags.get('--title'),existingProject:{name:flags.get('--existing'),...(flags.get('--inside')?{inside:flags.get('--inside')}:{})}});
+    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+  }
+  if(args[0]==='canvas-status'){
+    const board=args[1];if(!board||args.length!==2)throw new Error(usage);
+    const answer=await requestApiResponse('/sessions/v1/canvas-projects/'+encodeURIComponent(board));
+    console.log(JSON.stringify(answer.result));if(!answer.ok)process.exitCode=1;return;
+  }
   const [verb,project,...rest]=args;
   if(!verb||!['new','share','status','cancel'].includes(verb)||!project||project.startsWith('--'))throw new Error(usage);
   const flags=new Map<string,string>();
@@ -30,5 +52,6 @@ async function main(args:string[]){
   console.log(JSON.stringify(answer.result));
   if(!answer.ok)process.exitCode=1;
 }
+function flagsOf(args:string[],allowed:string[]){const flags=new Map<string,string>();for(let i=0;i<args.length;i++){const flag=args[i]!;if(!allowed.includes(flag)||flags.has(flag)||i+1>=args.length||args[i+1]!.startsWith('--'))throw new Error(`Invalid project option: ${flag}.\n${usage}`);flags.set(flag,args[++i]!);}return flags;}
 function sourceFlagsPresent(flags:Map<string,string>){return !!flags.get('--source-input')&&!!flags.get('--source-run');}
 try{await main(process.argv.slice(2));}catch(error){console.error(error instanceof Error?error.message:String(error));process.exitCode=2;}

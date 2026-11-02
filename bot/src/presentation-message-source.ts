@@ -99,6 +99,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     if(!row.is_inbox||row.agent_request)return [];
     if(row.kind==='post'&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
       .get(`post:collapse:${row.event_id}`))return [];
+    if(row.kind==='post'&&canceledRequestNotice(db,row.event_id))return [];
     if(!(['result','inbox_capture','post','request','topic_route'].includes(row.kind)
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='request'){
@@ -134,4 +135,19 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     return typeof messageId==='string'&&messageId?[{sequence:row.sequence,sessionId:row.session_id,messageId,eventId:row.event_id}]:[];
   });
   return {messages,topicEvents,ownerMessages,nextSequence:rows.at(-1)?.sequence??after,hasMore:rows.length===limit};
+}
+
+/** A cancellation is request state, not a new conversation reply. */
+export function canceledRequestNotice(db:Database,eventId:string):boolean {
+  if(!eventId.startsWith('post:forward:'))return false;
+  const row=db.query(`SELECT json_extract(payload_json,'$.requestId') AS requestId,
+      json_extract(payload_json,'$.postedBy') AS postedBy FROM session_owner_events WHERE event_id=?`)
+    .get(eventId) as {requestId:string|null;postedBy:string|null}|null;
+  if(row?.postedBy!=='service'||!row.requestId)return false;
+  const forwardedEventId=eventId.slice('post:forward:'.length);
+  const event=(db.query("SELECT kind,json_extract(payload_json,'$.output.stoppedBy') AS stoppedBy FROM session_communication_events WHERE event_id=?").get(forwardedEventId)
+    ??db.query("SELECT kind,json_extract(payload_json,'$.output.stoppedBy') AS stoppedBy FROM session_peer_events WHERE event_id=?").get(forwardedEventId)) as {kind:string;stoppedBy:string|null}|null;
+  if(event?.kind!=='final'||event.stoppedBy==='tejas')return false;
+  return !!(db.query("SELECT 1 FROM session_communication_requests WHERE request_id=? AND outcome='canceled'").get(row.requestId)
+    ??db.query("SELECT 1 FROM session_peer_requests WHERE request_id=? AND outcome='canceled'").get(row.requestId));
 }

@@ -13,6 +13,9 @@ router-actions.sh projects new <name> --purpose "<one sentence>" --consultation 
 router-actions.sh projects share <name> --to <machine> [--source-input <id> --source-run <id>]
 router-actions.sh projects status <name> [--to <machine>]
 router-actions.sh projects cancel <name> --to <machine>  # only before delivery
+router-actions.sh projects canvas-policy --consultation <completed organizer request id>
+router-actions.sh projects canvas-bind <board-id> --title <canvas title> --existing <registered project> [--inside <folder>]
+router-actions.sh projects canvas-status <board-id>
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>

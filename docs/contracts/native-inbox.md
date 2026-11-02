@@ -527,6 +527,31 @@ including when the agent did not name a thread on its private request.
 When Tejas addresses a reply directly to an agent, its internal delivery request is excluded
 from the conversation projection, including existing prepared rows on upgrade. His source
 message remains once with its route receipt and the agent's eventual answer still posts there.
+The work item names both the requesting and receiving sessions, so a delivery or cancellation
+does not inherit the requesting model's label as if it were the speaker in the conversation.
+A canceled request's generated service notice stays in the exact request record and work state;
+it is excluded from the conversation projection, including older prepared rows on upgrade.
+Prompt-answer reminders, overdue notices and genuine agent answers remain conversation posts.
+The public work item gives a canceled handoff `communicationKind: cancellation`, its retained
+canceling actor when one is proven, and the exact human input when it directly sent the request.
+Canceled internal thread-upkeep work is omitted from the public work lane; it has no message
+from this conversation to attach to. Its exact request and cancellation remain available by
+request ID through `sessions get`; this is not the private work-mode page. Cross-thread requests
+remain in the thread they addressed. A missing actor or human source remains unknown, not
+inferred from request prose.
+The 20-item public page reads local and Mac request identities in two batches and canceled
+source origins in one batch. Its storage budget includes those bounded rows.
+
+When an agent has open, non-stalled work on a topic, the Inbox router's manual post permits only
+a one-line answer of at most 200 characters when that turn already owes the thread a post. Its
+automatic `Sent to` receipt is the ordinary routing mark; substantive words go to the worker
+as a request, whose own answer posts in the thread. A service return already posted in that
+thread cannot be relayed from the Inbox, and it does not create a second owed-post duty.
+The refusal applies to the Inbox router's manual posts, not Tejas's messages, agent answers or
+another agent's ability to post. It uses canonical local and peer request state, excluding
+stalled and uncertain requests; a settled or canceled request releases the guard without a timer.
+If the Inbox turn ends without meeting an owed post while another agent works there, its fallback
+is a short notice of the unanswered turn, never the router's full closing text.
 
 Human Inbox inputs and agent-marked captures carry their thread in the prompt: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned

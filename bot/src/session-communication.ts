@@ -5,7 +5,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, topicHasOpenWorker, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
@@ -341,7 +341,7 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
-    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
         const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
@@ -349,7 +349,7 @@ export class SessionCommunicationCoordinator {
         const committed=priorKey?db.query('SELECT * FROM session_external_replies WHERE action_key=?').get(priorKey) as any:null;
         if(committed){
             const saved=JSON.parse(committed.payload_json);
-            if(committed.request_id!==input.request_id||saved.text!==input.text||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
+            if(committed.request_id!==input.request_id||saved.text!==input.text||saved.replyBody!==input.reply_body||!!committed.final!==input.final||saved.workDisposition!==input.workDisposition)
                 throw new Error('Idempotency conflict: outside reply changed.');
             return this.externalGet(request.agent_name,request.request_id);
         }
@@ -367,7 +367,7 @@ export class SessionCommunicationCoordinator {
         if(request.outcome)throw new Error('This outside request already has a final reply.');
         const sourceInputId=actor.inputId??this.peerActor(actor).inputId;
         const attachments=this.retainAttachments(sourceInputId,input.action_id,'reply-file',input);
-        const payload={text:input.text,final:input.final,responding_session_id:`concierge:${actor.session}`,
+        const payload={text:input.text,...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),final:input.final,responding_session_id:`concierge:${actor.session}`,
             ...(input.workDisposition?{workDisposition:input.workDisposition}:{}),...(attachments.length?{attachments}:{}),
             ...(input.evidence?{evidence:input.evidence}:{})};
         const eventId=randomUUID();
@@ -700,6 +700,17 @@ export class SessionCommunicationCoordinator {
             // A named topic must be the one the thread is in; a post cannot be filed under another.
             if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
                 if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
+            if(router){
+                const opening=getAcceptedSessionInput(sourceInputId);
+                if(opening?.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)
+                    throw new Error('The agent already posted this return in its named thread. Do not relay it from the Inbox; nothing was posted.');
+                const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
+                if(topic&&topicHasOpenWorker(topic.topic_id,session.id)){
+                    const owed=threadOwedByTurn(session,sourceInputId);
+                    const shortRoutingNote=owed===rootInputId&&text.length<=200&&!text.includes('\n')&&!input.attachments?.length&&!carried.length;
+                    if(!shortRoutingNote)throw new Error('Another agent is working in this thread. The Sent to receipt is its routing mark. Only a short one-line answer owed to this thread may be posted by the Inbox now; send substantive words to the agent with sessions ask. Nothing was posted.');
+                }
+            }
             // Custody is retained before the post is recorded, so an accepted post always
             // names files the owner already holds.
             const attachments=carried.length||input.attachments?.length

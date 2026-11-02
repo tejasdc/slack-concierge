@@ -299,6 +299,31 @@ CREATE INDEX IF NOT EXISTS session_communication_due ON session_communication_re
 CREATE INDEX IF NOT EXISTS session_communication_turn_lookup ON session_communication_requests(target_turn_id);
 CREATE INDEX IF NOT EXISTS session_communication_lab_source ON session_communication_requests(source_session_id,request_id);
 CREATE INDEX IF NOT EXISTS session_communication_lab_target ON session_communication_requests(target_session_id,request_id);
+CREATE TABLE IF NOT EXISTS canvas_project_policies (
+  revision_id TEXT PRIMARY KEY,
+  group_name TEXT NOT NULL,
+  template TEXT NOT NULL,
+  consultation_request_id TEXT NOT NULL UNIQUE REFERENCES session_communication_requests(request_id),
+  source_session_id INTEGER NOT NULL REFERENCES sessions(id),
+  source_input_id TEXT NOT NULL UNIQUE,
+  source_run_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS canvas_project_ensures (
+  board_id TEXT PRIMARY KEY,
+  client_action_id TEXT NOT NULL UNIQUE,
+  project TEXT NOT NULL,
+  inside TEXT,
+  title TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  template TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('awaiting_policy','creating','ready','failed')),
+  policy_revision_id TEXT REFERENCES canvas_project_policies(revision_id),
+  created_project INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_communication_events (
   event_id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES session_communication_requests(request_id) ON DELETE CASCADE,
