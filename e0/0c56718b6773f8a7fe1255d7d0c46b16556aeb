@@ -1,0 +1,1 @@
+Agents can now space out the requests they send without one failed request stopping the rest, so a nightly finding always reaches the session that owns it.
