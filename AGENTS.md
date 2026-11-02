@@ -248,11 +248,11 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Standing agents and their project folders are declared once in Concierge; use
   `sessions agents` or Thinkering's owner read to see bindings, repeating schedules, watches,
-  last runs, unowned schedules and host timers. Create their projects with `projects new --owner agents`,
+  last runs, unowned schedules and host timers. Consult the workspace organizer before creating their projects,
   write the project `AGENTS.md`, add the role row, then use `sessions agents bind`, `sessions ask --role`
   or `sessions schedule --role` to address the continuing session.
-  New repeating schedules and renewing watches belong only in agent, router or
-  lab projects. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
+  New repeating schedules and renewing watches belong to registered projects regardless of
+  grouping folder; new project placement goes through the workspace organizer. See [standing agents](docs/runbooks/ROUTER-ACTIONS.md#standing-agents).
 
 - Grafana health alerts queue the standing repair agent without a human Inbox thread; the external work-flow supervisor owns
   host resource pressure plus responsive-owner/speech memory and latency repair. Webhook acceptance alone does not
@@ -401,10 +401,12 @@ previews with phase timing for slow calls and a compact exact archive proof; see
 - Opening a link in his browser on the Mac is `sessions open <link>`, an order between the two
   Concierges, never a new Mac session; queued while the Mac sleeps. See
   [peer instances](docs/runbooks/PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
-- Project folders are machine-local. `projects new` creates the canonical scaffold and a
-  private `tejasdc` repository before retaining a peer setup order; its required `--owner`
-  puts his projects at the top of the workspace and agents' own or maintenance projects in
-  `workspace/agents/` ([router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing)); `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
+- Project folders are machine-local. `projects new` requires a completed placement consultation
+  from the bound workspace organizer, then creates the canonical scaffold and a private
+  `tejasdc` repository before retaining a peer setup order. One-level grouping folders such
+  as `canvases/` carry the same accepted placement to the peer; the child name remains the
+  registered project identity. See [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
+  `--template brainstorm|writing|design` adds the folders and standing-agent specifications of a thinking project ([project templates](docs/plans/2026-10-29-project-templates.md)); `projects share` requests
   one existing pushed project on a named peer. The peer checks its own destination and never
   replaces a folder. A project list on one machine does not imply that folder exists on the
   other. See [peer instances](docs/runbooks/PEER-INSTANCES.md#durable-project-setup).

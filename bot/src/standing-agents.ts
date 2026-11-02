@@ -1,11 +1,10 @@
-import {relative, sep} from 'node:path';
+import {relative} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {db,getSessionById,type SessionRow} from './state';
 import {sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
-import {isLabProject} from './session-space';
 
 /** One folder owns each continuing job. Paths are relative to this machine's workspace root. */
 export const STANDING_AGENTS = [
@@ -22,14 +21,13 @@ export const STANDING_AGENTS = [
   {role:'taste-mining',project:'agents/taste-mining',description:'Turn Tejas’s feedback into his taste profile.',wake:'Its repeating schedule.'},
   {role:'ai-provider-watch',project:'agents/ai-provider-watch',description:'Watch Anthropic and OpenAI changes and suggest what to adopt.',wake:'Its repeating schedule.'},
   {role:'agent-instructions-upkeep',project:'agents/agent-instructions-upkeep',description:'Keep agent instructions useful: route new rules and failure lessons to their owners.',wake:'Its nightly schedule.'},
+  {role:'workspace-organizer',project:'agents/workspace-organizer',description:'Choose placement for new persistent workspace projects and review the layout.',wake:'A project placement consultation or its recurring review.'},
 ] as const;
 
 export type StandingAgentRole = typeof STANDING_AGENTS[number]['role'];
-const topLevelAgents=new Set(['slack-inbox','journal-keeper','messaging-agent','thread-reader']);
 for(const agent of STANDING_AGENTS) {
   if(!/^[a-z][a-z0-9-]*$/.test(agent.role)
-    || !(agent.project.startsWith('agents/') && /^agents\/[a-z][a-z0-9-]*$/.test(agent.project)
-      || !agent.project.includes('/') && topLevelAgents.has(agent.project)))
+    || !/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)?$/.test(agent.project))
     throw new Error(`Invalid standing agent folder for ${agent.role}: ${agent.project}`);
 }
 if(new Set(STANDING_AGENTS.map(agent=>agent.role)).size!==STANDING_AGENTS.length
@@ -80,14 +78,12 @@ export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefine
   if(!cwd)return false;
   let root:string,actual:string;
   try {root=realpathSync(workspaceRoot);actual=realpathSync(cwd);} catch {return false;}
-  const under=relative(root,actual);
-  if(under==='agents'||under.startsWith(`agents${sep}`))return true;
-  return !!standingAgentForCwd(root,actual)||isLabProject(containingProject(root,actual)?.cwd);
+  return !!containingProject(root,actual);
 }
 
 export const STANDING_WORK_REFUSAL =
-  'Standing work belongs in an agent project under workspace/agents/, created with projects new <name> --owner agents. '
-  + 'Move the continuing job there and address it with sessions ask --role <role>; existing firings and watches continue.';
+  'New repeating schedules and renewing watches need a registered project folder. '
+  + 'Ask the workspace organizer to place a new project before creating one.';
 
 export function standingAgentSession(workspaceRoot:string,role:string):SessionRow|null {
   const project=standingAgentProject(workspaceRoot,role);

@@ -3780,7 +3780,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='new'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.new(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='share'&&parts.length===2&&this.projectSetup)result=await this.projectSetup.share(body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[1]==='cancel'&&parts.length===2&&this.projectSetup)result=this.projectSetup.cancel(body);
-      else if(request.method==='GET'&&parts[0]==='projects'&&parts[1]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[2]!,url.searchParams.get('peer')??undefined);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[1]!,url.searchParams.get('peer')??undefined);
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
       else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
