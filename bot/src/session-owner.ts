@@ -65,7 +65,7 @@ import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
-import {isInboxProducerKind} from './inbox-producer-sources';
+import {capturesEnterRouter,isInboxProducerKind,readerCaptureRefusal} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
@@ -1659,7 +1659,7 @@ export class SessionOwner {
         provider_admission_intended_at,provider_started_at,provider_turn_id,provider_input_acknowledged_at,saved_kind
         FROM turns WHERE id=?`).get(accepted.turn_id) as any:null;
       const capture=JSON.parse(accepted.payload_json).capture;
-      if(accepted.session_id!==session.id||!(accepted.origin==='human'||accepted.origin==='agent'&&capture?.source?.kind==='outside-agent')
+      if(accepted.session_id!==session.id||!capturesEnterRouter(accepted.origin,capture?.source?.kind)
         ||accepted.kind!=='input'||accepted.steering_id!==null
         ||accepted.receipt_json!==null||!turn||turn.status!=='queued'||turn.accepted_input_id!==accepted.id
         ||turn.owner_instance_id||turn.provider_admission_intended_at||turn.provider_started_at
@@ -1824,6 +1824,13 @@ export class SessionOwner {
     if(source.kind==='outside-agent'&&!/^[a-z][a-z0-9-]{2,40}$/.test(String(outsideAgent??'')))throw new SessionOwnerError('An outside-agent capture needs its valid outside agent name.');
     if(source.kind!=='outside-agent'&&outsideAgent!==undefined)throw new SessionOwnerError('Only an outside-agent capture may name an outside agent.');
     if(source.kind==='outside-agent'&&(source.metadata as Record<string,unknown>|undefined)?.agentSource!==undefined)throw new SessionOwnerError('An outside-agent capture cannot cite a Concierge run.');
+    // Reader's non-human handoffs: their author is the saving agent's verified run, or the service
+    // that fed Reader, never him (inbox-producer-sources.ts holds the contract).
+    const reader=source.kind==='reader'?(source.metadata as Record<string,unknown>|undefined):undefined;
+    if(source.kind==='reader'){
+      const refusal=readerCaptureRefusal(reader);
+      if(refusal)throw new SessionOwnerError(refusal,400,'READER_CAPTURE_INVALID');
+    }
     if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
     if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
     if(input.holdForReview!==undefined&&typeof input.holdForReview!=='boolean')
@@ -1838,10 +1845,12 @@ export class SessionOwner {
     // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
     // starting the Inbox's own turn.
     const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);
-    if(input.urgency!==undefined&&(outsideAgent||agent))
+    if(input.urgency!==undefined&&(outsideAgent||agent||reader))
       throw new SessionOwnerError('Only a human capture may choose urgent delivery.',403,'CAPTURE_URGENCY_FORBIDDEN');
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
-    const importOnly=input.importOnly===true||!!agent;
+    // An agent naming its run on any other door is testing that door; on Reader it is the author.
+    const importOnly=input.importOnly===true||!!agent&&!reader;
+    const origin=reader?(agent?'agent':'service'):agent||outsideAgent?'agent':'human';
     const digestFor=(capturedSource:unknown)=>hash(stablePayload({source:capturedSource,text:input.text,files:input.files??[],...(input.urgency?{urgency:input.urgency}:{}),...(input.holdForReview?{holdForReview:true}:{})}));
     const digest=digestFor(input.source);
     const accepted=db.transaction(()=>{
@@ -1863,7 +1872,7 @@ export class SessionOwner {
         if(transcript!==undefined)this.acceptDeviceTranscript(id,transcript);
         return id;
       });
-      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent||outsideAgent?'agent':'human',
+      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin,
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),
         payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,urgency:input.urgency??null,holdForReview:input.holdForReview===true,originalTextAttachmentId:presentation.report?attachments[0]:null}}}).input;
       const holdForReview=focusCaptureReviewEnabled()&&!importOnly&&!input.urgency&&retained.origin==='human'
@@ -1876,7 +1885,7 @@ export class SessionOwner {
           .run(captureId,retained.id,position,Date.now());
       }
       else db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'live'}),retained.id);
-      if(!agent&&!outsideAgent&&!holdForReview)recordSessionInputAttention(retained.id);
+      if(origin==='human'&&!holdForReview)recordSessionInputAttention(retained.id);
       if(!db.query('SELECT 1 FROM focus_held_captures WHERE capture_id=? AND released_at_ms IS NULL').get(captureId))
         recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
       return getAcceptedSessionInput(retained.id)!;
@@ -2285,9 +2294,13 @@ export class SessionOwner {
     const fromHumanSurface=input.scope==='surface:thinkering'
       &&(input.origin==='human'&&input.source_input_id===null&&input.source_run_id===null||markedAgent);
     const capture=body.capture,source=capture?.source;
+    // A Reader save by an agent carries that agent's run as its author; any other capture carries none.
+    const readerAgent=source?.kind==='reader'&&input.origin==='agent'?source.metadata?.agentSource:null;
     const fromCapture=input.scope===`capture:${source?.kind}`&&input.id===`capture:${capture?.id}`
-      &&receipt?.admissionIntent==='live'&&input.source_input_id===null&&input.source_run_id===null
-      &&(input.origin==='human'||input.origin==='agent'&&source?.kind==='outside-agent');
+      &&receipt?.admissionIntent==='live'&&(readerAgent
+        ?input.source_input_id===readerAgent.inputId&&input.source_run_id===readerAgent.runId
+        :input.source_input_id===null&&input.source_run_id===null)
+      &&capturesEnterRouter(input.origin,source?.kind);
     if(!fromHumanSurface&&!fromCapture)return;
     // A detached binding can retain evidence of a prior, possibly ambiguous provider send.
     // Only an explicit intent written by this admission path is eligible for recovery.

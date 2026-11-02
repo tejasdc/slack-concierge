@@ -1265,9 +1265,10 @@ function placementRoots(session:SessionRow,values:unknown,field='--root') {
 }
 export const routableMessage=(input:AcceptedSessionInput)=>{
   if(humanAuthored(input))return true;
-  if(input.origin!=='agent'||input.kind!=='input'||!input.scope.startsWith('capture:'))return false;
+  if(input.origin!=='agent'&&input.origin!=='service'||input.kind!=='input'||!input.scope.startsWith('capture:'))return false;
   const capture=JSON.parse(input.payload_json)?.capture?.source;
-  return capture?.kind==='outside-agent'||!!(capture?.metadata?.agentSource
+  if(capture?.kind==='reader')return true;
+  return input.origin==='agent'&&capture?.kind==='outside-agent'||input.origin==='agent'&&!!(capture?.metadata?.agentSource
     &&capture.metadata.agentSource.inputId===input.source_input_id
     &&capture.metadata.agentSource.runId===input.source_run_id);
 };
