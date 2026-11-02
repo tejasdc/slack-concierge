@@ -47,6 +47,18 @@ push. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
+### A thread worker waiting on him
+
+An agent working on an Inbox thread that declares `needs_you` at the end of a turn reaches him through
+that thread: the owner posts the question as the agent's words and files it exactly as a
+`needs_decision` reply (a blocking decision with the thread's notification). thnkr.ing leaves a turn the
+Inbox started to the Inbox, so before this the declaration reached no device; on 2026-11-02 the Uber
+Eats agent's request for a photo was lost that way after its "could not finish" reply filed only a
+reading item. The thread is the one his originating message belongs to (the turn's provenance); a
+session he started himself keeps its own notification. A reply and an outcome from the same agent run
+are one ask and ring once; a later run's ask keeps its own question. A Mac worker's turn outcome is not
+yet carried this way; its `needs_decision` reply is.
+
 ### No automatic reminders
 
 On 2026-10-30 Concierge briefly reminded him of every question waiting on him

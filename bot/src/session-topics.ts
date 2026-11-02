@@ -6,7 +6,7 @@ import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNot
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
-import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
@@ -2261,7 +2261,8 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet,notify:answer.notify});
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet,notify:answer.notify,
+      askedInRun:answer.answerSource?.runId??null});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
@@ -2276,6 +2277,47 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   }
   return post;
 }
+/**
+ * An agent working on an Inbox thread that is waiting on him is one decision in that thread, with
+ * the thread's blocking notification, whichever way it said so. Its own needs_you cannot reach him:
+ * thnkr.ing leaves a turn the Inbox started to the Inbox, and nothing carried it there, so the Uber
+ * Eats agent's "send a photo of the biryani" on 2026-11-02 reached no device (its failed reply had
+ * filed only a reading item). The thread is the one his originating message belongs to: the turn's
+ * own provenance, never merely the last thread this session served, so a session he started himself
+ * keeps its own notification. The question is posted as the agent's words there and filed exactly
+ * as a needs_decision reply is; a reply and an outcome from the same agent run are one ask and ring
+ * once, while a different ask keeps its own question (ChatGPT Pro's review, 2026-11-02).
+ */
+export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
+  const turnInput=getAcceptedSessionInput(input.turnInputId);
+  const human=turnInput?sessionInputProvenance(turnInput)?.originatingHuman:null;
+  const askedIn=human?conciergeSessionNumber(human.sessionId):null;
+  const inbox=askedIn!==null?getSessionById(askedIn):null;
+  if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
+  // The request carrying his originating message's thread, else the latest thread this Inbox sent this worker.
+  const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
+      WHERE target_session_id=? AND source_session_id=? AND thread_root_input_id IS NOT NULL
+      ORDER BY (thread_root_input_id=?) DESC,created_at_ms DESC LIMIT 1`)
+    .get(input.respondingSessionId,inbox.id,human.inputId)) as {request_id:string;thread_root_input_id:string}|null;
+  if(!request)return null;
+  const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
+  refreshRootMemo();
+  const topicId=topicOfRoot(root);
+  if(!topicId)return null;
+  const respondingSessionId=`concierge:${input.respondingSessionId}`;
+  if(topicQuestions(topicId).some(question=>sameAsk(question,respondingSessionId,input.runId)))return null;
+  const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:request.request_id,root,
+    inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
+  if(!post)return null;
+  fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:request.request_id,
+    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
+  return post;
+}
+/** One run's reply and outcome are one ask; a later run, or the same run asking again in other words
+ * on another day, may ask for something different and keeps its own question. */
+const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|null)=>!!runId&&question.kind==='decision'
+  &&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId&&question.owner?.askedInRun===runId;
+
 /** Close completed topic requests whose retained answer was originally filed under another root. */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
@@ -2389,7 +2431,7 @@ export function repairOctober21RepeatedAnswer():number {
   ]);
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -2436,7 +2478,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
       :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
-    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision))){
+    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
+      ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
       if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true);
       return;
     }
@@ -2446,7 +2489,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
       // a reading item is the Inbox's and ends only with his Read.
-      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
+      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId,...(answer.askedInRun?{askedInRun:answer.askedInRun}:{})}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
       sources:[answer.root,answer.postId],replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
       kind:decision?'decision':'reading',origin:'declared',generation,createdAt:at,updatedAt:at};
     const topic=topicRow(topicId),topicNext=bumped(topic);
