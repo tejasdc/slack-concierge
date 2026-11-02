@@ -11,18 +11,21 @@ import {meaningIndex} from './meaning-index';
  * Tejas, 2026-11-01, after only connecting "invest in a startup that employs me" with IdeaFlow in
  * the shower: "our system didn't notify me either ... showcase these connections."
  *
- * The question is his own words, in pieces of about 600 characters, because a voice capture
- * wanders and the passage that matters can be anywhere in it. When his words name something in
- * his standing facts (the vault's bio/standing-facts.md, a line "IdeaFlow, Jacob: IdeaFlow is the
- * startup that employs you…"), the fact is added to a second question, because the earlier
- * conversation may never use the name ("a startup that employs me" never says IdeaFlow).
+ * The questions are his own words in overlapping windows of a few sentences (about 350
+ * characters), because a voice capture wanders and one idea is a few sentences long: fixed
+ * 600-character pieces cut "invest in … Jacob" from "a startup that is employing me" and missed
+ * the match (2026-11-02 live check). A session that is a top match for more than a third of the
+ * windows is a hub, close to everything he says, and is passed over. When a window names
+ * something in his standing facts (the vault's bio/standing-facts.md, a line "IdeaFlow, Jacob:
+ * IdeaFlow is the startup that employs you…"), that window marks what he cares about: its best
+ * match takes the first place. The rest are ranked by how many windows they answer best.
  *
  * Only earlier work counts: the Inbox itself, sessions working on this thread, and anything
  * written after this message arrived are passed over, since those are this message's own echoes
  * (in the 2026-11-01 run they were the top three hits). What it finds is one quiet post in the
  * thread with links he can open; nothing asks him anything.
  */
-const MIN_SCORE=0.5,SHOWN=2,PIECE=600,STEP=500,PIECES=6;
+const MIN_SCORE=0.5,SHOWN=2,WINDOW=350,WINDOWS=14,PER_WINDOW=3;
 /** Messages that arrived before this owner started are linked only when this recent, so a restart never posts into old threads. */
 const RECENT_MS=24*60*60_000;
 const NOTES_ROOT=process.env.CONCIERGE_NOTES_ROOT||'/root/workspace/vault';
@@ -31,11 +34,17 @@ const NOT_NOTES=new Set(['Readwise','tmp','archive','templates']);
 const APP='https://thnkr.ing/agents';
 
 export type SessionSearch=(body:{query:string;limit:number})=>Promise<{results?:any[]}>;
-type Found={key:string;title:string;link:string;kind:string;score:number;snippet:string};
+type Found={key:string;title:string;link:string;kind:string;score:number;snippet:string;because?:string};
 
-const pieces=(text:string)=>{
-  const words=text.replace(/\s+/g,' ').trim(),out:string[]=[];
-  for(let start=0;start<words.length&&out.length<PIECES;start+=STEP)out.push(words.slice(start,start+PIECE));
+/** Overlapping windows of whole sentences, each about WINDOW characters, advancing half a window. */
+const windows=(text:string)=>{
+  const sentences=text.replace(/\s+/g,' ').trim().split(/(?<=[.?!])\s+/),out:string[]=[];
+  for(let start=0;start<sentences.length&&out.length<WINDOWS;){
+    let end=start,length=0;
+    while(end<sentences.length&&length<WINDOW){length+=sentences[end]!.length+1;end++;}
+    out.push(sentences.slice(start,end).join(' ').slice(0,WINDOW*2));
+    start+=Math.max(1,Math.floor((end-start)/2));
+  }
   return out;
 };
 const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
@@ -45,12 +54,11 @@ const time=(value:unknown)=>{
   return Number.isFinite(ms)?ms:null;
 };
 
-async function standingFacts(words:string):Promise<string[]> {
+/** The names his standing facts are about; a window naming one is about something he cares about. */
+async function standingNames():Promise<string[]> {
   let text:string;try{text=await readFile(join(NOTES_ROOT,'bio','standing-facts.md'),'utf8');}catch{return [];}
-  const lower=words.toLocaleLowerCase('en-US');
-  return text.split('\n').map(line=>/^\s*-\s*([^:]+):\s*(.+)$/.exec(line)).filter((match):match is RegExpExecArray=>!!match)
-    .filter(match=>match[1]!.split(',').some(term=>term.trim()&&lower.includes(term.trim().toLocaleLowerCase('en-US'))))
-    .map(match=>match[2]!.trim());
+  return text.split('\n').map(line=>/^\s*-\s*([^:]+):/.exec(line)?.[1]).filter((names):names is string=>!!names)
+    .flatMap(names=>names.split(',').map(name=>name.trim().toLocaleLowerCase('en-US')).filter(Boolean));
 }
 
 const noteCache=new Map<string,{mtime:number;title:string;text:string}>();
@@ -82,15 +90,15 @@ async function notes():Promise<{path:string;title:string;text:string}[]> {
 /** Earlier sessions, notes and threads close to one message, best first. */
 async function earlierWork(input:{inboxSessionId:number;topicId:string;words:string;arrivedMs:number;search:SessionSearch;threads:{id:string;title:string;text:string;createdMs:number|null}[]}) {
   const index=meaningIndex();if(!index?.installed)return [];
-  const questions=pieces(input.words);
-  const facts=await standingFacts(input.words);
-  if(facts.length)questions.push(...questions.slice(0,2).map(piece=>`${piece} ${facts.join(' ')}`));
+  const questions=windows(input.words);
+  const names=await standingNames();
+  const named=questions.map(question=>{const lower=question.toLocaleLowerCase('en-US');return names.some(name=>lower.includes(name));});
   const working=new Set<number>([input.inboxSessionId]);
   for(const row of db.query('SELECT dispatches_json FROM inbox_requests WHERE topic_id=?').all(input.topicId) as {dispatches_json:string}[])
     for(const dispatch of JSON.parse(row.dispatches_json) as any[]){const id=/^concierge:(\d+)$/.exec(String(dispatch?.targetSessionId??''));if(id)working.add(Number(id[1]));}
-  const best=new Map<string,Found>();
-  const keep=(found:Found)=>{const prior=best.get(found.key);if(!prior||found.score>prior.score)best.set(found.key,found);};
-  for(const query of questions){
+  // Each window's own best few, from every store.
+  const perWindow:Found[][]=questions.map(()=>[]);
+  for(const [at,query] of questions.entries()){
     const answer=await input.search({query,limit:10}).catch(error=>{log('warn','earlier_work_search_failed',{error:error instanceof Error?error.message:String(error)});return {results:[]};});
     for(const result of answer.results??[]){
       const view=result.session,score=Number(result.match?.meaning);
@@ -99,7 +107,8 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
       const evidenceAt=time(result.evidence?.[0]?.at);
       if(evidenceAt!==null&&evidenceAt>=input.arrivedMs)continue;
       if(view.origin!=='imported'&&(time(view.createdAt??view.timing?.startedAt)??0)>=input.arrivedMs)continue;
-      keep({key:view.id,title:view.title||'A session',kind:view.provider==='chatgpt'?'ChatGPT conversation':'session',
+      const title=String(view.title??'').replace(/<[^>]*>/g,'').trim()||'A session';
+      perWindow[at]!.push({key:view.id,title,kind:view.provider==='chatgpt'?'ChatGPT conversation':'session',
         link:`${APP}?sessionView=sessions&conversation=${encodeURIComponent(view.id)}`,score,snippet:String(result.evidence?.[0]?.snippet??'')});
     }
   }
@@ -107,27 +116,49 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
   const noteList=await notes();
   const noteVectors=await index.documentVectors(noteList.map(note=>({key:`note:${relative(NOTES_ROOT,note.path)}`,text:note.text})));
   const threadVectors=await index.documentVectors(input.threads.map(thread=>({key:`thread:${thread.id}`,text:thread.text})));
-  for(const vector of vectors){
+  for(const [at,vector] of vectors.entries()){
     for(const note of noteList){
       const other=noteVectors.get(`note:${relative(NOTES_ROOT,note.path)}`);if(!other)continue;
-      keep({key:note.path,title:note.title,kind:'note',link:note.path,score:dot(vector,other),snippet:''});
+      perWindow[at]!.push({key:note.path,title:note.title,kind:'note',link:note.path,score:dot(vector,other),snippet:''});
     }
     for(const thread of input.threads){
       if(thread.id===input.topicId||(thread.createdMs??0)>=input.arrivedMs)continue;
       const other=threadVectors.get(`thread:${thread.id}`);if(!other)continue;
-      keep({key:thread.id,title:thread.title,kind:'Inbox thread',
+      perWindow[at]!.push({key:thread.id,title:thread.title,kind:'Inbox thread',
         link:`${APP}?sessionView=inbox&topic=${encodeURIComponent(thread.id)}&topicView=conversation`,score:dot(vector,other),snippet:''});
     }
   }
-  return [...best.values()].filter(found=>found.score>=MIN_SCORE).sort((a,b)=>b.score-a.score).slice(0,SHOWN);
+  const tops=perWindow.map(list=>{
+    const seen=new Set<string>();
+    return list.filter(found=>found.score>=MIN_SCORE).sort((a,b)=>b.score-a.score).filter(found=>!seen.has(found.key)&&!!seen.add(found.key)).slice(0,PER_WINDOW);
+  });
+  const appearances=new Map<string,number>();
+  for(const list of tops)for(const found of list)appearances.set(found.key,(appearances.get(found.key)??0)+1);
+  const hub=(key:string)=>(appearances.get(key)??0)>Math.max(2,questions.length/3);
+  // Each window votes for its best non-hub match; named windows vote first.
+  const votes=new Map<string,{found:Found;named:number;all:number;best:number}>();
+  for(const [at,list] of tops.entries()){
+    const found=list.find(item=>!hub(item.key));if(!found)continue;
+    const vote=votes.get(found.key)??{found,named:0,all:0,best:0};
+    vote.all++;if(named[at])vote.named++;
+    if(found.score>vote.best){vote.best=found.score;vote.found={...found,because:questions[at]};}
+    votes.set(found.key,vote);
+  }
+  return [...votes.values()].sort((a,b)=>b.named-a.named||b.all-a.all||b.best-a.best).slice(0,SHOWN).map(vote=>vote.found);
 }
 
+/** A few of his words from the passage that found the link, so he can see why it is there. */
+const yourWords=(text:string|undefined)=>{
+  const words=(text??'').replace(/\s+/g,' ').trim();
+  return words.length>110?`${words.slice(0,110).replace(/\s+\S*$/,'')}…`:words;
+};
 const line=(found:Found)=>{
   // thnkr.ing opens a file link only for a path without spaces, and most note names have them,
   // so a note is named with its place in the vault instead of a link that would not open.
-  if(found.kind==='note')return `- your note “${found.title}” (vault: ${relative(NOTES_ROOT,found.link)})`;
-  const quote=found.snippet.replace(/\s+/g,' ').trim().slice(0,160);
-  return `- [${found.title}](${found.link}), a ${found.kind}${quote?`: “${quote}${found.snippet.length>160?'…':''}”`:''}`;
+  const what=found.kind==='note'?`your note “${found.title}” (in your vault: ${relative(NOTES_ROOT,found.link)})`
+    :`[${found.title}](${found.link}), ${found.kind==='Inbox thread'?'an earlier Inbox thread':`an earlier ${found.kind}`}`;
+  const because=yourWords(found.because);
+  return `- ${what}${because?`, close to where you said “${because}”`:''}`;
 };
 
 /**
@@ -148,7 +179,7 @@ export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:stri
       if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
       const found=await earlierWork({inboxSessionId:input.inboxSessionId,topicId,words:root.text,arrivedMs,search:input.search,threads});
       // A message with nothing close enough is marked too, so it is not searched again.
-      const text=found.length?`Earlier, close to this:\n${found.map(line).join('\n')}`:null;
+      const text=found.length?`**Earlier work related to this message.** Concierge found it by meaning in your sessions, threads and notes; nothing to do unless you want to open it.\n${found.map(line).join('\n')}`:null;
       recordSessionEvent({eventId,sessionId:input.inboxSessionId,inputId:root.id,kind:text?'post':'earlier_work',
         payload:text?{text,replyToMessage:{kind:'message',sessionId:`concierge:${input.inboxSessionId}`,messageId:root.id},postedBy:'service'}:{found:0}});
       if(text){posted++;log('info','earlier_work_linked',{topic_id:topicId,root:root.id,found:found.map(item=>({kind:item.kind,score:Math.round(item.score*1000)/1000}))});}
