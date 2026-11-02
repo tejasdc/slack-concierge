@@ -19,9 +19,9 @@ filed by a local or Mac worker uses the same path. A router response counts only
 when its turn did not dispatch work from that asking input; the router's post or
 result must supply the actual message ID and words. An acknowledgement of work
 in progress leaves the arm for the dispatched answer.
-An interim reply, including one marked as answering a direct question, remains quiet
-unless the agent explicitly uses `--notify`. It does not consume a result arm for
-work still in progress. A later final answer or explicit notification can consume it.
+An interim reply, including one marked as answering a direct question, remains quiet,
+and `--notify` cannot change that. It does not consume a result arm for work still in
+progress. A later final answer can consume it.
 If an answer also asks for Tejas's decision, its topic question remains a
 decision; the requested phone event uses the `response` outcome required by
 thnkr.ing's one-shot requested-result path.
@@ -30,8 +30,12 @@ An agent may explicitly request one push for its own message with `sessions
 post --notify` or `sessions reply --notify`. The owner requires a new message
 with words, names that message in the event, and emits
 `requestedNotification:true`. This also consumes an open topic arm, so the
-same answer never creates a second requested push. A partial reply can use the
-flag; a bodyless final cannot. These commands are available on both local and
+same answer never creates a second requested push. On a reply the flag is honored
+only for a final `completed` reply carrying `--checked` (a finished result checked live);
+on a partial, failed or unchecked reply it is dropped with a receipt notice and the reply
+is recorded as written. Tejas, 2026-11-02, after the think-aloud agent sent 14
+partial-update alerts in two hours: "Why can't it wait until everything is deployed and
+tested and then let me know?" A bodyless final cannot use it. These commands are available on both local and
 peer sessions. The resulting push uses the answer's own words and the normal
 thnkr.ing attention notifier. There is no direct push call from Concierge.
 
