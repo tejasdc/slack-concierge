@@ -166,6 +166,7 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   const captureSource=JSON.parse(input.payload_json).capture?.source;
   const capture=captureSource?.metadata?.outsideAgent;
   if(captureSource?.kind==='outside-agent'&&typeof capture==='string')return {author:{kind:'agent',outsideAgent:{name:capture,label:`Outside agent · ${capture}`}}};
+  if(captureSource?.kind==='agent-report'&&captureSource.metadata?.agentSource?.peer==='mac')return {author:{kind:'agent',session:authorSessionOf(db,`mac:${captureSource.metadata.agentSource.sessionId}`),runId:captureSource.metadata.agentSource.runId}};
   const corrected=input.origin==='human'?authorCorrection(input.id):null;
   if(corrected){
     const session=corrected.authorSessionId===null?undefined:authorSession(corrected.authorSessionId);

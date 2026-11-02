@@ -4,7 +4,7 @@
  * is added here once rather than in five places that can disagree. Dependency-free on purpose:
  * the capture ingress executable and the read workers import it without the ledger.
  */
-export const INBOX_PRODUCER_KINDS=['pebble','thinkering','monologue','alexa','outside-agent','reader'] as const;
+export const INBOX_PRODUCER_KINDS=['pebble','thinkering','monologue','alexa','outside-agent','agent-report','reader'] as const;
 export type InboxProducerKind=typeof INBOX_PRODUCER_KINDS[number];
 
 export const isInboxProducerKind=(kind:unknown):kind is InboxProducerKind=>
@@ -79,9 +79,9 @@ export function readerCaptureVia(source:{kind?:unknown;metadata?:Record<string,u
  * restart recovery all ask this one question.
  */
 export function capturesEnterRouter(origin:string,kind:unknown):boolean {
-  return origin==='human'||origin==='agent'&&(kind==='outside-agent'||kind==='reader')||origin==='service'&&kind==='reader';
+  return origin==='human'||origin==='agent'&&(kind==='outside-agent'||kind==='agent-report'||kind==='reader')||origin==='service'&&kind==='reader';
 }
 /** The same rule as SQL over `session_inputs` aliased `input`. */
 export const CAPTURES_ENTER_ROUTER_SQL=`(input.origin='human'
-  OR (input.origin='agent' AND json_extract(input.payload_json,'$.capture.source.kind') IN ('outside-agent','reader'))
+  OR (input.origin='agent' AND json_extract(input.payload_json,'$.capture.source.kind') IN ('outside-agent','agent-report','reader'))
   OR (input.origin='service' AND json_extract(input.payload_json,'$.capture.source.kind')='reader'))`;

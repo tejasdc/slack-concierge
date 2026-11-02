@@ -33,6 +33,7 @@ export function checkedAreaIds(input:unknown):string[]{
 /** Every area link the meaning filer makes carries this reason prefix; only links without it count as evidence. */
 export const MEANING_REASON_PREFIX='Filed by meaning: ';
 export const SYSTEM_NOTICE_AREA='area:system-notices';
+export const AGENT_REPORT_AREA='area:agent-reports';
 /** Threads whose meaning may have changed (created, renamed, re-summarised, given another message). */
 export const threadChanges=(()=>{
   const listeners:((topicId:string)=>void)[]=[];
@@ -44,6 +45,15 @@ export function ensureSystemNoticeArea(sessionId:number){
   if(!db.query('SELECT 1 FROM inbox_areas WHERE area_id=?').get(id)){
     const payload={action:'create',area:{id,name:'System notices',summary:'Service notices filed by Concierge',at:new Date().toISOString()}};
     recordSessionEvent({eventId:'area:system-notices',sessionId,kind:'area',payload});
+    applyAreaChange(payload);
+  }
+  return id;
+}
+export function ensureAgentReportArea(sessionId:number){
+  const id=AGENT_REPORT_AREA;
+  if(!db.query('SELECT 1 FROM inbox_areas WHERE area_id=?').get(id)){
+    const payload={action:'create',area:{id,name:'Agent reports',summary:'Issues agents noticed and sent to the Inbox',at:new Date().toISOString()}};
+    recordSessionEvent({eventId:'area:agent-reports',sessionId,kind:'area',payload});
     applyAreaChange(payload);
   }
   return id;

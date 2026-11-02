@@ -28,6 +28,7 @@ function socketPath() {
 export function resendIsSafe(path: string, body?: unknown) {
   if (body === undefined) return true;
   if(path==='/sessions/v1/canvas-projects/ensure'&&body&&typeof body==='object'&&'clientActionId' in body)return true;
+  if(path==='/sessions/v1/agent-report'&&body&&typeof body==='object'&&typeof (body as {actionId?:unknown}).actionId==='string')return true;
   return path.startsWith('/session-communication/') || path.startsWith('/external/');
 }
 

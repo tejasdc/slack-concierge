@@ -18,7 +18,7 @@ import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
-import {areasCommand,checkedAreaIds,applyAreaChange,ensureSystemNoticeArea,threadChanges} from './session-areas';
+import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -890,14 +890,21 @@ export function unfiledReceivedInputs(sessionId:number,turnId:number) {
     FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
     LEFT JOIN turn_steering_messages steering ON steering.id=input.steering_id
     WHERE input.session_id=? AND input.kind IN ('input','create','inbox-capture')
-      AND (input.origin='human' OR (input.origin='agent' AND input.scope='capture:outside-agent'))
+      AND (input.origin='human' OR (input.origin='agent' AND input.scope IN ('capture:outside-agent','capture:agent-report')))
       AND NOT EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=input.id)
       AND ((input.steering_id IS NULL AND (turn.provider_input_acknowledged_at IS NOT NULL OR turn.id=?))
         OR (input.steering_id IS NOT NULL AND steering.provider_sent_at IS NOT NULL))
     ORDER BY input.rowid`).all(sessionId,turnId) as {id:string;created_at:string;text:string|null}[];
   return inputs.flatMap(input=>{
     const root=rootOf(sessionId,input.id)??input.id;
-    return topicOfRoot(root)?[]:[{input_id:input.id,root_id:root,at:input.created_at,text:input.text??''}];
+    const topicId=topicOfRoot(root);
+    if(topicId&&input.id.startsWith('capture:')){
+      const report=db.query(`SELECT request_id FROM inbox_requests WHERE request_id=? AND state='open'
+        AND json_array_length(dispatches_json)=0`).get(`req:agent-report:${input.id}`) as {request_id:string}|null;
+      if(report)return [{input_id:input.id,root_id:root,at:input.created_at,text:input.text??'',
+        topic_id:topicId,request_id:report.request_id}];
+    }
+    return topicId?[]:[{input_id:input.id,root_id:root,at:input.created_at,text:input.text??''}];
   });
 }
 /** Thread roots nobody has filed yet: the sorting pile above the topic list. */
@@ -1268,6 +1275,7 @@ export const routableMessage=(input:AcceptedSessionInput)=>{
   if(input.origin!=='agent'&&input.origin!=='service'||input.kind!=='input'||!input.scope.startsWith('capture:'))return false;
   const capture=JSON.parse(input.payload_json)?.capture?.source;
   if(capture?.kind==='reader')return true;
+  if(capture?.kind==='agent-report')return true;
   return input.origin==='agent'&&capture?.kind==='outside-agent'||input.origin==='agent'&&!!(capture?.metadata?.agentSource
     &&capture.metadata.agentSource.inputId===input.source_input_id
     &&capture.metadata.agentSource.runId===input.source_run_id);
@@ -1357,6 +1365,24 @@ function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?
     by,reason:fields.reason??null,revision:topic.revision,
     ...(fields.splitFrom?{splitFrom:fields.splitFrom}:{}),
     ...(fields.parentTopicId?{parentTopicId:fields.parentTopicId}:{})}} as Change};
+}
+
+/** The report and its open work item are committed with the capture, before router admission. */
+export function openAgentReport(sessionId:number,inputId:string,title:string,brief:string) {
+  const session=getSessionById(sessionId);
+  if(!session||!sessionMetadata(session).inbox)throw new TopicError('Agent reports belong to the Inbox.',400,'AGENT_REPORT_INBOX_REQUIRED');
+  const existing=topicOfRoot(inputId);
+  if(existing)return {topicId:existing,requestId:`req:agent-report:${inputId}`};
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${sessionId}`};
+  const created=createTopic(session,by,{title,roots:[inputId],areaIds:[ensureAgentReportArea(sessionId)],reason:'An agent reported an issue for Inbox routing.'});
+  recordOwnerTopicChange(sessionId,`topic-agent-report:${inputId}`,'topic',created.change.payload);
+  const at=nowIso();
+  const request:StoredRequest={requestId:`req:agent-report:${inputId}`,topicId:created.topic.topicId,title,brief:Array.from(brief).slice(0,8000).join(''),state:'open',disposition:null,
+    revision:1,sources:[{inputId}],dispatches:[],closure:null,createdAt:at,updatedAt:at};
+  const next=bumped(created.topic);
+  recordOwnerTopicChange(sessionId,`topic-agent-report-request:${inputId}`,'topic_request',
+    {change:'added',topicId:created.topic.topicId,topic:next,request,by,revision:next.revision});
+  return {topicId:created.topic.topicId,requestId:request.requestId};
 }
 
 function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {

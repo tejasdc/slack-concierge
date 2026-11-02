@@ -20,6 +20,7 @@
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to <concierge:N>] -- <text>
+#   router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title <issue> -- <observation>
 #   router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>] [--limit <n>]   # Mac only; codes withheld
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
 #   router-actions.sh channels-list                       # prints active channels
@@ -138,6 +139,10 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/agent-test-capture.$ROUTER_SUFFIX" "$@"
     ;;
+  report)
+    shift
+    exec bun run "$BOT_DIR/scripts/router-agent-report.$ROUTER_SUFFIX" "$@"
+    ;;
   messages)
     # His texts on the Mac, with login codes, reset texts and sign-in links withheld; agents may
     # not open the Messages database themselves.
@@ -149,7 +154,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|react|todo-add|test-capture|messages|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|react|todo-add|test-capture|report|messages|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

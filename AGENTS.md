@@ -1,5 +1,7 @@
 # Concierge agent guide
 
+An agent's issue report enters the Inbox through `router-actions.sh report`, which creates an open thread and request before the router runs. The router dispatches from that thread and links the work to the existing request; see [agent issue reports](docs/contracts/native-inbox.md#agent-issue-reports).
+
 Messages from people, agents and service returns use the owning machine's live
 run when it can accept steering. Human Queue requires a current explicit-choice
 marker because older pages and share replies wrote Queue as their default;

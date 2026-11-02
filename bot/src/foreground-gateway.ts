@@ -18,7 +18,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     await Promise.all([local?.stop(force),peer?.stop(force)]);
     await pool.stop();
   })();
-  const route=async(request:Request):Promise<Response>=>{
+  const route=async(request:Request,fromPeer=false):Promise<Response>=>{
     const url=new URL(request.url);
     // Only the root-owned local socket reaches this entrance. The live stream stays
     // with the owner, while its retained page projection runs in a read executor.
@@ -27,7 +27,10 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     // These are process control entrances, never authenticated product capabilities.
     if(url.pathname.startsWith('/internal/'))return Response.json({error:'Unknown request API route.'},{status:404});
     const id=randomUUID();
-    const headers=new Headers(request.headers);headers.set('x-concierge-admission-id',id);
+    const headers=new Headers(request.headers);
+    headers.delete('x-concierge-verified-peer');
+    if(fromPeer)headers.set('x-concierge-verified-peer','1');
+    headers.set('x-concierge-admission-id',id);
     request=new Request(request,{headers});
     const read=classifyNativeReadRoute(request.method,url.pathname);
     if(read?.domain==='read-worker')return pool.request(request,read.pattern,id,read.source==='archive'?'archive':'interactive');
@@ -86,7 +89,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
         if(path!=='/sessions/v1'&&!path.startsWith('/sessions/v1/'))
           return Response.json({error:{code:'NOT_FOUND',message:'Only the session owner API is served to peers.'}},{status:404});
         config.onContact?.();
-        return route(request);
+        return route(request,true);
       }});
     }
     return {stop,snapshot:()=>pool.snapshot()};

@@ -163,6 +163,7 @@ export function templateAgentsSection(template: ProjectTemplate): string {
     '- `threads.md` — shared working memory: his reactions verbatim, open questions, running lists.',
     '- `research/` — numbered research dossiers with sources and quotes.',
     '- `agents/` — this project\'s standing agents, one specification each; start and address them as `agents/README.md` says.',
+    '- If you notice a likely bug or concerning issue outside your task, use `router-actions.sh report` with your current source input and run. The Inbox tracks it in an open thread until settled; see the global AGENTS.md for the command.',
   ];
   if (template !== 'brainstorm') lines.push(
     '- `outline.md`, `drafts/`, `passages/` — the piece from shape to accepted prose.',
