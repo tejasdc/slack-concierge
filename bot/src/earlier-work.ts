@@ -34,7 +34,7 @@ const NOT_NOTES=new Set(['Readwise','tmp','archive','templates']);
 const APP='https://thnkr.ing/agents';
 
 export type SessionSearch=(body:{query:string;limit:number})=>Promise<{results?:any[]}>;
-type Found={key:string;title:string;link:string;kind:string;score:number;snippet:string};
+type Found={key:string;title:string;link:string;kind:string;score:number;snippet:string;because?:string};
 
 /** Overlapping windows of whole sentences, each about WINDOW characters, advancing half a window. */
 const windows=(text:string)=>{
@@ -141,18 +141,24 @@ async function earlierWork(input:{inboxSessionId:number;topicId:string;words:str
     const found=list.find(item=>!hub(item.key));if(!found)continue;
     const vote=votes.get(found.key)??{found,named:0,all:0,best:0};
     vote.all++;if(named[at])vote.named++;
-    if(found.score>vote.best){vote.best=found.score;vote.found=found;}
+    if(found.score>vote.best){vote.best=found.score;vote.found={...found,because:questions[at]};}
     votes.set(found.key,vote);
   }
   return [...votes.values()].sort((a,b)=>b.named-a.named||b.all-a.all||b.best-a.best).slice(0,SHOWN).map(vote=>vote.found);
 }
 
+/** A few of his words from the passage that found the link, so he can see why it is there. */
+const yourWords=(text:string|undefined)=>{
+  const words=(text??'').replace(/\s+/g,' ').trim();
+  return words.length>110?`${words.slice(0,110).replace(/\s+\S*$/,'')}…`:words;
+};
 const line=(found:Found)=>{
   // thnkr.ing opens a file link only for a path without spaces, and most note names have them,
   // so a note is named with its place in the vault instead of a link that would not open.
-  if(found.kind==='note')return `- your note “${found.title}” (vault: ${relative(NOTES_ROOT,found.link)})`;
-  const quote=found.snippet.replace(/\s+/g,' ').trim().slice(0,160);
-  return `- [${found.title}](${found.link}), a ${found.kind}${quote?`: “${quote}${found.snippet.length>160?'…':''}”`:''}`;
+  const what=found.kind==='note'?`your note “${found.title}” (in your vault: ${relative(NOTES_ROOT,found.link)})`
+    :`[${found.title}](${found.link}), ${found.kind==='Inbox thread'?'an earlier Inbox thread':`an earlier ${found.kind}`}`;
+  const because=yourWords(found.because);
+  return `- ${what}${because?`, close to where you said “${because}”`:''}`;
 };
 
 /**
@@ -173,7 +179,7 @@ export async function linkEarlierWork(input:{inboxSessionId:number;topicIds:stri
       if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))continue;
       const found=await earlierWork({inboxSessionId:input.inboxSessionId,topicId,words:root.text,arrivedMs,search:input.search,threads});
       // A message with nothing close enough is marked too, so it is not searched again.
-      const text=found.length?`Earlier, close to this:\n${found.map(line).join('\n')}`:null;
+      const text=found.length?`**Earlier work related to this message.** Concierge found it by meaning in your sessions, threads and notes; nothing to do unless you want to open it.\n${found.map(line).join('\n')}`:null;
       recordSessionEvent({eventId,sessionId:input.inboxSessionId,inputId:root.id,kind:text?'post':'earlier_work',
         payload:text?{text,replyToMessage:{kind:'message',sessionId:`concierge:${input.inboxSessionId}`,messageId:root.id},postedBy:'service'}:{found:0}});
       if(text){posted++;log('info','earlier_work_linked',{topic_id:topicId,root:root.id,found:found.map(item=>({kind:item.kind,score:Math.round(item.score*1000)/1000}))});}
