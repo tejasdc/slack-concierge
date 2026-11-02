@@ -69,6 +69,7 @@ import {isInboxProducerKind} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
 import {preparedInboxDetailPart,preparedInboxDisplays,preparedMessages,preparedThreadRoot} from './presentation-message-reader';
+import {threadCoordination} from './thread-coordination';
 import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
@@ -3728,6 +3729,12 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='work-thread'&&parts.length===1)result=await this.workThreadFor(url);
       // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
       // are his own management actions, retained like every other human control.
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='coordination'&&parts.length===4)
+        {
+          const mode=url.searchParams.get('mode')??'visible';
+          if(mode!=='visible'&&mode!=='private')throw new SessionOwnerError('Coordination mode must be visible or private.',400,'INVALID_COORDINATION_MODE');
+          result=threadCoordination(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20)??20,mode);
+        }
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
         result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),20));
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);

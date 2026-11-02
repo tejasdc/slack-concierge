@@ -63,6 +63,33 @@ export function preparedThreadRoot(sessionId:number,messageId:string):string|nul
   return (row as {root_input_id:string}|null)?.root_input_id??null;
 }
 export type PreparedTopicEntryKey={sequence:number;messageId?:string;topicEventId?:string};
+/** Thread work is selected by its stable event identity, independently of conversation paging. */
+export function preparedThreadCoordinationKeys(topicId:string,limit:number,cursor:string|null,sourceHead=0){
+  const database=preparedDb();
+  const incomplete={keys:[] as PreparedMessageKey[],nextCursor:null as string|null,
+    coverage:{complete:false as const,code:'presentation_indexing' as const,retryAfterMs:1000,appliedSequence:0}};
+  if(!database)return incomplete;
+  return readPreparedThreadCoordinationKeys(database,topicId,limit,cursor,sourceHead);
+}
+export function readPreparedThreadCoordinationKeys(database:Database,topicId:string,limit:number,cursor:string|null,sourceHead=0){
+  const meta=database.query('SELECT generation,event_watermark,ready FROM presentation_message_meta WHERE singleton=1')
+    .get() as {generation:number;event_watermark:number;ready:number}|null;
+  if(!meta?.ready)return {keys:[] as PreparedMessageKey[],nextCursor:null,
+    coverage:{complete:false as const,code:'presentation_indexing' as const,retryAfterMs:1000,appliedSequence:meta?.event_watermark??0}};
+  const position=cursor===null?Number.MAX_SAFE_INTEGER:Number(cursor);
+  if(!Number.isSafeInteger(position)||position<=0)throw new Error('INVALID_PRESENTATION_CURSOR');
+  const rows=database.query(`SELECT sequence,messageId FROM (
+    SELECT event_sequence AS sequence,message_id AS messageId FROM presentation_messages INDEXED BY presentation_messages_topic_identity
+      WHERE generation=? AND topic_id=? AND message_id GLOB 'request:*' AND event_sequence<?
+    UNION ALL
+    SELECT event_sequence AS sequence,message_id AS messageId FROM presentation_messages INDEXED BY presentation_messages_topic_identity
+      WHERE generation=? AND topic_id=? AND message_id GLOB 'post:earlier-work:*' AND event_sequence<?
+  ) ORDER BY sequence DESC LIMIT ?`).all(meta.generation,topicId,position,meta.generation,topicId,position,limit+1) as PreparedMessageKey[];
+  const page=rows.slice(0,limit);
+  return {keys:page,nextCursor:rows.length>limit?String(page.at(-1)!.sequence):null,
+    coverage:meta.event_watermark>=sourceHead?{complete:true,appliedSequence:meta.event_watermark}
+      :{complete:false,code:'presentation_indexing',retryAfterMs:1000,appliedSequence:meta.event_watermark}};
+}
 export type PreparedMessagePage={keys:PreparedMessageKey[];nextCursor:string|null;coverage:{complete:boolean;code?:'presentation_indexing';retryAfterMs?:number;appliedSequence:number}};
 export function preparedMessages(sessionId:number,root:string,limit:number,cursor:string|null,sourceHead=0):PreparedMessagePage {
   const database=preparedDb();
