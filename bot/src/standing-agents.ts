@@ -21,6 +21,7 @@ export const STANDING_AGENTS = [
   {role:'thinkering-nightly-review',project:'agents/thinkering-nightly-review',description:'Review Thinkering each night.',wake:'Its repeating nightly schedule.'},
   {role:'taste-mining',project:'agents/taste-mining',description:'Turn Tejas’s feedback into his taste profile.',wake:'Its repeating schedule.'},
   {role:'ai-provider-watch',project:'agents/ai-provider-watch',description:'Watch Anthropic and OpenAI changes and suggest what to adopt.',wake:'Its repeating schedule.'},
+  {role:'agent-instructions-upkeep',project:'agents/agent-instructions-upkeep',description:'Keep agent instructions useful: route new rules and failure lessons to their owners.',wake:'Its nightly schedule.'},
 ] as const;
 
 export type StandingAgentRole = typeof STANDING_AGENTS[number]['role'];
