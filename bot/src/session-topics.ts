@@ -1387,11 +1387,17 @@ function mergeChange(from:StoredTopic,into:StoredTopic,by:TopicBy,reason:string|
     by,reason,revision:destination.revision}} as Change,destination,source};
 }
 
-function lastRenameBy(topicId:string):TopicBy|null {
-  const row=db.query(`SELECT payload_json FROM session_owner_events WHERE kind='topic'
-    AND json_extract(payload_json,'$.topicId')=? AND json_extract(payload_json,'$.change')='renamed'
-    ORDER BY sequence DESC LIMIT 1`).get(topicId) as {payload_json:string}|null;
-  return row?JSON.parse(row.payload_json).by??null:null;
+/** Who last renamed this thread, seeking only its own events. Unscoped, this walked every topic event
+ * in the ledger inside the rename transaction and held the owner 26.5 s (2026-11-02); scoped by
+ * session alone it still walked every Inbox topic event (~330 ms). The index is named because the
+ * ledger has no planner statistics. */
+function lastRenameBy(topic:StoredTopic):TopicBy|null {
+  const row=db.query(`SELECT json_extract(payload_json,'$.by') AS by_json FROM session_owner_events
+    INDEXED BY session_owner_events_topic_relation
+    WHERE session_id=? AND kind IN ('topic','topic_route') AND json_extract(payload_json,'$.topicId')=?
+    AND kind='topic' AND json_extract(payload_json,'$.change')='renamed'
+    ORDER BY sequence DESC LIMIT 1`).get(topic.sessionId,topic.topicId) as {by_json:string|null}|null;
+  return row?.by_json?JSON.parse(row.by_json):null;
 }
 
 function questionBrief(item:any) {
@@ -1721,7 +1727,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const title=text(body?.title,'title',200),why=text(body?.reason,'--reason');
       return agentMutation(actor,actionId(),{kind:'topic-rename',topicId:body?.topic_id,title,reason:why},()=>{
         const topic=topicFor(body?.topic_id);
-        if(lastRenameBy(topic.topicId)?.kind==='human'&&!why.toLowerCase().includes('human-approved'))
+        if(lastRenameBy(topic)?.kind==='human'&&!why.toLowerCase().includes('human-approved'))
           throw new TopicError('Tejas named this thread; an automatic rename needs his approval.',409,'TOPIC_TITLE_HUMAN');
         const next=bumped(topic,{title,aliases:[...new Set([...topic.aliases,topic.title])]});
         return {change:{kind:'topic',payload:{change:'renamed',topicId:topic.topicId,topic:next,title,previousTitle:topic.title,
@@ -2834,11 +2840,9 @@ function driftWords(value:string):Set<string> {
  * search and list rely on titles that say what is inside (capture d30a141a: "our thread names
  * don't make sense, and each thread keeps evolving into something we can't really track").
  */
-/** Whether he named this thread: its last rename, read within the Inbox's own events (an unscoped read took ~330 ms). */
+/** Whether he named this thread. */
 function renamedByHim(topic:StoredTopic):boolean {
-  const row=db.query(`SELECT json_extract(payload_json,'$.by.kind') AS by_kind FROM session_owner_events WHERE session_id=? AND kind='topic'
-    AND json_extract(payload_json,'$.topicId')=? AND json_extract(payload_json,'$.change')='renamed' ORDER BY sequence DESC LIMIT 1`).get(topic.sessionId,topic.topicId) as {by_kind:string|null}|null;
-  return row?.by_kind==='human';
+  return lastRenameBy(topic)?.kind==='human';
 }
 export function titleDrift(topicId:string):{title:string;unrelated:{id:string;title:string}[];namedByHim:boolean}|null {
   const topic=topicRow(topicId);
@@ -2974,7 +2978,7 @@ export function retitleRecoveredTopics() {
   let retitled=0;
   for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? AND recovered=1').all(session.id) as any[]) {
     const topic=toStoredTopic(row);
-    if(lastRenameBy(topic.topicId))continue;
+    if(lastRenameBy(topic))continue;
     const root=topicRoots(topic.topicId)[0];
     const input=root?getAcceptedSessionInput(root):null;
     if(!input)continue;
