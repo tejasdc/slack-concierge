@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringMayHaveReachedProvider,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -742,12 +742,30 @@ export class SessionExecutionHost {
       const session=getSessionById(sessionId);
       // The Inbox keeps its own queue rules (focus hold, captures waiting in order).
       if(!session||sessionMetadata(session).inbox||sessionMetadata(session).interactionPolicy==='consultation-only')return;
-      // Hand-offs this takeover found never sent may not have returned to the queue yet.
-      const unsent=db.query(`SELECT input.id FROM session_inputs input JOIN turn_steering_messages steering ON steering.id=input.steering_id
-        WHERE input.session_id=? AND steering.status='failed' AND steering.provider_sent_at IS NULL`).all(sessionId) as {id:string}[];
-      for(const row of unsent)recoverUnsentSteeredInput(row.id);
+      // Messages whose latest hand-off never reached the provider and that are not yet back in the
+      // queue: still attached to that failed attempt, or left detached by an interrupted pull.
+      const unsent=db.query(`SELECT input.id,input.origin,input.request_id FROM session_inputs input
+        JOIN turn_steering_messages steering ON steering.accepted_input_id=input.id
+          AND steering.id=(SELECT MAX(latest.id) FROM turn_steering_messages latest WHERE latest.accepted_input_id=input.id)
+        WHERE input.session_id=? AND steering.status='failed' AND steering.provider_sent_at IS NULL
+          AND json_extract(input.receipt_json,'$.state') IS NULL
+          AND (input.steering_id=steering.id OR input.steering_id IS NULL AND input.turn_id IS NULL)`).all(sessionId) as {id:string;origin:string;request_id:string|null}[];
+      for(const row of unsent) {
+        const recovered=recoverUnsentSteeredInput(row.id);
+        // A reminder to answer a request already answered says nothing true any more; delivering it
+        // late made the agent answer twice. Answers withdraw overdue notices the same way.
+        if(row.origin==='service'&&row.id.startsWith('question-reminder:')&&row.request_id
+          &&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND (prompt_answered_at_ms IS NOT NULL OR outcome IS NOT NULL)').get(row.request_id))
+          withdrawUnstartedServiceInput(recovered?.id??row.id,'Answered before this reminder was delivered.');
+      }
       const waiting=releaseWaitingInputs(sessionId);
-      for(const one of waiting)if(!this.steer(one))enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
+      for(const one of waiting) {
+        // One message that cannot join must never leave the others, or itself, out of the queue.
+        let joined=false;
+        try{joined=this.steer(one);}
+        catch(error){log('warn','waiting_input_join_failed',{session_id:sessionId,input_id:one.id,...errorFields(error)});}
+        if(!joined)enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
+      }
       if(waiting.length)log('info','waiting_inputs_joined_adopted_run',{session_id:sessionId,count:waiting.length});
     } catch(error) {
       log('warn','waiting_inputs_join_failed',{session_id:sessionId,...errorFields(error)});
@@ -787,7 +805,7 @@ export class SessionExecutionHost {
         // A follow-up's delivery changes mid-turn with no other owner event on it, so each
         // change is announced on that input; surfaces refresh its receipt at once instead
         // of showing it queued until their next periodic check.
-        const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:`delivery:${input.id}:${state}`,
+        const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
         const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
           prepareText:async root=>{
@@ -930,7 +948,7 @@ export class SessionExecutionHost {
     if(outcome==='acknowledged'&&(status==='sending'||status==='ambiguous'))markTurnSteeringMessageSent(row.steering_id);
     else if(outcome==='unacknowledged'&&status==='sending')markTurnSteeringMessageAmbiguous(row.steering_id,'The run ended before the agent recorded picking this message up.');
     else return;
-    recordSessionEvent({eventId:`delivery:${clientMessageId}:${outcome==='acknowledged'?'sent':'ambiguous'}`,sessionId:row.session_id,inputId:clientMessageId,
+    recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${clientMessageId}:${outcome==='acknowledged'?'sent':'ambiguous'}`,clientMessageId,row.steering_id),sessionId:row.session_id,inputId:clientMessageId,
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
