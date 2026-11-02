@@ -9,6 +9,7 @@ import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageRouteReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
+import {threadRequestDisplay} from './thread-request-display';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -148,18 +149,7 @@ export function inboxMessage(row:any) {
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
   const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
-  const requestRow=request?(db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(eventPayload.requestId)
-    ??db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(eventPayload.requestId)) as {payload_json:string}|null:null;
-  const requestPayload=requestRow?JSON.parse(requestRow.payload_json):null;
-  const requestSummary=typeof requestPayload?.summary==='string'?requestPayload.summary.trim():'';
-  const requestWords=typeof requestPayload?.text==='string'?requestPayload.text:payload.text??'';
-  const sourceMessage=typeof eventPayload.threadSourceMessageId==='string'?getAcceptedSessionInput(eventPayload.threadSourceMessageId):null;
-  const retainedSource=sourceMessage?.origin==='human'?JSON.parse(sourceMessage.payload_json):null;
-  const sourcePayload=retainedSource?.firstInput??retainedSource;
-  const sourceWords=typeof sourcePayload?.text==='string'?sourcePayload.text:'';
-  const recipient=typeof eventPayload.targetSessionId==='string'?authorSessionOf(db,eventPayload.targetSessionId):null;
-  const requestContent=[recipient?`For ${recipient.title??recipient.agentName??'the working agent'}`:'',requestSummary,sourceWords.trim()&&!requestWords.includes(sourceWords)?`Tejas wrote:\n${sourceWords}`:'',requestWords]
-    .filter(Boolean).join('\n\n');
+  const requestContent=request?threadRequestDisplay(db,eventPayload,payload.text??''):'';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),

@@ -128,7 +128,7 @@ binding. The role table in `bot/src/standing-agents.ts` is the sole home for the
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
-queues one firing in that bound session, or creates and binds the role's session first. A repeating
+queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
 with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available under the existing
