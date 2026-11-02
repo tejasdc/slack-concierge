@@ -18,7 +18,7 @@ import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
-import {areasCommand,checkedAreaIds,applyAreaChange,ensureSystemNoticeArea} from './session-areas';
+import {areasCommand,checkedAreaIds,applyAreaChange,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
 
@@ -461,7 +461,10 @@ export function topicOfRoot(rootInputId:string):string|null {
 export function applyTopicChange(kind:string,payload:any) {
   projectTopicChange(kind,payload);
   if(kind!=='area')keepThreadOpenOrClosed(payload);
+  if(kind==='topic'&&MEANING_CHANGES.has(payload?.change)&&typeof payload.topicId==='string')threadChanges.changed(payload.topicId);
 }
+/** Topic changes after which a thread's meaning is compared with the areas again. */
+const MEANING_CHANGES=new Set(['created','renamed','summary','placed','routed','merged','reopened']);
 /** The projection alone, for replay: a replayed event never records anything new. */
 function projectTopicChange(kind:string,payload:any) {
   if(kind==='area'){applyAreaChange(payload);return;}

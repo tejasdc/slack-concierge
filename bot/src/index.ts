@@ -520,6 +520,7 @@ if(process.platform==='linux'){
   sessionExecutionHost.owner.reconcileFinishedSpeechJobs();
   setInterval(()=>sessionExecutionHost.owner.reconcileFinishedSpeechJobs(),1_000);
 }
+{ const {startAreaFiling}=await import('./area-filing'); startAreaFiling((admission) => sessionExecutionHost.owner.admit(admission), (body) => sessionExecutionHost.owner.search(body)); }
 sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.status() ?? { available: false, reason: "Capture delivery has not started." };
 codexSessionObserver=new CodexSessionObserver();
 bindOwner();
