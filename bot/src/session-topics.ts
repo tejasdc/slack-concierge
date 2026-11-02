@@ -15,7 +15,7 @@ import {log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
-import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
+import {preparedInboxDisplays,preparedThreadRoot,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
@@ -267,12 +267,13 @@ function refreshRootMemo() {
   for(const [key,root] of rootMemo)if((root&&affected.has(root))||[...affected].some(id=>key.endsWith(':'+id)))rootMemo.delete(key);
   if(entryIndexState)entryIndexState=reassignEntries(entryIndexState,affected);
 }
-function rootOf(sessionId:number,messageId:string):string|null {
+export function rootOf(sessionId:number,messageId:string):string|null {
+  refreshRootMemo();
   const key=`${sessionId}:${messageId}`;
   if(rootMemo.has(key))return rootMemo.get(key)??null;
   // A provider/cwd cutover created a new Inbox session, and its predecessors' messages are
   // still Inbox messages. Resolve through the session that actually holds the message.
-  const root=inboxThreadRoot(sessionId,messageId)??(()=>{
+  const root=preparedThreadRoot(sessionId,messageId,threadLinkWatermark)??inboxThreadRoot(sessionId,messageId)??(()=>{
     const row=inboxRowByMessageId(null,messageId) as {session_id:number}|null;
     return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
   })();

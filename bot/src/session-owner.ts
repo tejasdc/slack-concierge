@@ -80,7 +80,7 @@ import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,rootOf,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -2363,7 +2363,7 @@ export class SessionOwner {
     const messageId=input.replyToMessage?.messageId;
     const hasMessageThread=typeof input.messageThreadRootId==='string';
     if(typeof messageId!=='string'||input.deliverTo==='router'&&!hasMessageThread)return null;
-    const root=inboxThreadRoot(session.id,messageId);
+    const root=rootOf(session.id,messageId);
     const topicId=root?topicOfRoot(root):null;
     if(!root||!topicId) {
       if(typeof input.deliverTo==='string')throw new SessionOwnerError('That message is not in a thread yet, so only the router can take this reply.',409,'REPLY_TARGET_UNKNOWN');
@@ -2377,7 +2377,7 @@ export class SessionOwner {
       const rootSession=rootMessage?.author?.session?.id;
       if(rootMessage?.role!=='assistant'||rootMessage?.author?.kind!=='agent'||typeof rootSession!=='string')
         throw new SessionOwnerError('A message reply thread starts from one exact agent message.',409,'MESSAGE_THREAD_ROOT_INVALID');
-      const rootTopic=inboxThreadRoot(session.id,nestedRoot),parentTopic=inboxThreadRoot(session.id,messageId),parent=inboxMessageById(session.id,messageId) as any;
+      const rootTopic=rootOf(session.id,nestedRoot),parentTopic=rootOf(session.id,messageId),parent=inboxMessageById(session.id,messageId) as any;
       if(!rootTopic||topicOfRoot(rootTopic)!==topicId)
         throw new SessionOwnerError('That agent message is not in this thread.',409,'MESSAGE_THREAD_ROOT_INVALID');
       if(!parentTopic||topicOfRoot(parentTopic)!==topicId)
@@ -3745,8 +3745,10 @@ export class SessionOwner {
         const successor=supersededBy(target.session_id);
         if(successor)throw new SessionOwnerError(`This session continues in ${successor}. Send the action to ${supersededAddress(target.session_id)}.`,409,'SESSION_SUPERSEDED');
       }
-      const prior=typeof body?.clientActionId==='string'?db.query(`SELECT 1 FROM session_inputs WHERE action_id=?
-        AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
+      const prior=typeof body?.clientActionId==='string'
+        ?db.query("SELECT 1 FROM session_inputs WHERE scope='surface:thinkering' AND action_id=? LIMIT 1").get(body.clientActionId)
+          ??(typeof body.sourceInputId==='string'?db.query('SELECT 1 FROM session_inputs WHERE action_id=? AND source_input_id=? LIMIT 1').get(body.clientActionId,body.sourceInputId):null)
+        :null;
       let result:unknown;
       const answerHeaders:Record<string,string>={};
       if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){

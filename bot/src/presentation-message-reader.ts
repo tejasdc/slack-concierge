@@ -53,10 +53,10 @@ export function readPreparedInboxDetailPart(database:Database,sessionId:number,m
   return {content:rows[0]!.content,nextPart:rows[1]?.part??null,complete:rows.length===1,digest:rows[0]!.digest};
 }
 /** Exact prepared lineage lookup; resolving a notification never walks the Inbox history. */
-export function preparedThreadRoot(sessionId:number,messageId:string):string|null {
+export function preparedThreadRoot(sessionId:number,messageId:string,minEventSequence=0):string|null {
   const database=preparedDb();if(!database)return null;
-  const meta=database.query('SELECT generation,ready FROM presentation_message_meta WHERE singleton=1').get() as {generation:number;ready:number}|null;
-  if(!meta?.ready)return null;
+  const meta=database.query('SELECT generation,event_watermark,ready FROM presentation_message_meta WHERE singleton=1').get() as {generation:number;event_watermark:number;ready:number}|null;
+  if(!meta?.ready||meta.event_watermark<minEventSequence)return null;
   const row=database.query('SELECT root_input_id FROM presentation_messages WHERE generation=? AND session_id=? AND message_id=?')
     .get(meta.generation,sessionId,messageId)??database.query('SELECT root_input_id FROM presentation_messages WHERE generation=? AND session_id=? AND input_id=? ORDER BY event_sequence LIMIT 1')
     .get(meta.generation,sessionId,messageId);

@@ -1,7 +1,7 @@
 import {db,executionChanged,getSessionById} from './state';
 import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunId,recordSessionEvent} from './session-inputs';
 import {inboxThreadRoot} from './session-inbox';
-import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
+import {questionsDeclaredByRun,readsForTurn,rootOf,type ReadingText} from './session-topics';
 import {log} from './log';
 import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
@@ -223,7 +223,7 @@ export function clearNeedsForHumanInput(sessionId:number,payload:{replyToMessage
   if(!session)return;
   const meta=sessionMetadata(session);
   if(!meta.needs?.length)return;
-  const thread=meta.inbox?(typeof payload.replyToMessage?.messageId==='string'?inboxThreadRoot(sessionId,payload.replyToMessage.messageId):null):undefined;
+  const thread=meta.inbox?(typeof payload.replyToMessage?.messageId==='string'?rootOf(sessionId,payload.replyToMessage.messageId):null):undefined;
   if(thread===null)return;
   const needs=thread===undefined?[]:meta.needs.filter(need=>need.inputId!==thread);
   if(needs.length!==meta.needs.length)updateSessionMetadata(sessionId,{needs});
