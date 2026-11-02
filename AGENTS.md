@@ -1357,6 +1357,11 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   Host-owned one-shot callers use the release's bundled router, notice and native
   continuation commands. Declare a new caller's bundle in the artifact file before
   pointing a host unit or script at it; the agent checkout is never a runtime path.
+- **No Claude agent sits blind on a build.** The same command guard refuses a Claude Code command
+  that waits on a shared host build slot unless it runs with `run_in_background`
+  (`bot/src/foreground-build-policy.ts`, which reads slot use from the script's source, so a
+  project marks a long command with `agents-run-this-in-background`); Codex already yields. A
+  foreground build froze the canvas voice repair for ten minutes while Tejas waited (2026-11-01).
 - **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
   amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
   commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:
