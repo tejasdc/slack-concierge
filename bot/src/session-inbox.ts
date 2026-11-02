@@ -149,7 +149,7 @@ export function inboxMessage(row:any) {
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
   const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
-  const requestContent=request?threadRequestDisplay(db,eventPayload,payload.text??''):'';
+  const requestContent=request?threadRequestDisplay(db,eventPayload):'';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),

@@ -51,7 +51,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   }
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const displayedRoot=post||request?inboxRootResolver(database)(sessionId,row.event_id)??row.input_id:row.input_id;
-  const content=post?event.text??'':request?threadRequestDisplay(database,event,payload.text??''):result?event.text??row.agent_text??'':payload.text??'';
+  const content=post?event.text??'':request?threadRequestDisplay(database,event):result?event.text??row.agent_text??'':payload.text??'';
   const attachmentIds=result||post?event.attachments:payload.attachments;
   const ids=Array.isArray(attachmentIds)?attachmentIds.filter((id:unknown):id is string=>typeof id==='string'):[];
   const attachments=ids.map(id=>database.query(

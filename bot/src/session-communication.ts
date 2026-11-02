@@ -1158,6 +1158,8 @@ export class SessionCommunicationCoordinator {
         // The thread this request works for, decided here and recorded on the request, so its
         // returns are filed there whatever input started the turn that sent it.
         const threadRoot=routedFrom?null:inboxRequestThread(getSessionById(actor.session)!,input.thread);
+        if(threadRoot&&(typeof input.summary!=='string'||!input.summary.trim()||/[\r\n]/.test(input.summary)))
+            throw new Error('A thread request needs a one-line summary for its visible handoff.');
         const currentInput=actor.inputId?getAcceptedSessionInput(actor.inputId):null;
         const threadSourceMessageId=threadRoot&&currentInput?.origin==='human'
             &&inboxThreadRoot(actor.session,currentInput.id)===threadRoot?currentInput.id:input.thread;
