@@ -29,8 +29,9 @@ router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-ti
 router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
-router-actions.sh sessions note <captureId | his Inbox message input id> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier-captureId> | --person <name> | --journal entry|checkin]
-router-actions.sh sessions title <source-flags> --action-id A -- <title>
+router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
+Any message the owner retained can become a note: a capture, a thread reply, a post, a routed message or an agent's answer.
+router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
@@ -119,7 +120,7 @@ Continue the session that owns the surface when search/context establish one una
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 For a bounded small task that fits one focused agent session, --small-task keeps Automatic choice and admits Google when its current model and allowance are verified. Omit it for broad implementation or uncertain diagnosis. --provider google explicitly starts a Google session.
 --outside is an ordinary request whose agent runs outside Concierge: a new Codex session whose turns run as the Codex command line (codex exec) in its own system unit, which Concierge starts and watches but does not drive. A Concierge restart, update or Pause all does not stop it; only Stop on that session does. Everything else is the ordinary request: it names a thread, its answers post there, you are not woken, and its end-of-turn check sends it back if it tries to stop without replying. If it ends without replying when that check could not run (Concierge was down), Concierge asks it once to report back, then records the stall in the thread. Use it for work that changes Concierge itself or must outlive Concierge trouble; never start Codex by hand with a launcher or file watch for this. Its default model is Concierge's Codex default; name another Codex alias with --provider.
-Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
+Use sessions title from an admitted run to name its own session, or another session with --session <address>, including renaming one named badly. A title Tejas set himself is preserved.
 Use sessions outcome once per live turn with that input's exact native source pair and a stable action ID. done takes no text; response says what to read, needs_you asks one question, and failed says why. Ask Tejas only for what no agent can do or what a permanent decision reserves for him: needs_you (and a reply's --work-disposition needs_decision) requires --only-he-can sign-in|secret|device|ambiguous|approval (ambiguous: readings of his words that lead to different things that cannot be undone), --his-words copied exactly from his message that started the work, and --why-not-answered; permission and design choices without a cited permanent approval rule are refused, because he said "just do as I say and fix or build things if it's not possible. Ask for forgiveness not permission". For approval, add --decision-id and --approval-action; the owner verifies the permanent record and its scope. Do the work, build what is missing, and tell him afterwards. A reply with --work-disposition completed requires --all-done (everything he asked for was done; when part was not, do it, have it built, or reply failed saying what) and --checked, what you exercised on the real system (his surfaces through your own entrance, test-capture) and what you saw, or --not-checked with why no live check was possible; both are shown with your answer. Do not write unit tests to fill it. A completed reply he need not read (a send that went exactly as he asked) adds --quiet-because "<why he need not read it>": it is still posted in his thread as your words with "Not sent to you: <reason>" under it, and it closes the thread's request, but it is not filed for him to read and raises no notification. A failed or needs_decision reply is never quiet. A turn that answers a message Tejas sent himself cannot end done without --quiet-because "<why he need not read this>": the owner refuses it, and a turn that ends without declaring is recorded as a response so he is told; the reason is shown under your reply. A turn that already answered with sessions post and declared its outcome needs no closing text. A turn opened by another agent's return or request into a thread must post its answer there before declaring; its closing text never shows in the thread, and an unposted one is relayed there by the owner as your reply.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, and its Timeline lists the dispatch, whatever input started the turn that sent it. Every fresh answer or terminal notice for that request posts directly into the thread, without waking the Inbox router. Progress stays quiet. A work final keeps its thread attention filing; an informational final quietly closes its linked request unless the asking human input explicitly requested a result. When you need the answer to act, ask with --return-to-requester; that choice adds a return to your run. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
@@ -144,8 +145,8 @@ export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; project?:string; title?: string; text: string; after?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; inputId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
-  | { operation: "title"; body: { source: Source; action_id:string; title:string } }
+  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
+  | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; decision_id?:string; approval_action?:string } }
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
@@ -651,6 +652,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
+      || (flag === '--session' && operation === 'title')
       || (flag === '--summary-file' && operation === 'note')
       || (flag === '--add-to' && operation === 'note')
       || (flag === '--person' && operation === 'note')
@@ -738,9 +740,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation,body:{source,action_id:actionId,input_id:identity!,...(thread?{thread}:{detach:true})}};
   }
   if(operation==='note') {
-    if(separator>=0)invalid('note accepts a capture ID or his Inbox message ID, not replacement source text.');
-    // A message he sent in an Inbox thread is named by its input id; the owner reads his words.
-    const message=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identity??'');
+    if(separator>=0)invalid('note accepts a capture ID or a message ID, not replacement source text.');
+    // Any other ID names a retained message; the owner reads its words.
+    const message=!/^[0-9a-f]{64}$/.test(identity??'');
     // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
     // "you should not dump my whole transcript here ... create like a nice bulleted list").
     const summaryFile=flags.get('--summary-file');
@@ -750,7 +752,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     // A follow-up to a thread whose note already exists joins that note as a new section
     // (Tejas, 2026-10-01: "if my platform is built on threads ... where can I find the idea").
     const addTo=flags.get('--add-to');
-    if(addTo!==undefined&&!/^[0-9a-f]{64}$/.test(addTo))invalid('--add-to takes the earlier capture ID whose note this one follows up.');
+    if(addTo!==undefined&&!addTo.trim())invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
     // A fact about a person goes into that person's one note in thnkr.ing (Tejas, 2026-10-07:
     // "start a thread for each person and keep adding to a central note").
     const person=flags.get('--person')?.trim();
@@ -761,7 +763,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const journal=flags.get('--journal');
     if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
     if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
-    return {operation,body:{source,action_id:actionId,...(message?{inputId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
+    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');
@@ -803,7 +805,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='title') {
     const title=content[0]!.trim();
     if(title.length>120)invalid('Session title must contain 1–120 characters.');
-    return {operation,body:{source,action_id:actionId,title}};
+    const address=flags.get('--session');
+    return {operation,body:{source,action_id:actionId,title,...(address?{address}:{})}};
   }
   if(operation==='post') {
     const thread=flags.get('--thread');

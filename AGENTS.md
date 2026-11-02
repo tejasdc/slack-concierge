@@ -559,8 +559,8 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.
 - Thinkering-created Codex sessions retain the owner's selected default model and
-  effort at creation. An admitted agent may name only its own session
-  through `sessions title` with its exact source input/run and stable action ID; it
+  effort at creation. An admitted agent may name its own session, or any other with
+  `--session <address>` [decision: agents-are-never-handcuffed], through `sessions title` with its exact source input/run and stable action ID; it
   may also correct that name later, because a session stuck with a bad name had no
   way to fix what he was reading (September 22, 2026). A title Tejas set himself
   through the app's Rename control always wins and is never overwritten. That is how a session
@@ -774,11 +774,13 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   wire contract.
 - A capture that answers a thread's question is placed there with `sessions thread`
   (`--detach` undoes it, and `unthread` is his own split control): an additive
-  `thread_link` event, never a rewrite of the retained capture. The Inbox agent decides,
-  only where it asked and is still waiting; the message then carries `replyToMessage` and
-  `routedBy`. See the native Inbox contract.
-- The Inbox agent answers a thread on purpose with `sessions post --thread`, a `post`
-  ledger event. Tejas rejected threads that collect whatever the agent said while it
+  `thread_link` event, never a rewrite of the retained capture. Any agent may place any
+  accepted Inbox message, and run every `sessions topics` and areas command against the Inbox,
+  credited to itself; `sessions note` saves any retained message (capture, thread reply, post,
+  routed message, agent answer) as a Timeline note [decision: agents-are-never-handcuffed].
+  The message then carries `replyToMessage` and `routedBy`. See the native Inbox contract.
+- An agent answers a thread on purpose with `sessions post --thread`, a `post`
+  ledger event in the Inbox; a post from another session is credited to it (`postedBySession`). Tejas rejected threads that collect whatever the agent said while it
   worked. The owner resolves the thread root; a post starts no turn and owes no reply.
   Only ledger-backed history accepts posts, because a provider transcript never contains
   them. See the native Inbox contract.
