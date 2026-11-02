@@ -415,7 +415,7 @@ export type SessionOwnerRuntime = {
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
   sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;proof?(input:any):Promise<any>;history?(input:any):Promise<any>;historyMessage?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
-  saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}):Promise<unknown>;
+  saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string;inboxMessage?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}):Promise<unknown>;
   auth?:{
     ephemera?():ProviderAuthEphemera;
     refreshEphemera?():Promise<ProviderAuthEphemera>;
@@ -1952,24 +1952,44 @@ export class SessionOwner {
     }
     return {captureIds,released,heldCaptureCount:(db.query('SELECT count(*) AS count FROM focus_held_captures WHERE released_at_ms IS NULL').get() as {count:number}).count};
   }
-  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
+  /**
+   * His own words to save as a note: a retained capture, or a message he typed or spoke into an
+   * Inbox thread (`inputId`). Either way the owner reads the words it accepted from him; an agent
+   * names the identity and never supplies the text. A thread reply has no capture, so the note
+   * door refused it and his "curiosity engine" reply could not be kept (2026-11-01).
+   */
+  private noteSource(input:{captureId?:string;inputId?:string}) {
+    if((input.captureId===undefined)===(input.inputId===undefined))throw new SessionOwnerError('Name one capture or one of his Inbox messages.',400,'NOTE_SOURCE_REQUIRED');
+    if(input.captureId!==undefined){
+      const body=JSON.parse(retainedInboxCapture(input.captureId).payload_json);
+      const text=body.capture.originalTextAttachmentId?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):body.text;
+      return {noteId:input.captureId,text,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt as string};
+    }
+    const row=getAcceptedSessionInput(input.inputId!);
+    const session=row?getSessionById(row.session_id):null;
+    const payload=row?JSON.parse(row.payload_json):null;
+    if(!row||row.origin!=='human'||row.kind!=='input'||!session||!sessionMetadata(session).inbox||typeof payload?.text!=='string'||!payload.text.trim())
+      throw new SessionOwnerError('That is not a message he sent in an Inbox thread.',404,'INBOX_MESSAGE_NOT_FOUND');
+    // Owner rows are stamped "2026-11-02 02:46:39" in UTC.
+    return {noteId:`inbox-message-${row.id}`,inboxMessage:row.id,text:payload.text as string,title:'Your message in an Inbox thread',capturedAt:new Date(row.created_at.replace(' ','T')+'Z').toISOString()};
+  }
+  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId?:string;inputId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
-    const captured=retainedInboxCapture(input.captureId),body=JSON.parse(captured.payload_json);
+    const from=this.noteSource(input);
     const operation=retainSessionInput({sessionId:input.sourceSessionId,scope:`communication:${input.sourceInputId}`,actionId:input.actionId,kind:'capture-note',origin:'agent',
-      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{captureId:input.captureId,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})}}).input;
+      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{...(input.captureId===undefined?{inputId:input.inputId}:{captureId:input.captureId}),...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})}}).input;
     const prior=operation.receipt_json?JSON.parse(operation.receipt_json):{};
     if(prior.state==='completed')return {operation:this.receipt(operation),note:prior.note};
-    const original=body.capture.originalTextAttachmentId?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):body.text;
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),operation.id);
     try {
       // The note capability deduplicates this immutable captureId. Retrying a
       // lost response reads the same note and preserves later human edits.
-      const note=await this.runtime.saveCaptureNote({captureId:input.captureId,text:original,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt,...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})});
+      const note=await this.runtime.saveCaptureNote({captureId:from.noteId,text:from.text,title:from.title,capturedAt:from.capturedAt,...(from.inboxMessage?{inboxMessage:from.inboxMessage}:{}),...(input.summary===undefined?{}:{summary:input.summary}),...(input.addTo===undefined?{}:{addTo:input.addTo}),...(input.person===undefined?{}:{person:input.person}),...(input.journal===undefined?{}:{journal:input.journal})});
       const result=object(note);
       for(const key of ['source','note'])if(typeof result[key]?.objectId!=='string'||typeof result[key]?.revision!=='string')throw new SessionOwnerError('Note capability returned incomplete object revisions.',502);
       if(typeof result.created!=='boolean')throw new SessionOwnerError('Note capability omitted its creation disposition.',502);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',note}),operation.id);
-      recordSessionEvent({eventId:`capture-note:${operation.id}`,sessionId:operation.session_id,inputId:operation.id,kind:'capture_note',payload:{captureId:input.captureId,note}});
+      recordSessionEvent({eventId:`capture-note:${operation.id}`,sessionId:operation.session_id,inputId:operation.id,kind:'capture_note',payload:{captureId:from.noteId,note}});
       return {operation:this.receipt(this.input(operation.id)),note};
     } catch(error) {
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'NOTE_SAVE_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
