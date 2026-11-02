@@ -37,6 +37,14 @@ for (const column of ['compactions', 'compactions_before', 'last_compaction_at_m
 // joined to topics on read because topics are re-placed and merged. '' means none.
 if (!(db.query("SELECT 1 FROM pragma_table_info('session_communication_requests') WHERE name='topic_root_input_id'").get()))
   db.run('ALTER TABLE session_communication_requests ADD COLUMN topic_root_input_id TEXT');
+if (!(db.query("SELECT 1 FROM pragma_table_info('session_peer_requests') WHERE name='topic_root_input_id'").get()))
+  db.run('ALTER TABLE session_peer_requests ADD COLUMN topic_root_input_id TEXT');
+db.run(`CREATE INDEX IF NOT EXISTS session_communication_topic_work
+  ON session_communication_requests(topic_root_input_id,created_at_ms DESC,request_id)
+  WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL`);
+db.run(`CREATE INDEX IF NOT EXISTS session_peer_topic_work
+  ON session_peer_requests(topic_root_input_id,created_at_ms DESC,request_id)
+  WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL`);
 }
 
 type WorkloadRow = { session_id: number; context_tokens: number | null; context_window: number | null; measured_at_ms: number | null; since_ms: number };
@@ -82,6 +90,12 @@ export async function backfillRequestTopics(stopped: () => boolean) {
     WHERE topic_root_input_id IS NULL AND created_at_ms >= ?`).all(started - BACKFILL_DAYS * 86_400_000) as { request_id: string; root: string | null; source: string | null }[]) {
     if (stopped()) return;
     db.query('UPDATE session_communication_requests SET topic_root_input_id=? WHERE request_id=?').run(topicRootFor(row.root, row.source) ?? '', row.request_id);
+    if (++requests % 100 === 0) await new Promise(resolve => setImmediate(resolve));
+  }
+  for (const row of db.query(`SELECT request_id, thread_root_input_id AS root, source_input_id AS source FROM session_peer_requests
+    WHERE topic_root_input_id IS NULL AND created_at_ms >= ?`).all(started - BACKFILL_DAYS * 86_400_000) as { request_id: string; root: string | null; source: string | null }[]) {
+    if (stopped()) return;
+    db.query('UPDATE session_peer_requests SET topic_root_input_id=? WHERE request_id=?').run(topicRootFor(row.root, row.source) ?? '', row.request_id);
     if (++requests % 100 === 0) await new Promise(resolve => setImmediate(resolve));
   }
   if (requests) log('info', 'request_topics_backfilled', { requests, durationMs: Date.now() - started });

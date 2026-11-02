@@ -103,9 +103,11 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='request'){
       const requestId=(db.query('SELECT json_extract(payload_json,\'$.requestId\') AS id FROM session_owner_events WHERE sequence=?').get(row.sequence) as {id:string|null}|null)?.id;
-      const routed=requestId&&(db.query("SELECT 1 FROM session_communication_requests WHERE request_id=? AND json_extract(payload_json,'$.routedMessage') IS NOT NULL")
-        .get(requestId)??db.query("SELECT 1 FROM session_peer_requests WHERE request_id=? AND json_extract(payload_json,'$.routedMessage') IS NOT NULL").get(requestId));
-      if(routed)return [];
+      const alreadyShown=requestId&&(db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=?
+          AND (json_extract(payload_json,'$.routedMessage') IS NOT NULL OR json_extract(payload_json,'$.forwardedReply') IS NOT NULL)`).get(requestId)
+        ??db.query(`SELECT 1 FROM session_peer_requests WHERE request_id=?
+          AND (json_extract(payload_json,'$.routedMessage') IS NOT NULL OR json_extract(payload_json,'$.forwardedReply') IS NOT NULL)`).get(requestId));
+      if(alreadyShown)return [];
     }
     if(row.kind==='result'&&!row.has_result_text&&!row.has_attachments)return [];
     const messageId=sourceMessageId(row);
