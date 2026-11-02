@@ -1,6 +1,7 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
+import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -994,9 +995,12 @@ export class SessionExecutionHost {
       let canvasApplicationContext:string|null=null;
       if(nativeContext&&!adoption) {
         const runId=nativeRunId(claim.turn_id);
+        // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
+        const thesaurus=await thesaurusTurnContext(prompt);
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
-        if(!canvasApplicationContext) {
-          const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),
+        if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
+        else {
+          const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),thesaurus,
             budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
             notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
           prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));

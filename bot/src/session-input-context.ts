@@ -61,8 +61,8 @@ export function sessionInputInstructions(options: { standing?: string | null } =
 }
 
 export function sessionTurnContext(input: AcceptedSessionInput, runId: string,
-  options: { unnamed?: boolean; budget?: string | null; notice?: string | null } = {}) {
-  return [options.budget,options.notice,options.unnamed?unnamedSessionStep(input,runId):null]
+  options: { unnamed?: boolean; budget?: string | null; notice?: string | null; thesaurus?: string | null } = {}) {
+  return [options.thesaurus,options.budget,options.notice,options.unnamed?unnamedSessionStep(input,runId):null]
     .filter(Boolean).join('\n\n');
 }
 
