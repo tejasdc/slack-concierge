@@ -545,16 +545,12 @@ only a short summary and at-most-8-KiB request preview, and short activity text 
 public and on-demand private coordination. Exact full request and result bodies remain available by request ID. Its storage budget includes those
 bounded rows and bytes.
 
-When an agent has open, non-stalled work on a topic, the Inbox router's manual post permits only
-a one-line answer of at most 200 characters when that turn already owes the thread a post. Its
-automatic `Sent to` receipt is the ordinary routing mark; substantive words go to the worker
-as a request, whose own answer posts in the thread. A service return already posted in that
-thread cannot be relayed from the Inbox, and it does not create a second owed-post duty.
-The refusal applies to the Inbox router's manual posts, not Tejas's messages, agent answers or
-another agent's ability to post. It uses canonical local and peer request state, excluding
-stalled and uncertain requests; a settled or canceled request releases the guard without a timer.
-If the Inbox turn ends without meeting an owed post while another agent works there, its fallback
-is a short notice of the unanswered turn, never the router's full closing text.
+The Inbox router may post its own answer even while another agent works on the topic.
+Its automatic `Sent to` receipt is the routing mark; the router's own instructions send
+substantive questions about the worker's job to that worker, whose answer posts in the thread.
+A service return already posted in that thread cannot be relayed from the Inbox, and it does
+not create a second owed-post duty. If the router leaves an owed answer unposted, the owner's
+fallback relays its closing text as the router's reply regardless of another agent's work.
 
 Human Inbox inputs and agent-marked captures carry their thread in the prompt: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned
