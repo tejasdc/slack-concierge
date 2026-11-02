@@ -10,7 +10,9 @@ const bounded=(value:string,max=CONTENT_BYTES)=>{
   if(bytes<=max)return {text:value,bytes,complete:true};
   return {text:Buffer.from(value).subarray(0,max).toString('utf8').replace(/\uFFFD$/,''),bytes,complete:false};
 };
-const stamp=(value:string)=>value.includes('T')?value:value+'Z';
+// SQLite's CURRENT_TIMESTAMP is UTC with no zone; a reader takes a zone-less time as its own
+// local time. Every time this projection writes says UTC, whichever spelling the row had.
+const stamp=(value:string)=>/(?:Z|[+-]\d\d:?\d\d)$/i.test(value)?value:value+'Z';
 
 /** Build a page-ready value in the isolated worker. The full retained row stays behind an exact detail read. */
 export function preparedInboxDisplay(database:Database,sessionId:number,sequence:number,messageId:string){
@@ -39,7 +41,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
       routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
         title:routeTitle(database,event.sourceTopicId,null)},
-      createdAt:stamp(original.created_at.replace(' ','T')),timestampSource:'submitted'};
+      createdAt:stamp(original.created_at),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
     return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],
       contentCoverage:{complete:false,code:'message_preview',bytes:Buffer.byteLength(full.content),attachments:ids.length},
