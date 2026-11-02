@@ -774,11 +774,13 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   wire contract.
 - A capture that answers a thread's question is placed there with `sessions thread`
   (`--detach` undoes it, and `unthread` is his own split control): an additive
-  `thread_link` event, never a rewrite of the retained capture. The Inbox agent decides,
-  only where it asked and is still waiting; the message then carries `replyToMessage` and
-  `routedBy`. See the native Inbox contract.
-- The Inbox agent answers a thread on purpose with `sessions post --thread`, a `post`
-  ledger event. Tejas rejected threads that collect whatever the agent said while it
+  `thread_link` event, never a rewrite of the retained capture. Any agent may place any
+  accepted Inbox message, and run every `sessions topics` and areas command against the Inbox,
+  credited to itself; `sessions note` saves any retained message (capture, thread reply, post,
+  routed message, agent answer) as a Timeline note [decision: agents-are-never-handcuffed].
+  The message then carries `replyToMessage` and `routedBy`. See the native Inbox contract.
+- An agent answers a thread on purpose with `sessions post --thread`, a `post`
+  ledger event in the Inbox; a post from another session is credited to it (`postedBySession`). Tejas rejected threads that collect whatever the agent said while it
   worked. The owner resolves the thread root; a post starts no turn and owes no reply.
   Only ledger-backed history accepts posts, because a provider transcript never contains
   them. See the native Inbox contract.

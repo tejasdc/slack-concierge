@@ -1606,8 +1606,12 @@ function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:
  */
 export function topicsCommand(actor:TopicActor,body:any) {
   if(typeof body?.verb==='string'&&body.verb.startsWith('area.'))return areasCommand(actor,{...body,verb:body.verb.slice(5)});
-  const session=getSessionById(actor.sessionId);
-  if(!session)throw new TopicError('Unknown session.',404);
+  const own=getSessionById(actor.sessionId);
+  if(!own)throw new TopicError('Unknown session.',404);
+  // Every agent may read and organize the Inbox's threads, credited to itself; only the Inbox
+  // router once could (Tejas, 2026-11-01: "every agent should be able to do all the actions
+  // here. Why were we handcuffing it?") [decision: agents-are-never-handcuffed].
+  const session=sessionMetadata(own).inbox?own:inboxOrThrow();
   const verb=String(body?.verb??'');
   const by=byOf(actor);
   const inbox=!!sessionMetadata(session).inbox;
@@ -1665,8 +1669,8 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const destination=text(body?.topic_id,'topic id',200);
       return agentMutation(actor,actionId(),{kind:'topic-route',messageId,destination,reason:reason()},actionInputId=>{
         const source=getAcceptedSessionInput(messageId);
-        if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox||!routableMessage(source))
-          throw new TopicError('Route one exact accepted human Inbox message or marked agent test capture.',404,'ROUTE_MESSAGE_UNKNOWN');
+        if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
+          throw new TopicError('Route one exact accepted Inbox message.',404,'ROUTE_MESSAGE_UNKNOWN');
         const sourceRoot=inboxThreadRoot(source.session_id,messageId);
         const sourceTopicId=sourceRoot?topicOfRoot(sourceRoot):null;
         if(!sourceRoot||!sourceTopicId)throw new TopicError('Place the source conversation before routing its message.',409,'ROUTE_SOURCE_UNPLACED');

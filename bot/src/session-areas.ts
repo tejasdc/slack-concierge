@@ -65,8 +65,8 @@ export function applyAreaChange(payload:any){
 }
 
 export function areasCommand(actor:TopicActor,body:any){
-  const session=getSessionById(actor.sessionId);
-  if(!session||!sessionMetadata(session).inbox)throw new AreaError('Only the Inbox router can organize areas.',403,'AREA_FORBIDDEN');
+  // Any agent may organize areas, credited to itself [decision: agents-are-never-handcuffed].
+  if(!getSessionById(actor.sessionId))throw new AreaError('Unknown session.',404,'AREA_FORBIDDEN');
   const verb=String(body?.verb??'');
   if(verb==='list'){
     const query=optional(body?.query,200),limit=Math.max(1,Math.min(50,Number(body?.limit)||20));

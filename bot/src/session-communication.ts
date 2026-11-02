@@ -5,7 +5,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
@@ -629,8 +629,9 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /**
-     * Place an accepted capture into the thread it answers, or take it back out. The Inbox
-     * agent decides this: it asked the question and knows whether the recording answers it.
+     * Place an accepted Inbox message into the thread it answers, or take it back out. Any agent
+     * may: the Inbox router, or a worker that knows a message belongs to its thread
+     * [decision: agents-are-never-handcuffed].
      * The capture keeps its own retained bytes; this records where it belongs, and the
      * latest record wins, so a wrong merge is undone by detaching rather than by rewriting
      * history (Tejas, 2026-09-20: a dictated answer opened its own request row).
@@ -643,18 +644,19 @@ export class SessionCommunicationCoordinator {
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
             this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
-            const session=getSessionById(actor.session)!;
-            if(!sessionMetadata(session).inbox)throw new Error('Only the Inbox threads its own captures.');
+            const own=getSessionById(actor.session)!,session=sessionMetadata(own).inbox?own:inboxSession();
+            if(!session)throw new Error('No Inbox session exists yet.');
+            const router=session.id===own.id;
             const target=getAcceptedSessionInput(input.input_id);
-            if(!target||target.session_id!==session.id||!routableMessage(target))throw new Error('Thread placement needs one of this Inbox\'s accepted human or marked test inputs.');
+            if(!target||target.session_id!==session.id)throw new Error('Thread placement needs an accepted message in the Inbox.');
             const root=detach?null:inboxThreadRoot(session.id,input.thread!);
             if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
-            if(root===target.id)throw new Error('A capture cannot continue its own thread.');
-            const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,kind:'action',origin:'agent',
+            if(root===target.id)throw new Error('A message cannot continue its own thread.');
+            const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,kind:'action',origin:'agent',
                 payload:{kind:'thread-link',inputId:target.id,...(detach?{detach:true}:{thread:input.thread})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const receipt={inputId:target.id,attached:!detach,...(detach?{}:{thread:input.thread,root})};
             if(saved.duplicate)return {threadLink:receipt,duplicate:true};
-            recordSessionEvent({eventId:`thread-link:${saved.input.id}`,sessionId:session.id,inputId:target.id,turnId:actor.turn,kind:'thread_link',
+            recordSessionEvent({eventId:`thread-link:${saved.input.id}`,sessionId:session.id,inputId:target.id,...(router?{turnId:actor.turn}:{}),kind:'thread_link',
                 payload:{...receipt,routedBy:{kind:'agent',sessionId:`concierge:${actor.session}`,inputId:sourceInputId,runId:nativeRunId(actor.turn)}}});
             // Which thread a message belongs to just changed; topic membership is resolved from it.
             invalidateTopicRoots();
@@ -684,8 +686,11 @@ export class SessionCommunicationCoordinator {
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
             this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
-            const session=getSessionById(actor.session)!;
-            if(!sessionMetadata(session).inbox)throw new Error('Only the Inbox accepts posts: this session shows its provider transcript, which a post never enters.');
+            // Any agent may post into an Inbox thread, credited to itself; posts live in the Inbox's
+            // ledger-backed history [decision: agents-are-never-handcuffed].
+            const own=getSessionById(actor.session)!,session=sessionMetadata(own).inbox?own:inboxSession();
+            if(!session)throw new Error('No Inbox session exists yet.');
+            const router=session.id===own.id;
             // The owner, not the caller, decides which thread this belongs to. A reply to any
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
@@ -698,18 +703,18 @@ export class SessionCommunicationCoordinator {
             const attachments=carried.length||input.attachments?.length
                 ?this.retainAttachments(sourceInputId,input.action_id,'post-file',input)
                 :[];
-            const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
+            const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
                     ...(input.topic?{topic:input.topic}:{}),...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
             const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
-            recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,turnId:actor.turn,kind:'post',
-                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(attachments.length?{attachments}:{})}});
+            recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
+                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
             if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text);
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
-            const topic=input.keep_working?null:releaseFocusForPost(session,rootInputId,input.topic??null);
+            const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
@@ -815,13 +820,13 @@ export class SessionCommunicationCoordinator {
             });
         }
     }
-    async note(input:{source:CommunicationSource;action_id:string;captureId?:string;inputId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
+    async note(input:{source:CommunicationSource;action_id:string;captureId?:string;messageId?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
-        return this.dependencies.owner.saveInboxNote({sourceInputId,sourceRunId:nativeRunId(actor.turn),sourceSessionId:actor.session,actionId:input.action_id,...(typeof input.summary==='string'?{summary:input.summary}:{}),...(typeof input.addTo==='string'?{addTo:input.addTo}:{}),...(typeof input.person==='string'?{person:input.person}:{}),...(input.journal==='entry'||input.journal==='checkin'?{journal:input.journal}:{}),...(typeof input.inputId==='string'?{inputId:input.inputId}:{captureId:input.captureId})});
+        return this.dependencies.owner.saveInboxNote({sourceInputId,sourceRunId:nativeRunId(actor.turn),sourceSessionId:actor.session,actionId:input.action_id,...(typeof input.summary==='string'?{summary:input.summary}:{}),...(typeof input.addTo==='string'?{addTo:input.addTo}:{}),...(typeof input.person==='string'?{person:input.person}:{}),...(input.journal==='entry'||input.journal==='checkin'?{journal:input.journal}:{}),...(typeof input.messageId==='string'?{messageId:input.messageId}:{captureId:input.captureId})});
     }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
@@ -1098,13 +1103,11 @@ export class SessionCommunicationCoordinator {
         if(input.routeMessageId!==undefined){
             if(input.provider||!input.address||input.saved||input.after?.length||input.consult||input.thread||input.return_to_requester)
                 throw new Error('Routing one message to a session needs one exact existing address, without a second thread or request destination.');
-            const owner=getSessionById(actor.session);
+            // Any agent may route any accepted Inbox message [decision: agents-are-never-handcuffed].
             const source=getAcceptedSessionInput(input.routeMessageId);
-            if(!owner||!sessionMetadata(owner).inbox||!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
-                throw new Error('The routed message must be an accepted input in this Inbox.');
+            if(!source||!sessionMetadata(getSessionById(source.session_id)!).inbox)
+                throw new Error('The routed message must be an accepted input in the Inbox.');
             const body=JSON.parse(source.payload_json);
-            if(!routableMessage(source))
-                throw new Error('Only Tejas’s exact message or a marked agent test message can be routed.');
             const root=inboxThreadRoot(source.session_id,source.id);
             const topicId=root?topicOfRoot(root):null;
             if(!root||!topicId)throw new Error('The source message must already belong to an Inbox thread.');
