@@ -1587,6 +1587,15 @@ export class SessionCommunicationCoordinator {
             dropAnswerMark('--answers-question was ignored: a final reply already answers the request. Your reply was recorded.');
         else if(input.answers_question&&!input.text.trim())
             dropAnswerMark('--answers-question was ignored because the reply has no words. It was recorded as ordinary progress.');
+        // His phone rings for a question only he can answer (needs_decision files its own alert) or
+        // once for a finished result that was checked live; progress, corrections and partial updates
+        // never ring, whatever an agent or its instructions ask (Tejas, 2026-11-02: "Why can't it wait
+        // until everything is deployed and tested and then let me know?", after one agent sent 14
+        // partial-update alerts in two hours). The flag is dropped, never the reply.
+        if(input.notify&&!(input.final&&input.workDisposition==='completed'&&typeof input.checked==='string'&&input.checked.trim())){
+            input={...input,notify:false};
+            answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
+        }
         const noted=<T extends object>(receipt:T):T=>answerNotice?{...receipt,notice:answerNotice}:receipt;
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
         // confirmation if it was sent? Just let me know if it was not sent")
