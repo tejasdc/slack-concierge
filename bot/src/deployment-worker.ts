@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   adoptRewrittenDesiredCommit,
+  automaticDeploymentStartsAtMs,
   beginDeploymentRepair,
   claimDeploymentTurnReaction,
   claimDeploymentNotice,
@@ -181,6 +182,8 @@ export async function reconcileDeploymentWork(input: {
   recoveredNotices: number;
   recoveredReactions: number;
   automaticDeploymentPrepared: boolean;
+  /** A pending update is waiting for main to go quiet until this instant; wake the worker then. */
+  settlesAtMs: number | null;
   launched: number;
   repairsLaunched: number;
   reactionsStarted: number;
@@ -191,10 +194,15 @@ export async function reconcileDeploymentWork(input: {
   const supersededRepairs = retireSupersededDeploymentRepairs(input.isOwnerAlive);
   if (supersededRepairs) log("info", "deployment_repairs_superseded", { count: supersededRepairs });
   let automaticDeploymentPrepared = false;
+  let settlesAtMs: number | null = null;
   if (!input.shouldStop()) {
     try {
       const desired = await installableDesiredCommit();
-      if (desired) {
+      const startsAtMs = automaticDeploymentStartsAtMs();
+      if (desired && !getActiveDeploymentRun() && desired !== getLastKnownGoodRelease()?.git_commit
+        && startsAtMs !== null && startsAtMs > Date.now()) {
+        settlesAtMs = startsAtMs;
+      } else if (desired) {
         const automatic = requestAutomaticDeployment(desired, "concierge");
         automaticDeploymentPrepared = automatic.reason === "prepared";
       }
@@ -286,7 +294,8 @@ export async function reconcileDeploymentWork(input: {
         text: `Concierge update run ${latest.id} ended ${latest.status} without an autonomous repair owner. `
           + `Inspect its retained deployment failure and repair through the existing deployment owner. `
           + `Tell Tejas only if the remaining action truly requires him.` });
-    } else if (Date.now() - sqlTimeMs(desired.observed_at) >= 15 * 60_000 && (!latest || latest.status === "succeeded")) {
+    } else if (Date.now() - (automaticDeploymentStartsAtMs() ?? sqlTimeMs(desired.observed_at)) >= 15 * 60_000
+      && (!latest || latest.status === "succeeded")) {
       recordRepairNotice(db, { key: `deployment-never-started:${desired.desired_commit}`, kind: "deployment_parked",
         text: `Concierge desired update ${desired.desired_commit} has not started within fifteen minutes, `
           + `and no deployment or repair owns it. Inspect the signed push intake and deployment wake, `
@@ -397,6 +406,7 @@ export async function reconcileDeploymentWork(input: {
     recoveredNotices,
     recoveredReactions,
     automaticDeploymentPrepared,
+    settlesAtMs,
     launched,
     repairsLaunched,
     reactionsStarted,

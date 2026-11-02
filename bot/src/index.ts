@@ -3654,7 +3654,7 @@ async function launchDeploymentRepair(incidentId: string) {
 }
 
 const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
-type DeploymentWorkReason = "startup" | "github-push" | "turn-settled" | "state-change";
+type DeploymentWorkReason = "startup" | "github-push" | "turn-settled" | "state-change" | "settled";
 const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
   shouldStop: () => draining,
   run: async (reason) => {
@@ -3678,11 +3678,29 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
         || result.reactionsStarted) {
         log("info", "deployment_work_reconciled", { reason, ...result });
       }
+      armDeploymentSettleWake(result.settlesAtMs);
     } catch (error) {
       log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
     }
   },
 });
+
+// A pending update that waits for main to go quiet has nobody else to wake it when the quiet
+// arrives: no push, and possibly no turn settling. One timer per deadline is that wake.
+let deploymentSettleWake: { atMs: number; timer: ReturnType<typeof setTimeout> } | null = null;
+function armDeploymentSettleWake(atMs: number | null) {
+  if (deploymentSettleWake?.atMs === atMs) return;
+  if (deploymentSettleWake) clearTimeout(deploymentSettleWake.timer);
+  deploymentSettleWake = null;
+  if (atMs === null) return;
+  log("info", "deployment_settling", { starts_at: new Date(atMs).toISOString() });
+  const timer = setTimeout(() => {
+    deploymentSettleWake = null;
+    scheduleDeploymentWork("settled");
+  }, Math.max(0, atMs - Date.now()) + 1_000);
+  timer.unref?.();
+  deploymentSettleWake = { atMs, timer };
+}
 
 function scheduleDeploymentWork(reason: DeploymentWorkReason) {
   if (!runtime.ownership.deployment || !serviceOnline || draining) return;

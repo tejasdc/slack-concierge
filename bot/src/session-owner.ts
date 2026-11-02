@@ -32,7 +32,7 @@ import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
 import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateSummary} from './release-history';
-import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
+import {automaticDeploymentStartsAtMs,getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
@@ -1614,7 +1614,9 @@ export class SessionOwner {
     ].filter(Boolean));
     if(!installed.size||installed.has(desired))return null;
     const observed=iso(desiredState.observed_at);
-    if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
+    // A pending update deliberately waits for main to go quiet; it is late only after it may start.
+    const startsAtMs=automaticDeploymentStartsAtMs(target)??Date.parse(observed??'');
+    if(!observed||!Number.isFinite(startsAtMs)||Date.now()-startsAtMs<NEVER_STARTED_MS)return null;
     const holds=await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
     return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
       tries:0,since:observed,failedAt:null,repair:null,stopped:null};
