@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringMayHaveReachedProvider,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -737,6 +737,22 @@ export class SessionExecutionHost {
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
     return prompt;
   }
+  private pullWaitingInputs(sessionId:number) {
+    try {
+      const session=getSessionById(sessionId);
+      // The Inbox keeps its own queue rules (focus hold, captures waiting in order).
+      if(!session||sessionMetadata(session).inbox||sessionMetadata(session).interactionPolicy==='consultation-only')return;
+      // Hand-offs this takeover found never sent may not have returned to the queue yet.
+      const unsent=db.query(`SELECT input.id FROM session_inputs input JOIN turn_steering_messages steering ON steering.id=input.steering_id
+        WHERE input.session_id=? AND steering.status='failed' AND steering.provider_sent_at IS NULL`).all(sessionId) as {id:string}[];
+      for(const row of unsent)recoverUnsentSteeredInput(row.id);
+      const waiting=releaseWaitingInputs(sessionId);
+      for(const one of waiting)if(!this.steer(one))enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
+      if(waiting.length)log('info','waiting_inputs_joined_adopted_run',{session_id:sessionId,count:waiting.length});
+    } catch(error) {
+      log('warn','waiting_inputs_join_failed',{session_id:sessionId,...errorFields(error)});
+    }
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -762,10 +778,10 @@ export class SessionExecutionHost {
         const input=one,body=JSON.parse(one.payload_json);
         if(!sameCanvasSpeechTurn(input,target.turnId))return false;
         // Re-reading a retained return must not enqueue the same provider message
-        // again. Its first steering row owns the send state, even if a prior
-        // recovery detached the input's current placement.
+        // again. An attempt that may have reached the provider owns the send state, even if a
+        // prior recovery detached the input's current placement; a proven-unsent one does not.
         if(input.steering_id!==null)return true;
-        if(db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=?').get(input.id))return false;
+        if(steeringMayHaveReachedProvider(input.id))return false;
         const attached=attachSessionSteering(input.id,target.turnId);
         const steeringId=attached.steering_id!;
         // A follow-up's delivery changes mid-turn with no other owner event on it, so each
@@ -973,6 +989,12 @@ export class SessionExecutionHost {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable();
+          // A run taken back after a restart takes messages again only once its history is rebuilt;
+          // what the restart returned to the queue meanwhile goes into it then.
+          if(adoption&&prepared.onSteeringReady){
+            const ready=prepared.onSteeringReady;
+            prepared={...prepared,onSteeringReady:sender=>{ready(sender);queueMicrotask(()=>this.pullWaitingInputs(session.id));}};
+          }
           let actual=prepared;
           // New Codex turns always use the shared daemon. Retain the old host path only
           // to finish an execution recorded before this change.

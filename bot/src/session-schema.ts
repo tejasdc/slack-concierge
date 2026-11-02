@@ -174,7 +174,13 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS turns_session_queued ON turns(session_id,id DESC) WHERE status='queued';
         CREATE INDEX IF NOT EXISTS turns_session_started ON turns(session_id,id DESC) WHERE status<>'queued' AND started_at IS NOT NULL;
         CREATE INDEX IF NOT EXISTS turns_session_provider_turn ON turns(session_id,provider_turn_id) WHERE provider_turn_id IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS steering_accepted_input ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
+        -- At most one hand-off per message that could have reached the provider; failed, never-sent
+        -- attempts stay as history and do not block the next one (the rule in session-inputs.ts,
+        -- steeringMayHaveReachedProvider; 2026-11-02 incident). The lookup index serves every attempt.
+        DROP INDEX IF EXISTS steering_accepted_input;
+        CREATE UNIQUE INDEX IF NOT EXISTS steering_accepted_input_live ON turn_steering_messages(accepted_input_id)
+          WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
+        CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_turn ON session_inputs(turn_id);
         CREATE INDEX IF NOT EXISTS session_inputs_surface_recovery ON session_inputs(scope)

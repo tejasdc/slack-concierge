@@ -186,7 +186,17 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   }
   if(input.origin==='agent')Object.assign(author,sourceIdentity(input.source_input_id,input.source_run_id));
   const request=db.query('SELECT * FROM session_communication_requests WHERE target_input_id=? AND target_session_id=? AND request_id=?').get(input.id,input.session_id,input.request_id) as any;
-  if(request){author.communication='request';return {author,text:JSON.parse(request.payload_json).text};}
+  if(request){
+    const payload=JSON.parse(request.payload_json);
+    // His reply in a thread, carried to the agent working on it, is his words: the Inbox only
+    // delivered it. With no sending session it read "Unknown agent · Request" (2026-11-02).
+    const own=payload.forwardedReply&&request.source_input_id?getAcceptedSessionInput(request.source_input_id):null;
+    if(own?.origin==='human'){
+      const door=doorOf(own);
+      return {author:{kind:'human',via:door?`${door}, reply in a thread`:'reply in a thread',requestId:request.request_id},text:payload.text};
+    }
+    author.communication='request';return {author,text:payload.text};
+  }
   // A request another instance delivered: the same sender, request and message a local one shows.
   const delivery=db.query('SELECT * FROM session_peer_deliveries WHERE target_input_id=? AND target_session_id=?').get(input.id,input.session_id) as any;
   if(delivery){
