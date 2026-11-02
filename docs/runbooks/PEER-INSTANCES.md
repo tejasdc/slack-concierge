@@ -384,10 +384,12 @@ it stops. The listener accepts only a matching stop and ignores an update older 
 accepted helper timestamp. If the helper exits or sleeps, the lease expires and publishes the
 inactive state automatically. No audio or recognized words enter this state.
 
-An allowed browser origin reads the current `{version, revision, active, captureId}` at
+An allowed browser origin reads the current `{version, revision, active, captureId, expiresAt}` at
 `GET /capture/v1/status` or subscribes at `GET /capture/v1/events`. The event stream sends the
-current state immediately, sends only state changes after that, and sends the current state again
-after reconnect. Both browser routes retain the speech listener's existing origin and private
+current state immediately, sends a new revision when a heartbeat extends the lease or capture
+changes, and sends the current state again after reconnect. `expiresAt` is the helper's epoch
+millisecond deadline while active and `null` while inactive, so a page can fail closed even if its
+event stream disconnects. Both browser routes retain the speech listener's existing origin and private
 network CORS checks; the native write remains loopback-only because the listener itself binds only
 to `127.0.0.1` or `localhost`.
 

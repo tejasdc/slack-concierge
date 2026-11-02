@@ -3,6 +3,7 @@ export type LocalCaptureSnapshot = {
   revision: number;
   active: boolean;
   captureId: string | null;
+  expiresAt: number | null;
 };
 
 type CaptureUpdate = { active: boolean; captureId: string; leaseMs: number; sentAt: number };
@@ -27,7 +28,13 @@ export class LocalCaptureState {
 
   snapshot(): LocalCaptureSnapshot {
     this.expireIfNeeded();
-    return { version: 1, revision: this.revision, active: this.active, captureId: this.active ? this.captureId : null };
+    return {
+      version: 1,
+      revision: this.revision,
+      active: this.active,
+      captureId: this.active ? this.captureId : null,
+      expiresAt: this.active ? this.expiresAt : null,
+    };
   }
 
   update(input: CaptureUpdate): { accepted: boolean; state: LocalCaptureSnapshot } {
@@ -39,12 +46,14 @@ export class LocalCaptureState {
     if (input.sentAt < this.lastSentAt || (input.sentAt === this.lastSentAt && !this.active && input.active)) return { accepted: false, state: this.snapshot() };
     if (!input.active && (!this.active || this.captureId !== input.captureId)) return { accepted: false, state: this.snapshot() };
 
+    const nextExpiresAt = input.active ? input.sentAt + input.leaseMs : 0;
     const changed = this.active !== input.active || (input.active && this.captureId !== input.captureId);
+    const leaseChanged = input.active && this.expiresAt !== nextExpiresAt;
     this.lastSentAt = input.sentAt;
     if (input.active) {
       this.active = true;
       this.captureId = input.captureId;
-      this.expiresAt = input.sentAt + input.leaseMs;
+      this.expiresAt = nextExpiresAt;
       this.scheduleExpiry();
     } else {
       this.active = false;
@@ -52,7 +61,7 @@ export class LocalCaptureState {
       this.expiresAt = 0;
       this.clearExpiry();
     }
-    if (changed) this.publish();
+    if (changed || leaseChanged) this.publish();
     return { accepted: true, state: this.snapshot() };
   }
 
