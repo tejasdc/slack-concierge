@@ -6,7 +6,7 @@ import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNot
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
-import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
@@ -2277,22 +2277,34 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   return post;
 }
 /**
- * An agent working on an Inbox thread that ends its turn waiting on him is a decision in that
- * thread, with the thread's blocking notification. Its own needs_you cannot reach him: thnkr.ing
- * leaves a turn the Inbox started to the Inbox, and nothing carried it there, so the Uber Eats
- * agent's "send a photo of the biryani" on 2026-11-02 reached no device (its failed reply had
- * filed only a reading item). The question is posted as the agent's words in the thread it was
- * last sent work for, then filed exactly as a needs_decision reply is.
+ * An agent working on an Inbox thread that is waiting on him is one decision in that thread, with
+ * the thread's blocking notification, whichever way it said so. Its own needs_you cannot reach him:
+ * thnkr.ing leaves a turn the Inbox started to the Inbox, and nothing carried it there, so the Uber
+ * Eats agent's "send a photo of the biryani" on 2026-11-02 reached no device (its failed reply had
+ * filed only a reading item). The thread is the one his originating message belongs to: the turn's
+ * own provenance, never merely the last thread this session served, so a session he started himself
+ * keeps its own notification. The question is posted as the agent's words there and filed exactly
+ * as a needs_decision reply is; one worker has at most one open decision per thread, so a reply and
+ * an outcome saying the same thing ring once.
  */
-export function fileWorkerNeedInThread(input:{respondingSessionId:number;eventId:string;text:string}):string|null {
-  const request=db.query(`SELECT request.request_id,request.source_session_id,request.thread_root_input_id FROM session_communication_requests request
-    WHERE request.target_session_id=? AND request.thread_root_input_id IS NOT NULL ORDER BY request.created_at_ms DESC LIMIT 1`)
-    .get(input.respondingSessionId) as {request_id:string;source_session_id:number;thread_root_input_id:string}|null;
+export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;eventId:string;text:string}):string|null {
+  const turnInput=getAcceptedSessionInput(input.turnInputId);
+  const human=turnInput?sessionInputProvenance(turnInput)?.originatingHuman:null;
+  const askedIn=human?conciergeSessionNumber(human.sessionId):null;
+  const inbox=askedIn!==null?getSessionById(askedIn):null;
+  if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
+  // The request carrying his originating message's thread, else the latest thread this Inbox sent this worker.
+  const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
+      WHERE target_session_id=? AND source_session_id=? AND thread_root_input_id IS NOT NULL
+      ORDER BY (thread_root_input_id=?) DESC,created_at_ms DESC LIMIT 1`)
+    .get(input.respondingSessionId,inbox.id,human.inputId)) as {request_id:string;thread_root_input_id:string}|null;
   if(!request)return null;
-  const inbox=getSessionById(request.source_session_id);
-  if(!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
   const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
+  refreshRootMemo();
+  const topicId=topicOfRoot(root);
+  if(!topicId)return null;
   const respondingSessionId=`concierge:${input.respondingSessionId}`;
+  if(workerHasOpenDecision(topicId,respondingSessionId))return null;
   const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:request.request_id,root,
     inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
   if(!post)return null;
@@ -2300,6 +2312,8 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;eventId
     respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text});
   return post;
 }
+const workerHasOpenDecision=(topicId:string,respondingSessionId:string)=>topicQuestions(topicId)
+  .some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId);
 
 /** Close completed topic requests whose retained answer was originally filed under another root. */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
@@ -2461,7 +2475,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
       :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
-    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision))){
+    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
+      ||question.kind==='decision'&&question.owner?.sessionId===answer.respondingSessionId)){
       if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true);
       return;
     }
