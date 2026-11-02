@@ -446,7 +446,7 @@ export class SessionPeers {
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
     machineNeed?:MachineNeed;
-    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;returnToRequester?:boolean;
+    requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
@@ -493,7 +493,7 @@ export class SessionPeers {
         payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
           ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
         sourceInputId:actor.inputId,sourceRunId:runId,requestId:id}).input;
-      recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId)}});
+      recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),...(input.threadRoot?{threadSourceMessageId:input.threadSourceMessageId}:{})}});
       if(input.routedFrom)recordSessionMessageRoute({sourceMessageId:input.routedFrom.messageId,
         destinationSessionId:this.presentedSession(input.peer,accepted.sessionId),destinationMessageId:`request:${id}`,requestId:id,
         actor:{sessionId:actor.session,turnId:actor.turn,inputId:actor.inputId,runId}});

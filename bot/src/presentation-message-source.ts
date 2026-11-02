@@ -40,7 +40,15 @@ export function inboxRootResolver(db:Database) {
       WHERE event.session_id=? AND event.event_id=? AND event.kind IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
       ??db.query(`SELECT event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
       WHERE event.session_id=? AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
-    if(row?.kind==='request'||row?.kind==='topic_route'){memo.set(cacheKey,row.event_id);return row.event_id;}
+    if(row?.kind==='request'){
+      const requestId=JSON.parse(row.payload_json).requestId;
+      const request=(typeof requestId==='string'?(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)
+        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)):null) as {thread_root_input_id:string|null}|null;
+      const linked=typeof requestId==='string'?inboxRequestRoot(db,requestId,request?.thread_root_input_id??null):null;
+      if(linked&&linked!==row.event_id){memo.set(cacheKey,linked);return linked;}
+      memo.set(cacheKey,row.event_id);return row.event_id;
+    }
+    if(row?.kind==='topic_route'){memo.set(cacheKey,row.event_id);return row.event_id;}
     if(!row?.input_id){memo.set(cacheKey,row?.input_id??null);return row?.input_id??null;}
     const inputId=row.input_id;
     if(row.kind==='post'){

@@ -8,6 +8,7 @@ import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageRouteReceipts} from './message-route-receipts';
+import {authorSessionOf} from './session-presence';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -126,7 +127,7 @@ export function inboxMessage(row:any) {
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const eventPayload=JSON.parse(row.payload_json);
-  const displayedRoot=post?inboxThreadRoot(row.session_id,row.event_id)??row.input_id:row.input_id;
+  const displayedRoot=post||request?inboxThreadRoot(row.session_id,row.event_id)??row.input_id:row.input_id;
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   // An agent message carries its own files: a post names them, and a result names them when
   // the retained result payload does. A human capture or a returned answer carries the
@@ -147,16 +148,29 @@ export function inboxMessage(row:any) {
   const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
   const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
+  const requestRow=request?(db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(eventPayload.requestId)
+    ??db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=?').get(eventPayload.requestId)) as {payload_json:string}|null:null;
+  const requestPayload=requestRow?JSON.parse(requestRow.payload_json):null;
+  const requestSummary=typeof requestPayload?.summary==='string'?requestPayload.summary.trim():'';
+  const requestWords=typeof requestPayload?.text==='string'?requestPayload.text:payload.text??'';
+  const sourceMessage=typeof eventPayload.threadSourceMessageId==='string'?getAcceptedSessionInput(eventPayload.threadSourceMessageId):null;
+  const retainedSource=sourceMessage?.origin==='human'?JSON.parse(sourceMessage.payload_json):null;
+  const sourcePayload=retainedSource?.firstInput??retainedSource;
+  const sourceWords=typeof sourcePayload?.text==='string'?sourcePayload.text:'';
+  const recipient=typeof eventPayload.targetSessionId==='string'?authorSessionOf(db,eventPayload.targetSessionId):null;
+  const requestContent=[recipient?`For ${recipient.title??recipient.agentName??'the working agent'}`:'',requestSummary,sourceWords.trim()&&!requestWords.includes(sourceWords)?`Tejas wrote:\n${sourceWords}`:'',requestWords]
+    .filter(Boolean).join('\n\n');
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),
     ...(typeof closingLine==='string'?{closingLine}:{}),
     ...(post&&eventPayload.answersQuestion===true?{answersQuestion:true}:{}),
-    content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
+    content:post?eventPayload.text??'':request?requestContent:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:request?row.event_id:displayedRoot}:{}),
     // A post is the router's unless the service itself wrote it (a notice's "running again").
     ...(!agent&&typeof outsideAgent==='string'?{author:{kind:'agent' as const,outsideAgent:{name:outsideAgent,label:`Outside agent · ${outsideAgent}`}}}:{}),
-    ...(request?{author:{kind:'agent' as const,communication:'request' as const,requestId:eventPayload.requestId}}:{}),
+    ...(request?{author:{kind:'agent' as const,session:authorSessionOf(db,`concierge:${row.session_id}`),communication:'request' as const,requestId:eventPayload.requestId},
+      ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
       ...(typeof eventPayload.requestId==='string'?{requestId:eventPayload.requestId}:{}),
@@ -204,7 +218,17 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
   const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
-  if(row?.kind==='request'||row?.kind==='topic_route')return row.event_id;
+  if(row?.kind==='request'){
+    const requestId=JSON.parse(row.payload_json).requestId;
+    if(typeof requestId==='string'){
+      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)
+        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)) as {thread_root_input_id:string|null}|null;
+      const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
+      if(linked&&linked!==row.event_id)return linked;
+    }
+    return row.event_id;
+  }
+  if(row?.kind==='topic_route')return row.event_id;
   if(!row?.input_id)return row?.input_id??null;
   if(row.kind==='post'){
     const post=JSON.parse(row.payload_json);
