@@ -52,7 +52,9 @@ func makeTranscriber() -> SpeechTranscriber {
 // fast option uses "a smaller context window" for "faster but also less accurate results", so it
 // never produces a final segment or the finished text. Measured on this Mac, November 1, 2026:
 // alone, the accurate transcriber reports every ~4 s (volatile reporting added nothing), while
-// this one shows a phrase ~1 s before it would become final.
+// this one shows a spoken phrase ~1.2 s after it starts. DictationTranscriber's
+// progressiveShortDictation showed a first word at 0.6 s but whole commands at most 0.2 s sooner,
+// and its long utterance ranges kept already-final words in the partial, repeating commands.
 func makeQuickTranscriber() -> SpeechTranscriber {
     SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults, .fastResults], attributeOptions: [])
 }
@@ -171,6 +173,11 @@ final class LiveStream {
     let analyzer: SpeechAnalyzer
     let continuation: AsyncStream<AnalyzerInput>.Continuation
     let collector: Task<String, Error>
+    // The quick transcriber has its own analyzer. In one analyzer with the accurate transcriber,
+    // both reported at one pace chosen per recording, and about half the time it was the slow
+    // one (~4 s); alone it reported every ~1 s in 6 of 6 runs (November 1, 2026).
+    let quickAnalyzer: SpeechAnalyzer
+    let quickContinuation: AsyncStream<AnalyzerInput>.Continuation
     let lookahead: Task<Void, Never>
     let segments: LiveSegments
     var frames: AVAudioFrameCount = 0
@@ -179,7 +186,8 @@ final class LiveStream {
 
     init(_ transcriber: SpeechTranscriber, quick: SpeechTranscriber) async throws {
         self.transcriber = transcriber
-        analyzer = SpeechAnalyzer(modules: [transcriber, quick])
+        analyzer = SpeechAnalyzer(modules: [transcriber])
+        quickAnalyzer = SpeechAnalyzer(modules: [quick])
         let segments = LiveSegments()
         self.segments = segments
         collector = Task { @MainActor in
@@ -200,7 +208,22 @@ final class LiveStream {
         }
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.continuation = continuation
+        let (quickStream, quickContinuation) = AsyncStream<AnalyzerInput>.makeStream()
+        self.quickContinuation = quickContinuation
         try await analyzer.start(inputSequence: stream)
+        do { try await quickAnalyzer.start(inputSequence: quickStream) } catch { quickContinuation.finish() }
+    }
+
+    func feed(_ slice: AVAudioPCMBuffer) {
+        continuation.yield(AnalyzerInput(buffer: slice))
+        quickContinuation.yield(AnalyzerInput(buffer: slice))
+    }
+
+    // Its words are never final, so it is stopped rather than finalized.
+    func stopQuick() async {
+        quickContinuation.finish()
+        await quickAnalyzer.cancelAndFinishNow()
+        lookahead.cancel()
     }
 }
 var live: [String: LiveStream] = [:]
@@ -220,7 +243,7 @@ func errorCode(_ error: Error) -> String {
             let piece = try convert(try samples(fromBase64: payload))
             stream.frames += piece.frameLength
             stream.pieces += 1
-            for slice in slices(piece) { stream.continuation.yield(AnalyzerInput(buffer: slice)) }
+            for slice in slices(piece) { stream.feed(slice) }
         } catch { stream.failure = errorCode(error) }
     case "drain":
         let parts = (payload ?? "").split(separator: "\t", omittingEmptySubsequences: false)
@@ -233,6 +256,7 @@ func errorCode(_ error: Error) -> String {
         guard let stream = live.removeValue(forKey: id) else { emit(["id": id, "error": "UNKNOWN_STREAM"]); return }
         let began = Date()
         stream.continuation.finish()
+        await stream.stopQuick()
         do {
             if let failure = stream.failure { throw NSError(domain: "apple-speech", code: 5, userInfo: [NSLocalizedDescriptionKey: failure]) }
             try await stream.analyzer.finalizeAndFinishThroughEndOfInput()
@@ -246,7 +270,7 @@ func errorCode(_ error: Error) -> String {
         stream.continuation.finish()
         await stream.analyzer.cancelAndFinishNow()
         stream.collector.cancel()
-        stream.lookahead.cancel()
+        await stream.stopQuick()
     default:
         emit(["id": id, "error": "UNKNOWN_COMMAND"])
     }
