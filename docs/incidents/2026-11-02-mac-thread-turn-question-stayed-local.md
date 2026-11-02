@@ -24,7 +24,7 @@ owns the Inbox thread and its alert.
 The Mac retains the declared question beside the exact peer request and forwards it through
 the existing peer reply channel. The server checks that the request came from an Inbox thread
 and files the question there with the existing once-per-ask decision rule. The event identity
-survives retry and the retained peer status allows recovery after a missed push.
+survives retry, and an unacknowledged question stays pending across bounded retry windows.
 
 ## Acceptance scenario
 

@@ -1324,9 +1324,12 @@ export class SessionPeers {
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
+      const turnNeed=JSON.parse(reply.payload_json).turnOutcome==='needs_you';
       try {
         const answer=await withRetry({operation:'peer-reply',key:reply.event_id,policy:RETRY_POLICIES.peerReply,
-          startedAtMs:reply.created_at_ms,
+          // A final reply may already have closed the origin's request, so it will not poll
+          // this status again. Keep a turn question eligible for later bounded retry windows.
+          startedAtMs:turnNeed?this.now():reply.created_at_ms,
           run:async()=>{
             const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
             if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused'].includes(response.recorded??''))
@@ -1350,6 +1353,10 @@ export class SessionPeers {
         log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
       } catch(error) {
         this.note(row.peer,error);
+        if(turnNeed){
+          log('warn','session_peer_turn_need_retry_later',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,...errorFields(error)});
+          continue;
+        }
         const deadline=error instanceof RetryBudgetExhaustedError&&error.reason==='deadline';
         const status=deadline?'failed_deadline':'failed_budget';
         db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(status,error instanceof Error?error.message:String(error),reply.event_id);

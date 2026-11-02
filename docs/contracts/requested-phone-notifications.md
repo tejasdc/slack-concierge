@@ -60,7 +60,7 @@ are one ask and ring once; a later run's ask keeps its own question. A Mac worke
 outcome with the exact peer request and forwards it through the existing durable reply channel, even
 when a final reply already closed the request. The server checks that request's Inbox origin and thread,
 then posts and files the decision there. The same event ID makes a repeated send harmless; an offline
-Mac keeps the event until the peer reports it, and the server can recover it from the retained peer status.
+Mac keeps the event pending and retries later until the server acknowledges it.
 
 ### No automatic reminders
 
