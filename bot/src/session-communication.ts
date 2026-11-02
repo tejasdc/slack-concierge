@@ -1986,6 +1986,11 @@ export class SessionCommunicationCoordinator {
         if (this.heldPrerequisite(request, dependencies))
             return;
         let routed = this.binding(request);
+        // A request that waited behind others starts its reminder clock when it is handed over,
+        // not when it was asked, so its agent gets the same time as any other request.
+        if(!routed&&(payload.after.length||payload.pace?.length))
+            db.query('UPDATE session_communication_requests SET due_at_ms=max(due_at_ms,?) WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
+                .run(this.now()+STILL_WAITING_AFTER_MS, request.request_id);
         if(routed?.status==='failed') {
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
             return;
@@ -2323,6 +2328,17 @@ export class SessionCommunicationCoordinator {
     private inspectOverdueRequest(request: RequestRow) {
         const now = this.now();
             if (!request.source_input_id || !request.target_input_id) return;
+            // A request still queued behind earlier requests (--after-request or --after-settled
+            // that have not settled) has not been handed to its agent, so it cannot be late yet:
+            // look again later instead of telling the asker to inspect a recipient that has
+            // nothing. The nightly review got about ten such reminders for queued findings on
+            // 2026-11-02.
+            const queuedBehind=JSON.parse(request.payload_json) as {after?:string[];pace?:string[]};
+            if([...(queuedBehind.after??[]),...(queuedBehind.pace??[])].some(id=>!this.row(id).outcome)) {
+                db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
+                    .run(now + STILL_WAITING_AFTER_MS, request.request_id);
+                return;
+            }
             if(JSON.parse(request.payload_json).promptAnswer && request.prompt_answered_at_ms===null) {
                 const asker=getAcceptedSessionInput(request.source_input_id)?.origin==='agent'?'The marked agent test':'Tejas';
                 db.transaction(()=>{
