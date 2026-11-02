@@ -81,9 +81,11 @@ router-actions.sh sessions topics items <topicId> <source-flags> --kind question
 router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH [--part N]
 router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
-router-actions.sh sessions topics create <source-flags> --action-id A --title T --area <areaId> [--area <areaId> ...] [--summary S] [--root <inputId> ...] [--reason R]
+router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
 router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R]
+router-actions.sh sessions topics link <relatedTopicId> <source-flags> --action-id A --into <sourceTopicId> --reason R
+router-actions.sh sessions topics unlink <relatedTopicId> <source-flags> --action-id A --into <sourceTopicId> --reason R
 router-actions.sh sessions topics rename <topicId> <source-flags> --action-id A --reason R -- <title>
 router-actions.sh sessions topics summary <topicId> <source-flags> --action-id A -- <current fact, one line>
 router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id A --into <topicId> --reason R
@@ -184,10 +186,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","read","items","detail","resolve","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
-  "--into","--thread","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
+  "--into","--from","--thread","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -241,6 +243,8 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
   const copy = (flag: string, field: string) => { if (flags.has(flag)) body[field] = flags.get(flag); };
   copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
+  if(verb==='create'&&flags.has('--from'))body.parent_topic_id=flags.get('--from');
+  if((verb==='link'||verb==='unlink')&&flags.has('--into'))body.parent_topic_id=flags.get('--into');
   copy("--thread", "topic_id");
   copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");

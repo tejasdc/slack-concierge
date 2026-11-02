@@ -1,0 +1,7 @@
+# Linked Inbox topics
+
+The source event ledger records topic relationships. A topic route names its source topic. A topic created by an agent from a filed Inbox input records that input's topic at creation time; `topics create --from` can name it explicitly. A side thread inherits its parent's areas when none are specified, so the agent can create it in context. A standalone thread still needs an area. `topics link <child> --into <parent> --reason` connects an existing topic, and `topics unlink` ends that connection. The reason and actor stay on the owner event. These operations do not move messages or change the thread's own reply root.
+
+The presentation worker folds creation, route, link and unlink events in sequence into a derived parent-child table. The table is rebuilt from the canonical events and indexed by parent and child. The prepared overview returns complete `branches` and `parents` lists, each joined to current topic summaries, including closed topics. Repeated routes between the same pair appear once. The main topic list remains unchanged, so a linked topic is still an ordinary active topic.
+
+Agents browse and search with the existing `topics read` and `topics list --query` commands. `topics read` includes relations. The browser uses that read and the ordinary owner event stream; a branch is not guessed from text or title similarity. The separate thread-posting work owns visible requests and answers in the ordinary conversation.
