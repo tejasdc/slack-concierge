@@ -544,23 +544,31 @@ export function attachSessionSteering(inputId:string,turnId:number) {
  * answered (concierge:4081, 2026-10-08 23:42). A message he explicitly queued stays queued: that
  * was his choice of "after this work". Older pages and routes that wrote Queue without
  * a choice marker did not prove that choice. Saved work retains its chosen time.
+ *
+ * Only a message the run will actually take is released. `canJoin` is the caller's own
+ * admission rule for that run, asked before the waiting turn is withdrawn, so a message the run
+ * refuses keeps its queue place untouched. Withdrawing first and refusing afterwards put every
+ * refused message back in a new turn on every later send: a Canvas think-aloud run takes only
+ * speech from its own page, and twelve agent returns waiting behind it were cancelled and
+ * re-queued on each of his speech segments, ~170 ledger statements each, until a send cost 1 s
+ * of the owner's thread (docs/incidents/2026-11-02-think-aloud-send-requeued-every-waiting-return.md).
  */
-export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string):AcceptedSessionInput[] {
+export function releaseEarlierWaitingInputs(sessionId:number,laterInputId:string,canJoin:(input:AcceptedSessionInput)=>boolean=()=>true):AcceptedSessionInput[] {
   const later=getAcceptedSessionInput(laterInputId);
   if(!later)return [];
   const laterBody=JSON.parse(later.payload_json);
   if(laterBody.delivery==='queue'&&laterBody.queueChosen===true)return [];
-  return releaseWaiting(sessionId,laterInputId);
+  return releaseWaiting(sessionId,laterInputId,canJoin);
 }
 /**
  * The same messages, when a run taken back after a restart can accept messages again. A restart
  * discards the run's not-yet-sent hand-offs and returns them to the queue; without this they waited
  * for the next message to the session, or for the whole turn to end (2026-11-02).
  */
-export function releaseWaitingInputs(sessionId:number):AcceptedSessionInput[] {
-  return releaseWaiting(sessionId,null);
+export function releaseWaitingInputs(sessionId:number,canJoin:(input:AcceptedSessionInput)=>boolean=()=>true):AcceptedSessionInput[] {
+  return releaseWaiting(sessionId,null,canJoin);
 }
-function releaseWaiting(sessionId:number,laterInputId:string|null):AcceptedSessionInput[] {
+function releaseWaiting(sessionId:number,laterInputId:string|null,canJoin:(input:AcceptedSessionInput)=>boolean):AcceptedSessionInput[] {
   return db.transaction(()=>{
     const rows=db.query(`SELECT input.id AS id,turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
       WHERE input.session_id=? AND (? IS NULL OR input.id<>?) AND input.kind='input' AND input.steering_id IS NULL
@@ -579,12 +587,14 @@ function releaseWaiting(sessionId:number,laterInputId:string|null):AcceptedSessi
         AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id)
         AND (? IS NULL OR input.rowid<(SELECT rowid FROM session_inputs WHERE id=?))
       ORDER BY input.rowid`).all(sessionId,laterInputId,laterInputId,laterInputId,laterInputId) as {id:string;turn_id:number}[];
-    for(const row of rows) {
+    // Ask before withdrawing: a refused message keeps its queued turn and is not touched again.
+    const joining=rows.filter(row=>{const input=getAcceptedSessionInput(row.id);return !!input&&canJoin(input);});
+    for(const row of joining) {
       db.query("UPDATE turns SET accepted_input_id=NULL WHERE id=? AND status='queued'").run(row.turn_id);
       finishTurn(row.turn_id,'cancelled','Joined the running work with his next message.');
       db.query('UPDATE session_inputs SET turn_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?').run(row.id,row.turn_id);
     }
-    return rows.map(row=>getAcceptedSessionInput(row.id)!);
+    return joining.map(row=>getAcceptedSessionInput(row.id)!);
   })();
 }
 /** Withdraw a redundant service copy only while no provider can have received it. */
