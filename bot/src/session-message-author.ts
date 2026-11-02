@@ -5,7 +5,7 @@ import type {MessageAuthor} from './provider-history';
 import {peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
-import {FIXED_PRODUCER_DOORS,type InboxProducerKind} from './inbox-producer-sources';
+import {FIXED_PRODUCER_DOORS,readerCaptureVia,type InboxProducerKind} from './inbox-producer-sources';
 
 /** Who wrote a message, by the one author-session rule in session-presence.ts. */
 export function authorSession(id:number):MessageAuthor['session'] {
@@ -180,6 +180,7 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   if(input.scope===SERVICE_NOTICE_SCOPE)return {author:{kind:'service',communication:'notice'}};
   const author:MessageAuthor={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
   if(input.origin==='human'){const via=doorOf(input);if(via)author.via=via;}
+    else{const via=readerCaptureVia(JSON.parse(input.payload_json).capture?.source);if(via)author.via=via;}
   if(input.kind==='inbox-capture'){
     const quoted=JSON.parse(input.payload_json).capture?.source?.metadata?.quoted;
     if(quoted&&quoted.kind!=='human')author.quoted=quoted;

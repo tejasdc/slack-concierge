@@ -7,6 +7,7 @@ import {notificationRequest} from './session-notification-request';
 import {armThreadNotification} from './thread-notifications';
 import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 import {topicRouteAnchor} from './inbox-request-root';
+import {capturesEnterRouter} from './inbox-producer-sources';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -490,7 +491,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
         AND saved_kind IS NULL`).get(input.turn_id,input.session_id,input.id) as {id:number}|null;
       const capture=JSON.parse(input.payload_json).capture;
       if(!queued||!sessionMetadata(getSessionById(input.session_id)!).inbox
-        ||!(input.origin==='human'||input.origin==='agent'&&capture?.source?.kind==='outside-agent'))
+        ||!capturesEnterRouter(input.origin,capture?.source?.kind))
         throw new Error('Only a never-received Inbox capture can join a running turn.');
       db.query("UPDATE turns SET accepted_input_id=NULL WHERE id=? AND status='queued'").run(queued.id);
       finishTurn(queued.id,'cancelled','Joined the current Inbox work.');

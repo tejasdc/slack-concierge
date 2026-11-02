@@ -1,7 +1,8 @@
 import type {Database} from 'bun:sqlite';
+import {CAPTURES_ENTER_ROUTER_SQL} from './inbox-producer-sources';
 
-export type WaitingInboxInput={inputId:string;captureId:string|null;text:string;createdAt:string;position:number;origin:'human'|'agent'};
-type Row={turn_id:number;queue_priority:number;input_id:string;capture_id:string|null;text:string;created_at:string;origin:'human'|'agent'};
+export type WaitingInboxInput={inputId:string;captureId:string|null;text:string;createdAt:string;position:number;origin:'human'|'agent'|'service'};
+type Row={turn_id:number;queue_priority:number;input_id:string;capture_id:string|null;text:string;created_at:string;origin:'human'|'agent'|'service'};
 
 function position(cursor:string|null):{priority:number;id:number;position:number}|null {
   if(!cursor)return null;
@@ -24,8 +25,7 @@ export function inboxQueuePage(source:Database,sessionId:number,cursor:string|nu
       AND turn.saved_kind IS NULL AND turn.owner_instance_id IS NULL
       AND turn.provider_admission_intended_at IS NULL AND turn.provider_started_at IS NULL
       AND turn.provider_turn_id IS NULL AND turn.provider_input_acknowledged_at IS NULL
-      AND input.kind='input' AND (input.origin='human' OR (input.origin='agent'
-        AND json_extract(input.payload_json,'$.capture.source.kind')='outside-agent'))
+      AND input.kind='input' AND ${CAPTURES_ENTER_ROUTER_SQL}
       AND input.steering_id IS NULL AND input.receipt_json IS NULL
       AND (? IS NULL OR turn.queue_priority<? OR (turn.queue_priority=? AND turn.id>?))
     ORDER BY turn.queue_priority DESC,turn.id LIMIT ?`).all(sessionId,after?.priority??null,

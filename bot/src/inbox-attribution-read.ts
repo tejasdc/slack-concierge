@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
 import {authorSessionOf} from './session-presence';
-import {FIXED_PRODUCER_DOORS,type InboxProducerKind} from './inbox-producer-sources';
+import {FIXED_PRODUCER_DOORS,readerCaptureVia,type InboxProducerKind} from './inbox-producer-sources';
 
 type Input={id:string;session_id:number;scope:string;action_id:string;kind:string;origin:'human'|'agent'|'service';
   payload_json:string;turn_id:number|null;source_input_id:string|null;source_run_id:string|null;request_id:string|null;created_at:string};
@@ -162,6 +162,7 @@ export function inboxAttribution(db:Database){
     if(input.scope===SERVICE_NOTICE_SCOPE)return withProvenance(input,{author:{kind:'service',communication:'notice'}});
     const author:Author={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
     if(input.origin==='human'){const via=doorOf(input);if(via)author.via=via;}
+    else{const via=readerCaptureVia(JSON.parse(input.payload_json).capture?.source);if(via)author.via=via;}
     if(input.kind==='inbox-capture'){
       const quoted=JSON.parse(input.payload_json).capture?.source?.metadata?.quoted;
       if(quoted&&quoted.kind!=='human')author.quoted=quoted;
