@@ -26,6 +26,8 @@ import {meaningIndex} from './meaning-index';
  * thread with links he can open; nothing asks him anything.
  */
 const MIN_SCORE=0.5,SHOWN=2,WINDOW=350,WINDOWS=14,PER_WINDOW=3;
+/** How much of a note's opening is compared, the same length the thread filer reads of his words. */
+const NOTE_OPENING=600;
 /** Messages that arrived before this owner started are linked only when this recent, so a restart never posts into old threads. */
 const RECENT_MS=24*60*60_000;
 const NOTES_ROOT=process.env.CONCIERGE_NOTES_ROOT||'/root/workspace/vault';
@@ -77,7 +79,7 @@ async function notes():Promise<{path:string;title:string;text:string}[]> {
       if(cached?.mtime!==mtime){
         const body=(await readFile(path,'utf8').catch(()=>'')).replace(/^---\n[\s\S]*?\n---\n/,'');
         const title=entry.name.slice(0,-3);
-        cached={mtime,title,text:`${title}. ${body.replace(/\s+/g,' ').trim().slice(0,PIECE)}`};
+        cached={mtime,title,text:`${title}. ${body.replace(/\s+/g,' ').trim().slice(0,NOTE_OPENING)}`};
         noteCache.set(path,cached);
       }
       out.push({path,title:cached.title,text:cached.text});
