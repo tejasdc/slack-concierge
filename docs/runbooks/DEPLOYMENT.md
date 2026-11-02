@@ -364,7 +364,9 @@ per merge: on 2026-11-01/02 27 merges in four hours restarted Concierge about tw
 times, and replaying those merge times gives 7 under this rule (see
 [the failure record](../incidents/2026-11-02-merge-burst-restarted-concierge-twenty-times.md)).
 Operator `deploy.sh` and repair runs do not wait. The never-started report counts its
-15 minutes from that start time. The worker creates a
+15 minutes from that start time. A fix pushed after a failed update keeps the failed
+burst's start, so once that is 30 minutes old the fix starts without a quiet window; this
+is deliberate, since the fix is what ends the failure. The worker creates a
 fixed transient systemd unit. The
 runner tests provider admission atomically. If any provider work owns the
 system, the runner immediately releases its trial gate and sleeps; Concierge

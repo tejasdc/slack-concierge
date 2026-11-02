@@ -1619,7 +1619,7 @@ export class SessionOwner {
     if(!observed||!Number.isFinite(startsAtMs)||Date.now()-startsAtMs<NEVER_STARTED_MS)return null;
     const holds=await pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
     return {runId:null,commit:desired,notes:holds.notes,subjects:holds.subjects,
-      tries:0,since:observed,failedAt:null,repair:null,stopped:null};
+      tries:0,since:new Date(startsAtMs).toISOString(),failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');

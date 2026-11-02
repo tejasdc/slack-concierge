@@ -540,7 +540,10 @@ request ID through `sessions get`; this is not the private work-mode page. Cross
 remain in the thread they addressed. A missing actor or human source remains unknown, not
 inferred from request prose.
 The 20-item public page reads local and Mac request identities in two batches and canceled
-source origins in one batch. Its storage budget includes those bounded rows.
+source origins in one batch. Each batch has a page-sized SQL limit. The public read projects
+only a short summary and at-most-8-KiB request preview, and short activity text in both
+public and on-demand private coordination. Exact full request and result bodies remain available by request ID. Its storage budget includes those
+bounded rows and bytes.
 
 When an agent has open, non-stalled work on a topic, the Inbox router's manual post permits only
 a one-line answer of at most 200 characters when that turn already owes the thread a post. Its
