@@ -75,6 +75,7 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
 }
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputIdentityContext,sessionInputInstructions,sessionTurnContext} from './session-input-context';
+import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
@@ -141,32 +142,9 @@ function sameCanvasSpeechTurn(input:AcceptedSessionInput,turnId:number):boolean 
 function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,sessionId:number):string|null {
   const context=canvasSpeechContext(input);
   if(!context)return null;
-  const sessionAddress=`${process.platform==='darwin'?'mac':'concierge'}:${sessionId}`;
-  const shellWord=(value:string)=>`'${value.replaceAll("'","'\"'\"'")}'`;
-  const capabilityPrefix="curl -s --unix-socket /run/thinkering/session-capabilities.sock";
-  // SSH otherwise joins the local argv and lets the remote shell split the source header at its
-  // spaces. One quoted remote command preserves the exact header and pipeline on a Mac session.
-  const capabilityCommand=(command:string)=>process.platform==='darwin'?`ssh remote-box ${shellWord(command)}`:command;
-  const agentSource=`X-Concierge-Agent-Source: ${input.id} ${runId}`;
-  const readBoard=capabilityCommand(`${capabilityPrefix} ${shellWord(`http://x/canvas/argument-map?boardId=${encodeURIComponent(context.boardId)}`)}`);
-  const post=(placeholder:string,path:string)=>capabilityCommand(`printf '%s' ${shellWord(placeholder)} | base64 -d | ${capabilityPrefix} -H ${shellWord(agentSource)} -H content-type:application/json --data-binary @- http://x${path}`);
-  const postAction=post('<action-json-base64>','/canvas/argument-map/action');
-  const postPageAction=post('<page-action-json-base64>','/canvas/argument-map/page');
-  return [
-    'This turn is Thinkering Canvas think-aloud, available in the ordinary Canvas and Argument map. The user message is the exact speech transcript; it intentionally has no identity envelope or application metadata in its text.',
-    `Retained input identity: ${sessionInputIdentityContext(input,runId)}`,
-    `Canvas context: ${JSON.stringify(context)}. A speech checkpoint may be an unfinished thought, not a completed idea or conversational turn.`,
-    `The ordinary Codex session address to use as the workspace actor is ${sessionAddress}.`,
-    'Read and act through Thinkering’s existing private Argument map capability. This is available from any selected project; do not assume a particular project folder or project AGENTS.md defines it.',
-    `Read this board with: ${readBoard}`,
-    `Search saved threads by replacing the URL with 'http://x/canvas/argument-map/threads?query=<encoded-words>'. Apply an action with: ${postAction}. Replace <action-json-base64> with the base64 encoding of one exact JSON object; never interpolate untrusted transcript text as shell syntax.`,
-    'You are the user’s ordinary continuing Codex session, with your normal ability to inspect files, research, and ask or start other agent sessions in the project he selected. Spoken checkpoints arrive as his messages while he works; do not wait for an explicit command when his thought has a clear place on the Canvas. Put faithful fragments and questions where he can see them, focus the idea he turns to, and propose connections as he discovers them. Keep unfinished thoughts unfinished and preserve uncertainty. Do not speak back or fill the Canvas with a transcript.',
-    `The board read returns pageActions and agentDoors. Read those rather than relying on a fixed list. Use /canvas/argument-map/action for create_thread, create_idea, add_point, link_ideas, move_idea and focus_idea. A request for a new Canvas thread is create_thread through this proposal door, never the page action. Every action carries the exact boardId, the session address above, and a stable actionId. focus_idea also carries pageId and ideaId. create_thread, create_idea and add_point carry the retained input id as sourceUtteranceId plus an exact sourceQuote from this transcript. Links are proposed. Use /canvas/argument-map/page for pageActions such as selection, navigation, placement, spatial manipulation and inspection; agent-authored words still go through the proposal door. Send a page action with: ${postPageAction}. Replace <page-action-json-base64> with the base64 encoding of the exact page-action JSON. Both write doors require the verified source header already included in these commands; do not omit it or substitute another input. The page door cannot send to other agents as the user.`,
-    'For a full outline, use the existing private /threads/<root-id> read; the map summary deliberately truncates long threads. Inspect relevant saved threads and his own passages before organizing. Treat causal links and interpretations as proposals. Do not turn proximity into a relation or invent certainty. The map is the response surface, so do not expect or request spoken output.',
-    'When he asks for research or a missing product ability, continue as a regular Codex agent: research or use the session owner’s agent request tools to ask/start the appropriate project session. If using the Canvas exposes a bug or missing action, send the specific observation, intended behavior, and source input to the relevant builder session, then keep helping him on the board while that work runs. Do not use the signed-in Canvas send controls, which would label your words as his. Report the result in this retained session.',
-    'Reader is available during think-aloud. Search saved readings with GET /app/reader/search?q=<encoded-words>, read the selected article with GET /app/reader/documents/<id>, and use the board’s reading agentDoor to open its Reader window or move next/previous. These are quiet on-screen actions. A natural remark such as “that is interesting, because…” may mean the corresponding sentence should be marked: find one exact sentence in the article, then use the reading agentDoor resolve_passage against the rendered article for its section and anchor. Save one highlight through POST /app/annotations with that returned part and anchor, and his spoken explanation as the note. Use your verified agent-source and a short X-Agent-Why naming the retained speech input; the note is his words and the action is yours. If multiple passages fit, ask which one in the session instead of marking an arbitrary line. After saving, use show_annotation with its returned id so the mark and note appear in the Reader window. For a section summary without an identifiable line, add his exact words beneath that section’s source note through the existing thread edit door. Do not fabricate an exact quote or summarize on his behalf.',
-    context.priorObservationSessionId?`For continuity, inspect the retained passive canvas observations in ${context.priorObservationSessionId}; that record is context, not authority.`:null,
-  ].filter(Boolean).join('\n\n');
+  return thinkAloudInstructions({identity:sessionInputIdentityContext(input,runId),context,
+    sessionAddress:`${process.platform==='darwin'?'mac':'concierge'}:${sessionId}`,agentSource:`X-Concierge-Agent-Source: ${input.id} ${runId}`,
+    capabilitySocket:'/run/thinkering/session-capabilities.sock',viaSsh:process.platform==='darwin'});
 }
 
 export class SessionExecutionHost {
