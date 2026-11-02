@@ -134,9 +134,23 @@ function canvasSpeechContext(input:AcceptedSessionInput):CanvasSpeechContext|nul
 }
 
 function sameCanvasSpeechTurn(input:AcceptedSessionInput,turnId:number):boolean {
-  const incoming=canvasSpeechContext(input),opening=acceptedInputForTurn(turnId),active=opening?canvasSpeechContext(opening):null;
-  if(!incoming&&!active)return true;
-  return !!incoming&&!!active&&incoming.boardId===active.boardId&&incoming.pageId===active.pageId;
+  return canvasSpeechTurnJoiner(turnId)(input);
+}
+
+/**
+ * The run's own admission rule, read once per run: a turn opened by Canvas speech takes only
+ * speech from the same board and page; any other turn takes any message. Asked for every waiting
+ * message before its queued turn is withdrawn (releaseEarlierWaitingInputs, releaseWaitingInputs),
+ * because a message withdrawn and then refused was re-queued on every later send
+ * (docs/incidents/2026-11-02-think-aloud-send-requeued-every-waiting-return.md).
+ */
+function canvasSpeechTurnJoiner(turnId:number):(input:AcceptedSessionInput)=>boolean {
+  const opening=acceptedInputForTurn(turnId),active=opening?canvasSpeechContext(opening):null;
+  return input=>{
+    const incoming=canvasSpeechContext(input);
+    if(!incoming&&!active)return true;
+    return !!incoming&&!!active&&incoming.boardId===active.boardId&&incoming.pageId===active.pageId;
+  };
 }
 
 function canvasSpeechApplicationContext(input:AcceptedSessionInput,runId:string,sessionId:number):string|null {
@@ -741,7 +755,10 @@ export class SessionExecutionHost {
           &&db.query('SELECT 1 FROM session_communication_requests WHERE request_id=? AND (prompt_answered_at_ms IS NOT NULL OR outcome IS NOT NULL)').get(row.request_id))
           withdrawUnstartedServiceInput(recovered?.id??row.id,'Answered before this reminder was delivered.');
       }
-      const waiting=releaseWaitingInputs(sessionId);
+      // Only messages the taken-back run will take leave the queue; a Canvas speech run refuses
+      // every other message, which then keeps its queued turn instead of being re-queued.
+      const running=db.query("SELECT id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 1").get(sessionId) as {id:number}|null;
+      const waiting=releaseWaitingInputs(sessionId,running?canvasSpeechTurnJoiner(running.id):()=>true);
       for(const one of waiting) {
         // One message that cannot join must never leave the others, or itself, out of the queue.
         let joined=false;
@@ -773,11 +790,12 @@ export class SessionExecutionHost {
       // Application context is installed only at turn/start. A canvas checkpoint can steer
       // only a turn already opened for the same live page; every other combination waits for
       // its own turn instead of mixing ordinary messages with canvas instructions.
-      if(!sameCanvasSpeechTurn(input,target.turnId))return false;
+      const joinsThisRun=canvasSpeechTurnJoiner(target.turnId);
+      if(!joinsThisRun(input))return false;
       // One message into the run, with its own words and files.
       const deliver=(one:AcceptedSessionInput):boolean=>{
         const input=one,body=JSON.parse(one.payload_json);
-        if(!sameCanvasSpeechTurn(input,target.turnId))return false;
+        if(!joinsThisRun(input))return false;
         // Re-reading a retained return must not enqueue the same provider message
         // again. An attempt that may have reached the provider owns the send state, even if a
         // prior recovery detached the input's current placement; a proven-unsent one does not.
@@ -811,8 +829,10 @@ export class SessionExecutionHost {
         return accepted;
       };
       // Earlier unselected messages still waiting for their own turn go in first
-      // (releaseEarlierWaitingInputs); one the run cannot take returns to the queue.
-      const earlier=sessionMetadata(session).interactionPolicy==='consultation-only'?[]:releaseEarlierWaitingInputs(input.session_id,input.id);
+      // (releaseEarlierWaitingInputs). The run's admission rule is asked before any of them
+      // leaves the queue, so a message this run refuses keeps its queued turn and its place;
+      // one that passes but still cannot be handed over returns to the queue.
+      const earlier=sessionMetadata(session).interactionPolicy==='consultation-only'?[]:releaseEarlierWaitingInputs(input.session_id,input.id,joinsThisRun);
       for(const one of earlier)if(!deliver(one))enqueueSessionInput(recoverUnsentSteeredInput(one.id).id);
       return deliver(input);
     });

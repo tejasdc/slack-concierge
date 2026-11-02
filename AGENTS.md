@@ -482,6 +482,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
 - Ambient canvas sessions retain finalized device-speech words and browser action outcomes as passive observations, without launching a second provider turn. Their admission and provenance are in [the session owner wire contract](docs/contracts/session-owner-v1.md#ambient-canvas-observations).
 - Canvas think-aloud uses an ordinary continuing Codex session; the owner passes board context beside each exact speech input so the agent can inspect, organize, research, and delegate while the browser performs visible Canvas and Reader actions. See [Canvas think-aloud](docs/architecture/canvas-think-aloud.md).
+  A run opened by Canvas speech takes only speech from its own board and page; returns and requests to that session wait for their own turn. The earlier-waiting promotion asks that rule before withdrawing any waiting turn (`canJoin` on `releaseEarlierWaitingInputs`), so a refused message keeps its queue place: withdrawing first re-queued every waiting return on each speech segment, ~170 statements apiece, until one send held the owner a second (2026-11-02, [record](docs/incidents/2026-11-02-think-aloud-send-requeued-every-waiting-return.md)).
 - An agent on the Mac may photograph a window or a screen, which Tejas asked for on
   September 22, 2026. One command, `~/.local/bin/mac-screenshot` (absolute path: provider
   children have no `~/.local/bin` on PATH), built from `bot/native/mac-capture.swift`. It uses
