@@ -5,7 +5,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, enqueueSessionInput, getAcceptedSessionInput, withdrawUnstartedServiceInput, HOLDING_OUTCOMES, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, topicHasOpenWorker, turnPostedInto } from './session-inbox';
+import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { followForwardedReply, forwardedReplyFraming } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
@@ -704,12 +704,6 @@ export class SessionCommunicationCoordinator {
                 const opening=getAcceptedSessionInput(sourceInputId);
                 if(opening?.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)
                     throw new Error('The agent already posted this return in its named thread. Do not relay it from the Inbox; nothing was posted.');
-                const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
-                if(topic&&topicHasOpenWorker(topic.topic_id,session.id)){
-                    const owed=threadOwedByTurn(session,sourceInputId);
-                    const shortRoutingNote=owed===rootInputId&&text.length<=200&&!text.includes('\n')&&!input.attachments?.length&&!carried.length;
-                    if(!shortRoutingNote)throw new Error('Another agent is working in this thread. The Sent to receipt is its routing mark. Only a short one-line answer owed to this thread may be posted by the Inbox now; send substantive words to the agent with sessions ask. Nothing was posted.');
-                }
             }
             // Custody is retained before the post is recorded, so an accepted post always
             // names files the owner already holds.

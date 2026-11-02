@@ -798,7 +798,8 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   The message then carries `replyToMessage` and `routedBy`. See the native Inbox contract.
 - An agent answers a thread on purpose with `sessions post --thread`, a `post`
   ledger event in the Inbox; a post from another session is credited to it (`postedBySession`). Tejas rejected threads that collect whatever the agent said while it
-  worked. The owner resolves the thread root; a post starts no turn and owes no reply.
+  worked. Another agent's open work does not block the Inbox router from posting its own answer.
+  The owner resolves the thread root; a post starts no turn and owes no reply.
   Only ledger-backed history accepts posts, because a provider transcript never contains
   them. See the native Inbox contract.
 - Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
