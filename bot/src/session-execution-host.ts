@@ -332,24 +332,25 @@ export class SessionExecutionHost {
    * machines first, 6 to 18 seconds each on 2026-10-07, so the page sat empty for up to a minute:
    * "Why are we like not caching things ... so I don't have to wait for like a minute, every single
    * time I open this page". Now an ordinary read returns at once, marked `checking` while a check
-   * runs, and the page asks once more with `fresh` to get the checked answer. Refresh asks with
-   * `fresh` directly, so pressing it still waits for new readings (2026-09-23). One check at a time
-   * is shared by every reader.
+   * runs, and the page asks once more with `fresh` to start a new check. A `fresh` read used to
+   * wait for that check too, 11 to 20 seconds around a sign-in on 2026-11-03 (the Claude and
+   * Codex sign-in checks and the usage reading), so it now also answers at once, marked
+   * `checking`, and the page reads again until no row says `checking`. One check at a time is
+   * shared by every reader.
    */
   async refreshAuthEphemera():Promise<ProviderAuthEphemera>{
-    await this.checkProviderAuth(true);
+    this.checkProviderAuth(true);
     return this.authEphemera();
   }
-  private async checkProviderAuth(fresh=false):Promise<void>{
+  private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    const check=this.providerAuthCheck??(!fresh&&recent?null:this.providerAuthCheck=Promise.all([refreshClaudeAccount(),
+    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([refreshClaudeAccount(),
       codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();}));
-    if(fresh&&check)await check;
+      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
-    await this.checkProviderAuth(fresh);
+    this.checkProviderAuth(fresh);
     const checking=this.providerAuthCheck!==null;
     // Reading the list never copies a login. It used to snapshot the Codex login in use into
     // a kept home on every read, which is a second copy of one renewal key.
