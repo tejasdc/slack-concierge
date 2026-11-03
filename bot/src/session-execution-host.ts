@@ -127,7 +127,7 @@ const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   superseded:'Another sign-in for this provider started, so this one was dropped.',
 };
 
-type CanvasSpeechContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string};
+type CanvasSpeechContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string;segments?:Array<{text:string;spokenAt:string}>};
 
 function canvasSpeechContext(input:AcceptedSessionInput):CanvasSpeechContext|null {
   const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
@@ -217,7 +217,7 @@ export class SessionExecutionHost {
     // Codex signs itself in over its own API and keeps the token it obtained, so there is
     // nothing here to activate — only parked work to release once the account is usable.
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
-      steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
+      steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionStop(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,

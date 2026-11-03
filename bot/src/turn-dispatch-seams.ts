@@ -199,6 +199,15 @@ export class ActiveTurnDispatchRegistry {
     return { matched: true, completion: target.cancellation.request() };
   }
 
+  requestSessionStop(sessionId: number, turnId: number): { matched: false } | { matched: true; completion: Promise<void> } {
+    const target = this.sessions.get(sessionId);
+    if (!target || target.turnId !== turnId) return { matched: false };
+    // The provider may take time to cancel. Close its local steering line first so a
+    // sentence waiting behind the current send cannot leave after Stop.
+    target.controller.close(new Error("The run was stopped before this steering message was sent."));
+    return { matched: true, completion: target.cancellation.request() };
+  }
+
   requestSafeSessionCancellation(sessionId:number,turnId:number):{matched:false}|{matched:true;completion:Promise<void>} {
     const target=this.sessions.get(sessionId);
     if(!target||target.turnId!==turnId)return {matched:false};

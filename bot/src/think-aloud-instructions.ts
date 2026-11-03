@@ -3,7 +3,7 @@
 // its own capability socket, so a check runs the agent on the words it really gets (2026-11-02: the
 // check used its own prompt, which demanded a speech quote, while the real one refused without it).
 // Pure and free of imports so either runtime can load it.
-export type ThinkAloudCanvasContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string};
+export type ThinkAloudCanvasContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string;segments?:Array<{text:string;spokenAt:string}>};
 export type ThinkAloudInstructionInput={identity:string;context:ThinkAloudCanvasContext;sessionAddress:string;agentSource:string;capabilitySocket:string;viaSsh:boolean};
 
 export function thinkAloudInstructions(input:ThinkAloudInstructionInput):string {
