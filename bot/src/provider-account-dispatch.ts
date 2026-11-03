@@ -282,6 +282,15 @@ export function claudeHeldWorkCanRun(model?:string|null):boolean{
   } catch { return false; }
 }
 
+/** Bring a peer-discovered account with room into this machine's own login path. */
+export function requestMissingClaudeHomes(model?:string|null):void{
+  if(!claudeRunsFromOwnHomes())return;
+  const local=new Set(listProfiles('claude-code').map(profile=>profile.label));
+  for(const room of accountAvailability('claude-code',model))
+    if(room.hasRoom&&!local.has(room.account))
+      needClaudeSignInRenewal(room.account,'This account has room but has not been signed in on this machine.');
+}
+
 /**
  * When every Claude account this machine can launch is spent, the earliest moment one frees up,
  * by the same rules dispatch uses; null when one can run now or no reset is known.
@@ -383,10 +392,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     // A new account may be visible in the server's allowance read before this Mac has
     // its own login. Ask the existing browser repair path to establish that local home;
     // the server's credential cannot be copied here or used for this Mac session.
-    if(ownHomes&&turnId!==undefined)for(const room of accountAvailability('claude-code',model)){
-      if(room.hasRoom&&!listProfiles('claude-code').some(profile=>profile.label===room.account))
-        needClaudeSignInRenewal(room.account,'This account has room but has not been signed in on this machine.');
-    }
+    if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
     // An old reading is not a limit. Each account is read about every twelve minutes and a reading
     // counts for six, so an account with room routinely looked unreadable here and work was held
     // "until" the spent account's reset (2026-10-15, his account at 19% of its week). A launchable

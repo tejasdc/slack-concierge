@@ -8,7 +8,7 @@ import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
-import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead } from "./provider-account-dispatch";
+import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
 import { antigravityExecutable } from "./antigravity";
@@ -630,6 +630,10 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // A percentage drop cannot identify which window caused a model-specific refusal.
       // The exact model's success, a manual clear, or its stated reset retires that cache.
       const claudeCanDispatch=provider==='claude-code'&&claudeHeldWorkCanRun(null);
+      if(provider==='claude-code'&&!claudeCanDispatch&&db.query(`SELECT 1 FROM turns
+        JOIN sessions ON sessions.id=turns.session_id
+        WHERE sessions.provider_id='claude-code' AND turns.status='queued'
+          AND turns.dispatch_hold='usage' LIMIT 1`).get())requestMissingClaudeHomes(null);
       if(activeHasRoom || claudeCanDispatch)
         releaseUsageContinuationHolds(provider);
       if(claudeCanDispatch)releaseUsageHeldWork('claude-code','usable_account_observed');
