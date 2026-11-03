@@ -33,3 +33,19 @@ export function recordClaudeHomeProof(home:string,proven:boolean):void {
   if(proven)db.query('INSERT INTO claude_home_proof(home,proven_at_ms) VALUES(?,?) ON CONFLICT(home) DO UPDATE SET proven_at_ms=excluded.proven_at_ms').run(home,Date.now());
   else db.query('DELETE FROM claude_home_proof WHERE home=?').run(home);
 }
+/**
+ * Claude account homes last seen signed out (a turn's sign-in refusal or a signed_out check), until a check
+ * passes or a new login is filed. Kept in the ledger so a restart does not forget it: the Claude-to-Codex
+ * transfer runs at startup, and without this it would again move work that is only waiting for a sign-in.
+ */
+if (process.env.CONCIERGE_READ_WORKER !== "1") db.exec(`CREATE TABLE IF NOT EXISTS claude_home_signed_out (
+  home TEXT PRIMARY KEY,
+  seen_at_ms INTEGER NOT NULL
+)`);
+export function claudeHomeSignedOut(home:string):boolean {
+  return !!db.query('SELECT 1 FROM claude_home_signed_out WHERE home=?').get(home);
+}
+export function recordClaudeHomeSignedOut(home:string,signedOut:boolean):void {
+  if(signedOut)db.query('INSERT INTO claude_home_signed_out(home,seen_at_ms) VALUES(?,?) ON CONFLICT(home) DO UPDATE SET seen_at_ms=excluded.seen_at_ms').run(home,Date.now());
+  else db.query('DELETE FROM claude_home_signed_out WHERE home=?').run(home);
+}

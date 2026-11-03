@@ -602,7 +602,7 @@ export class SessionExecutionHost {
     // At its limit is still signed in and still his choice: select it, and its work waits for the
     // reset or runs on the other account while that one has room.
     const full=check.reason==='out_of_room';
-    if(!check.ok&&!full)markClaudeHomeRefused(home);
+    if(!check.ok&&!full)markClaudeHomeRefused(home,check.reason==='signed_out');
     if(check.reason==='signed_out'&&home)needClaudeSignInRenewal(profile.label,'switching to it found it signed out');
     if(!check.ok&&!full){
       log('warn','provider_profile_switch_refused',{provider:key,reason:check.reason});
