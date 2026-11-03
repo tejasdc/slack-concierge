@@ -48,6 +48,12 @@ if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopte
 // release folder, so an update that did not change the host leaves no run on a previous version.
 if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='host_digest'").get()))
   db.exec("ALTER TABLE executions ADD COLUMN host_digest TEXT");
+// The survival proof (execution-survival.ts) asks which kinds have been taken over live and released.
+// Without this index that question scanned the whole table (9,700 rows across 245 MB of pages on
+// 2026-11-03), and the queue asks it on every claim while an update holds the drain gate, so the
+// owner thread spent up to 14 s of each minute of a drain inside it. Partial on exactly the proof's
+// predicate, so no other reader can pick it up (docs/incidents/2026-11-03-update-drain-queue-claim-scanned-executions.md).
+db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider, supervisor) WHERE adopted_live=1 AND state='released'");
 }
 
 /** This coordinator took the run over while its provider was still running. */
