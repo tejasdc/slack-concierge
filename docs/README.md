@@ -2,11 +2,17 @@
 
 Human instruction 1789490492.818709 (Sept 15) disabled agent-run test suites; on 2026-09-29 Tejas narrowed it: agents check their work end to end on the real system, through their own marked entrance, before saying it is done, and write no unit tests to fill that [decision: agents-check-real-end-to-end-behavior]. The suites and sandbox directions below stay disabled and superseded.
 
-**Current direction:** Thinkering is the product surface. Tejas deprecated Slack and ended
+**Current direction:** thnkr.ing is the product surface. Tejas deprecated Slack and ended
 Slack feature parity, Slack-specific tests, sandbox runs and mandatory review/testing cycles
 in inputs `1789490232.840229` and `1789490293.092859`. The [agent guide](../AGENTS.md)
 owns that delivery policy. Older Slack runbooks and acceptance receipts below are retained
 history, not gates for new Thinkering work.
+
+The [agent guide](../AGENTS.md) is the short loaded index for project-wide agent
+behavior. Current implementation details live in the architecture and contracts below;
+repeatable operations live in runbooks. The
+[pre-index guide](archive/2026-11-03-pre-index-agent-guide.md) preserves the former
+wording and Tejas's quoted reasons as historical evidence, not current instructions.
 
 Use this index to distinguish current operational truth from reviewed history. Source, manifests, config, and focused tests remain authoritative for executable behavior and constants.
 
@@ -28,8 +34,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
 - [Peer instances](runbooks/PEER-INSTANCES.md) — the Mac Concierge under launchd, the token-guarded tailnet owner API, and cross-instance `sessions ask --peer`.
-- [Reusable Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — four shared lane claims, fresh worktree-selected runs, persistent provisioning and browser profiles, screenshot evidence, and exact manual boundaries before push.
-- [Live Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — bounded post-deployment feature proof, exact completion claims, production-noise discipline, and automated-versus-manual boundaries.
+- [Historical Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — disabled procedure retained for provenance; do not run its lanes or tests for current work.
+- [Historical Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — disabled procedure retained for provenance; do not use it as a release gate.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
 - [Slack app administration](runbooks/SLACK-APP-ADMINISTRATION.md) — manifest-first app features, OAuth scopes, reinstall, and verification.
 - [Router action helper](runbooks/ROUTER-ACTIONS.md) — user posts/resumes/uploads, bot audit replies, exact message receipts, and read-only recovery.
@@ -59,7 +65,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — historical plan for the retired agent-enrollment and success-wake workflow; current deployment behavior is documented in the runbook above.
 - [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
-- [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — historical design and validation record for the four-lane sandbox; current operation is in the [sandbox runbook](runbooks/SANDBOX-TESTING.md).
+- [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — historical design and validation record for the retired four-lane sandbox; its [old runbook](runbooks/SANDBOX-TESTING.md) is disabled.
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Pebble gesture routing](plans/2026-09-06-pebble-trigger-routing.md) — implemented single-click Journalmaxx preservation, double-click Slack/agent routing, durable provenance, and four-lane sandbox proof.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.

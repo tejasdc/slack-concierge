@@ -642,3 +642,10 @@ is involved. This works before the pending cross-turn partial-return fix activat
 The timer stops after provider admission or a terminal queue failure, and Stop,
 pause or archive cancel the continuation. Operator receipts contain IDs and state;
 the private continuation text stays in the common ledger.
+
+## Interpreting native Inbox intent
+
+- The native Inbox interprets human intent, including “take a note”, “take action” and
+  “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
+  Ambiguity asks the human. Note saves use the existing Thinkering capability host and
+  original retained capture bytes; user edits survive retry. No extraction runner returns.

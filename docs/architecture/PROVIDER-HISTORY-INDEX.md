@@ -13,3 +13,47 @@ An append to Claude's file does not itself trigger another full import. A separa
 Snapshots are prepared before anyone opens a conversation. The owner's history keeper (`provider-history-warmer.ts`, both compositions) checks once a minute for Claude conversations whose latest finished turn it has not prepared, skips any with a turn under way, and runs the same verification, then import if needed, one conversation at a time in the existing child processes; the first pass after a start covers every conversation. It logs `provider_history_warmed` per pass. Before it existed only 192 of the conversations had a snapshot, so most first opens answered with no messages while an import ran (2026-10-13). Each read executor also loads its history page worker at startup rather than on the first open.
 
 The separate snapshot is derived data; the native transcript and owner event ledger remain authorities. Do not delete either as cache cleanup. Look for `provider_history_imported`, `provider_history_import_failed` and response `coverage` during investigation. A cold page's client must retry on `history_indexing` instead of presenting an empty conversation as complete.
+
+## Source history and archive evidence
+
+- Claude history reads resolve the bound provider UUID through the SDK across project
+  directories; current execution cwd is not transcript storage identity. Project a
+  provider-observed steering message from its unique accepted input and exact retained
+  replay bytes when Claude assigns a different row UUID; the JSON identity header is
+  transport, not chat content or authority. A Claude user row is a message only when
+  Claude records who submitted it (`promptSource` `sdk` from the owner, or `typed`).
+  Interruption notes, model-switch records, background-task notifications, compaction
+  notes and other CLI bookkeeping are never messages: in a session this owner drives,
+  anything a person or another session said was submitted through the owner, so history
+  drops a user row it cannot attribute and the live stream publishes one only when its
+  text is exactly one the run wrote to Claude or a person typed it. Claude marks queued
+  notifications as replays too, so the replay flag proves nothing (2026-09-21). Claude records a
+  message without its trailing whitespace, so the input envelope sends that form; exact sent bytes
+  with a trailing space hid an answered reply as Queued (2026-10-22). Imported and reconstructed sessions
+  keep their unattributable rows. Decide by that recorded author, never by wording: matching one
+  interruption phrasing missed the next, and real messages can start with a bracket.
+  A turn's opening input is proved the same way and must not wait for the provider to
+  echo it: the transcript can show the message first, which rendered it as an unknown
+  author with its header as text. Only header-stamped bytes are unique by construction,
+  so ambiguous or headerless bytes fall through to the older joins. A delegated message
+  shows its whole chain — sender, the human request it acts for, and work versus
+  information — never less than its operation receipt already resolves.
+
+- Archive discovery retains exact source bytes through the source capability before
+  materializing a returned catalogue candidate. Pure index searches do not copy archives;
+  changed or unavailable candidates remain explicit coverage omissions. The retention proof
+  is one page of Thinkering's prepared history for that exact version (`retainArchiveSource`),
+  never a `context` read: context re-reads and serializes the whole snapshot on every search,
+  and a 289 MB transcript cost 5.8 s and 120 MB per candidate, making one search take 10.2 s
+  (supervisor incident 708b0814, 2026-10-08).
+
+- Source history is cited evidence. Verify exact source/version/branch/event membership.
+  Catalogue projections distinguish unbound imported `historical-evidence` from
+  conversations; discovery never promotes evidence into active work. Reconstructed
+  consultations and explicitly bound imports remain conversations. The wire contract
+  owns the classification and backward-compatible surface rule.
+  An imported Claude/Codex source with a native UUID may continue through resurrection
+  on the machine holding its recorded folder and provider transcript. The owning machine
+  binds one native session to that UUID; peer archive resurrection still makes a distinct copy.
+  Historical consultation is information-only, with no tools, network, writes or outbound
+  requests. Preserve the source and the restricted child identity across follow-ups.

@@ -1038,3 +1038,49 @@ Anthropic's own explanation of why a long session costs more, and its remedies (
 for unrelated work; compaction only for continuity, and it is itself a large request), is in
 "Why usage climbs in a long session" at https://code.claude.com/docs/en/costs.
 Measure again with `python3 -I scripts/token-burn.py <hours>`.
+
+## Account, sign-in and forecast details
+
+- Signing Codex in is asked of Codex, never read off its console. `codex-device-login.ts`
+  calls the App Server's `account/login/start` (`chatgptDeviceCode`), which answers with
+  `verificationUrl` and `userCode` as fields, reports approval through the
+  `account/login/completed` notification, and withdraws an abandoned attempt with
+  `account/login/cancel`. The daemon performs the login itself, so it already holds the
+  token: nothing here writes a credential file and no restart is needed, only the release
+  of parked work. The scraper it replaced expected a four-and-four code, Codex 0.153.4
+  prints four-and-five (`S8AM-GKSLB`), and Tejas was shown an empty box with no way to
+  finish (September 22, 2026). Never parse a human-facing transcript for a value a
+  protocol will hand over. Claude Code keeps the bounded CLI adapter in `auth-login.ts`
+  because it documents no structured login; its approval code arrives through the app's
+  own field, never from him reading process output. Where that adapter must read the
+  transcript, it reads exactly, never by a heuristic about what the value looks like: the
+  same file cut every Claude sign-in link at `redirect_uri=` for three weeks, because it
+  trimmed each URL at the second `http` and Claude's authorize URL carries an encoded
+  `redirect_uri=https%3A%2F%2F…`. Anthropic rejected every one of those links, so no Claude
+  sign-in through this path had ever completed, and he found it during an outage a sign-in
+  would have ended (2026-09-22). A URL may contain a URL; a code may be grouped any way.
+  Parse what the shape actually is, or do not parse at all.
+
+- A kept account's name is recorded beside it, never inferred from whoever is signed in.
+  A Codex credential names its own account; a Claude one carries no address at all, so the
+  code that labelled it read `~/.claude.json`, which is the global record of the *current*
+  sign-in. Every kept Claude account therefore wore the current account's email: his
+  personal account sat in the list as `tejas@chann.app`, which read as one account listed
+  twice and would have switched him to the wrong one (2026-09-22). Claude homes keep
+  `.account-email` beside their credential; the default login keeps its own identity.
+  Whether the account selected for new work is current is decided by that address and the
+  owner's durable selection — a refresh token rotates and its fingerprint stops matching, which would
+  list the account in use a second time. An account kept before a name was recorded recovers
+  its address by applying `profileId` forward to the addresses this machine already knows
+  (the usage reader lists every Claude account by address) and matching — an equality check
+  on a function we own, not a guess at a slug. Showing the filed name instead was shipped
+  knowingly for one evening and was wrong twice over: a usage reading is keyed by address, so
+  the same row also claimed its usage had never been read while that account sat at its
+  weekly limit, and he read the screen as broken (2026-09-23).
+
+- A usage reading is not a display. Every reading is kept and forecast
+  (`provider-usage-forecast.ts`); a window the provider does not project itself — the
+  five-hour one, the one that broke — is projected from this machine's own samples, and
+  every forecast carries its source, samples, span and rate. Never state a countdown: a rate
+  cannot promise a time. Readings tighten to five-minute cadence near a wall because two
+  samples cannot draw a line, and both runtime compositions start the watch.

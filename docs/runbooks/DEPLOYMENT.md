@@ -908,3 +908,123 @@ running session holding an update, with the description, age and last notice for
 each background job. The drain command reports the same jobs. A failed deployment
 run with an uncertain external effect still stops for recovery instead of replaying
 that effect automatically.
+
+## Release and Git operating rules
+
+### Update notes for every commit
+
+- **Every commit carries an `Update-note:` line — one sentence in product language about what
+  that change does, addressed to him, no code terms. Documentation is included: an instruction
+  change alters how agents behave, which is exactly what he wants to know about. `internal` is
+  retired.** He threw it out on 2026-09-23, reading a notice that
+  hid a change because its author had marked it invisible: *"I do not understand what you mean by
+  changes. Nothing you see … I'm not asking for updates only in the visual aspects of it. I need to
+  understand, look, what the back end is going … every single thing that is, we are changing, every
+  update is gonna matter, right? It's a change that you're making. What is it? … Yes, maybe I don't
+  visibly see, but who cares? That's not what the updates are talking about. Do you think every
+  single feature that we're launching here is like something that I visibly see?"* So a change to
+  how a conversation picks its account is described exactly like a change to a button: "a
+  conversation now keeps the account it started on". Say the
+  consequence when waiting has one ("until this lands, questions you cannot answer still count
+  as waiting on you"), because that is the only honest way he can tell an urgent update from a
+  routine one: no severity is derived anywhere, and a label nothing populates would be worse
+  than none (his question, 2026-09-22: "I can't tell how important it is for us to install
+  that"). thnkr.ing shows those sentences,
+  and only those, while a Concierge update waits for his sessions to finish, so he knows
+  what is about to be applied; commit subjects are shown only when a change has no sentence. A note can be added
+  to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
+  <commit>` followed by `git push origin refs/notes/update`, and that note wins.
+  Published release history uses these same sentences for each change inside a pull-request
+  merge; the merge itself is only delivery metadata. See [release history](../contracts/session-owner-v1.md).
+  `release-history.ts` reads them, never remembering one, so a note written or corrected while
+  an update waits reaches him on the next read; the wait payload carries them. **Write the note
+  when you commit.** The `post-commit` hook says so, to you, while you are still there; it warns
+  and never refuses, because a missing sentence must not stop a fix from shipping (Tejas,
+  2026-09-22). Release time is too late to start: the release asked the authoring session, and
+  on 2026-09-22 that ask sat in the queue of a session whose running work was itself blocking the
+  release, so he was shown a waiting update and nothing about it, twice in one evening (captures
+  `d0781019`, `d5881417`). That mechanism is removed. **An update is never hidden from him**: a
+  change still missing its sentence is shown with its own commit summary instead, which is ours to
+  close, not a reason for his notice to stay silent. A note pushed from another machine is not
+  readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
+  an editor wraps a long sentence at the commit margin, and reading only its first line published
+  half a sentence to him three times in one evening.
+
+- Deployment migration opens the ledger through `state-database.ts` and reserves one outer
+  SQLite writer transaction before loading application and deployment schema. Deployment
+  commands import that connection directly; they must not initialize unrelated application
+  schema as a side effect of claiming or inspecting deployment ownership.
+
+- Use isolated task worktrees for concurrent changes. Code and host configuration travel
+  through their Git origins; host services belong in remote-box. Never hand-edit installed
+  units or copy source into a service checkout.
+
+- The managed pre-command guard refuses writable delegated Codex CLI launches from a
+  repository's canonical checkout and gives `wt <task-name>` as the recovery command.
+  Read-only reviews remain allowed. During deployment, the runner commits modified
+  and untracked shared-checkout files to a timestamped preservation branch and linked
+  worktree before pulling and posts the file list and location to the native Inbox's
+  Needs attention path without a provider turn; a failed preservation stops the
+  update with its Git stash retained. A recorded Git-update failure gets one retry
+  after the checkout is clean, checked by the owner once per minute without a push.
+
+- **Failed updates are retained and assigned to agents.** `status.deploymentStuck` still
+  reports every failed run since the last success for investigation; the autonomous repair
+  owns it first, and parked, unowned or never-started updates go to the standing repair
+  agent. The workspace update line shows pending changes waiting on his work, not raw
+  deployment failures; an agent reaches him through Needs attention only for an action
+  he alone can take (Oct 12 report `c5e7bda7`). The earlier 2026-09-23 request to
+  expose failures (`c60c6162`) is superseded for failures by that report; pending update
+  visibility remains. **A deployment target that no branch has is abandoned, not chased.** A force-push leaves the
+  commit a webhook recorded on no branch; every deployment then installs main, ends with that
+  commit still unmet and starts the next one. Nine ran in eleven minutes on 2026-09-23, each
+  restarting the service and draining his sessions, while his update notice never cleared
+  (capture d526a570). `observeDeploymentDesiredCommit` cannot see a rewrite — every later push
+  reads as `divergent`, so the unreachable commit is kept forever — and the worker now resolves
+  the desired commit against the repository before asking for a run, adopting main's head once
+  and saying so in the log (`deployment_desired_commit_rewritten`).
+
+- An update that never started is the same fact: a commit that should be
+  running, with no attempt in flight and none for longer than a deployment takes to begin, is
+  reported with no attempts to count — today's failures began exactly there, with a wake loop
+  that kept the runner from starting. Anything that changes how a failed or unstarted run is
+  recorded keeps that read working, and nothing may claim a retry the record does not show.
+
+- Concierge delivery sends a proposed commit to a topic branch; GitHub's required release
+  check must pass before it advances to `main`. End the provider turn so
+  the existing detached worker can reach an idle boundary. Do not manually restart the
+  service, wait for its deployment, add a deployment waiter, or restart the shared Codex
+  App Server. The established deployment/repair owner handles rollout and health.
+  Human input `1789510460.238219` explicitly authorizes the bounded native Inbox recovery
+  exception: `bot/scripts/native-pipeline-continuation.ts` enrolls the current live source
+  before yielding; remote-box's single safeguard observes deployment readiness/deadline
+  and admits one service continuation through the existing native queue. It never
+  deploys or runs a provider. Stop/pause/archive cancel it. See the native Inbox contract.
+
+- **No Claude agent sits blind on a build.** The same command guard refuses a Claude Code command
+  that waits on a shared host build slot unless it runs with `run_in_background`
+  (`bot/src/foreground-build-policy.ts`, which reads slot use from the script's source, so a
+  project marks a long command with `agents-run-this-in-background`); Codex already yields. A
+  foreground build froze the canvas voice repair for ten minutes while Tejas waited (2026-11-01).
+
+- **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
+  amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
+  commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:
+  `bot/scripts/history-guard.ts` (decision in `history-rewrite-policy.ts`) refuses the command
+  before it runs, for Claude through `--settings` on every Concierge run and Claude's managed
+  settings, and for Codex as a managed PreToolUse hook; git's pre-push
+  (`scripts/git-hooks/refuse-history-rewrite`) refuses the push itself in every checkout through a
+  machine-wide `core.hooksPath` whose dispatcher still runs each repository's own hooks; and this
+  repository's `.githooks/pre-push` runs the same check because its own hooks path overrides the
+  machine's. `install-codex-stop-hook.sh` installs the managed layers and the system git hooks
+  (remote-box's deploy; the Mac's password step), and `install-mac.sh` installs the git hooks for
+  the Mac user on every unattended update. GitHub ruleset `23901100` also refuses rewriting or
+  deleting this repository's main. Source: a session amended a pushed commit and force-pushed it
+  on 2026-09-23, and nine deployments chased the vanished commit; Tejas: "Why are we like, you
+  know, force pushing … add changes and just, like, not remove changes."
+  The same pre-command hook, when it refuses nothing, names a website's runbook to an agent about
+  to open that site in a browser (`agent-browser open|goto|navigate`, or an MCP navigate call):
+  `bot/src/site-runbook-notice.ts` asks the `website-runbooks` skill's `site-runbook --json`
+  lookup and returns its answer as `additionalContext`, once per domain per provider session,
+  skipping local hosts and his own apps, never blocking, silent when the lookup is missing.
+  Built 2026-10-06 for the website-runbooks work (Inbox capture `7b0dae00`).

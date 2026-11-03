@@ -4,6 +4,17 @@ Slack Concierge is the repository authority for the shared Codex App Server's ho
 
 The daemon is detached from the Concierge process and may outlive a bot restart. Ordinary Concierge deployment starts it if absent but does not stop, restart, bootstrap, or update it.
 
+Concierge's native session observer uses a separate App Server connection. It scans
+loaded threads once after connecting, reads their status and history head without
+resuming idle history, subscribes to running threads, and unsubscribes after a turn
+becomes idle. Codex's broadcast status changes reveal turns started by other clients
+without a recurring scan.
+On 2026-11-03 an account switch restarted the daemon and the old observer resumed
+748 saved sessions, raising its resident memory above 12 GB. A Concierge release
+closes that observer connection without restarting the daemon; Codex can then unload
+the idle threads after its grace period. Verify the loaded-thread count and daemon
+memory after release, and do not manually restart a daemon with running turns.
+
 ## Lifecycle Invariants
 
 - `/root/.codex/packages/standalone/` is the canonical install channel because `concierge-bot.service` invokes that path directly. Package releases, `current`, sockets, PID files, and logs are machine-owned runtime state and must never sync from another OS.

@@ -42,7 +42,7 @@ Terminal observations may arrive before asynchronous executor cleanup releases t
 
 The existing recovery owner distinguishes unattempted input, a known-dead ambiguous attempt, and a saved result. Only proven unattempted work can resume without new effect evidence. Saved results return without another provider call. Ambiguous effects remain inspectable. A deliberate Stop cannot become an automatic retry. Unconfirmed interrupted model input can be supplied as labeled historical context to a later authorized input; it is not permission to repeat prior actions. Native fork controls are excluded from that model history.
 
-Known terminal state stays monotonic. A native result and its notification are distinct from any correlated answer. The shared Codex app-server observer is composed in both Slack-enabled and Slack-disabled owner runtimes and subscribes to each uniquely bound active native session, independent of whether that session still has an eligible Slack projection. After subscribing, it reads the latest native item and retains a digest per session. It invalidates history unless the retained thread and digest match exactly. First observation, a rebound to another thread, and an unreadable native head invalidate; a later reconnect to an unchanged head stays silent. First observation may produce one event per bound session when this state is introduced, and the read path avoids taking the writer lock for exact matches. Future completed user, assistant and tool items enter the common owner observation stream with their exact provider message and turn IDs; Slack mirroring remains a separate projection of its narrower eligible subset. On-demand history/detail reads use the same native item shapes. Cursor replay rebuilds a view, never submits another run. Archive, pause, outcome, read and attention retain separate meaning.
+Known terminal state stays monotonic. A native result and its notification are distinct from any correlated answer. The Codex app-server observer is composed in both Slack-enabled and Slack-disabled owner runtimes. It uses its own connection, scans the App Server's loaded conversations once on connection or reconnection, and subscribes only to a uniquely bound conversation with running work. Codex broadcasts status changes to every connection; an active transition subscribes the observer to externally started work, and an idle transition refreshes its terminal receipt. A terminal turn releases the subscription once the thread is idle; the next Concierge turn or active status change reattaches it. This follows external work without resuming every saved conversation after a restart or polling all idle ones. For each observed loaded conversation, it reads the latest native item and retains a digest per session. It invalidates history unless the retained thread and digest match exactly. First observation, a rebound to another thread, and an unreadable native head invalidate; a later reconnect to an unchanged head stays silent. Future completed user, assistant and tool items enter the common owner observation stream with their exact provider message and turn IDs; Slack mirroring remains a separate projection of its narrower eligible subset. On-demand history/detail reads use the same native item shapes. Cursor replay rebuilds a view, never submits another run. Archive, pause, outcome, read and attention retain separate meaning.
 
 Session outcome is working-set state, not execution history. `done` means done for now:
 the owner changes it back to `open` when a human- or agent-origin input is durably bound
@@ -60,7 +60,7 @@ A confirmed nonretryable native provider refusal settles as a failed input and r
 
 ## Externally submitted Codex turns
 
-The shared Codex observer subscribes each uniquely bound provider thread and retains
+The Codex observer subscribes each uniquely bound provider thread while it runs and retains
 `turn/started` and `turn/completed` evidence independently of owner-admitted inputs.
 The session view uses a newer external turn's provider state and timestamps when no
 owner run is active. Its native run ID stays absent: observation grants no Stop,
@@ -313,3 +313,200 @@ Focused tests cover immutable acceptance, exact source authority, independent qu
 ## Read and dismiss action cost
 
 The owner clamps a read or dismiss generation to the session's own attention counter without projecting the Inbox's questions. A requested generation above that counter can be inherited from an older session; only that exceptional case resolves the exact open attention list before clamping. The normal action retains its receipt and event, advances the canonical session row for the prepared catalogue's change journal, and returns the existing bounded session view to Thinkering. The October 19 phone catch-up showed why this matters: projecting the Inbox's question list solely to calculate a ceiling cost about 8,900 ledger calls per read action.
+
+## Admission, identity and return invariants
+
+- Retained audio attachments keep their original bytes and an optional transcript
+  in the same attachment row. The authenticated human surface can request transcription
+  of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
+  uses that text and avoids repeating it when it is already in the accepted human message.
+  A forwarded recording is a new custody copy of identical bytes, so it reuses the words its
+  original already has (found by `sha256`) instead of being transcribed again.
+
+- Executable input receipts expose `statusDetail` with a human reason, known condition
+  clearance time and whether that exact input retries automatically. Terminal failures
+  remain immutable history. A native turn parked with an unconfirmed outcome is never
+  replayed and never holds back later inputs: the next one runs and carries it as
+  unconfirmed context, because nothing reconciles it and a Mac request sat queued behind
+  one for five days (mac:69, Oct 1–6, 2026). A queued request that is held (sign-in, usage,
+  or anything that will not clear by itself) tells its sender at once, from a peer too
+  (`inputHold`). See the shared wire contract.
+
+- Ambiguous steering follows its linked turn's confirmed terminal state, with a separate
+  `STEERING_DELIVERY_UNCONFIRMED` explanation while provider acknowledgement is absent.
+  Turn completion never proves that particular steering input reached the provider;
+  keep `acknowledgedAt` null and do not replay it. See the shared wire contract.
+
+- Saved sessions, saved messages and message reactions are personal owner state in that
+  same ledger. Every message mark keys the canonical session plus exact provider message
+  ID; Thinkering may cache projections but must not use browser storage as cross-device
+  truth or reopen a neighboring message when an exact target is unavailable.
+
+- Session names use the canonical metadata `title` shown in Thinkering. Router
+  `--session-name` initializes that field; do not add a separate display label or
+  infer names inside Concierge from task prose. See the shared wire contract.
+
+- Native session/input identity is independent of Slack. Never fabricate a Slack message,
+  channel, timestamp or provider binding to satisfy an obsolete caller shape.
+
+- Selected-message actions resolve exact retained native message references in the common
+  owner. Comparison replays only human requests through that boundary; Inbox capture
+  retains explicit note/action intent without a provider turn; task creation appends to
+  the registered project's existing `notes/TODOS.md` authority. The browser never supplies
+  replacement message bytes, and no parallel task store or Slack route is introduced.
+
+- One recipient turn commonly holds several of a requester's questions: the first opens
+  it and later ones steer in, and the recipient answers them together. When every input
+  an acknowledged turn received is such a request, a sibling's explicit final reply
+  written at or after this request arrived settles this one too, with that reply's text
+  and disposition. A reply naming one request ID is not the only proof of an answer. A
+  turn that carried anything else, a reply from another requester, and a sibling's reply
+  to a request that sent its own partial never settle it. A sibling settled that way carries
+  the same words, so it shares the answer's return rather than starting another.
+  A steered request the provider never acknowledged follows its turn's confirmed terminal
+  state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
+  source input for its exact live run. That citation is strong evidence of receipt but not
+  proof (the input ID derives from a request ID another message can quote), so it records
+  no acknowledgement.
+  Any live run of the exact recipient session may reply to a request delivered to that
+  session, so an answer after an interruption lands. Duplicate reply actions can be inspected after the run ends. An unanswered prerequisite
+  holds its dependent request for a decision; it does not prove the prerequisite failed.
+  A dependent the requester asked after that outcome reached it is the decision and is
+  delivered; otherwise the requester cancels (`sessions cancel`) or asks again. A hold
+  with no release path stranded requests silently for a day (September 17–19, 2026).
+
+- Work running under a live owner, or a recipient session still running after the bound
+  turn ended, is not a stall. The due-time inspection defers it to
+  the next interval rather than waking the requester, and when a stall is real the
+  requests one recipient turn holds report one health event between them, not one each.
+
+- Final work replies declare `completed`, `failed`, or `needs_decision`. Declared
+  completion settles and returns as soon as the reply is recorded. It used to wait for
+  the answering run to end, which held answers for hours in a Claude session that takes
+  new requests by steering into one long run (September 21, 2026); the recipient's
+  explicit declaration is the confirmation.
+  Every settled request with a requester input is carried by exactly one `return:<eventId>`
+  input, including confirmed completion, even while the requester is mid-run; only a
+  paused, archived or missing requester holds it. One answer reaches a requester once:
+  finals to the same requester from the same session with byte-identical words and the
+  same disposition share the first one's return, which names every request it closes, and a
+  later identical copy joins the return already delivered instead of starting another
+  requester turn. One answer closing five requests arrived as five Inbox turns and five lines
+  on his screen (September 23, 2026). Identical bytes are the test, never similar words. Completion used to be retained
+  without a return, and the Inbox silently lost 64 finished results on September 21,
+  2026, so never reintroduce a settled-but-unreturned state. `session-return-audit.ts`
+  logs `session_return_undelivered` (error) once for any settled result still
+  unreturned after ten minutes. A run ended by his own Stop (a human `stop` operation naming that
+  run, `stopped-by-tejas.ts`) settles as his stop: a quiet line in the Inbox thread it served, never
+  a router turn or a notification; a cancellation without his Stop says so and asks for follow-up.
+  What Concierge writes into an agent's conversation is plain words (`session-notices.ts`): an answer
+  or cancellation names the request by its summary and the other session by its title, with no
+  request, event or session numbers and no "not new authorization" line, because the identity
+  header already carries the exact request, origin and authority; a number appears only where the
+  agent must type it (a robotic notice reached a ChatGPT chat on 2026-10-09).
+  A partial reply is not a result and wakes nobody: it is recorded on
+  the request and read with `sessions get`, because each wake re-read the asker's whole
+  conversation (one lab session, ~860k tokens per note, four times for one note, 2026-10-08). Legacy `retained` rows stay as history; the Inbox's
+  rows from that day were re-delivered once in one digest reply, and rows the old runtime
+  retained during rollout, or held waiting for their run to end, are released to return
+  at startup. An
+  unclassified work answer is `undetermined` and holds dependents. Never infer
+  success from `requestedEffect`.
+
+- Persist accepted intent before external effects. Retain exact action/input/run identity,
+  verify current ownership, and preserve uncertain outcomes. Never replay completed work
+  or resend an ambiguous provider effect merely because a response was lost.
+
+- Every attributable message carries the accepted input it belongs to as `inputId`, so a
+  client threads a request to its replies from owner-established identity rather than
+  page order; `submissionId` keeps its provider-submission meaning. Any owner read a
+  client repeats is bounded by the owner: event reads take `kind`/`runId` sets and a
+  `limit`, a client holding every receipt asks `changedAfter=<asOf>` and gets back only
+  those still able to change plus new ones — decided from whether each receipt has
+  settled for good, never from which events fired, since a hand-off's answer records no
+  event on it — and receipt reads page, so unread state and Inbox receipts cost a page instead
+  of the whole ledger. A receipt looks its request up with `find`, which answers null for an
+  id no table holds (a project set-up's return, a Mac request the peer table dropped), so one
+  such row never refuses the whole read: it did, for every Inbox receipts read from 2026-09-28
+  to 2026-10-01, and his phone said "Request receipts could not be loaded." A client holding a page asks `history?after=<asOf>` for what
+  changed. Answer it from what the page was built from, never the ledger alone: a
+  provider transcript can hold a message the ledger never recorded. When the owner
+  cannot answer truthfully it returns `reset`, never a partial delta. See the shared
+  wire contract.
+
+- A capture that answers a thread's question is placed there with `sessions thread`
+  (`--detach` undoes it, and `unthread` is his own split control): an additive
+  `thread_link` event, never a rewrite of the retained capture. Any agent may place any
+  accepted Inbox message, and run every `sessions topics` and areas command against the Inbox,
+  credited to itself; `sessions note` saves any retained message (capture, thread reply, post,
+  routed message, agent answer) as a Timeline note [decision: agents-are-never-handcuffed].
+  The message then carries `replyToMessage` and `routedBy`. See the native Inbox contract.
+
+- An agent answers a thread on purpose with `sessions post --thread`, a `post`
+  ledger event in the Inbox; a post from another session is credited to it (`postedBySession`). Tejas rejected threads that collect whatever the agent said while it
+  worked. Another agent's open work does not block the Inbox router from posting its own answer.
+  The owner resolves the thread root; a post starts no turn and owes no reply.
+  Only ledger-backed history accepts posts, because a provider transcript never contains
+  them. See the native Inbox contract.
+
+- Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
+
+- A selected-message reply is an immutable human input carrying `replyToMessage:{kind:"message",sessionId,messageId,source?}`. Its session ID must equal the addressed canonical session; imported-source targets retain their source/version/event pin. It is presentation/provenance for the provider envelope, not an agent/service reply or a substitute for the existing `replyTo` request-return field.
+
+- Session outcome is durable working-set state: `done` means done for now and reopens to
+  `open` only when the owner binds a new human or agent input to queued execution or live
+  steering. Retained-but-held inputs, service returns and incidental controls do not
+  reopen it. `shipped` remains distinct and is never reopened automatically. Active
+  working-set clients filter conversations by `outcome=open`; execution is independent.
+
+- Thinkering's workspace records and published proposals stay untouched by convergence.
+  Do not import discarded extraction bookkeeping, replay old jobs or reapply workspace
+  effects. Retired development controls stay retired; independent browser/phone code-only
+  rollback must remain available without an agent session and must preserve notes.
+
+- **A value more than one place needs has exactly one home, and something refuses the
+  second copy.** This is DRY as Hunt and Thomas stated it — "every piece of knowledge must
+  have a single, unambiguous, authoritative representation within a system" — which is about
+  knowledge, not about text that looks alike. Models live in `aliases.ts`: id, provider and
+  the name Tejas reads, with everything else deriving from it, and `/sessions/v1/models`
+  publishing it so no client keeps a list. Enforce in this order, strongest first: derive it
+  so a gap cannot compile (`MODEL_LABELS` is keyed by the literal union of the model tables,
+  so an unnamed model is a build error); publish it so a consumer reads instead of copying;
+  refuse a second copy with a check. **A derived guard is only real once you have watched it
+  fail** — the first version of that union went through `PROVIDER_ALIASES`, whose `model` is
+  typed `string`, so it widened to `string`, accepted anything, and passed a deliberately
+  broken build. A client that cannot reach the published list says so and offers the
+  default; a remembered fallback list is the second copy in disguise. Source: 2026-09-23,
+  when Concierge moved to Opus 5.5 and thnkr.ing's picker kept offering Opus 5 — "we need to
+  make this architecturally impossible". The inventory of every other duplicated value, what
+  was fixed and what is still open, is in
+  [one source of truth](https://github.com/tejasdc/thinkering/blob/main/docs/plans/2026-09-23-one-source-of-truth.md).
+- **A request closes only through a command, never through prose.** Agents are taught only the
+  commands, once, in `REQUEST_PROTOCOL` (`bot/src/request-protocol.ts`), in the per-run
+  instructions and `sessions --help`; the rules are enforced where they apply, not repeated. One
+  Stop hook for every agent (`bot/scripts/owed-reply-stop-hook.ts`) sends it back once when it
+  tries to end a turn owing a reply: Claude gets it with `--settings` on every run, Codex as a
+  managed hook from `/etc/codex/requirements.toml` (`scripts/install-codex-stop-hook.sh`, run by
+  remote-box's deploy on the box and by `install-mac.sh` from a terminal on the Mac), because Codex
+  runs unreviewed hooks only from managed policy. There is no reminder turn and no weaker path for
+  either provider; a request still stranded after the hook is reported stalled. Never put standing instructions into each input: the Inbox's 3,802-character preamble
+  was prefixed to every input (1,019 copies, ~3.9 million characters, in one conversation) and now live in its per-run
+  instructions; an input carries only its identity header and its own facts. The mechanism, its grounding (FIPA Request,
+  transactional outbox), the enforcement table and the measurements are in
+  [the request reply protocol](../plans/2026-09-23-request-reply-protocol.md). For engineers
+  here: nothing in the owner may settle a request from a turn's text or silence (only ChatGPT
+  and consultation-only turns, which have no reply command, answer with their turn);
+  `request-liveness.ts` owns the stranded check and the stalled notice, and
+  the recipient's machine runs them; an old inferred final (`isInferredFinal`) is superseded by
+  a later explicit one (`superseded_by_event_id`); peer replies count as forwarded only when the
+  origin confirms that exact event, and a pulled reply with files is fetched whole. Incident:
+  September 23, 2026, 72 guessed closures in a week and a discarded Mac answer; Tejas: "Why
+  can't the agent say this is his final reply? … Do you know about functions and determinism?"
+
+- **Every answer reaches its asker the moment it arrives; nothing is held to batch answers** (Tejas, 2026-10-08:
+  "Please update as soon as one agent you get there. What if one agent is like doing some minor work and an another
+  agent is doing two hours of work?" [decision: answers-delivered-when-they-arrive]). A stall or overdue notice is checked
+  against the request at delivery and dropped when the request is already answered, and an answer withdraws a notice
+  about it not yet taken up. A worker waiting on its own sub-request or watch started after the request is not stalled
+  (`waitingOnDependency`). Every ask and final reply carries a one-line `--summary` shown first; `--answer-view
+  summary` lets the asker see only it. See [exchange kinds](../plans/2026-10-08-exchange-kinds.md).

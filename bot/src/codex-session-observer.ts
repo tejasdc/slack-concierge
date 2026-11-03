@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  sharedCodexAppServerClient,
+  CodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
@@ -40,10 +40,14 @@ export class CodexSessionObserver {
   private readonly subscribedThreadIds = new Set<string>();
   private readonly pendingThreadSubscriptions = new Map<string, Promise<void>>();
   private readonly appServer: CodexAppServerClientLike;
+  private readonly ownsAppServer: boolean;
   private readonly lifecycleVersions = new Map<string, number>();
 
   constructor(options: { appServer?: CodexAppServerClientLike } = {}) {
-    this.appServer = options.appServer ?? sharedCodexAppServerClient();
+    // Subscriptions belong to this observer, so releasing an idle thread cannot
+    // unsubscribe the execution host or another client sharing its connection.
+    this.ownsAppServer = !options.appServer;
+    this.appServer = options.appServer ?? new CodexAppServerClient();
     this.stoppedSignal = new Promise((resolve) => { this.resolveStoppedSignal = resolve; });
   }
 
@@ -74,6 +78,7 @@ export class CodexSessionObserver {
       this.notificationLoop,
       ...this.pendingThreadSubscriptions.values(),
     ].filter(Boolean) as Promise<void>[]);
+    if (this.ownsAppServer) await (this.appServer as CodexAppServerClient).close();
   }
 
   private async runConnections() {
@@ -83,7 +88,7 @@ export class CodexSessionObserver {
       const unsubscribe = this.appServer.onNotification((event) => this.queueNotification(event));
       try {
         generation = await this.appServer.connect();
-        if (!await this.subscribeCurrentBindings(this.appServer, generation)) continue;
+        if (!await this.observeLoadedBindings(this.appServer, generation)) continue;
         failures = 0;
         clearRetryBreaker("codex-session-observer:app-server");
         await Promise.race([this.appServer.waitForDisconnect(generation), this.stoppedSignal]);
@@ -105,35 +110,36 @@ export class CodexSessionObserver {
     }
   }
 
-  private async subscribeCurrentBindings(connection: CodexAppServerClientLike, generation: number) {
-    for (const binding of listUniqueCodexSessionBindings()) {
-      // The sweep resumes every bound conversation one at a time, about a minute in all; a
-      // shutdown waited for it to finish, so each of 2026-10-07's back-to-back update restarts
-      // took 60–94 s to stop while his threads showed errors.
-      if (this.stopped) return false;
-      if (await connection.connect() !== generation) return false;
-      try {
-        await connection.request("thread/resume", {
-          threadId: binding.provider_thread_uuid,
-          excludeTurns: true,
-        });
-        this.subscribedThreadIds.add(binding.provider_thread_uuid);
-        await this.queueLifecycleRefresh(binding.provider_thread_uuid);
-        await this.refreshHistoryHead(binding.session_id, binding.provider_thread_uuid);
-        log("info", "codex_session_thread_subscribed", {
-          provider_thread_uuid: binding.provider_thread_uuid,
-          session_id: binding.session_id,
-        });
-      } catch (error) {
+  private async observeLoadedBindings(connection: CodexAppServerClientLike, generation: number) {
+    const bindings = new Map(listUniqueCodexSessionBindings().map(binding => [binding.provider_thread_uuid, binding]));
+    let cursor: string | null = null;
+    do {
+      const page = await connection.request("thread/loaded/list", { cursor, limit: 100 });
+      if (!Array.isArray(page?.data)) throw new Error("Codex did not return loaded thread IDs.");
+      for (const threadId of page.data) {
+        const binding = bindings.get(threadId);
+        if (!binding || this.subscribedThreadIds.has(threadId)) continue;
+        if (this.stopped) return false;
         if (await connection.connect() !== generation) return false;
-        log("warn", "codex_session_thread_subscription_failed", {
-          ...errorFields(error),
-          provider_thread_uuid: binding.provider_thread_uuid,
-          session_id: binding.session_id,
-        });
+        try {
+          // Read stored state without loading a dormant conversation. A loaded idle
+          // thread may have completed before reconnect, so refresh its receipts.
+          const snapshot = await connection.request("thread/read", { threadId, includeTurns: false });
+          await this.queueLifecycleRefresh(threadId);
+          await this.refreshHistoryHead(binding.session_id, threadId);
+          if (snapshot.thread?.status?.type === "active") await this.providerSessionBound(threadId);
+        } catch (error) {
+          if (await connection.connect() !== generation) return false;
+          log("warn", "codex_session_thread_subscription_failed", {
+            ...errorFields(error),
+            provider_thread_uuid: threadId,
+            session_id: binding.session_id,
+          });
+        }
+        if (await connection.connect() !== generation) return false;
       }
-      if (await connection.connect() !== generation) return false;
-    }
+      cursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
+    } while (cursor);
     return true;
   }
 
@@ -227,10 +233,22 @@ export class CodexSessionObserver {
       if (["turn/started", "turn/completed"].includes(event.method)) {
         observeCodexLifecycle(threadId, event.params.turn, event.method);
         if (event.method === "turn/completed") this.invalidateHistory(getUniqueCodexSessionBinding(threadId)!.session_id, threadId);
+        if (event.method === "turn/completed") await this.releaseIdleSubscription(threadId);
         return;
       }
       if (event.method === "thread/status/changed") {
+        if (event.params.status?.type === "active" && !this.subscribedThreadIds.has(threadId)) {
+          // Status changes are broadcast even to connections that did not resume
+          // this thread. Subscribe outside this serial notification loop: the
+          // subscription's lifecycle refresh joins the same loop.
+          void this.providerSessionBound(threadId).catch(error =>
+            log("warn", "codex_session_lifecycle_subscription_failed", {
+              provider_thread_uuid: threadId, ...errorFields(error),
+            }));
+        }
         await this.refreshLifecycle(threadId);
+        await this.refreshHistoryHead(getUniqueCodexSessionBinding(threadId)!.session_id, threadId);
+        await this.releaseIdleSubscription(threadId);
         return;
       }
       if (event.method === "thread/closed") {
@@ -263,6 +281,21 @@ export class CodexSessionObserver {
     if (typeof item.type !== "string" || typeof item.id !== "string" || !item.id
       || ["reasoning", "hookPrompt"].includes(item.type)) return;
     this.observeMessages(params);
+  }
+
+  private async releaseIdleSubscription(threadId: string) {
+    if (!this.subscribedThreadIds.has(threadId)) return;
+    try {
+      const snapshot = await this.appServer.request("thread/read", { threadId, includeTurns: false });
+      if (snapshot.thread?.status?.type !== "idle") return;
+      await this.appServer.request("thread/unsubscribe", { threadId });
+      this.subscribedThreadIds.delete(threadId);
+    } catch (error) {
+      // A failed cleanup must not hold every other thread's notification behind it.
+      log("warn", "codex_session_idle_unsubscribe_failed", {
+        provider_thread_uuid: threadId, ...errorFields(error),
+      });
+    }
   }
 
   private queueLifecycleRefresh(threadId: string) {
