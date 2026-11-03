@@ -1,0 +1,1 @@
+Concierge now keeps the shared Codex server from loading hundreds of idle conversations after an account switch, so active agents can keep working without exhausting server memory.
