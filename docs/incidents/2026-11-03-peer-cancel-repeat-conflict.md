@@ -1,7 +1,7 @@
 ---
 failure: Reconciliation resent older peer cancellations after the peer had already retained a cancellation instruction or the origin had already received a final answer.
 date: 2026-11-03
-fix_commits: [a8a420ad]
+fix_commits: [a8a420ad, b8178839]
 cause_status: confirmed
 ---
 
@@ -21,7 +21,7 @@ The peer treats an already retained cancellation instruction as evidence that it
 
 ## Acceptance scenario
 
-- **Seed:** cancel a peer request and retain its worker cancellation instruction; separately retain a canceled origin request whose own final cancellation notice was received and whose peer delivery has aged out.
+- **Seed:** cancel a peer request and retain its worker cancellation instruction; separately retain a canceled origin request whose own final cancellation notice was received and whose peer never held that request.
 - **Action:** repeat origin cancellation after an update and run reconciliation.
 - **Expected:** the first target remains terminal, the existing instruction is unchanged, and the peer acknowledges the repeat. The origin's final notice never suppresses a necessary peer cancellation. The second request stops retrying only after the peer explicitly reports its delivery absent. The original Mac session 75 still has zero pending work.
 - **Live check:** inspect the five affected request IDs after installation for no further `session_peer_cancel_unsent` event.
