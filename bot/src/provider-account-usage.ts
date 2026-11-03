@@ -366,8 +366,9 @@ async function readClaude(): Promise<ProviderUsage> {
       const own = await pacedOwnLoginWindows(label, previous.get(label));
       if (own) {
         windows.splice(0, windows.length, ...own.windows);
-        // Only a fresh read from the real login clears claude-swap's warning (such as a sign-in needed).
-        if (own.fresh) problem = null;
+        // A fresh read from the real login clears claude-swap's warning (such as a sign-in needed), and so
+        // does a kept reading that such a read had already cleared; a warning claude-swap set stays.
+        if (own.fresh || (own.problem === null && previous.get(label)?.problem === null)) problem = null;
         readAtNow = own.readAt;
       }
     }
