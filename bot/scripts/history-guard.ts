@@ -30,7 +30,8 @@
  * launcher or machine password is needed.
  */
 import { realpathSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { userInfo } from 'node:os';
 import { historyRewriteRefusal, toolCommand, writableCodexLaunchDirectory, type RepositoryProbe } from '../src/history-rewrite-policy';
 import { siteRunbookNotices } from '../src/site-runbook-notice';
 import { messagesDatabaseRefusal } from '../src/messages-database-policy';
@@ -99,8 +100,22 @@ try {
   const command = toolCommand(input);
   reason = messagesDatabaseRefusal(command, input);
   refusedMessages = reason !== null;
-  if(!reason)reason=macSurfaceRefusal({command,toolName:String(hook.tool_name??''),toolInput:input,
-    need:process.env.CONCIERGE_MAC_NEED??'',platform:process.platform});
+  const surface={command,toolName:String(hook.tool_name??''),toolInput:input,platform:process.platform};
+  if(!reason)reason=macSurfaceRefusal({...surface,need:process.env.CONCIERGE_MAC_NEED??''});
+  // The environment can be empty (Codex's shared App Server) or older than a need steered in later, so a
+  // refusal a need could lift asks the Mac owner for the need of the run holding this conversation. The
+  // Codex hook gets no Concierge environment, so the socket is the Mac owner's fixed one (as the browser
+  // fallback reaches it); one attempt, three seconds, because a hook killed at its own timeout lets the
+  // tool run.
+  const liftable=reason&&!refusedMessages&&process.platform==='darwin'&&typeof hook.session_id==='string'&&hook.session_id
+    &&macSurfaceRefusal({...surface,need:'ios-native'})!==reason;
+  if(liftable){
+    const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({provider_session_id:hook.session_id}),
+      unix:join(userInfo().homedir,'Library','Application Support','concierge','requests.sock'),signal:AbortSignal.timeout(3000),
+    } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?answer.kind:null,()=>null);
+    if(recorded&&recorded!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
+  }
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {

@@ -541,6 +541,26 @@ export class SessionCommunicationCoordinator {
      * agent; `remind`, sent when the agent comes back because of a Stop hook, records exactly those
      * as reminded, so the stall that follows if it still does not reply says so.
      */
+    /**
+     * The machine need of the run holding this provider conversation: the newest one among the inputs that
+     * run took, its first message or a later request steered into it. The tool guard asks this when its
+     * process environment names none: Codex turns all run on one shared App Server, so a per-turn
+     * environment never reaches Codex's hook, and no process environment changes when a later request
+     * arrives by steering. On 2026-11-02 the Mac's Voice Memos session (mac:258) was created with a mac-app
+     * need and its guard saw none, twice.
+     */
+    macNeed(input:{provider_session_id:string}) {
+        const running=db.query(`SELECT turn.id AS turn_id FROM sessions session JOIN turns turn ON turn.session_id=session.id
+            WHERE session.agent_session_uuid=? AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`)
+            .get(input.provider_session_id) as {turn_id:number}|null;
+        if(!running)return {kind:null};
+        for(const row of db.query(`SELECT payload_json FROM session_inputs WHERE turn_id=? ORDER BY rowid DESC LIMIT 50`).all(running.turn_id) as {payload_json:string}[]){
+            const payload=JSON.parse(row.payload_json);
+            const kind=payload?.machineNeed?.kind??payload?.firstInput?.machineNeed?.kind;
+            if(typeof kind==='string'&&kind)return {kind};
+        }
+        return {kind:null};
+    }
     owed(input:{provider:string;provider_session_id:string;offer?:string[];remind?:boolean}) {
         const running=db.query(`SELECT session.id AS session_id,turn.id AS turn_id,turn.accepted_input_id FROM sessions session
             JOIN turns turn ON turn.session_id=session.id WHERE session.provider_id=? AND session.agent_session_uuid=?
