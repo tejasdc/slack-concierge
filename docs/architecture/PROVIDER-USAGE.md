@@ -154,7 +154,9 @@ copy of each login, so a home whose login is signed out still reads as having ro
 `claudeAccountLaunchableHere`, says whether this machine can launch an account now (a proven home,
 or the selected one not just refused; a home whose latest check or turn found it signed out stays
 out until a check passes). The usage hold notice names only launchable accounts as where work
-moves, and lists the rest as `accountsNeedingSignIn`. The Claude-to-Codex transfer at an allowance
+moves, and lists the rest as `accountsNeedingSignIn`. It also carries `movesAutomatically`, the
+same answer the usage warnings carry, and `machine`, so thnkr.ing promises a move only when this
+rule makes one and never keeps a copy of the rule. The Claude-to-Codex transfer at an allowance
 wall does not run while an account with room only needs a sign-in: the work stays held in the
 session it was sent to. The renewal request a Mac sends its own browser agent names the Mac's
 login, never the server's. Before 2026-11-02 it said "the server's" from both machines, so the
