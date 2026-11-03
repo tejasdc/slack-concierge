@@ -50,6 +50,7 @@ const peers=peerSettings();
 const self=peers.self??process.env.CONCIERGE_PEER_NAME??'cloud';
 const peerCache=new Map<string,{view:Record<string,unknown>;at:number}>();
 const peerReads=new Map<string,Promise<Record<string,unknown>>>();
+const peerLatest=new Map<string,{view:Record<string,unknown>;at:number}>();
 // Keep all request costs as counters; one ordinary completion in 100 is enough
 // to retain examples without recreating the per-request journal write load.
 const requests={completed:0,failed:0,slow:0,totalDurationMs:0,maxDurationMs:0,logSampledOut:0};
@@ -95,18 +96,24 @@ async function peerGet(name:string,path:string,timeoutMs:number):Promise<unknown
   return body;
 }
 function peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
+  // A machine says `checking` only while a read of it is outstanding: the page reads again while
+  // any machine says so, and the last answer, good or not, stands for 30 s like this one's check.
+  const latest=peerLatest.get(name);
+  if(!fresh&&latest&&!peerReads.has(name)&&Date.now()-latest.at<30_000)return Promise.resolve(latest.view);
   let read=peerReads.get(name);
   if(!read){
     read=(async()=>{
+      let view:Record<string,unknown>;
       try{
         const answer=await peerGet(name,'/sessions/v1/auth/providers?'+new URLSearchParams({machine:name,...(fresh?{fresh:'1'}:{})}),fresh?30_000:8_000) as {providers?:unknown};
-        const view={name,self:false,reachable:true,note:null,providers:answer?.providers??[]};
+        view={name,self:false,reachable:true,note:null,providers:answer?.providers??[]};
         peerCache.set(name,{view,at:Date.now()});
-        return view;
-      }catch(error){return {name,self:false,reachable:false,
+      }catch(error){view={name,self:false,reachable:false,
         note:error instanceof SessionOwnerError&&error.code==='MACHINE_UNREACHABLE'
           ?`${name} is not answering right now, so its accounts cannot be read.`
           :error instanceof Error?error.message:`${name} could not be read right now.`,providers:[]};}
+      peerLatest.set(name,{view,at:Date.now()});
+      return view;
     })().finally(()=>peerReads.delete(name));
     peerReads.set(name,read);
   }

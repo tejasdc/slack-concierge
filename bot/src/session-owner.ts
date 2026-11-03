@@ -1000,20 +1000,26 @@ export class SessionOwner {
    */
   private peerAccountCache=new Map<string,{view:Record<string,unknown>;at:number}>();
   private peerAccountReads=new Map<string,Promise<Record<string,unknown>>>();
+  private peerAccountLatest=new Map<string,{view:Record<string,unknown>;at:number}>();
   private async peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
+    // `checking` only while a read of that machine is outstanding; the last answer stands for 30 s.
+    const latest=this.peerAccountLatest.get(name);
+    if(!fresh&&latest&&!this.peerAccountReads.has(name)&&Date.now()-latest.at<30_000)return latest.view;
     let read=this.peerAccountReads.get(name);
     if(!read){
       read=(async()=>{
+        let view:Record<string,unknown>;
         try {
-          const view={name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]};
+          view={name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]};
           this.peerAccountCache.set(name,{view,at:Date.now()});
-          return view;
         } catch(error) {
           const note=error instanceof PeerError&&error.kind==='unreachable'
             ?`${name} is not answering right now, so its accounts cannot be read.`
             :error instanceof PeerError?error.message:`${name} could not be read right now.`;
-          return {name,self:false,reachable:false,note,providers:[]};
+          view={name,self:false,reachable:false,note,providers:[]};
         }
+        this.peerAccountLatest.set(name,{view,at:Date.now()});
+        return view;
       })().finally(()=>this.peerAccountReads.delete(name));
       this.peerAccountReads.set(name,read);
     }

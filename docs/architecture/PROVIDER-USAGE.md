@@ -290,8 +290,8 @@ timer, a credential change and his Refresh press all share it.
 **Refresh reads.** A `fresh` read of `/auth/providers` starts
 `scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
 the Codex sign-in state) and answers at once from the last known state with `checking` set;
-the Accounts page reads again every few seconds while any row says `checking` or
-`refreshing`, so the numbers fetched for that press arrive on screen without a read waiting
+the Accounts page reads again every few seconds while any row or machine says `checking`
+or `refreshing` (a peer machine says `checking` only while a read of it is outstanding), so the numbers fetched for that press arrive on screen without a read waiting
 for them. Until 2026-09-23 it refreshed only *who was signed in* and returned whatever the
 half-hourly pass had last written, so pressing Refresh changed no percentage on the screen
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
