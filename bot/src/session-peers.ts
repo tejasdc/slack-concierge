@@ -567,6 +567,14 @@ export class SessionPeers {
     const row=this.row(requestId);
     if(row.outcome!=='canceled'||!row.remote_operation_id
       ||JSON.parse(row.remote_status_json??'{}').cancellationAcknowledged)return;
+    // A final answer already received by the origin leaves no peer work to revoke.
+    // Older canceled requests can outlive the peer's delivery record; retrying their
+    // cancellation against that missing record only produces an endless 404 loop.
+    if(db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='final' AND status='received' LIMIT 1").get(requestId)){
+      db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
+        WHERE request_id=? AND outcome='canceled'`).run(requestId);
+      return;
+    }
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     try {
@@ -1286,13 +1294,14 @@ export class SessionPeers {
   /** The origin canceled a request this instance delivered: close the delivery and tell its worker. */
   canceledByOrigin(requestId:string) {
     const row=this.delivery(requestId);
+    const noticeAlreadyRetained=!!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(`canceled:${requestId}`);
     const stopped=db.transaction(()=>{
       db.query('UPDATE session_peer_deliveries SET closed_at_ms=coalesce(closed_at_ms,?) WHERE request_id=?').run(this.now(),requestId);
       const stopped=cancelQueuedWithdrawnRequest(row.target_input_id);
       if(stopped)withdrawUnstartedServiceInput(`canceled:${requestId}`,'The request was withdrawn before its worker began.');
       return stopped;
     })();
-    if(!stopped&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
+    if(!stopped&&!noticeAlreadyRetained&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
       tellWorkerCanceled(this.dependencies.owner,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
     return {canceled:true};
   }
