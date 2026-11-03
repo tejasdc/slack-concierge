@@ -511,12 +511,18 @@ export class SessionCapabilityClient {
    * from the first failure, not from the first ask: an observation is a long wait, and one held open
    * 30 minutes while Pro thought was closed by a release and parked at once, its window already
    * spent before anything had failed (session 3750, 2026-10-22 20:14 UTC).
+   * A read that was held open for over a minute before failing proves Thinkering was up: its front
+   * entrance ends any request idle for 90 seconds, and a quiet Pro answer ends every observation that
+   * way. Such a failure starts a fresh window; only quick failures in a row count as an outage. Ten
+   * of those timeouts in a row parked a live Pro run 20 minutes in (session 8052, 2026-11-03).
    */
   private async readAcrossRestart<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     let until: number | null = null;
     for (let pause = 2_000; ; pause = Math.min(pause * 2, 30_000)) {
+      const asked = Date.now();
       const outcome = await read().then(value => ({ value }), (error: unknown) => ({ error }));
       if ("value" in outcome) return outcome.value;
+      if (Date.now() - asked > 60_000) { until = null; pause = 2_000; }
       until ??= Date.now() + 20 * 60_000;
       const restarting = outcome.error instanceof SessionCapabilityError && !signal?.aborted
         && (outcome.error.code === "CAPABILITY_DISCONNECTED" || outcome.error.code === "CHATGPT_CAPABILITY_UNAVAILABLE" || outcome.error.status === 503);
