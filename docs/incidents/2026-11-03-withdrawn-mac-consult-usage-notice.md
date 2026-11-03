@@ -19,6 +19,7 @@ On November 3 at 2:28 PM ET, Mac session `mac:75`, “Third spaces online: resea
 - The Mac receipt projection retained both inputs, while provider history contained neither because no provider turn began. The visible session did not present the held consult to Tejas. The notification originated from the hold event before cancellation, not a later human input.
 
 The primary defect was peer cancellation that settled the origin without revoking an unstarted target. The notice also treated an internal agent consult as a user message and promised a start from a reset calculation that did not prove launchability.
+The account discovery path had a separate gap: when the Mac could read its two exhausted local accounts, it did not borrow the server's newly added account. That left the Mac's sign-in repair path unable to discover the account with room.
 
 ## Acceptance scenario
 

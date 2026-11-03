@@ -253,6 +253,9 @@ The November 3 replay procedure and live release checks are tracked in the [inci
 
 Claude accounts are read from two places: claude-swap's managed list, and every account home
 Concierge keeps (`listProfiles`), read from that home's own login when claude-swap does not list it.
+Each machine also discovers the other machine's Claude accounts on every usage refresh, even
+when all local readings succeed. The peer's account label and source time can trigger local
+sign-in repair for a held turn, but they do not prove a runnable local credential home.
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
