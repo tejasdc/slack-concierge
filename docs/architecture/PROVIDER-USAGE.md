@@ -258,7 +258,7 @@ Concierge keeps (`listProfiles`), read from that home's own login when claude-sw
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
-Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`.
+Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`. Each account read from its own login (also the fallback when claude-swap's copy has died) is asked at most every five minutes, inside the six minutes a reading counts as fresh, doubling the gap after a failure up to thirty minutes; between reads or after a failure it keeps its last good windows with the time they were taken, so a 429 never blanks it.
 
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
 current usage windows (headroom, reset time, pace) of **every** account, not only the one
