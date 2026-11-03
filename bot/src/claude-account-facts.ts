@@ -43,6 +43,8 @@ import { accountHome, credentialPath, currentAccount, listProfiles } from "./pro
 export type UsageCreditsFacts = Readonly<{
   line: string;
   enabled: boolean;
+  /** Codex's credit read has its own source time; an old balance cannot authorize paid work. */
+  observedAt?: string | null;
   usedUsd: number | null;
   capUsd: number | null;
   balanceUsd: number | null;

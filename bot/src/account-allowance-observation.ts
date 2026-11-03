@@ -34,6 +34,21 @@ export function includedAllowanceWindows(provider:AccountIdentityProvider,accoun
   return account.windows;
 }
 
+/** OpenAI can charge this account's existing credits after its included Codex week is spent.
+ * The credit flag and balance come from the same account reading as the allowance bars. */
+export function codexCreditsCanCover(account:AccountUsage,now=Date.now()):boolean {
+  const at=Date.parse(account.usageCredits?.observedAt??'');
+  return account.usageCredits?.enabled===true&&Number.isFinite(at)&&at<=now
+    &&now-at<ACCOUNT_READING_MAX_AGE_MS;
+}
+
+export function accountCanTakeWork(provider:AccountIdentityProvider,account:AccountUsage,
+  model?:string|null):boolean {
+  const windows=includedAllowanceWindows(provider,account,model);
+  return windows.length>0 && (windows.every(window=>window.usedPercent<100)
+    || provider==='codex'&&codexCreditsCanCover(account));
+}
+
 /** A provider observation belongs to an account, not to the batch or peer transfer. */
 export function accountReadingAt(account:AccountUsage):number|null {
   // Every reader writes readAt; old records without it remain unknown. The batch timestamp

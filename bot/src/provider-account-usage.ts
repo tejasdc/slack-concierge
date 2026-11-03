@@ -7,7 +7,7 @@ import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAcc
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
-import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows} from './account-allowance-observation';
+import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
 import { accountUsageTable } from "./provider-usage-tables";
@@ -255,9 +255,9 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
 function codexCredits(block: any): UsageCreditsFacts | null {
   if (block?.balanceReadSucceeded !== true || typeof block?.remaining !== "number" || !Number.isFinite(block.remaining)) return null;
   const left = Math.floor(block.remaining).toLocaleString("en-US");
-  const enabled = block.creditsAvailable === true;
+  const enabled = block.creditsAvailable === true && block.remaining > 0;
   return { line: enabled ? `Codex credits: ${left} left for use beyond the plan's limits.` : `Codex credits: ${left} left, not currently usable.`,
-    enabled, usedUsd: null, capUsd: null, balanceUsd: null };
+    enabled, observedAt:iso(block.updatedAt), usedUsd: null, capUsd: null, balanceUsd: null };
 }
 
 /** Only the grants that can still be used; a spent or lapsed one is not an opportunity. */
@@ -574,8 +574,9 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // window; an Opus-only reading cannot wake a Fable hold.
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
       const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
-        && activeWindows.every(window=>window.usedPercent<100)
-        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null));
+        && accountCanTakeWork(provider,current,null)
+        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null))
+        &&(provider!=='codex'||!cachedUsageLimit(usageAttempt('codex',undefined,current.label)));
       // A percentage drop cannot identify which window caused a model-specific refusal.
       // The exact model's success, a manual clear, or its stated reset retires that cache.
       const claudeCanDispatch=provider==='claude-code'&&claudeHeldWorkCanRun(null);
@@ -652,8 +653,9 @@ function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): v
   const previous = accountInUse.get(provider);
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;
-  if (includedAllowanceWindows(provider,current,null).some(window => window.usedPercent >= 100)
-    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)) {
+  if (!accountCanTakeWork(provider,current,null)
+    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)
+    ||provider==='codex'&&!!cachedUsageLimit(usageAttempt('codex',undefined,current.label))) {
     log("info", "provider_account_changed_still_spent", { provider });
     return;
   }
