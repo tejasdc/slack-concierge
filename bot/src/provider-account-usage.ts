@@ -6,7 +6,7 @@ import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
-import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
@@ -341,6 +341,19 @@ async function readClaude(): Promise<ProviderUsage> {
     // has lapsed keeps its last facts, and a never-read one simply has none yet.
     const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
     accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: readAtNow,
+      usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
+  }
+  // claude-swap knows only the accounts added to it, and adding one copies its login, which dies the
+  // first time the original renews. Every account Concierge keeps a home for is read from that home's
+  // own login instead: hey@tejas.nyc, signed in through Accounts on 2026-11-03, was never in claude-swap's
+  // list, so it was missing from every reading and nothing could see its room.
+  for (const profile of listProfiles("claude-code")) {
+    if (!profile.signedIn || !profile.label || accounts.some(account => account.label === profile.label)) continue;
+    const own = await claudeWindowsFromOwnLogin(profile.label);
+    const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
+    accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: false,
+      windows: (own ?? []).map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
+      problem: own ? null : "Usage could not be read.", readAt: own ? new Date().toISOString() : null,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };

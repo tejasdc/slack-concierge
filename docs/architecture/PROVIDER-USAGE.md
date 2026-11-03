@@ -253,6 +253,13 @@ Tejas owns end-to-end acceptance.
 
 ## Usage limits for every account
 
+Claude accounts are read from two places: claude-swap's managed list, and every account home
+Concierge keeps (`listProfiles`), read from that home's own login when claude-swap does not list it.
+Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
+which dies the first time the original renews), so before 2026-11-03 such an account was missing from
+every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
+Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`.
+
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
 current usage windows (headroom, reset time, pace) of **every** account, not only the one
 agents use, 30 seconds after start and every three minutes, into `provider_account_usage`.
