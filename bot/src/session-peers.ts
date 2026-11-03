@@ -567,13 +567,23 @@ export class SessionPeers {
     const row=this.row(requestId);
     if(row.outcome!=='canceled'||!row.remote_operation_id
       ||JSON.parse(row.remote_status_json??'{}').cancellationAcknowledged)return;
+    const acknowledge=()=>{
+      db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
+        WHERE request_id=? AND outcome='canceled'`).run(requestId);
+    };
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     try {
       await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{});
-      db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
-        WHERE request_id=? AND outcome='canceled'`).run(requestId);
+      acknowledge();
     } catch(error) {
+      // A peer that explicitly has no delivery has no execution authority left to
+      // revoke. This is different from the origin's own final cancellation event.
+      if(error instanceof PeerError&&error.status===404&&error.message==='Unknown session request.'){
+        acknowledge();
+        log('info','session_peer_cancel_absent',{request_id:requestId,peer:row.peer});
+        return;
+      }
       log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
     }
   }
@@ -1286,13 +1296,14 @@ export class SessionPeers {
   /** The origin canceled a request this instance delivered: close the delivery and tell its worker. */
   canceledByOrigin(requestId:string) {
     const row=this.delivery(requestId);
+    const noticeAlreadyRetained=!!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(`canceled:${requestId}`);
     const stopped=db.transaction(()=>{
       db.query('UPDATE session_peer_deliveries SET closed_at_ms=coalesce(closed_at_ms,?) WHERE request_id=?').run(this.now(),requestId);
       const stopped=cancelQueuedWithdrawnRequest(row.target_input_id);
       if(stopped)withdrawUnstartedServiceInput(`canceled:${requestId}`,'The request was withdrawn before its worker began.');
       return stopped;
     })();
-    if(!stopped&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
+    if(!stopped&&!noticeAlreadyRetained&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
       tellWorkerCanceled(this.dependencies.owner,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
     return {canceled:true};
   }
