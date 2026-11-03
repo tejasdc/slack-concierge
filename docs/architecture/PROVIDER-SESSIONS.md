@@ -805,3 +805,54 @@ The request stores a unique recovery marker and deterministic Slack message ID b
 Recovery first proves the previous process owner dead. Interrupted Codex recovery requires both the exact `forkedFromId` and recovery marker from App Server thread enumeration. `parentThreadId` identifies sub-agents and is not a fork-recovery key. Zero matches may retry only from a dead owner; multiple matches remain ambiguous. Claude interruptions remain ambiguous because its CLI has no equivalent marker. Only invalid-parameter JSON-RPC errors are definite rejection; internal errors enter ambiguous recovery.
 
 Authority: `bot/src/fork-requests.ts`, fork transitions in `bot/src/state.ts`, `bot/src/codex.ts`, `bot/tests/fork-requests.test.ts`, and focused fork cases in provider/state tests.
+
+## Provider turn and account behavior
+
+- Thinkering-created Codex sessions retain the owner's selected default model and
+  effort at creation. An admitted agent may name its own session, or any other with
+  `--session <address>` [decision: agents-are-never-handcuffed], through `sessions title` with its exact source input/run and stable action ID; it
+  may also correct that name later, because a session stuck with a bad name had no
+  way to fix what he was reading (September 22, 2026). A title Tejas set himself
+  through the app's Rename control always wins and is never overwritten. That is how a session
+  Tejas starts by hand gets its name, so the session instructions name the helper by
+  absolute path: provider children do not have `~/.local/bin` on PATH. A run that
+  starts while its session is unnamed also gets one direct, prefilled title step; the
+  general paragraph alone was skipped on a short request in the live check (Sept 19).
+
+- Codex Remote mirroring handles inputs actually submitted by another Codex client.
+  Match native provider input IDs against the common ledger and exact provider turn;
+  human, agent and service inputs owned by Concierge must not be labeled Remote or
+  exported through that observer. Native results belong in Thinkering and correlated
+  request replies; an old Slack thread binding alone does not authorize mirroring them.
+
+- ChatGPT uses the existing private profile, transcript custody and browser capability.
+  Deliberate provider choice and same-provider failures remain visible. Operator-owned
+  daily refresh and explicit refresh use the common owner; no competing browser or index.
+  The browser is remote-box's always-running real Chrome, which Thinkering keeps signed in
+  (remote-box `docs/chatgpt-browser.md`). `sessions ask --provider chatgpt` takes `--effort`
+  as ChatGPT's thinking level (default `pro`, stored as the session's model; `--gpt` instead opens one GPT from the GPT Store) and any `--file`;
+  agents send research and second opinions there first [decision: chatgpt-pro-is-the-big-guns].
+  A ChatGPT attachment carries only its custody pin (id, name, type, digest, bytes): Thinkering
+  refuses any other field, and an added transcript field broke every ChatGPT file send.
+- A follow-up to a running Claude session joins Claude Code's own streaming-input queue
+  as a uuid-stamped message; it never interrupts the agent and has no per-message
+  deadline while the turn is live. Stop is the only interrupt. Tejas approved this on
+  September 18, 2026 ("we should start using Claude's own queue"). Every Claude message,
+  opening or follow-up, is acknowledged when Claude's own transcript records picking it
+  up (`claude-transcript-watch.ts`); the stdout echo arrives only with Claude's first
+  output and is the fallback. So a waiting follow-up reads as queued until Claude takes
+  it, and nothing after — shown from Claude's record, never estimated. The message itself
+  is published at that pickup, from the same transcript row and through the same mapping
+  as the later echo, so it appears when Claude takes it rather than with Claude's first
+  reply, and the echo merges into it under the same identity. History lists that same
+  message where Claude read it: a message that arrives while a tool is running is written
+  by Claude Code as a `queued_command` attachment row, never a `user` row, and the SDK's
+  history reader drops attachment rows, so `claude-queued-messages.ts` scans the transcript
+  itself (append-only, once per new byte) and places each such message after the row it
+  followed, under the uuid it was submitted as, which is the id the live echo carried.
+  Two requests Claude had answered at 12:37 sat below each new message he typed with "read
+  after 12:50 PM" because the page never listed them (Tejas, 2026-09-28, reported twice).
+  Do not build a
+  warm Claude process for speed: process start and `--resume` cost 1–2 seconds; the long
+  wait before a reply is Claude working, which a warm process would also pay. See the
+  [parity approach](../plans/2026-09-17-claude-session-parity.md).

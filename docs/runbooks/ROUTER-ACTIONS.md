@@ -867,3 +867,20 @@ Provider contracts: [single-message length guidance and truncation warnings](htt
 Lab comments share their discussion. To answer a specific comment, use `sessions board post --thread <handle> --reply-to lab:<handle>/<entry>` with the usual source and action flags. The record resolves the parent and refuses a different thread or a hidden parent; mention notices include this reply command. Omit `--reply-to` to add a top-level comment.
 
 On the server, the launcher sends Lab board commands to the installed current owner, including when the agent session started before a deployment. The older parser pinned to that session cannot know a new board option. Keep other session commands on their existing routing unless their contract specifically requires the current owner.
+
+## Inbox instruction ownership and project commands
+
+- Change the Inbox agent's standing behavior by asking the Inbox session itself
+  (`sessions ask` at its exact address) to update its own `slack-inbox` instructions.
+  Never edit its AGENTS.md from another session. A resumed Claude session keeps the
+  system prompt it started with, so an edit made around it never enters its context;
+  a change it makes itself does. Other sessions pick up new instructions when they start.
+  Source: Tejas, 2026-09-18, after the Inbox never saw the turn-outcome rule.
+
+- **A session can live in a folder inside a project** (Tejas, 2026-10-08: "Why do we have an expertise folder in the root workspace?" [decision: lab-work-lives-inside-agent-ecology]): `--project` on ask and create accepts `<project>/<folder>` or its absolute path (`sessionProject` in session-projects.ts; the folder must exist inside the project), and `sessions move <address> --project …` re-homes an idle session, whose next turn resumes the same conversation in the new folder (each turn reads the folder from the session record). Lab work lives inside agent-ecology, never as top-level projects.
+- **The lab runs inside Concierge in its own space** [decision: lab-runs-inside-concierge-in-its-own-space]: a session
+  created in agent-ecology (including any folder inside it, such as `agent-ecology/expertise/<name>`), lab-commons or any `expertise-*` folder is lab work (`sessionSpace` in session-roles.ts),
+  every session view carries `space`, `GET /sessions?space=` filters, and `GET /lab` lists the lab's sessions and
+  every request touching it with how it ended. thnkr.ing keeps lab sessions out of his everyday list, Inbox and
+  notifications and shows them in its Lab view. An experiment that changes Concierge itself runs on a separate
+  instance. See [the lab space](../plans/2026-10-08-lab-space.md).
