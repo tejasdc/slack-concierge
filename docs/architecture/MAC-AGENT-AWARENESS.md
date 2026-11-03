@@ -5,7 +5,9 @@ request must state the relevant native iOS, Mac app, Mac file, Mac screen, Messa
 explicit human Mac need. A pre-tool hook also refuses common browser and foreground-control
 commands in Claude and Codex turns, including server SSH commands aimed at the Mac. It allows
 background Simulator command-line automation only with a native iOS need on that accepted
-turn. This is a tool boundary; arbitrary programs outside the managed provider stream remain
+turn. Codex Computer Use also requires a recorded desktop-capable need, and Claude in
+Chrome remains refused because it controls his personal browser. This is a tool boundary;
+arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
 
 The Mac session owner observes Claude and Codex tool starts in the existing provider

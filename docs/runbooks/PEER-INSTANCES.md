@@ -141,7 +141,11 @@ an empty browser configuration, so an agent's environment or browser preferences
 the owner check or attach it to Tejas's Chrome. The recorded website bounds the first open; later
 navigation may include a site's authentication providers and remains the agent's responsibility. Direct
 agent-browser, Playwright and Chrome DevTools tools remain refused on the Mac, as do foreground
-Chrome and app activation. This keeps the fallback separate from Tejas's Chrome and focus.
+Chrome and app activation. Claude in Chrome is also refused for agent work because it
+attaches to his personal Chrome, even when a Mac browser fallback is recorded. Codex
+Computer Use requires an accepted Mac app, screen, native iOS, or explicit Mac need;
+a Mac file or browser fallback need does not unlock desktop control. This keeps the
+fallback separate from Tejas's Chrome and focus.
 The failure report is the agent's recorded observation; Concierge does not independently
 prove that it exhausted every server recovery. Do not move a browser after a timed-out submit
 until the destination is checked for an already-completed write.
