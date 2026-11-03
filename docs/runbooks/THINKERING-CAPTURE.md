@@ -46,7 +46,7 @@ router-actions.sh test-capture --path <path> --source-input <id> --source-run <i
 Paths: `send-to-inbox`, `bug-report`, `pebble` (this drop-off), `iphone-share`,
 `action-button`, `watch`, `mac` (thnkr.ing's device route, with the agent test device key
 thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnkr.ing, into
-`--reply-to`), and `monologue` or `alexa` (the owner socket; `--source-id` repeats an exact producer ID). The agent's own accepted input and run travel
+`--reply-to`), and `monologue`, `alexa` or `voice-memo` (the owner socket; use the same `--source-id`, `--recorded-at` and text to test an exact retry). The agent's own accepted input and run travel
 as `X-Concierge-Agent-Source: <input> <run>` on the drop-off and thnkr.ing, and as
 `source.metadata.agentSource` or `agentSource` at the owner. The owner (`agentTestSource`)
 records the capture with origin agent and that source, shows it in the Inbox under the agent's
@@ -148,6 +148,22 @@ spoken words: `{"source":{"kind":"alexa","id":"<Alexa request ID>","recordedAt":
 timestamp>"},"text":"<his words>"}`. The request ID is the retry identity. It is recorded as
 his and shown as "You · Alexa"; `test-capture --path alexa` (with optional `--source-id` to
 repeat an ID) exercises it as an agent.
+
+Apple Voice Memos transcribed by the Mac's voice-memo-transcription iCloud rescue job use
+the same root-private socket. The Mac sends the original recording start, a stable job ID,
+and the complete transcript without routing instructions:
+
+```json
+{"source":{"kind":"voice-memo","id":"voice-memo:<16-hex job id>","recordedAt":"<recording start, ISO>","title":"Voice memo, <weekday mon d, h:mm AM/PM> (<n> min)"},"text":"<complete transcript, verbatim>","files":[]}
+```
+
+The owner records it as his, shows "You · Voice Memos", and queues the Inbox router to
+split its topics. The Mac job must persist the exact source, title, transcript and files
+for every retry: the source ID is the retry identity, identical payloads return the
+original receipt, and changed payloads conflict. `test-capture --path voice-memo` exercises
+the same socket as a marked agent capture without starting a router turn. The Mac job's
+completion marker is responsible for keeping previously accepted recordings, including
+the November 2 shower memo, from being sent again.
 
 ## Configuration and recovery
 

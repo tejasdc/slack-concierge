@@ -4,7 +4,7 @@
  * is added here once rather than in five places that can disagree. Dependency-free on purpose:
  * the capture ingress executable and the read workers import it without the ledger.
  */
-export const INBOX_PRODUCER_KINDS=['pebble','thinkering','monologue','alexa','outside-agent','agent-report','reader'] as const;
+export const INBOX_PRODUCER_KINDS=['pebble','thinkering','monologue','alexa','voice-memo','outside-agent','agent-report','reader'] as const;
 export type InboxProducerKind=typeof INBOX_PRODUCER_KINDS[number];
 
 export const isInboxProducerKind=(kind:unknown):kind is InboxProducerKind=>
@@ -14,6 +14,7 @@ export const isInboxProducerKind=(kind:unknown):kind is InboxProducerKind=>
 export const FIXED_PRODUCER_DOORS:Readonly<Record<string,string>>={
   monologue:'Monologue',
   alexa:'Alexa',
+  'voice-memo':'Voice Memos',
   'home-assistant':'Home Assistant',
 };
 
