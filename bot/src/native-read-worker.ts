@@ -95,11 +95,14 @@ async function peerGet(name:string,path:string,timeoutMs:number):Promise<unknown
     body?.error?.code??'PEER_REFUSED');
   return body;
 }
+// A peer that answered while its own check ran is asked again rather than trusted for 30 s.
+const stillChecking=(view:Record<string,unknown>)=>Array.isArray(view.providers)&&view.providers.some((row:any)=>row?.checking===true);
 function peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
   // A machine says `checking` only while a read of it is outstanding: the page reads again while
   // any machine says so, and the last answer, good or not, stands for 30 s like this one's check.
   const latest=peerLatest.get(name);
-  if(!fresh&&latest&&!peerReads.has(name)&&Date.now()-latest.at<30_000)return Promise.resolve(latest.view);
+  if(!fresh&&latest&&!peerReads.has(name)&&Date.now()-latest.at<30_000&&!stillChecking(latest.view))
+    return Promise.resolve(latest.view);
   let read=peerReads.get(name);
   if(!read){
     read=(async()=>{

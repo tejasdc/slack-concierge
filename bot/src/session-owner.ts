@@ -1004,7 +1004,9 @@ export class SessionOwner {
   private async peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
     // `checking` only while a read of that machine is outstanding; the last answer stands for 30 s.
     const latest=this.peerAccountLatest.get(name);
-    if(!fresh&&latest&&!this.peerAccountReads.has(name)&&Date.now()-latest.at<30_000)return latest.view;
+    // A peer that answered while its own check ran is asked again rather than trusted for 30 s.
+    const stillChecking=Array.isArray(latest?.view.providers)&&(latest!.view.providers as any[]).some(row=>row?.checking===true);
+    if(!fresh&&latest&&!this.peerAccountReads.has(name)&&Date.now()-latest.at<30_000&&!stillChecking)return latest.view;
     let read=this.peerAccountReads.get(name);
     if(!read){
       read=(async()=>{
