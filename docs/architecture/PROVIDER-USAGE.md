@@ -1,5 +1,7 @@
 # Provider usage reset cache
 
+The [current provider state flow](PROVIDER-STATE-FLOW.md) joins this evidence and the session owner into one operator map. Historical notice descriptions below are corrected at the affected sections for the November 3 incident.
+
 Concierge remembers an actual usage refusal and its provider-reported reset instant
 in the existing SQLite ledger. The shared implementation is `bot/src/provider-usage.ts`;
 the Codex and Claude adapters consult it immediately before starting provider work.
@@ -178,11 +180,10 @@ notice promised the work would move to that account, and his 7:28 PM message mov
 session instead while he was signing in. Record:
 `docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
 
-The first held input of an episode publishes one `provider_outage` event with an `auth`
-payload: account, machine and number of held inputs. Thinkering's existing notification
-courier pushes it without a provider turn. `provider_auth_hold_notified` and
-`provider_auth_hold_activation_failed` give the operator the hold and recovery trail
-without logging credentials or request text. This does not replay turns that reached
+The first held input of an episode records one internal `provider_hold_observed` event with an
+`auth` payload: account, machine and number of held inputs. It does not itself push a
+notification. The sign-in renewal path asks Tejas only when the Mac browser agent cannot
+restore the login without him. This does not replay turns that reached
 assistant output or tools. The September 23 expired-sign-in incident left six Inbox
 inputs terminal despite Claude only writing their input to its transcript; those six
 are handled separately by the Inbox and are not migrated or replayed by this change.
@@ -228,28 +229,25 @@ Structured events report `provider_usage_exhausted`, `provider_usage_cached_skip
 and `provider_usage_cache_write_failed`. Fields contain provider/model identity and reset
 metadata, never prompts, credentials, account identifiers or raw provider errors.
 
-## Telling him his account has stopped
+## Showing a held message without an unnecessary phone notice
 
-A hold is invisible unless someone says so, and the session that would normally say it runs
-on the provider that is refusing. So `provider-usage-notice.ts` publishes one durable
-`provider_outage` owner event the moment a usage refusal actually blocks accepted work, on
-the session whose input was held. Thinkering already turns that event into a notification on
-his phone through its notification courier, with no provider turn and no router session
-involved — which is what the 2026-09-22 outage needed, because every Claude path was the
-broken thing.
+A hold remains visible on the accepted message's session receipt. The owner also records one
+durable `provider_hold_observed` diagnostic event for an allowance or authentication episode.
+That event does not produce a phone outage or Needs attention item: a reset or usable account
+can release the work without Tejas. If only he can complete sign-in or make a decision, the
+repair path raises that exact need. The prior raw `provider_outage` delivery let a transient
+agent consult claim Tejas had a waiting message on November 3.
 
 One notice per episode, not per input: the allowance belongs to the account, so the reset
 instant identifies the episode and the ledger's unique event id deduplicates it. The payload
 carries a `usage` object — the reset instant, how many inputs are waiting on it, and which
-other accounts had room at the last half-hourly reading — and offers no model alternatives,
-because every model on an exhausted account is equally out. Thinkering renders that object
-with its own words (`attention-notifications.ts`); the ordinary outage wording is unchanged.
+other accounts had room on this machine — and offers no model alternatives, because an
+account-wide allowance cannot be bypassed by picking another model. A reset is a recheck,
+not an unconditional start promise.
 A running process never changes account. A later Claude turn may launch from another
 account's own home when it has room; no shared credential is replaced.
 
-This change was inspected against source and the existing incident evidence. No tests,
-provider probes or sandbox traffic were run or added, under the current delivery policy.
-Tejas owns end-to-end acceptance.
+The November 3 replay procedure and live release checks are tracked in the [incident](../incidents/2026-11-03-withdrawn-mac-consult-usage-notice.md).
 
 ## Usage limits for every account
 
@@ -604,24 +602,13 @@ them back, because they were built for a screen. Now:
   reset instant, and mixing the two would flatten the line. Every forecast carries its
   source, sample count, span and rate so nobody has to trust it blindly, and no surface ever
   states a countdown — a rate cannot promise a time and agent work arrives in bursts.
-- **Tejas is told** only when a fresh provider reading for that account reaches 90% of a window (`NOTICE_AT_PERCENT`), once
-  per account per window per allowance period, for every account. No pace and no forecast: on
-  2026-10-08 a pace projection warned him at 21% and he said "I do not want to be notified when
-  it's like a fucking 21% dude. Please throw the pace and all of the nonsense ... Actually, 90% of
-  above" [decision: usage-notice-only-at-90-percent]. It is a provider-free Inbox notice
-  (`publishProviderFreeNotice`, kind `provider_usage_warning`): its own thread, a reading item and
-  the push thnkr.ing sends for every reading item. Each account must carry its own provider
-  observation time within the one-minute warning limit (Claude's source fetch time or
-  CodexBar's usage update time); a newer provider-wide scan cannot refresh an old account's
-  number or stand in for a missing or invalid account timestamp. The separate
-  six-minute dispatch limit does not authorize a warning. The combined Claude/Codex warning likewise uses fresh measured windows,
-  never dispatch capacity raised to 100% by an earlier refusal. It names both accounts,
-  windows, percentages and observation times. Alternative accounts are described as having
-  room only when their readings are fresh. When the window refills the thread says so and
-  closes; pace warnings sent before the change were withdrawn on the next reading. Until
-  2026-10-07 it was a bare `provider_outage` event, which thnkr.ing never shows. Forecasts
-  remain diagnostic and do not trigger budget notices. The banked-reset expiry notice uses
-  the same carrier.
+- **Running-low readings stay in Accounts.** The older 90% warning and combined Claude/Codex
+  warning were valid under Tejas's October 8 decision [decision: usage-notice-only-at-90-percent],
+  which replaced noisy pace warnings. His November 3 decision [decision: provider-account-notices-only-when-action-needed] superseded that threshold:
+  no routine usage, provider, or account notice should reach him unless he must act. Existing
+  warning threads are closed on the next usage pass. Forecasts remain available in Accounts
+  and through `sessions usage`; they do not gate dispatch. A banked reset approaching expiry
+  remains a separate notice when using it before it lapses requires his decision.
 - **`router-actions.sh sessions usage`** answers the same question for any caller: the
   account in use, the closest wall with its basis, the accounts with room, every window's
   forecast. A read; it recommends nothing and changes nothing. The Inbox router uses it to
@@ -915,13 +902,12 @@ five-hour window there, and the reading is still complete.
 | A conversation stayed where it was | nothing |
 | He selected another account and conversations moved onto it | nothing — he did it |
 | Its account ran out and it continued on another one | nothing — it kept working |
-| **Every account is out, so work is waiting** | the usage hold notice: what is waiting, and when the allowance returns |
+| **Every usable account is out, so work is waiting** | the held message remains visible in its session; Accounts shows allowance evidence; no automatic phone outage |
 | **A banked turn's selected account is out** | it waits, and says so, naming that account |
 
-The first five rows are the account rule doing its job. The last two are the only thing he asked
-to hear about, and both already existed before this: `noticeUsageHold` in
-`provider-usage-notice.ts`, published once per allowance episode, and `accountWaitingSentence`
-for banked work.
+The first five rows are the account rule doing its job. The final row describes a session
+receipt, not a phone notice. A banked release remains in its session and names its bound
+account there.
 
 He arrived at that line in four messages on 2026-09-29, each after a narrower fix:
 

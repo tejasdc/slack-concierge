@@ -21,7 +21,7 @@ export type StatusContext={
   now:()=>number;
   formatTime:(ms:number)=>string;
 };
-export type StatusInput={id:string;session_id:number;kind:string;request_id:string|null};
+export type StatusInput={id:string;session_id:number;kind:string;request_id:string|null;origin?:string};
 export type StatusTurn={id:number;status:string;agent_text:string|null;dispatch_failure_class:string|null;
   dispatch_next_attempt_ms:number|null;dispatch_attempt:number;dispatch_hold?:string|null};
 export type StatusSteering={status:string;provider_sent_at:string|null;error:string|null};
@@ -37,6 +37,7 @@ export function providerTroubleText(status:number|null,offer:OutageFact=null):st
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
   saved:any,context:StatusContext):InputStatusDetail|null {
   const {turn,steering,state}=observed;
+  const waitingWork=input.origin==='human'?'Your message':input.origin==='agent'?'The agent’s request':'The session instruction';
   if(steering?.status==='ambiguous'&&!steering.provider_sent_at){
     const outcome=turn?.status==='done'?'completed':turn?.status==='error'?'failed':turn?.status==='cancelled'?'was canceled':null;
     return {code:outcome?'STEERING_DELIVERY_UNCONFIRMED':'STEERING_ACK_PENDING',
@@ -62,7 +63,7 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   }
   if(state==='running'&&turn&&!steering){
     const retry=context.retry(turn.id);
-    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status,context.outage(turn.id))} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. Your message is kept; nothing to do.`,
+    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status,context.outage(turn.id))} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. ${waitingWork} is kept; nothing to do.`,
       clearsAt:retry.retryAt?new Date(retry.retryAt).toISOString():null,automaticRetry:true};
   }
   if(state!=='queued'&&state!=='waiting')return null;
@@ -89,14 +90,14 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
-      ?`No ${product} account has room until ${when}, when the first one frees up. Your message is kept and starts then by itself, or straight away if you add an account with room in Accounts.`
-      :`No ${product} account has room, and none has said when it frees up. Your message is kept and starts by itself as soon as one has room, or straight away if you add an account with room in Accounts.`,clearsAt:next,automaticRetry:true};
+      ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
+      :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};
     const again=when?`at ${when}`:'now';
-    if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. Your message is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
-    return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} Your message is kept and goes again ${again}; nothing is needed from you.`
-      :`${product} is not answering right now. Your message is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
+    if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
+    return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`
+      :`${product} is not answering right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
   }
-  if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:`This account could not sign in. ${waitingWork} is kept and will start automatically after this machine can use its credentials again.`,clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',message:'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='chosen_time')return turn.dispatch_next_attempt_ms?{code:'CHOSEN_TIME_HELD',message:`The agent picks this work up again at ${context.formatTime(turn.dispatch_next_attempt_ms)}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true}:null;
   const focusUntil=context.focusHold(input.session_id);

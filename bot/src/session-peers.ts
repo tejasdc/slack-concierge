@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {PeerCatalogueSync} from './peer-catalogue-sync';
 import {sessionProject} from './session-projects';
-import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
@@ -558,10 +558,24 @@ export class SessionPeers {
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
       if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.');
     })();
-    // Tell the peer now; if it is unreachable, it learns at its next report, which returns the outcome.
-    const client=this.dependencies.clients.get(row.peer);
-    if(!row.outcome&&client)void client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{}).catch(error=>log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)}));
+    // The peer may still be accepting a queued-offline delivery. Keep revocation owed
+    // until that acceptance is recorded and the peer acknowledges cancellation.
+    if(!row.outcome)this.schedule(`cancel:${requestId}`,()=>this.revokeCanceledRemote(requestId));
     return this.receipt(this.row(requestId));
+  }
+  private async revokeCanceledRemote(requestId:string) {
+    const row=this.row(requestId);
+    if(row.outcome!=='canceled'||!row.remote_operation_id
+      ||JSON.parse(row.remote_status_json??'{}').cancellationAcknowledged)return;
+    const client=this.dependencies.clients.get(row.peer);
+    if(!client)return;
+    try {
+      await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{});
+      db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
+        WHERE request_id=? AND outcome='canceled'`).run(requestId);
+    } catch(error) {
+      log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
+    }
   }
   private event(row:PeerRequestRow,kind:PeerEventRow['kind'],payload:unknown,eventId=randomUUID()) {
     if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))return eventId;
@@ -744,6 +758,10 @@ export class SessionPeers {
       // His thread reply the Mac has now taken: its message stops saying it is queued.
       if(JSON.parse(row.payload_json).forwardedReply)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
       row=this.row(row.request_id);
+      if(row.outcome==='canceled'){
+        await this.revokeCanceledRemote(row.request_id);
+        return;
+      }
     }
     let remote:any;
     try {remote=await client.request('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);this.unreachable.delete(row.peer);}
@@ -1264,8 +1282,13 @@ export class SessionPeers {
   /** The origin canceled a request this instance delivered: close the delivery and tell its worker. */
   canceledByOrigin(requestId:string) {
     const row=this.delivery(requestId);
-    db.query('UPDATE session_peer_deliveries SET closed_at_ms=coalesce(closed_at_ms,?) WHERE request_id=?').run(this.now(),requestId);
-    if(!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
+    const stopped=db.transaction(()=>{
+      db.query('UPDATE session_peer_deliveries SET closed_at_ms=coalesce(closed_at_ms,?) WHERE request_id=?').run(this.now(),requestId);
+      const stopped=cancelQueuedWithdrawnRequest(row.target_input_id);
+      if(stopped)withdrawUnstartedServiceInput(`canceled:${requestId}`,'The request was withdrawn before its worker began.');
+      return stopped;
+    })();
+    if(!stopped&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(requestId))
       tellWorkerCanceled(this.dependencies.owner,{requestId,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
     return {canceled:true};
   }
@@ -1377,7 +1400,13 @@ export class SessionPeers {
     row=this.delivery(row.request_id);
     const status=this.status(row.request_id);
     const fingerprint=JSON.stringify([status.hold?.code??null,status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
-    if(fingerprint===row.notified_fingerprint)return;
+    // A withdrawn origin may have changed while this queued peer turn did not.
+    // Poll the origin once after each reconciliation even with the same local
+    // fingerprint; otherwise an offline Mac learns of cancellation only at reset.
+    const target=getAcceptedSessionInput(row.target_input_id);
+    const queued=target?.turn_id!==null&&target?.turn_id!==undefined
+      &&!!db.query("SELECT 1 FROM turns WHERE id=? AND status='queued'").get(target.turn_id);
+    if(fingerprint===row.notified_fingerprint&&!queued)return;
     try {
       const answer=await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
         policy:RETRY_POLICIES.peerNotify,
@@ -1388,7 +1417,7 @@ export class SessionPeers {
       this.unreachable.delete(row.peer);
       db.query('UPDATE session_peer_deliveries SET notified_fingerprint=?,closed_at_ms=CASE WHEN ? THEN ? ELSE closed_at_ms END WHERE request_id=?').run(fingerprint,answer?.outcome?1:0,this.now(),row.request_id);
       if(answer?.outcome==='canceled'&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))
-        tellWorkerCanceled(this.dependencies.owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`a session on the ${row.peer}`});
+        this.canceledByOrigin(row.request_id);
     } catch(error) {
       this.note(row.peer,error);
       // The origin commits its request only after this instance accepted it, so a 404 within
@@ -1424,11 +1453,25 @@ export class SessionPeers {
       for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
       await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
         row=>this.closeStranded(row));
+      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests
+          WHERE outcome='canceled' AND remote_operation_id IS NOT NULL
+            AND coalesce(json_extract(remote_status_json,'$.cancellationAcknowledged'),0)=0
+            AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+        row=>this.schedule(`cancel:${row.request_id}`,()=>this.revokeCanceledRemote(row.request_id)));
       await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
         row=>this.inspectHold(row));
       await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.inspectOverdueRequest(row),this.now());
       if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
+      // A cancellation could have been admitted by an older release without revoking its
+      // held turn. The cancellation instruction itself can then sit behind that same hold.
+      await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT d.rowid AS reconciliation_rowid,d.* FROM session_peer_deliveries d
+          JOIN session_inputs notice ON notice.id='canceled:'||d.request_id
+          JOIN session_inputs target ON target.id=d.target_input_id
+          JOIN turns turn ON turn.id=target.turn_id
+          WHERE d.closed_at_ms IS NOT NULL AND turn.status='queued' AND turn.saved_kind IS NULL
+            AND d.rowid<=? AND d.rowid>? ORDER BY d.rowid LIMIT 1`,
+        row=>this.canceledByOrigin(row.request_id));
       await this.scanRows<PeerRequestRow>('session_peer_requests','SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
         row=>this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id))));
       await this.scanRows<PeerEventRow>('session_peer_events',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_events WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",

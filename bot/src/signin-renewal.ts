@@ -59,8 +59,8 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
     if (open) return false;
     const onWorkerMachine = process.platform === "darwin";
     const recorded = recordRepairNotice(db, { key: `${PREFIX[provider]}${account}:${Date.now()}`, kind: SIGNIN_RENEWAL_KINDS[provider],
-      text: `The ${name} sign-in for ${account} on the server was refused (${why}). Concierge sent the Mac's browser agent `
-        + `(mac/${SIGNIN_WORKER.address}) a request to renew it through thnkr.ing Accounts in his Chrome`
+      text: `The ${name} account ${account} is not ready on ${onWorkerMachine ? 'the Mac' : 'the server'} (${why}). Concierge sent the Mac's browser agent `
+        + `(mac/${SIGNIN_WORKER.address}) a request to sign it in through thnkr.ing Accounts in his Chrome`
         + (onWorkerMachine
           ? `; it runs on this same Mac, so its answer stays with the request and it tells Tejas itself if only he can act. Check Accounts later shows ${account} signed in; nothing else is yours. `
           : `; its answer comes back to you. When it answers completed, check Accounts shows ${account} signed in and end done. If it answers needs_decision because Chrome's own `
@@ -90,7 +90,7 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
   const approve = provider === "codex"
     ? `Accounts shows a code and a link: open the link in Chrome, sign in to OpenAI as ${account} (switch account first if another one is showing), and enter the code there`
     : `approve it on claude.ai as ${account} (switch claude.ai's account first if another one is showing), and enter the one-time code into the waiting Accounts form`;
-  return `Renew ${machine}'s ${name} sign-in for ${account}: ${machine}'s login for it was refused. In Chrome on this Mac, open thnkr.ing `
+  return `Make ${machine}'s ${name} account ${account} ready for agent work. In Chrome on this Mac, open thnkr.ing `
     + `Accounts, start ${account}'s ${name} sign-in for ${machine}${local ? " (the Mac's row in Accounts, not the server's)" : ""}, ${approve}. Keep the link and the code out of every message, `
     + `file and reply. Reply completed once Accounts shows ${account} signed in on ${machine}. Reply needs_decision --only-he-can sign-in only `
     + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`

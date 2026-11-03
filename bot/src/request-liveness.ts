@@ -1,7 +1,8 @@
-import { db, getSessionById } from './state';
+import { db, finishTurn, getSessionById, settleTurnDependencies } from './state';
 import { canceledNotice, requestLabel } from './session-notices';
 import { getAcceptedSessionInput } from './session-inputs';
 import type { SessionOwner } from './session-owner';
+import {resolveUsageHoldNoticesForSettledTurn,type UsageProvider} from './provider-usage';
 
 /**
  * Whether an open request can still be answered without anyone's help, and what the owner does
@@ -150,6 +151,27 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
         sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,
         text: canceledNotice(requestLabel((db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(input.requestId) as { payload_json: string } | null)?.payload_json ?? '{}'), input.requester),
     });
+}
+
+/** A withdrawn request that never reached a provider has no worker to notify. */
+export function cancelQueuedWithdrawnRequest(targetInputId: string): boolean {
+    const target = getAcceptedSessionInput(targetInputId);
+    if (!target) return false;
+    if (target.turn_id !== null) {
+        const queued = db.query("SELECT status,saved_kind FROM turns WHERE id=? AND session_id=?")
+            .get(target.turn_id, target.session_id) as { status: string; saved_kind: string | null } | null;
+        if (queued?.status === 'cancelled')
+            return JSON.parse(target.receipt_json ?? '{}').state === 'canceled';
+        if (queued?.status !== 'queued' || queued.saved_kind !== null) return false;
+        finishTurn(target.turn_id, 'cancelled', 'The requesting session withdrew this work before it resumed.');
+        settleTurnDependencies(target.turn_id);
+        const session=getSessionById(target.session_id);
+        if(session&&['codex','claude-code','antigravity'].includes(session.provider_id))
+            resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider,target.turn_id,'request_withdrawn');
+    } else if (target.steering_id !== null || JSON.parse(target.receipt_json ?? '{}').state != null) return false;
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(target.id);
+    return true;
 }
 
 /**

@@ -1,18 +1,15 @@
 import { providerDisplayName } from "./aliases";
-import {createHash} from 'node:crypto';
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
-import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
+import { currentAccount } from "./provider-accounts";
 import { claudeAccountAwaitingSignIn, claudeAccountLaunchableHere, claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
-import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
-  storedUsage, tightestCurrentWindow, type UsageForecast } from "./provider-usage-forecast";
+import { accountAvailability, accountsWithRoom, accountsWithRoomBesides } from "./provider-usage-forecast";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
-import {accountReadingFresh} from './account-allowance-observation';
 import { budgetBriefWithProviderRoom, codexRoomForClaudeDelegation, measuredBudgetPressure, newWorkCapacity } from './provider-start-choice';
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import { clearCodexAccountUsage, type UsageProvider } from "./provider-usage";
@@ -63,16 +60,14 @@ export function availableResetCredit(provider: UsageProvider): ResetCreditNotice
  * window free. He found out at 02:14 by asking what had happened to his threads. He was
  * the monitoring system.
  *
- * So this publishes one durable event the moment a usage refusal actually blocks accepted
- * work, on the session whose input was held. Thinkering already turns a `provider_outage`
- * event into a notification on his phone, without a provider turn and without the router
- * being alive — which is exactly what tonight needed, because every Claude path was the
- * thing that was broken.
+ * The hold is recorded for diagnosis. A usage wait does not itself require Tejas to act:
+ * the owner retries on a usable account or at a proved reset, and the repair path handles
+ * a sign-in that actually needs him. Publishing this as a phone outage made a withdrawn
+ * agent request look like his own waiting message on 2026-11-03.
  *
- * One notice per episode, not per input: the allowance belongs to the account, so the
- * reset instant identifies the episode and the ledger's unique event id does the
- * deduplication. It fires on a real refusal, never on ordinary queueing, and it changes
- * nothing by itself — switching account stays his tap in Provider accounts.
+ * One observation per episode, not per input: the allowance belongs to the account, so the
+ * reset instant identifies the episode and the ledger's unique event id deduplicates it.
+ * It changes nothing by itself. A hold is not a request for Tejas to act.
  */
 
 export type UsageHoldNotice = {
@@ -113,7 +108,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
   if (!turn?.accepted_input_id || !getSessionById(turn.session_id)) return;
   const inputId = turn.accepted_input_id;
   try {
-    // Claude's failed attempt names its execution account. Selection is not evidence of it.
+    // A failed Claude attempt names its execution account; preflight has no execution account.
     // Room in a usage reading is not room this machine can use: an account whose login here is signed
     // out is named as needing a sign-in, never as where the work moves (the Mac, 2026-11-02).
     const withRoom = accountsWithRoom(input.provider,input.model);
@@ -128,7 +123,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
     const held = heldInputCount(input.clearsAtMs,input.provider,account);
     record({
       eventId, sessionId: turn.session_id, inputId, turnId: input.turnId,
-      kind: "provider_outage",
+      kind: "provider_hold_observed",
       payload: {
         inputId, provider: input.provider, model: input.model,
         modelLabel: modelLabel(input.model), status: null, incident: null,
@@ -150,7 +145,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
       },
     });
     // The account name belongs in his app, not in a log line.
-    log("warn", "provider_usage_hold_notified", { provider: input.provider, session_id: turn.session_id,
+    log("info", "provider_usage_hold_observed", { provider: input.provider, session_id: turn.session_id,
       turn_id: input.turnId, clears_at: new Date(input.clearsAtMs).toISOString(),
       held_inputs: held, accounts_with_room: alternatives.length, accounts_needing_sign_in: needSignIn.length });
   } catch (error) {
@@ -179,12 +174,15 @@ export function noticeAuthHold(input: {provider: UsageProvider; model:string|nul
   const waiting=db.query(`SELECT count(*) AS held FROM turns JOIN sessions ON sessions.id=turns.session_id
     WHERE turns.status='queued' AND sessions.provider_id=?`).get(input.provider) as {held:number};
   const heldInputs=Math.max(authHeldInputCount(input.provider),waiting.held);
+  // Claude homes and Codex have a browser repair agent. Antigravity, and a
+  // single-home Claude installation, still need a guarded human sign-in notice.
+  const hasRepairRoute=input.provider==='codex'||input.provider==='claude-code'&&claudeRunsFromOwnHomes();
   try {
     record({eventId:episode,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId:input.turnId,
-      kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
+      kind:hasRepairRoute?'provider_hold_observed':'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
         model:input.model,modelLabel:modelLabel(input.model),status:null,incident:null,alternatives:[],
         auth:{account,machine,heldInputs}}});
-    log('warn','provider_auth_hold_notified',{provider:input.provider,machine,held_inputs:heldInputs});
+    log('info','provider_auth_hold_observed',{provider:input.provider,machine,held_inputs:heldInputs});
   } catch(error) {
     log('error','provider_auth_hold_notice_failed',{provider:input.provider,turn_id:input.turnId,
       error:error instanceof Error?error.message:String(error)});
@@ -232,12 +230,12 @@ export function noticeTurnContinuation(input:{provider:UsageProvider;model:strin
     .get(input.provider,input.turnId) as {held:number};
   try{
     record({eventId,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId:input.turnId,
-      kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
+      kind:'provider_hold_observed',payload:{inputId:turn.accepted_input_id,provider:input.provider,
         model:input.model,modelLabel:modelLabel(input.model),status:null,incident:null,alternatives:[],
         continuation:{reason:input.reason.refusal,account:input.account??currentAccount(input.provider)?.label??null,
           machine:machineName(),heldInputs:waiting.held,
           clearsAt:input.reason.waitUntilMs?new Date(input.reason.waitUntilMs).toISOString():null}}});
-    log('warn','provider_continuation_hold_notified',{provider:input.provider,reason:input.reason.refusal,
+    log('info','provider_continuation_hold_observed',{provider:input.provider,reason:input.reason.refusal,
       machine:hostname(),held_inputs:waiting.held});
   }catch(error){log('error','provider_continuation_hold_notice_failed',{provider:input.provider,
     error:error instanceof Error?error.message:String(error)});}
@@ -334,7 +332,7 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   const remaining = outcome.remainingCredits ?? null;
   const nextExpiresAt = outcome.nextExpiresAt ?? null;
   record({
-    eventId: `${episode}:used`, sessionId: session, kind: "provider_outage",
+    eventId: `${episode}:used`, sessionId: session, kind: "provider_hold_observed",
     payload: {
       inputId: null, provider, model: null, modelLabel: providerDisplayName(provider) ?? provider,
       status: null, incident: null, alternatives: [],
@@ -363,119 +361,13 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
  */
 const allowancePeriod = (resetsAt: string) => Math.round(Date.parse(resetsAt) / 60_000);
 
-/** A window's name in words, because "5-hour" is a field name and not a sentence. */
-function windowLabel(name: string): string {
-  if (name === "5-hour") return "five-hour window";
-  if (name === "Weekly") return "weekly allowance";
-  const scoped = name.match(/^Weekly · (.+?) only$/);
-  return scoped ? `weekly allowance for ${scoped[1]}` : name;
-}
-
-/**
- * Tells him, in his Inbox and on his phone, when an account reaches 90% of a window.
- *
- * Only the level counts: no pace, no forecast, no "will run out around" (Tejas, 2026-10-08,
- * after a pace projection warned him at 21% [decision: usage-notice-only-at-90-percent]). It is a
- * provider-free Inbox notice, because a bare outage event is never shown (2026-10-07). One per
- * account per window per allowance period; it watches every account, since turns move between
- * accounts for room. When the window refills its thread says so and closes.
- */
+/** Running-low readings stay in Accounts; they do not require a message to Tejas. */
 export function publishUsageForecastNotices(_record?: RecordEvent): void {
-  let published = false;
-  const capacity = (provider: 'claude-code' | 'codex') => {
-    try { return newWorkCapacity(provider); } catch { return null; }
-  };
-  const claudeCapacity = capacity('claude-code');
-  const codexCapacity = capacity('codex');
-  const claudePressure = claudeCapacity && measuredBudgetPressure('claude-code', claudeCapacity.account);
-  const codexPressure = codexCapacity && measuredBudgetPressure('codex', codexCapacity.account);
-  const bothNear = !!claudePressure?.resetsAt && !!codexPressure?.resetsAt
-    && (claudePressure.usedPercent < 100 || codexPressure.usedPercent < 100);
-  for (const provider of ["claude-code", "codex"] as const) {
-    let nearlySpent: UsageForecast[];
-    try { nearlySpent = accountsNearlySpent(provider); } catch { continue; }
-    for (const reading of nearlySpent) {
-      if (bothNear) continue;
-      if (!reading.resetsAt) continue;
-      // A fresh key: a pace notice already sent this period must not suppress the 90% one.
-      const key = `usage-at-${NOTICE_AT_PERCENT}:${provider}:${reading.account}:${reading.window}:${allowancePeriod(reading.resetsAt)}`;
-      if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`service-notice:${key}`)) continue;
-      try {
-        const spare = freshAccountsWithRoomBesides(provider, reading.account);
-        const recorded = publishProviderFreeNotice(db, {
-          key, kind: "provider_usage_warning",
-          text: usageWarningText(provider, reading, spare),
-          payload: {
-            provider, account: reading.account, window: reading.window, windowLabel: windowLabel(reading.window),
-            usedPercent: reading.usedPercent, resetsAt: reading.resetsAt, accountsWithRoom: spare,
-            movesAutomatically: movesAutomatically(provider), thresholdPercent: NOTICE_AT_PERCENT,
-          },
-        });
-        published ||= recorded;
-        log("warn", "provider_usage_level_notified", { provider, account: reading.account, window: reading.window,
-          used_percent: reading.usedPercent, accounts_with_room: spare.length, recorded });
-      } catch (error) {
-        log("error", "provider_usage_level_notice_failed", { provider,
-          error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-  }
-  try {
-    const claude = claudePressure;
-    const codex = codexPressure;
-    if (bothNear && claude?.resetsAt && codex?.resetsAt) {
-      // Account eligibility can change before either provider refills. That must not turn
-      // one period of shared pressure into a second warning with a different reset key.
-      const open = db.query(`SELECT 1 FROM session_inputs input
-        JOIN session_owner_events event ON event.input_id=input.id AND event.kind='provider_usage_warning'
-        WHERE input.scope=? AND json_extract(event.payload_json,'$.providers') IS NOT NULL
-          AND json_extract(event.payload_json,'$.resetsAt')>?
-          AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)
-        LIMIT 1`).get(SERVICE_NOTICE_SCOPE,new Date().toISOString());
-      if (!open) {
-        const key = `both-providers-at-${NOTICE_AT_PERCENT}:${claude.account}:${allowancePeriod(claude.resetsAt)}:${codex.account}:${allowancePeriod(codex.resetsAt)}`;
-        published ||= publishProviderFreeNotice(db, {key,kind:'provider_usage_warning',
-          text:`Accounts on ${machineName()} measured Claude account ${claude.account} at ${claude.usedPercent}% of ${claude.window} (${claude.observedAt}) and Codex account ${codex.account} at ${codex.usedPercent}% of ${codex.window} (${codex.observedAt}). Both are at or above 90%. Automatic dispatch checks availability when new work is requested; earlier provider refusals can still hold a request.`,
-          payload:{providers:['claude-code','codex'],thresholdPercent:NOTICE_AT_PERCENT,
-            claudeAccount:claude.account,claudeWindow:claude.window,claudeObservedAt:claude.observedAt,
-            codexAccount:codex.account,codexWindow:codex.window,codexObservedAt:codex.observedAt,
-            claudeUsedPercent:claude.usedPercent,codexUsedPercent:codex.usedPercent,
-            resetsAt:new Date(Math.min(Date.parse(claude.resetsAt),Date.parse(codex.resetsAt))).toISOString()}});
-      }
-    }
-  } catch (error) { log('error','combined_provider_usage_notice_failed',
-    {error:error instanceof Error?error.message:String(error)}); }
-  // The notice has its thread before its notification can be tapped.
-  if (published) fileServiceNotices();
   settleRefilledUsageWarnings();
 }
 
 /** Claude turns pick, each time, an account that still has room; Codex moves its one login once the account in use is spent. */
 const movesAutomatically = (provider: UsageProvider) => provider === "codex" || claudeRunsFromOwnHomes();
-
-function freshAccountsWithRoomBesides(provider: 'claude-code' | 'codex', account: string): string[] {
-  const usage = storedUsage(provider);
-  if (!usage || usage.problem) return [];
-  const now = Date.now();
-  const fresh = new Set(usage.accounts.filter(value => accountReadingFresh(provider,usage,value,now,BUDGET_NOTICE_MAX_AGE_MS))
-    .map(value => value.label));
-  return accountsWithRoomBesides(provider, account, null).filter(label => fresh.has(label));
-}
-
-function usageWarningText(provider: UsageProvider, reading: UsageForecast, spare: string[]): string {
-  const name = providerDisplayName(provider) ?? provider;
-  const refill = noticeTime(db, Date.parse(reading.resetsAt!));
-  const head = `${name} account ${reading.account} has used ${Math.round(reading.usedPercent)}% of its `
-    + `${windowLabel(reading.window)}. It refills at ${refill}.`;
-  const next = spare.length
-    ? ` A fresh reading shows ${spare.join(" or ")} below its limit. Concierge checks launch availability when new work is requested.`
-    : ` No other ${name} account has confirmed room from a fresh reading; availability is checked when new work is requested.`;
-  const other = provider === 'codex' ? 'claude-code' : 'codex';
-  const otherCapacity = newWorkCapacity(other);
-  const automaticElsewhere = otherCapacity && otherCapacity.used < 100
-    ? ` Automatic new work can start on ${providerDisplayName(other) ?? other} while it has room.` : '';
-  return head + next + automaticElsewhere;
-}
 
 /**
  * A warning whose stated reset time passed is no longer something to read: its thread says so and
@@ -487,28 +379,10 @@ function settleRefilledUsageWarnings(): void {
     WHERE input.scope=? AND NOT EXISTS (SELECT 1 FROM session_owner_events done WHERE done.event_id='post:service-resolved:'||input.id)
     ORDER BY event.sequence`)
     .all(SERVICE_NOTICE_SCOPE) as { id: string; payload_json: string }[];
-  let sharedWarningActive = false;
   for (const row of rows) {
     try {
-      const payload = JSON.parse(row.payload_json) as { resetsAt?: string; account?: string; provider?: string; providers?: string[]; thresholdPercent?: number };
-      // Pace warnings sent before 2026-10-08 are withdrawn rather than left waiting to be read.
-      if (payload.thresholdPercent === undefined) {
-        settleServiceNotice({ inputId: row.id,
-          text: `Withdrawn: running-low notices now come only when an account reaches ${NOTICE_AT_PERCENT}%.` });
-        continue;
-      }
-      const resetsAtMs = Date.parse(payload.resetsAt ?? "");
-      if (payload.providers && Number.isFinite(resetsAtMs) && resetsAtMs > Date.now()) {
-        if (sharedWarningActive) settleServiceNotice({inputId:row.id,
-          text:'This repeated warning has closed. The first warning remains active.'});
-        else sharedWarningActive = true;
-        continue;
-      }
-      if (!Number.isFinite(resetsAtMs) || resetsAtMs > Date.now()) continue;
       settleServiceNotice({ inputId: row.id,
-        text: payload.providers
-          ? `The first allowance's stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; the both-providers warning has ended.`
-          : `${payload.account ?? "The account"}'s stated reset time passed at ${noticeTime(db, resetsAtMs)}. Current room is being checked; nothing waits on you.` });
+        text: 'Running-low updates now stay in Accounts; this notice is closed.' });
     } catch (error) {
       log("error", "provider_usage_warning_settle_failed", { input_id: row.id, error: String(error) });
     }
