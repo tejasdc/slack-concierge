@@ -163,3 +163,27 @@ to the controller's exact source/run.
 Slack assigns sandbox timestamps. The deterministic fixture asserts production
 root `1786558965.762069`; real Slack acceptance records the equivalent sandbox
 root and both identities without contacting production Slack.
+
+## Native discovery and search semantics
+
+- Native discovery remains available when historical Slack routing evidence is unavailable.
+  Report that source failure in search coverage and omissions; do not let a retired
+  channel binding hide canonical sessions or claim complete historical coverage. Missing
+  historical channel metadata omits that candidate with explicit coverage, preserving
+  other candidates without recreating a channel or authorizing resume.
+- Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
+  "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
+  llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy;
+  it is stopped when Concierge exits and killed by the kernel if Concierge is killed (`setpriv --pdeathsig`).
+  Every passage is credited to the session that wrote it and keyed by author plus exact words: a
+  request counts toward the session that received it, a reply and its returned copy (including a
+  Mac session's reply that exists here only as a return) are one passage of the replier. Titles of
+  this machine's and the peer catalogue's sessions and the archive's prompts (read from Thinkering's
+  index, never transcript files) are included; tool output is not. Vectors live in `meaning-index.db`
+  beside the ledger, never in it. Results fuse word and meaning ranks and say which matched.
+  **One search for every machine:** a machine without the index (the Mac) sends `sessions search` to
+  the machine that has it (`searchThrough`, owner route `search` with `everywhere`), which runs the
+  same federated search the Inbox gets, including a live word search of the asking machine; the Mac
+  searches alone only when the server cannot be reached, and says so. Decision history, starting
+  with the September QMD evaluation, and the working-text measurement are in
+  [session search by meaning](../plans/2026-10-07-session-search-by-meaning.md). Archive search joins indexed identity to exact prepared event proof; its consumer check runs in the build.
