@@ -199,7 +199,9 @@ Codex's App Server starts only under its native disabled-updater preference on b
 machines; installation and activation are separate, and a running listener is never
 restarted merely to apply the setting. See [Codex App Server Lifecycle](docs/runbooks/CODEX-APP-SERVER.md).
 The shared Codex session observer retains a native history head per bound session;
-reattaching an unchanged thread is silent. See [session ownership](docs/architecture/SESSION-OWNER.md).
+reattaching an unchanged thread is silent. It follows loaded running conversations and
+releases idle subscriptions so saved history does not accumulate in the App Server;
+see [session ownership](docs/architecture/SESSION-OWNER.md).
 Outside Codex conversations stay owned by their command-line execution hosts; the shared
 App Server observer excludes them so follow-up requests can resume them. See
 [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#outside-codex-conversation-ownership).
