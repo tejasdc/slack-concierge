@@ -290,6 +290,34 @@ async function readCodex(): Promise<ProviderUsage> {
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
 
+/**
+ * One Claude account's windows read from its own login, at most once per OWN_LOGIN_INTERVAL_MS (inside
+ * the six minutes a reading counts as fresh), doubling the gap after each failure up to
+ * OWN_LOGIN_MAX_BACKOFF_MS. Between reads, or when a read fails, the account keeps its last good
+ * windows with the time they were taken. Read every three minutes with no memory, a 429 from
+ * Anthropic blanked hey@tejas.nyc, then his only Claude account with room (2026-11-03).
+ */
+const OWN_LOGIN_INTERVAL_MS = 5 * 60_000;
+const OWN_LOGIN_MAX_BACKOFF_MS = 30 * 60_000;
+const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number }>();
+async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined):
+    Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null } | null> {
+  const kept = previous && previous.windows.length && previous.readAt
+    ? { windows: [...previous.windows], readAt: previous.readAt } : null;
+  const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0 };
+  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: previous!.problem } : null;
+  const own = await claudeWindowsFromOwnLogin(label);
+  if (own) {
+    ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0 });
+    return { windows: own.map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
+      readAt: new Date().toISOString(), problem: null };
+  }
+  const failures = pacing.failures + 1;
+  ownLoginPacing.set(label, { failures,
+    nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS) });
+  return kept ? { ...kept, problem: "Showing the last reading; the latest could not be taken." } : null;
+}
+
 async function readClaude(): Promise<ProviderUsage> {
   if (!existsSync(CSWAP)) return { observedAt: new Date().toISOString(), accounts: [], problem: "claude-swap is not installed on this host." };
   // `list` checks every managed account that is due under claude-swap's shared
@@ -302,6 +330,7 @@ async function readClaude(): Promise<ProviderUsage> {
   if (!Array.isArray(list?.accounts))
     return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." };
   const accounts: AccountUsage[] = [];
+  const previous = new Map((providerAccountUsage("claude-code")?.accounts ?? []).map(account => [account.label, account] as const));
   for (const account of list.accounts) {
     const hasCurrentUsage = account?.usage != null;
     const usage = hasCurrentUsage ? account.usage : account?.lastGoodUsage ?? null;
@@ -329,12 +358,11 @@ async function readClaude(): Promise<ProviderUsage> {
     let readAtNow = readAt;
     if (status !== "ok") {
       // claude-swap's own copy of this login can die while the real one works; read the real one.
-      const own = await claudeWindowsFromOwnLogin(label);
+      const own = await pacedOwnLoginWindows(label, previous.get(label));
       if (own) {
-        windows.splice(0, windows.length, ...own.map(window => ({ ...window, resetsAt: iso(window.resetsAt),
-          willLastToReset: null, runsOutAt: null })));
-        problem = null;
-        readAtNow = new Date().toISOString();
+        windows.splice(0, windows.length, ...own.windows);
+        problem = own.problem;
+        readAtNow = own.readAt;
       }
     }
     // Plan tier and credits ride on the same login the bars come from; a login whose token
@@ -349,11 +377,10 @@ async function readClaude(): Promise<ProviderUsage> {
   // list, so it was missing from every reading and nothing could see its room.
   for (const profile of listProfiles("claude-code")) {
     if (!profile.signedIn || !profile.label || accounts.some(account => account.label === profile.label)) continue;
-    const own = await claudeWindowsFromOwnLogin(profile.label);
+    const own = await pacedOwnLoginWindows(profile.label, previous.get(profile.label));
     const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
     accounts.push({ label: profile.label, plan: facts?.plan ?? null, current: false,
-      windows: (own ?? []).map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
-      problem: own ? null : "Usage could not be read.", readAt: own ? new Date().toISOString() : null,
+      windows: own?.windows ?? [], problem: own ? own.problem : "Usage could not be read.", readAt: own?.readAt ?? null,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
