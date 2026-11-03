@@ -138,6 +138,9 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
         usage: {
           account, clearsAt: new Date(input.clearsAtMs).toISOString(),
           heldInputs: held, accountsWithRoom: alternatives, accountsNeedingSignIn: needSignIn, accounts,
+          // Whether held work moves to an account with room by itself is this file's rule; the
+          // notice reads the answer instead of keeping its own copy of it (nightly review, 2026-11-03).
+          movesAutomatically: movesAutomatically(input.provider), machine: machineName(),
           inboxClaudeExhausted,
           codexRoom: input.provider==='claude-code' ? (()=>{const codex=newWorkCapacity('codex');return codex?codex.used<100?'yes':'no':'unknown';})() : null,
           // The moment a banked reset is worth most: work is stopped, and this ends it now
