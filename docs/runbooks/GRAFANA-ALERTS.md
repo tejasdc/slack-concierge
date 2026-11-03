@@ -26,6 +26,10 @@ alert. The old Slack design is historical reference only.
   The first reports high measured Mac WebContent physical footprint; the second reports
   missing or stale footprint observations. Neither opens a human thread or starts a
   second investigator.
+- `ThinkeringJournalTypingSlow` and `ThinkeringJournalTypingEvidenceUnavailable`
+  enter that same Repair agent queue. The first reports severe measured Journal key
+  delay; the second reports missing or stale exported typing measurements. Both
+  retain their Grafana episode and recovery receipts without opening a human thread.
 - Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
   thread, repair notice, or investigator starts.
 
