@@ -22,10 +22,10 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   const code=typeof details.code==='string'?details.code:'';
   if(platform==='darwin'&&(CHROME_CONTROL.test(tool)||namedToolCall(CHROME_CONTROL,code)))
     return 'Claude in Chrome controls Tejas’s personal Chrome. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
-  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&/\b(?:Google Chrome|Chrome|Safari)\b/i.test(code))
+  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&need!=='provider-renewal'&&/\b(?:Google Chrome|Chrome|Safari)\b/i.test(code))
     return 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
-      &&!['ios-native','mac-app','mac-screen','human-mac'].includes(need))
+      &&!['ios-native','mac-app','mac-screen','human-mac','provider-renewal'].includes(need))
     return 'Mac Computer Use needs an accepted Mac app, screen, native iOS, or explicit Mac need on this request.';
   if(/^(?:read|grep|glob|notebookread)$/i.test(toolName))return null;
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(raw.trim())

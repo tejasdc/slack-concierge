@@ -146,6 +146,13 @@ attaches to his personal Chrome, even when a Mac browser fallback is recorded. C
 Computer Use requires an accepted Mac app, screen, native iOS, or explicit Mac need;
 a Mac file or browser fallback need does not unlock desktop control. This keeps the
 fallback separate from Tejas's Chrome and focus.
+Concierge's own provider sign-in repair is the narrow exception: the owner records a
+repair notice and request for the Mac browser worker, then the Mac owner admits
+Computer Use for that request only. This uses the saved Chrome account to complete
+thnkr.ing Accounts' Claude or Codex renewal, as Tejas expressly chose on October 8
+[decision: provider-accounts-switch-automatically]. Ordinary agent requests cannot
+claim this need, and direct browser tools remain refused. The worker keeps links and
+codes inside the browser session. See [sign-in approval](CLAUDE-SIGNIN-APPROVAL.md).
 The failure report is the agent's recorded observation; Concierge does not independently
 prove that it exhausted every server recovery. Do not move a browser after a timed-out submit
 until the destination is checked for an already-completed write.

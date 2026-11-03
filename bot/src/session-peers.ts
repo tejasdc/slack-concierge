@@ -1113,8 +1113,12 @@ export class SessionPeers {
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
     let machineNeed:MachineNeed|undefined;
     if(this.self==='mac'&&(typeof input.provider==='string'||input.requestedEffect==='work'&&!input.forwardedReply)) {
-      try { machineNeed=parseMachineNeed(typeof input.machineNeed?.kind==='string'&&typeof input.machineNeed?.why==='string'
-        ? `${input.machineNeed.kind}:${input.machineNeed.why}`:undefined,input.machineNeed?.serverAttempt); }
+      try { machineNeed=input.machineNeed?.kind==='provider-renewal'
+        && typeof origin.inputId==='string' && /^repair-notice:(?:claude|codex)-signin:/.test(origin.inputId)
+        && typeof input.address==='string' && input.address==='session:WzIsMTAwLDFd'
+          ? {kind:'provider-renewal',why:'Concierge provider sign-in repair request'}
+          : parseMachineNeed(typeof input.machineNeed?.kind==='string'&&typeof input.machineNeed?.why==='string'
+            ? `${input.machineNeed.kind}:${input.machineNeed.why}`:undefined,input.machineNeed?.serverAttempt); }
       catch(error) { throw new SessionOwnerError(error instanceof Error?error.message:'Mac-only need required.',400,'MACHINE_NEED_REQUIRED'); }
     }
     if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))

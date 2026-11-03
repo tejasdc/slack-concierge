@@ -1,4 +1,4 @@
-export type MachineNeedKind = 'ios-native' | 'mac-app' | 'mac-file' | 'mac-screen' | 'messages' | 'human-mac' | 'browser-fallback';
+export type MachineNeedKind = 'ios-native' | 'mac-app' | 'mac-file' | 'mac-screen' | 'messages' | 'human-mac' | 'browser-fallback' | 'provider-renewal';
 export type ServerBrowserAttempt = {url:string;failure:string};
 export type MachineNeed = {kind:MachineNeedKind;why:string;serverAttempt?:ServerBrowserAttempt};
 
