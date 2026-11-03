@@ -304,9 +304,13 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
     Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {
   const kept = previous && previous.windows.length && previous.readAt
     ? { windows: [...previous.windows], readAt: previous.readAt } : null;
+  // A kept reading counts as good only while it is younger than the longest gap between reads; older,
+  // the login may be dead (no token reads the same as a refusal), so it says so and stops counting as room.
+  const keptProblem = kept && Date.now() - Date.parse(kept.readAt) <= OWN_LOGIN_MAX_BACKOFF_MS
+    ? null : "Showing the last reading; the latest could not be taken.";
   const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0 };
   // A kept reading is a good one whose time says how old it is, so the work router can still use it.
-  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: null, fresh: false } : null;
+  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
   const own = await claudeWindowsFromOwnLogin(label);
   if (own) {
     ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0 });
@@ -316,7 +320,7 @@ async function pacedOwnLoginWindows(label: string, previous: AccountUsage | unde
   const failures = pacing.failures + 1;
   ownLoginPacing.set(label, { failures,
     nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS) });
-  return kept ? { ...kept, problem: null, fresh: false } : null;
+  return kept ? { ...kept, problem: keptProblem, fresh: false } : null;
 }
 
 async function readClaude(): Promise<ProviderUsage> {
