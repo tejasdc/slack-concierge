@@ -52,7 +52,11 @@ function noteChatgptModel(text:string|undefined):void{
       text:`ChatGPT's ${level} answers now come from ${model} instead of ${before}; agents pick it up on their own, so nothing is needed from you.`});
   }catch{}
 }
-function noteChatgptChannelFailure(error:unknown,sessionId:number):void{
+function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttempt:number):void{
+  // A first failure Concierge retries by itself is not yet a channel fault; a retry that fails
+  // again is. A send that failed choosing Pro and then went through 30 seconds later woke the
+  // repair agent on 2026-11-03.
+  if(dispatchAttempt<=1&&error instanceof ProviderDispatchError&&error.failureClass==='retryable')return;
   const text=error instanceof Error?error.message:String(error);
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
   // CHATGPT_NOT_SENT means Thinkering restarted while the request waited its turn: nothing reached
@@ -1087,7 +1091,7 @@ export class SessionExecutionHost {
                   throw new ProviderDispatchError({message:'ChatGPT returned a proof line without an answer body.',terminalConfirmed:false,toolsUsed:[],failureClass:'retryable'});
                 }
                 return result;
-              },error=>{noteChatgptChannelFailure(error,session.id);throw error;});
+              },error=>{noteChatgptChannelFailure(error,session.id,claim.dispatch_attempt);throw error;});
           }
           if(outside)return runOutsideCodexTurn(actual as OutsideRun);
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
