@@ -380,6 +380,13 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     because:'stayed-for-warm-cache',expected,selectionRevision:selection?.revision??0};
   const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
   if(choice.account===null){
+    // A new account may be visible in the server's allowance read before this Mac has
+    // its own login. Ask the existing browser repair path to establish that local home;
+    // the server's credential cannot be copied here or used for this Mac session.
+    if(ownHomes&&turnId!==undefined)for(const room of accountAvailability('claude-code',model)){
+      if(room.hasRoom&&!listProfiles('claude-code').some(profile=>profile.label===room.account))
+        needClaudeSignInRenewal(room.account,'This account has room but has not been signed in on this machine.');
+    }
     // An old reading is not a limit. Each account is read about every twelve minutes and a reading
     // counts for six, so an account with room routinely looked unreadable here and work was held
     // "until" the spent account's reset (2026-10-15, his account at 19% of its week). A launchable
@@ -396,6 +403,15 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     if(lastShowedRoom)return {account:lastShowedRoom.room.account,home:lastShowedRoom.room.home,
       because:lastShowedRoom.room.account===warmCacheAccount?'stayed-for-warm-cache'
         :lastShowedRoom.room.account===expected?'stayed-on-its-account':'moved-for-room',
+      expected,selectionRevision:selection?.revision??0};
+    // A failed usage read is not a provider refusal. If a proven login is available,
+    // let Claude decide whether it can run instead of parking work on missing evidence.
+    const unreadable=rooms.filter(room=>(room.home||room.isDefault)
+      &&room.tightestUsedPercent===null&&!claudeAccountCachedReset(room.account,model))
+      .sort((a,b)=>Number(b.account===expected)-Number(a.account===expected)
+        ||Number(b.account===warmCacheAccount)-Number(a.account===warmCacheAccount))[0];
+    if(unreadable)return {account:unreadable.account,home:unreadable.home,
+      because:unreadable.account===expected?'stayed-on-its-account':unreadable.account===warmCacheAccount?'stayed-for-warm-cache':'moved-for-room',
       expected,selectionRevision:selection?.revision??0};
     // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
     const resets=accountAvailability('claude-code',model).filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))

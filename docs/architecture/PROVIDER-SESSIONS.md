@@ -1,5 +1,7 @@
 # Provider sessions, comparisons, and forks
 
+For the current end-to-end choice, hold, release, and notice path across providers and accounts, read the [provider state flow](PROVIDER-STATE-FLOW.md).
+
 This document describes how visible Slack threads bind to providers and how Concierge creates comparison and fork sessions. Executable aliases and state transitions live in source and focused tests.
 
 The [unified session owner](SESSION-OWNER.md) adds authenticated native creation,

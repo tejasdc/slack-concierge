@@ -233,17 +233,18 @@ export function releaseProvenUsageHolds(attempt: UsageAttempt, account: string, 
  * queued retry or seeing an initial pickup says nothing about model admission or recovery of
  * the account named in the old notice.
  */
-export function resolveUsageHoldNoticesForSettledTurn(provider: UsageProvider, turnId: number): void {
+export function resolveUsageHoldNoticesForSettledTurn(provider: UsageProvider, turnId: number,
+  releasedBy:'provider_succeeded'|'request_withdrawn'='provider_succeeded'): void {
   try {
     const notices = db.query(`SELECT event_id, session_id, input_id, turn_id FROM session_owner_events e
-      WHERE kind='provider_outage' AND turn_id=? AND (event_id LIKE ? OR event_id LIKE ?)
+      WHERE kind IN ('provider_outage','provider_hold_observed') AND turn_id=? AND (event_id LIKE ? OR event_id LIKE ? OR event_id LIKE ?)
         AND NOT EXISTS (SELECT 1 FROM session_owner_events r WHERE r.event_id = e.event_id || ':resolved')`)
-      .all(turnId,`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`) as
+      .all(turnId,`provider-usage-hold:${provider}:%`, `provider-continuation-hold:${provider}:%`, `provider-auth-hold:${provider}:%`) as
       { event_id: string; session_id: number; input_id: string | null; turn_id: number | null }[];
     for (const notice of notices)
       recordSessionEvent({ eventId: `${notice.event_id}:resolved`, sessionId: notice.session_id, inputId: notice.input_id,
         turnId: notice.turn_id, kind: "provider_outage_resolved",
-        payload: { provider, usage: { released_by: 'provider_succeeded', settled_turn_id: turnId } } });
+        payload: { provider, usage: { released_by: releasedBy, settled_turn_id: turnId } } });
   } catch (error) {
     log("error", "provider_usage_hold_resolution_failed", { provider, turn_id: turnId,
       error: error instanceof Error ? error.message : String(error) });

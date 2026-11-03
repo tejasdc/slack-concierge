@@ -23,7 +23,7 @@ import {boardCommand,type BoardActor,type BoardInput} from './commons-board-serv
 import {notifyAgentPost} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import { isHisChatGpt } from './aliases';
-import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, questionForTejas } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
@@ -927,26 +927,14 @@ export class SessionCommunicationCoordinator {
             if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker is told to stop.');
             // A paused or usage-held worker can already have a queued turn. Withdrawing its
             // request revokes that turn before a later account reset or Continue can claim it.
-            if(this.row(row.request_id).outcome==='canceled')stoppedQueuedTarget=this.cancelQueuedWithdrawnTarget(row);
+            if(this.row(row.request_id).outcome==='canceled'&&row.target_input_id)
+                stoppedQueuedTarget=cancelQueuedWithdrawnRequest(row.target_input_id);
+            if(stoppedQueuedTarget)withdrawUnstartedServiceInput(`canceled:${row.request_id}`,'The request was withdrawn before its worker began.');
         })();
         // A worker already holding it is told to stop (the FIPA cancel reaches the participant).
         if(!stoppedQueuedTarget&&!row.outcome&&row.target_input_id&&this.row(row.request_id).outcome==='canceled')
             tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:sessionLabel(row.source_session_id)});
         return this.receipt(this.row(row.request_id));
-    }
-    private cancelQueuedWithdrawnTarget(request:RequestRow):boolean {
-        if(!request.target_input_id)return false;
-        const target=getAcceptedSessionInput(request.target_input_id);
-        if(target?.turn_id){
-            const queued=db.query("SELECT status,saved_kind FROM turns WHERE id=?").get(target.turn_id) as {status:string;saved_kind:string|null}|null;
-            if(queued?.status!=='queued'||queued.saved_kind!==null)return false;
-            finishTurn(target.turn_id,'cancelled','The requesting session withdrew this work before it resumed.');
-            settleTurnDependencies(target.turn_id);
-            db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(target.id);
-            return true;
-        }
-        db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(request.target_input_id);
-        return false;
     }
     private receipt(row: RequestRow, withTarget = true) {
         const binding = this.binding(row);
@@ -2497,7 +2485,10 @@ export class SessionCommunicationCoordinator {
             await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome='canceled' AND t.status='queued' AND t.saved_kind IS NULL AND r.rowid<=? AND r.rowid>?
-                ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>this.cancelQueuedWithdrawnTarget(request))());
+                ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>{
+                    if(request.target_input_id&&cancelQueuedWithdrawnRequest(request.target_input_id))
+                        withdrawUnstartedServiceInput(`canceled:${request.request_id}`,'The request was withdrawn before its worker began.');
+                })());
             await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
                 JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
                 WHERE r.outcome IS NULL AND r.overdue_at_ms IS NULL AND t.status='queued' AND r.rowid<=? AND r.rowid>?
