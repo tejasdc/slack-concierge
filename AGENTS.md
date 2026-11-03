@@ -685,7 +685,7 @@ previews with phase timing for slow calls and a compact exact archive proof; see
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.
-  Stop cancels its exact run and the waiting line present at that moment; later messages
+  Stop cancels its exact run and his waiting messages present at that moment; later messages
   and returns remain eligible in the same durable session. The [session owner wire contract](docs/contracts/session-owner-v1.md)
   owns cancellation receipts and timestamped Canvas speech. Preserve agent authorship and owner-resolved human provenance;
   a new input never replays the stopped input or an uncertain effect.

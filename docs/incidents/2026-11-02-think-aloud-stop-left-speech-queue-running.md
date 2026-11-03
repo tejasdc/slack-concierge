@@ -17,11 +17,11 @@ The Canvas submitted each finalized speech segment as its own durable input. The
 
 ## Fix
 
-The session owner now cancels the waiting turns in the Stop transaction, retaining their accepted input text and canceled receipts. A queued retry that may have reached the provider is marked uncertain and cannot replay. Retained queue intents without a turn are canceled too, so restarting the owner or continuing a paused session cannot revive them. A separate clear-queue action lets an older stopped session recover its waiting line. The paired Thinkering change batches speech into one ordered transcript with per-segment speaking times before admission.
+The session owner now cancels the person's waiting messages in the Stop transaction, retaining their accepted input text and canceled receipts. Agent returns, requests and saved work keep their own custody. A queued retry or message already attached to the stopped run that may have reached the provider is marked uncertain and cannot replay. Explicit human queue intents without a turn are canceled too, so restarting the owner or continuing a paused session cannot revive them. A separate clear-queue action lets an older stopped session recover its human waiting messages. The paired Thinkering change batches speech into one ordered transcript with per-segment speaking times before admission.
 
 ## Acceptance scenario
 
-- **Seed:** A think-aloud session with one running turn, three unadmitted speech inputs queued behind it, and one accepted input with a queue intent but no turn. Retain the original input text and action identities.
+- **Seed:** A think-aloud session with one running turn, three unadmitted human speech inputs queued behind it, one human input attached to the run but never sent, one explicit human queue intent without a turn, and one agent return and scheduled turn. Retain the original input text and action identities.
 - **Action:** Stop the exact active run, then allow the owner to recover and inspect the session queue.
-- **Expected:** Stop cancels the running turn and all four waiting inputs. Their original words remain in history with canceled receipts. No old sentence starts a new run after recovery. A newly submitted transcript remains eligible as one new input.
+- **Expected:** Stop cancels the running turn and all five human waiting inputs. Their original words remain in history with canceled receipts. The agent return and scheduled turn keep their own place and are not reported as failed. No old sentence starts a new run after recovery. A newly submitted transcript remains eligible as one new input.
 - **Replayable offline:** yes (isolated owner ledger and a provider stub that confirms Stop)

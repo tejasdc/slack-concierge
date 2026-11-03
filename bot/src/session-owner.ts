@@ -2522,7 +2522,7 @@ export class SessionOwner {
         updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
         if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
       }
-      else if(action.kind==='clear-queue')this.clearWaitingTurns(session.id,'clear-queue');
+      else if(action.kind==='clear-queue')this.clearWaitingHumanInputs(session.id,'clear-queue');
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
     });
     if(action.kind==='continue'||action.kind==='restore') {
@@ -2609,12 +2609,15 @@ export class SessionOwner {
     if(target.turn_id){finishTurn(target.turn_id,'cancelled',null);settleTurnDependencies(target.turn_id);}
     db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
   }
-  /** Stop owns the session's entire waiting line. Keep every accepted input and its original words. */
-  private clearWaitingTurns(sessionId:number,reason:'stop'|'clear-queue') {
+  /** Stop settles his waiting words, while agent returns and saved work keep their own custody. */
+  private clearWaitingHumanInputs(sessionId:number,reason:'stop'|'clear-queue',stoppedTurnId?:number) {
     const waiting=db.query(`SELECT turn.id,turn.provider_admission_intended_at,turn.provider_started_at,
         turn.provider_turn_id,turn.provider_input_acknowledged_at,input.id AS input_id,input.receipt_json
-      FROM turns turn LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id
-      WHERE turn.session_id=? AND turn.status='queued' ORDER BY turn.id`).all(sessionId) as Array<{
+      FROM turns turn JOIN session_inputs input ON input.id=turn.accepted_input_id
+      WHERE turn.session_id=? AND turn.status='queued' AND turn.saved_kind IS NULL
+        AND input.kind='input' AND input.origin='human' AND input.steering_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=input.id)
+      ORDER BY turn.id`).all(sessionId) as Array<{
         id:number;provider_admission_intended_at:string|null;provider_started_at:string|null;
         provider_turn_id:string|null;provider_input_acknowledged_at:string|null;
         input_id:string|null;receipt_json:string|null}>;
@@ -2623,21 +2626,21 @@ export class SessionOwner {
         ||turn.provider_turn_id||turn.provider_input_acknowledged_at);
       finishTurn(turn.id,'cancelled',null);
       settleTurnDependencies(turn.id);
-      if(turn.input_id){
-        const prior=turn.receipt_json?JSON.parse(turn.receipt_json):{};
-        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-          .run(JSON.stringify({...prior,state:couldHaveReachedProvider?'uncertain':'canceled',
-            ...(couldHaveReachedProvider?{error:{code:'STOPPED_WITH_PRIOR_PROVIDER_ATTEMPT',
-              message:'The waiting retry was stopped; an earlier provider attempt may have taken effect.'}}:{})}),turn.input_id);
-      }
+      const prior=turn.receipt_json?JSON.parse(turn.receipt_json):{};
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+        .run(JSON.stringify({...prior,state:couldHaveReachedProvider?'uncertain':'canceled',
+          ...(couldHaveReachedProvider?{error:{code:'STOPPED_WITH_PRIOR_PROVIDER_ATTEMPT',
+            message:'The waiting retry was stopped; an earlier provider attempt may have taken effect.'}}:{})}),turn.input_id);
       recordSessionEvent({eventId:`queue-cleared:${reason}:${turn.id}`,sessionId,turnId:turn.id,
-        ...(turn.input_id?{inputId:turn.input_id}:{}),kind:'queue_cleared',payload:{reason,couldHaveReachedProvider}});
+        inputId:turn.input_id,kind:'queue_cleared',payload:{reason,couldHaveReachedProvider}});
     }
-    // An accepted input can have a retained queue intent before a turn exists. A restart or
-    // Continue would otherwise turn it into fresh work after Stop had cleared the visible line.
+    // Only an explicit human queue intent without a turn is safe to close here. Agent
+    // returns and other unbound inputs retain their own delivery and request obligations.
     const unbound=db.query(`SELECT id,receipt_json FROM session_inputs WHERE session_id=? AND kind='input'
-      AND turn_id IS NULL AND steering_id IS NULL
-      AND (receipt_json IS NULL OR json_extract(receipt_json,'$.admissionIntent')='queue')`).all(sessionId) as
+      AND origin='human' AND turn_id IS NULL AND steering_id IS NULL
+      AND json_extract(receipt_json,'$.admissionIntent')='queue'
+      AND json_extract(receipt_json,'$.state') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=session_inputs.id)`).all(sessionId) as
       Array<{id:string;receipt_json:string|null}>;
     for(const input of unbound){
       const prior=input.receipt_json?JSON.parse(input.receipt_json):{};
@@ -2646,7 +2649,30 @@ export class SessionOwner {
       recordSessionEvent({eventId:`queue-cleared:${reason}:${input.id}`,sessionId,inputId:input.id,
         kind:'queue_cleared',payload:{reason,couldHaveReachedProvider:false}});
     }
-    return waiting.length+unbound.length;
+    const attached=stoppedTurnId===undefined?[]:db.query(`SELECT input.id,input.receipt_json,
+        steering.id AS steering_id,steering.status,steering.provider_sent_at
+      FROM session_inputs input JOIN turn_steering_messages steering ON steering.id=input.steering_id
+      WHERE input.session_id=? AND input.turn_id=? AND input.kind='input' AND input.origin='human'
+        AND steering.status<>'sent'
+        AND json_extract(input.receipt_json,'$.state') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM session_input_author_corrections correction WHERE correction.input_id=input.id)`)
+      .all(sessionId,stoppedTurnId) as Array<{id:string;receipt_json:string|null;
+        steering_id:number;status:string;provider_sent_at:string|null}>;
+    for(const input of attached){
+      const earlierCouldHaveReached=!!db.query(`SELECT 1 FROM turn_steering_messages
+        WHERE accepted_input_id=? AND id<>? AND NOT (status='failed' AND provider_sent_at IS NULL) LIMIT 1`)
+        .get(input.id,input.steering_id);
+      const couldHaveReachedProvider=earlierCouldHaveReached||!!input.provider_sent_at
+        ||input.status==='sending'||input.status==='ambiguous';
+      const prior=input.receipt_json?JSON.parse(input.receipt_json):{};
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+        .run(JSON.stringify({...prior,state:couldHaveReachedProvider?'uncertain':'canceled',
+          ...(couldHaveReachedProvider?{error:{code:'STOPPED_WITH_UNCONFIRMED_STEERING',
+            message:'The stopped run may have received this message; it will not be replayed.'}}:{})}),input.id);
+      recordSessionEvent({eventId:`queue-cleared:${reason}:${input.id}`,sessionId,inputId:input.id,
+        kind:'queue_cleared',payload:{reason,couldHaveReachedProvider}});
+    }
+    return waiting.length+unbound.length+attached.length;
   }
   cancelAction(id:string,targetActionId:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId']);
@@ -2733,7 +2759,7 @@ export class SessionOwner {
     const operation=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'stop',origin:'human',payload:input}).input;
       db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'").run(turn.id);
-      this.clearWaitingTurns(session.id,'stop');
+      this.clearWaitingHumanInputs(session.id,'stop',turn.id);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),saved.id);
       return saved;
     })();
