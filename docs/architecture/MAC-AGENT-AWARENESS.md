@@ -6,7 +6,10 @@ explicit human Mac need. A pre-tool hook also refuses common browser and foregro
 commands in Claude and Codex turns, including server SSH commands aimed at the Mac. It allows
 background Simulator command-line automation only with a native iOS need on that accepted
 turn. Codex Computer Use also requires a recorded desktop-capable need, and Claude in
-Chrome remains refused because it controls his personal browser. This is a tool boundary;
+Chrome remains refused because it controls his personal browser. Concierge's own
+provider sign-in repair request is the sole Computer Use exception for the saved
+Chrome account; the Mac owner checks the retained repair request before admitting it.
+This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
 

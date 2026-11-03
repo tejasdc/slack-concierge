@@ -7,6 +7,7 @@ const check=(command:string,need='',platform='darwin',toolName='Bash')=>
 
 assert.equal(parseMachineNeed('ios-native:iPhone Safari selection handles after touch').kind,'ios-native');
 assert.throws(()=>parseMachineNeed('browser:phone-size layout'));
+assert.throws(()=>parseMachineNeed('provider-renewal:claimed by an ordinary agent'));
 assert.throws(()=>parseMachineNeed('browser-fallback:Server portal blocked after login'));
 assert.equal(parseMachineNeed('browser-fallback:Server portal blocked after login',{
   url:'https://bosse.managebuilding.com/Resident/portal/login',
@@ -34,6 +35,8 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}})??'',/personal browser/);
+assert.equal(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}}),null);
+assert.match(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__claude-in-chrome__navigate',toolInput:{url:'https://claude.ai'}})??'',/personal Chrome/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-screen',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}}),null);
 assert.match(macSurfaceRefusal({command:null,need:'browser-fallback',platform:'darwin',toolName:'mcp__claude-in-chrome__navigate',toolInput:{url:'https://bosse.managebuilding.com'}})??'',/personal Chrome/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__claude-in-chrome__read_page',toolInput:{}})??'',/personal Chrome/);

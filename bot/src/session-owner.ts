@@ -1420,7 +1420,8 @@ export class SessionOwner {
     for(const {notice,renewal} of renewals){
       const {provider,account}=renewal!;
       void peers.ask({session:session.id,turn,inputId:admitted.id},{peer:SIGNIN_WORKER.peer,address:SIGNIN_WORKER.address,
-        action_id:signInWorkerActionId(notice.key),text:signInWorkerText(provider,account),requestedEffect:'work'})
+        action_id:signInWorkerActionId(notice.key),text:signInWorkerText(provider,account),requestedEffect:'work',
+        machineNeed:{kind:'provider-renewal',why:'Renew the provider account through the saved Mac browser sign-in'}})
         .then(receipt=>log('info','signin_renewal_sent',{provider,account,status:(receipt as {status?:string})?.status??null}))
         .catch(error=>log('error','signin_renewal_not_sent',{provider,account,error:String((error as Error)?.message??error).slice(0,300)}));
     }

@@ -3,6 +3,8 @@
 Use the Mac Codex session's existing Chrome computer-use extension and Thinkering
 Accounts. A real server sign-in completed through this path on 2026-10-08; Apple
 Events did not work in the same session. No new Chrome-control permission was needed.
+The Mac tool guard now admits this only while Concierge's own provider sign-in repair
+request is the current work. An ordinary addressed request cannot claim that exception.
 
 ## Ownership and invocation
 

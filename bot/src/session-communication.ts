@@ -34,6 +34,7 @@ import { isWritingSession, takesManySubjects, WRITING_SESSION_REFUSAL } from './
 import {standingAgent,standingAgentProject,standingAgentSession,bindStandingAgentSession,canOwnStandingWork,STANDING_WORK_REFUSAL} from './standing-agents';
 import {sessionProject} from './session-projects';
 import {parseMachineNeed} from './machine-need';
+import {signInWorkerActionId} from './signin-renewal';
 import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
@@ -550,14 +551,33 @@ export class SessionCommunicationCoordinator {
      * need and its guard saw none, twice.
      */
     macNeed(input:{provider_session_id:string}) {
-        const running=db.query(`SELECT turn.id AS turn_id FROM sessions session JOIN turns turn ON turn.session_id=session.id
+        const running=db.query(`SELECT turn.id AS turn_id,session.id AS session_id FROM sessions session JOIN turns turn ON turn.session_id=session.id
             WHERE session.agent_session_uuid=? AND turn.status IN ('running','delivering') ORDER BY turn.id DESC LIMIT 1`)
-            .get(input.provider_session_id) as {turn_id:number}|null;
+            .get(input.provider_session_id) as {turn_id:number;session_id:number}|null;
         if(!running)return {kind:null};
-        for(const row of db.query(`SELECT payload_json FROM session_inputs WHERE turn_id=? ORDER BY rowid DESC LIMIT 50`).all(running.turn_id) as {payload_json:string}[]){
+        let newest=true;
+        for(const row of db.query(`SELECT id,payload_json FROM session_inputs WHERE turn_id=? ORDER BY rowid DESC LIMIT 50`).all(running.turn_id) as {id:string;payload_json:string}[]){
             const payload=JSON.parse(row.payload_json);
             const kind=payload?.machineNeed?.kind??payload?.firstInput?.machineNeed?.kind;
-            if(typeof kind==='string'&&kind)return {kind};
+            if(typeof kind==='string'&&kind&&(kind!=='provider-renewal'||newest))return {kind};
+            // A return to the worker carries the original renewal input as its request source.
+            // Other turns in the same session never inherit this browser exception.
+            if(newest){
+                const sources=db.query(`SELECT DISTINCT request.source_input_id FROM session_communication_events event
+                    JOIN session_communication_requests request ON request.request_id=event.request_id
+                    WHERE event.accepted_input_id=? AND request.source_session_id=?`).all(row.id,running.session_id) as {source_input_id:string}[];
+                const sourceInput=sources.length===1?sources[0]!.source_input_id:row.id;
+                const peerRenewal=db.query(`SELECT 1 FROM session_peer_deliveries WHERE target_input_id=? AND target_session_id=?
+                    AND closed_at_ms IS NULL AND json_extract(origin_provenance_json,'$.machineNeed.kind')='provider-renewal'`)
+                    .get(sourceInput,running.session_id);
+                if(peerRenewal)return {kind:'provider-renewal'};
+                const renewal=db.query(`SELECT action_id FROM session_external_requests WHERE target_input_id=? AND agent_name='signin-renewal' AND outcome IS NULL`).get(sourceInput) as {action_id:string}|null;
+                if(renewal){
+                    const notices=db.query(`SELECT key FROM repair_notices WHERE kind IN ('claude_signin_expired','codex_signin_expired')`).all() as {key:string}[];
+                    if(notices.some(notice=>signInWorkerActionId(notice.key)===renewal.action_id))return {kind:'provider-renewal'};
+                }
+            }
+            newest=false;
         }
         return {kind:null};
     }
