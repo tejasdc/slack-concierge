@@ -1,0 +1,1 @@
+Stop now closes the running agent’s speech delivery line before another waiting sentence can reach it.
