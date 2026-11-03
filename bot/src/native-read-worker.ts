@@ -68,7 +68,7 @@ async function capped(response:Response,max:number):Promise<Response>{
 async function ownerEphemera(fresh=false):Promise<ProviderAuthEphemera>{
   let response:Response;
   try{response=await fetch(`http://localhost/internal/${fresh?'auth-refresh':'auth-ephemera'}`,
-    {unix:ownerSocket,method:fresh?'POST':'GET',signal:AbortSignal.timeout(fresh?18_000:750)} as RequestInit);}
+    {unix:ownerSocket,method:fresh?'POST':'GET',signal:AbortSignal.timeout(750)} as RequestInit);}
   catch{throw new SessionOwnerError('Current sign-in state is unavailable; account status cannot be verified.',503,'AUTH_EPHEMERA_UNAVAILABLE');}
   if(!response.ok)throw new SessionOwnerError('Current sign-in state is unavailable; account status cannot be verified.',503,'AUTH_EPHEMERA_UNAVAILABLE');
   const value=await response.json() as ProviderAuthEphemera;
@@ -110,7 +110,7 @@ function peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknow
     })().finally(()=>peerReads.delete(name));
     peerReads.set(name,read);
   }
-  if(fresh)return read;
+  // A fresh read starts the new check on that machine without waiting for it, like this one's.
   const cached=peerCache.get(name);
   if(cached)return Promise.resolve({...cached.view,checking:true});
   return Promise.race([read,new Promise<Record<string,unknown>>(resolve=>setTimeout(()=>

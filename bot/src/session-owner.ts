@@ -994,7 +994,9 @@ export class SessionOwner {
    * every peer (up to 8 seconds, longer for a sleeping Mac) before showing this machine's rows; GPT-6
    * Astra's review of the 2026-10-07 complaint named it. An ordinary read shows the last answer that
    * machine gave, marked `checking`, and reads it again behind; a machine never heard from gets a
-   * short wait and is then shown as checking. A `fresh` read waits for the real answer.
+   * short wait and is then shown as checking. A `fresh` read asks that machine for a new check
+   * the same way and does not wait for it either; the page reads again while a row says
+   * `checking` (2026-11-03, when a fresh read took 11 to 20 seconds around a sign-in).
    */
   private peerAccountCache=new Map<string,{view:Record<string,unknown>;at:number}>();
   private peerAccountReads=new Map<string,Promise<Record<string,unknown>>>();
@@ -1015,7 +1017,6 @@ export class SessionOwner {
       })().finally(()=>this.peerAccountReads.delete(name));
       this.peerAccountReads.set(name,read);
     }
-    if(fresh)return read;
     const cached=this.peerAccountCache.get(name);
     if(cached)return {...cached.view,checking:true};
     return Promise.race([read,new Promise<Record<string,unknown>>(resolve=>setTimeout(()=>

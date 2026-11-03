@@ -287,12 +287,17 @@ would show it with nothing under it. `refreshing` on that payload says a read is
 so the surface can name the state instead of leaving a gap. One pass runs at a time; the
 timer, a credential change and his Refresh press all share it.
 
-**Refresh reads.** `providerAuthStatus()` awaits `scheduleProviderAccountUsageRefresh()`
-alongside the identity reads, so the payload it returns carries numbers fetched during that
-press. Until 2026-09-23 it refreshed only *who was signed in* and returned whatever the
+**Refresh reads.** A `fresh` read of `/auth/providers` starts
+`scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
+the Codex sign-in state) and answers at once from the last known state with `checking` set;
+the Accounts page reads again every few seconds while any row says `checking` or
+`refreshing`, so the numbers fetched for that press arrive on screen without a read waiting
+for them. Until 2026-09-23 it refreshed only *who was signed in* and returned whatever the
 half-hourly pass had last written, so pressing Refresh changed no percentage on the screen
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
-all." A press while a pass is already running joins that pass instead of starting a second.
+all." From then until 2026-11-03 a fresh read waited for the whole check, 11 to 20 seconds
+around a sign-in, which held the account row's confirmation spinner that long. A press
+while a pass is already running joins that pass instead of starting a second.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
