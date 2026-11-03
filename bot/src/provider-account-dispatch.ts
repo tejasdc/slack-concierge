@@ -11,6 +11,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,claudeHomeSignedOut,recordClaudeHomeProof,recordClaudeHomeSignedOut} from './provider-account-selection';
 import {log} from './log';
+import {releaseUsageContinuationHolds} from './state';
 import {accountFilesView,forgetAccountFiles} from './account-files-memo';
 import {accountAvailability} from './provider-usage-forecast';
 import {claudeKeychainMayHoldLogin} from './claude-keychain';
@@ -141,7 +142,7 @@ function provenOrProve(account:string,home:string):boolean{
     proving.add(home);
     void claudeAccountWorks(home,account).then(check=>{
       // Work held because no account had room may now have one: release it to try again.
-      if(check.ok){markClaudeHomeVerified(home);releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
+      if(check.ok){markClaudeHomeVerified(home);releaseUsageContinuationHolds('claude-code');releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
       else {
         failedAt.set(home,Date.now());if(check.reason==='signed_out')recordClaudeHomeSignedOut(home,true);
         log('warn','claude_account_home_unproven',{account,reason:check.reason});
