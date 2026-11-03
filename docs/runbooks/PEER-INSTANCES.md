@@ -123,6 +123,11 @@ approval or text code for that browser is handled there; it is not evidence of a
 server. Native iOS Safari touch and selection, Xcode, Messages, a Mac-only file or app, its
 physical screen, and Tejas's explicit Mac requests can use the Mac. New and addressed Mac work
 requires `--machine-need` with a specific reason; the receiving owner checks it.
+The tool guard on the Mac reads the need from its run's environment and, before a refusal stands,
+asks the Mac owner for the need of the run holding that conversation (the newest need among the
+inputs the run took, its first message or a request steered in later). Codex turns all run on the
+shared App Server, so a per-turn environment never reaches Codex's hook; before 2026-11-03 a Codex
+session created with a mac-app need was refused as if it had none.
 
 When a website genuinely fails in the server browser, the requesting server agent records
 `--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>
