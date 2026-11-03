@@ -36,7 +36,10 @@ export function provenRunKinds(database: Database): Set<string> {
   // updater shell has no agent-host launcher), so proof is read from the record alone.
   if (!hasExecutions(database)) return new Set();
   if (!database.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()) return new Set();
-  const observed = (database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions
+  // Named when present because the ledger has no planner statistics; a ledger an older owner last
+  // opened (a deployment script before the restart that creates it) still answers, by the scan.
+  const indexed = !!database.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='executions_survival'").get();
+  const observed = (database.query(`SELECT DISTINCT provider || '/' || supervisor AS kind FROM executions ${indexed ? "INDEXED BY executions_survival" : ""}
     WHERE adopted_live=1 AND state='released'`).all() as { kind: string }[]).map(row => row.kind)
     .filter(kind => kind !== "codex/codex-daemon" || managedHooksFollowRuns());
   // The execution host is one program whatever provider it runs: once one provider's run has been

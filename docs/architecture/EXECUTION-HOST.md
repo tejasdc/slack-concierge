@@ -207,7 +207,10 @@ A running turn holds an update only if it would end with the coordinator. One ru
   `continuing`, not `active`: the update does not wait for it.
 - While the gate is held, the queue keeps starting turns of proven kinds (not forks), so a new
   message is not held behind the install; other kinds wait as before, and their receipts say so
-  (`DEPLOYMENT_HOLD`).
+  (`DEPLOYMENT_HOLD`). The proof is read on every claim while the gate is held, so it is answered
+  from the partial index `executions_survival` (released, live-adopted rows only): as a table scan
+  it held the owner up to 14 s a minute during busy installs
+  ([record](../incidents/2026-11-03-update-drain-queue-claim-scanned-executions.md)).
 - **Compatibility between the real releases.** `bot/src/host-protocols.json` holds the protocol new
   hosts speak (`current`) and every protocol a release can take back (`adoptable`); the host program
   and the coordinator both read it, and each release answers `drain-status.js host-protocols`. Before
