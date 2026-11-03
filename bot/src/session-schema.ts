@@ -679,6 +679,7 @@ export function initializeSessionOwnerSchema(db: Database) {
         ['capture:0efbbf3dd0a230eb318e8a2f1f462b665d1277039eed3771ff874b2e02124178',3572,'The Thinkering agent posted this test through the capture intake with the app\'s key (2026-09-23).'],
         ['capture:3427ddf59583d32229017ff81267672751ffaeaf73f4b5a7c5e874da0b8c38c5',3572,'The Thinkering agent posted this test through the capture intake with the app\'s key (2026-09-23).'],
         ['capture:e075516f9458a7e9024092c52f2e22bb0feb7b3a193f40c1f935da34eacde2a8',null,'An agent on the Mac posted this delivery check with a device key it made for the capture helper (2026-09-23).'],
+        ['capture:9fd62edcab6b1647a38717c772d1bf967eed94bc393436ba04b52a62a3f39563',null,'The Mac Voice Memos watcher sent an agent-authored delivery probe without an agent marker (mac:258, 2026-11-03).'],
         ['a939f495-9319-4d39-ad0f-b3076a67d1d5',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
         ['a6b5b14b-06c4-496e-b4d6-f2c2800e3588',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
         ['8c51f324-70c2-4c6b-80b4-c80a0c3d7142',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
