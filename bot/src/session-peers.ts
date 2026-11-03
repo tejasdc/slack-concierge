@@ -567,21 +567,23 @@ export class SessionPeers {
     const row=this.row(requestId);
     if(row.outcome!=='canceled'||!row.remote_operation_id
       ||JSON.parse(row.remote_status_json??'{}').cancellationAcknowledged)return;
-    // A final answer already received by the origin leaves no peer work to revoke.
-    // Older canceled requests can outlive the peer's delivery record; retrying their
-    // cancellation against that missing record only produces an endless 404 loop.
-    if(db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='final' AND status='received' LIMIT 1").get(requestId)){
+    const acknowledge=()=>{
       db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
         WHERE request_id=? AND outcome='canceled'`).run(requestId);
-      return;
-    }
+    };
     const client=this.dependencies.clients.get(row.peer);
     if(!client)return;
     try {
       await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(requestId)}/cancel`,{});
-      db.query(`UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.cancellationAcknowledged',1)
-        WHERE request_id=? AND outcome='canceled'`).run(requestId);
+      acknowledge();
     } catch(error) {
+      // A peer that explicitly has no delivery has no execution authority left to
+      // revoke. This is different from the origin's own final cancellation event.
+      if(error instanceof PeerError&&error.status===404&&error.message==='Unknown session request.'){
+        acknowledge();
+        log('info','session_peer_cancel_absent',{request_id:requestId,peer:row.peer});
+        return;
+      }
       log('warn','session_peer_cancel_unsent',{request_id:requestId,peer:row.peer,...errorFields(error)});
     }
   }
