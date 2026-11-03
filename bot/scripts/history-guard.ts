@@ -37,7 +37,7 @@ import { siteRunbookNotices } from '../src/site-runbook-notice';
 import { messagesDatabaseRefusal } from '../src/messages-database-policy';
 import { recordMessagesRead } from '../src/messages-read-log';
 import { liveStoreCopyRefusal } from '../src/live-store-copy-policy';
-import { macSurfaceRefusal } from '../src/mac-surface-policy';
+import { macComputerUseCall, macSurfaceRefusal } from '../src/mac-surface-policy';
 import { foregroundBuildRefusal } from '../src/foreground-build-policy';
 
 function selfMatchingWaitRefusal(command: string): string | null {
@@ -95,27 +95,32 @@ let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
 let reason: string | null = null;
 let refusedMessages = false;
+let macComputerUseAttempt = false;
 try {
   const input = hook.tool_input ?? {};
+  macComputerUseAttempt=process.platform==='darwin'&&macComputerUseCall(String(hook.tool_name??''),input);
   const command = toolCommand(input);
   reason = messagesDatabaseRefusal(command, input);
   refusedMessages = reason !== null;
   const surface={command,toolName:String(hook.tool_name??''),toolInput:input,platform:process.platform};
   if(!reason)reason=macSurfaceRefusal({...surface,need:process.env.CONCIERGE_MAC_NEED??''});
-  // The environment can be empty (Codex's shared App Server) or older than a need steered in later, so a
-  // refusal a need could lift asks the Mac owner for the need of the run holding this conversation. The
-  // Codex hook gets no Concierge environment, so the socket is the Mac owner's fixed one (as the browser
-  // fallback reaches it); one attempt, three seconds, because a hook killed at its own timeout lets the
-  // tool run.
+  // The environment can be empty (Codex's shared App Server) or older than a need steered in later.
+  // Computer Use always checks the active owner's record, including when the environment claims a need:
+  // a direct Mac process must not unlock desktop control by setting an environment variable. The Codex
+  // hook gets no Concierge environment, so the socket is the Mac owner's fixed one. One attempt takes at
+  // most three seconds; a missing answer keeps Computer Use refused.
+  const computerUse=!refusedMessages&&macComputerUseAttempt;
   const liftable=reason&&!refusedMessages&&process.platform==='darwin'&&typeof hook.session_id==='string'&&hook.session_id
     &&macSurfaceRefusal({...surface,need:'ios-native'})!==reason;
-  if(liftable){
+  if((liftable||computerUse)&&typeof hook.session_id==='string'&&hook.session_id){
     const recorded=await fetch('http://localhost/session-communication/mac-need',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({provider_session_id:hook.session_id}),
       unix:join(userInfo().homedir,'Library','Application Support','concierge','requests.sock'),signal:AbortSignal.timeout(3000),
     } as RequestInit & {unix:string}).then(response=>response.ok?response.json():null).then((answer:any)=>typeof answer?.kind==='string'?answer.kind:null,()=>null);
-    if(recorded&&recorded!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
+    if(computerUse)reason=macSurfaceRefusal({...surface,need:recorded??''});
+    else if(recorded&&recorded!==(process.env.CONCIERGE_MAC_NEED??''))reason=macSurfaceRefusal({...surface,need:recorded});
   }
+  if(computerUse&&(!hook.session_id||typeof hook.session_id!=='string'))reason=macSurfaceRefusal({...surface,need:''});
   // Codex names a command's own working directory in its input; Claude's is the hook's cwd.
   const start = [input.workdir, hook.cwd].find(dir => typeof dir === 'string' && dir) ?? process.cwd();
   if (command && !reason) {
@@ -138,12 +143,14 @@ try {
       }
     }
   }
-} catch { reason = null; }
+} catch { reason = macComputerUseAttempt
+  ? 'Mac Computer Use needs a recorded desktop-capable Mac need; the owner check could not complete.'
+  : null; }
 if (refusedMessages) {
   try { recordMessagesRead({ event: 'messages_database_refused', provider_session: hook.session_id ?? null, tool: hook.tool_name ?? null, cwd: hook.cwd ?? null }); } catch {}
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n');
 } else if (reason) {
-  console.error(JSON.stringify({ event: 'history_rewrite_refused', provider_session: hook.session_id ?? null }));
+  console.error(JSON.stringify({ event: 'tool_preflight_refused', provider_session: hook.session_id ?? null, tool: hook.tool_name ?? null }));
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n');
 } else {
   // Not a refusal: a browser about to open a website hears about that website's runbook.

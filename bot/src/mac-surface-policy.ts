@@ -1,3 +1,16 @@
+const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
+const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
+
+function namedToolCall(name:RegExp,code:string):boolean {
+  return new RegExp(`\\btools\\.[\\w$]*(?:${name.source})[\\w$]*\\s*\\(`,'i').test(code);
+}
+
+export function macComputerUseCall(toolName:string,toolInput:unknown):boolean {
+  const details=toolInput&&typeof toolInput==='object'?toolInput as Record<string,unknown>:{};
+  const code=typeof details.code==='string'?details.code:'';
+  return COMPUTER_CONTROL.test(toolName)||namedToolCall(COMPUTER_CONTROL,code);
+}
+
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
 export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:string;platform:string}):string|null {
   const {command,toolName,toolInput,need,platform}=input;
@@ -7,6 +20,13 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return 'Direct agent browser control on Tejas’s Mac is refused. Use the server, or the isolated Mac browser after a recorded server failure.';
   const details=toolInput&&typeof toolInput==='object'?toolInput as Record<string,unknown>:{};
   const code=typeof details.code==='string'?details.code:'';
+  if(platform==='darwin'&&(CHROME_CONTROL.test(tool)||namedToolCall(CHROME_CONTROL,code)))
+    return 'Claude in Chrome controls Tejas’s personal Chrome. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
+  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&/\b(?:Google Chrome|Chrome|Safari)\b/i.test(code))
+    return 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
+  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
+      &&!['ios-native','mac-app','mac-screen','human-mac'].includes(need))
+    return 'Mac Computer Use needs an accepted Mac app, screen, native iOS, or explicit Mac need on this request.';
   if(/^(?:read|grep|glob|notebookread)$/i.test(toolName))return null;
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(raw.trim())
       && !/[;&|`\n]|\$\(/.test(raw))return null;
@@ -32,7 +52,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   const simulatorUi=new RegExp(action+'(?:/usr/bin/)?open\\s+[^\\n;|]*\\bSimulator(?:\\.app)?\\b','i');
   const appControl=/\b(?:osascript|cliclick|pyautogui|cua_repl|computer\.use|skycomputeruse)\b/i;
   const simulator=/\b(?:xcrun\s+simctl\s+(?:boot|launch|io|ui|create|install|push|openurl)|safaridriver\b|scripts\/ios-look\.mjs\b)/i;
-  if(/computer|desktop|screen/i.test(tool)&&!/(?:screenshot|read)/i.test(tool))
+  if(/computer|desktop|screen/i.test(tool)&&!/(?:screenshot|read)/i.test(tool)&&!COMPUTER_CONTROL.test(tool))
     return 'Mac desktop control is refused because it can take focus. Use a background Mac capability for a specific Mac-only need.';
   if(browserCli.test(source)||chrome.test(source)||simulatorUi.test(source))
     return 'Direct browser and foreground Chrome or Simulator use on Tejas’s Mac is refused. Run ordinary checks on the server; a recorded server failure can use the isolated Mac browser without desktop focus.';

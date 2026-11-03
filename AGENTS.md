@@ -95,6 +95,8 @@ Mac work needs a specific physical capability named at peer admission; a recorde
 server browser attempt unlocks an isolated headless Mac fallback without per-use approval.
 Managed provider tools refuse direct browser and foreground control on his Mac. See
 [Mac placement](docs/runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
+Codex Computer Use requires an accepted desktop-capable Mac need; Claude in Chrome
+remains refused for agent work so a website cannot attach to his personal browser.
 
 The coordinated responsiveness release follows the dependency checkpoints in
 [Deployment](docs/runbooks/DEPLOYMENT.md#coordinated-responsiveness-release-dependency-order):
