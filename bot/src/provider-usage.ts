@@ -2,7 +2,7 @@ import { db, releaseScheduledProviderRetries } from "./state";
 import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
-import { canonicalClaudeUsageModel } from "./aliases";
+import { claudeUsageAllowanceModel } from "./aliases";
 import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
 import { recordSessionEvent } from "./session-inputs";
@@ -41,7 +41,7 @@ function prune(state: UsageState, now = Date.now()) {
 export function usageScope(provider: UsageProvider, model?: string): string {
   const account = accountScope(provider);
   if (provider === "codex") return account;
-  return `${account}:${provider === "claude-code" ? canonicalClaudeUsageModel(model!.trim()) : model!.trim()}`;
+  return `${account}:${provider === "claude-code" ? claudeUsageAllowanceModel(model!.trim()) : model!.trim()}`;
 }
 
 export function usageAttempt(provider: UsageProvider, model?: string, selectedAccount?:string): UsageAttempt {
@@ -51,13 +51,13 @@ export function usageAttempt(provider: UsageProvider, model?: string, selectedAc
   const accountKey=selectedAccount?createHash('sha256').update(selectedAccount.toLowerCase()).digest('hex').slice(0,24):null;
   const scope=provider==='codex'&&selectedAccount&&selectedAccount!==account?.label
     ?codexAccountIdForLabel(selectedAccount)??`account:${accountKey}`
-    :accountKey&&provider==='claude-code'?`${accountKey}:${canonicalClaudeUsageModel(model!.trim())}`:usageScope(provider, model);
+    :accountKey&&provider==='claude-code'?`${accountKey}:${claudeUsageAllowanceModel(model!.trim())}`:usageScope(provider, model);
   return { provider, scope,
     // What a person should be told the limit applies to. The scope carries a
     // credential fingerprint and never belongs in a message.
     label: provider === "codex" ? selectedAccount??account?.label ?? "this Codex account"
       : provider === "antigravity" ? `${model!.trim()} on ${account?.label ?? "this Google account"}`
-      : `${canonicalClaudeUsageModel(model!.trim())} on ${selectedAccount??account?.label ?? "this Claude account"}`,
+      : `${claudeUsageAllowanceModel(model!.trim())} on ${selectedAccount??account?.label ?? "this Claude account"}`,
     generation: state.generation, revision: state.revision };
 }
 
@@ -72,7 +72,7 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
 export function claudeAccountCachedReset(account:string,model?:string|null):number|null {
   const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
   const state=read('claude-code');
-  const exact=model?`${prefix}${canonicalClaudeUsageModel(model.trim())}`:null;
+  const exact=model?`${prefix}${claudeUsageAllowanceModel(model.trim())}`:null;
   const resets=Object.entries(state.limits).filter(([scope,limit])=>(exact?scope===exact:scope.startsWith(prefix))
     &&limit.resetAt!==null&&limit.resetAt>Date.now())
     .map(([,limit])=>limit.resetAt!);

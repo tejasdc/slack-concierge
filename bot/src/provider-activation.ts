@@ -9,6 +9,7 @@ import { authHeldInputCount, db, holdCodexAdmission, observeExecutionChanges, re
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { releaseUsageHeldWork } from "./provider-usage";
+import { releaseUsageContinuationHolds } from "./state";
 import { credentialPath, currentAccount, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
@@ -382,6 +383,10 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
       return { status: "failed", detail: "That account is signed in on disk but did not answer, "
         + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
     }
+    // An account that just answered is proof of room for every held turn, including a refused turn's
+    // continuation: those wait in their own hold, and only a usage reading released them, which an
+    // account the usage reader cannot see never produces (the Inbox stayed held 35 minutes, 2026-11-03).
+    releaseUsageContinuationHolds(provider);
     releaseUsageHeldWork(provider);
     releaseAuthHold(provider, releasedBy);
     return { status: "applied", detail: "Done. This machine is using the new account now." };
@@ -393,6 +398,7 @@ async function performActivation(provider: ProviderKey, releasedBy: ReleaseSourc
   if (report.status === "applied") {
     if(!await codexCredentialsAnswer(currentAccount('codex')?.label??null))return {status:'failed',
       detail:'Codex restarted, but that account could not sign in from this machine.'};
+    releaseUsageContinuationHolds(provider);
     releaseUsageHeldWork(provider);
     if(authHeldInputCount(provider)>0)releaseAuthHold(provider, releasedBy);
   }

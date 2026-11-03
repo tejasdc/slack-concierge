@@ -122,6 +122,19 @@ the Slack-enabled runtime in `index.ts`, which also polls every 60 seconds, and 
 native-only runtime in `session-runtime.ts`, which has no poll at all and before this
 change could leave a scheduled retry waiting indefinitely on a quiet machine.
 
+## One allowance per Claude model, and every proof of room releases every hold
+
+Usage limits and holds name the allowance a model spends (`claudeUsageAllowanceModel`), not its
+alias: Claude Code's extended-window Opus (`opus[1m]`, the Inbox's model) and Opus 5.5 are one
+scope. In-turn model fallback still uses the exact model, so the Inbox does not start falling back to
+Sonnet. A sign-in, a switch or a background account check whose credentials answer releases
+usage-held turns and refused turns' continuations alike; before 2026-11-03 it released only the
+former, and continuations waited for a usage reading showing room, which an account the usage
+reader cannot read never produces. On 2026-11-03 the Inbox's captures stayed held 35 minutes after
+a new account was signed in and proven, while an Accounts check released only Opus 5.5's holds,
+until a Concierge restart's startup check ran it. Record:
+`docs/incidents/2026-11-03-inbox-held-after-new-account.md`.
+
 ## Sign-in holds
 
 An authentication refusal is held without a guessed reset time when the provider confirmed

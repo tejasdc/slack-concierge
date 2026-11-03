@@ -374,6 +374,17 @@ export function canonicalClaudeUsageModel(model: string): string {
   return SUPERSEDED_CLAUDE_MODELS[model] ?? model;
 }
 
+/**
+ * The allowance a Claude model spends, for usage limits and holds only. Claude Code's extended-window
+ * Opus is the same model on the same allowance: on 2026-11-02 one account was refused for both names
+ * with the same reset. Kept as two scopes, an Accounts check that proved Opus never released the
+ * Inbox, which runs on the extended one (2026-11-03). Fallback choice keeps the exact model.
+ */
+export function claudeUsageAllowanceModel(model: string): string {
+  const canonical = canonicalClaudeUsageModel(model);
+  return canonical === CLAUDE_MODELS.opus1m ? CLAUDE_MODELS.opus : canonical;
+}
+
 export function claudeUsageFallbackModels(model: string): string[] {
   const index = CLAUDE_USAGE_FALLBACK_CHAIN.indexOf(canonicalClaudeUsageModel(model));
   return index < 0 ? [] : CLAUDE_USAGE_FALLBACK_CHAIN.slice(index + 1);
