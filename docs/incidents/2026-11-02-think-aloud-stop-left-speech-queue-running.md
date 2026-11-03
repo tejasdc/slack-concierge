@@ -17,7 +17,7 @@ The Canvas submitted each finalized speech segment as its own durable input. The
 
 ## Fix
 
-The session owner now cancels the person's waiting messages in the Stop transaction, retaining their accepted input text and canceled receipts. Agent returns, requests and saved work keep their own custody. A queued retry or message already attached to the stopped run that may have reached the provider is marked uncertain and cannot replay. Explicit human queue intents without a turn are canceled too, so restarting the owner or continuing a paused session cannot revive them. A separate clear-queue action lets an older stopped session recover its human waiting messages. The paired Thinkering change batches speech into one ordered transcript with per-segment speaking times before admission.
+The session owner now cancels the person's waiting messages in the Stop transaction, retaining their accepted input text and canceled receipts. Agent returns, requests and saved work keep their own custody. The active run's in-memory steering line closes before provider cancellation is awaited, so a waiting sentence cannot leave after Stop; an in-flight send remains uncertain until its acknowledgement settles. A queued retry or message already attached to the stopped run that may have reached the provider is marked uncertain and cannot replay. Explicit human queue intents without a turn are canceled too, so restarting the owner or continuing a paused session cannot revive them. A separate clear-queue action lets an older stopped session recover its human waiting messages. The paired Thinkering change batches speech into one ordered transcript with per-segment speaking times before admission.
 
 ## Acceptance scenario
 
