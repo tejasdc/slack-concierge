@@ -127,7 +127,7 @@ const SIGN_IN_FAILURE_DETAIL:Record<string,string>={
   superseded:'Another sign-in for this provider started, so this one was dropped.',
 };
 
-type CanvasSpeechContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string};
+type CanvasSpeechContext={kind:'argument-map-speech';boardId:string;boardTitle:string;pageId:string;priorObservationSessionId?:string;segments?:Array<{text:string;spokenAt:string}>};
 
 function canvasSpeechContext(input:AcceptedSessionInput):CanvasSpeechContext|null {
   const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;

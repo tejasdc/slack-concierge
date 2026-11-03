@@ -504,12 +504,26 @@ function validateContext(input:Record<string,any>) {
 }
 function validateCanvasContext(input:Record<string,any>) {
   if(input.canvasContext===undefined)return;
-  const context=object(input.canvasContext);only(context,['kind','boardId','boardTitle','pageId','priorObservationSessionId']);
+  const context=object(input.canvasContext);only(context,['kind','boardId','boardTitle','pageId','priorObservationSessionId','segments']);
   if(context.kind!=='argument-map-speech'||typeof context.boardId!=='string'||!context.boardId||context.boardId.length>256||
     typeof context.boardTitle!=='string'||!context.boardTitle||context.boardTitle.length>300||
     typeof context.pageId!=='string'||!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(context.pageId)||
     context.priorObservationSessionId!==undefined&&(typeof context.priorObservationSessionId!=='string'||!/^(?:concierge|mac):[1-9][0-9]*$/.test(context.priorObservationSessionId)))
     throw new SessionOwnerError('Argument-map speech needs bounded board and open-page context.',400,'CANVAS_CONTEXT_INVALID');
+  if(context.segments!==undefined){
+    if(!Array.isArray(context.segments)||!context.segments.length)
+      throw new SessionOwnerError('Speech segments must name the words and times in this transcript.',400,'CANVAS_SEGMENTS_INVALID');
+    const segments=context.segments.map((value:unknown)=>{
+      const segment=object(value);only(segment,['text','spokenAt']);
+      if(typeof segment.text!=='string'||!segment.text.trim()||typeof segment.spokenAt!=='string'
+        ||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$/.test(segment.spokenAt)
+        ||!Number.isFinite(Date.parse(segment.spokenAt)))
+        throw new SessionOwnerError('A speech segment needs its original words and UTC time.',400,'CANVAS_SEGMENTS_INVALID');
+      return segment.text;
+    });
+    if(segments.join('\n')!==input.text)
+      throw new SessionOwnerError('Speech segments must reproduce the exact input text in order.',409,'CANVAS_SEGMENTS_MISMATCH');
+  }
 }
 /**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
@@ -2470,7 +2484,7 @@ export class SessionOwner {
   action(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','value','generation']);
-    const allowed=['title','summary','outcome','read','dismiss','archive','restore','pause','continue','pin','save','model'];
+    const allowed=['title','summary','outcome','read','dismiss','archive','restore','pause','continue','pin','save','model','clear-queue'];
     if(!allowed.includes(action.kind))throw new SessionOwnerError('Unknown session action.');
     // A usage decision belongs to the provider hold, which has an account-specific release.
     // The October 10 outside steering action used a generic Pause and stranded thirteen
@@ -2508,6 +2522,7 @@ export class SessionOwner {
         updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
         if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
       }
+      else if(action.kind==='clear-queue')this.clearWaitingTurns(session.id,'clear-queue');
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
     });
     if(action.kind==='continue'||action.kind==='restore') {
@@ -2594,6 +2609,45 @@ export class SessionOwner {
     if(target.turn_id){finishTurn(target.turn_id,'cancelled',null);settleTurnDependencies(target.turn_id);}
     db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
   }
+  /** Stop owns the session's entire waiting line. Keep every accepted input and its original words. */
+  private clearWaitingTurns(sessionId:number,reason:'stop'|'clear-queue') {
+    const waiting=db.query(`SELECT turn.id,turn.provider_admission_intended_at,turn.provider_started_at,
+        turn.provider_turn_id,turn.provider_input_acknowledged_at,input.id AS input_id,input.receipt_json
+      FROM turns turn LEFT JOIN session_inputs input ON input.id=turn.accepted_input_id
+      WHERE turn.session_id=? AND turn.status='queued' ORDER BY turn.id`).all(sessionId) as Array<{
+        id:number;provider_admission_intended_at:string|null;provider_started_at:string|null;
+        provider_turn_id:string|null;provider_input_acknowledged_at:string|null;
+        input_id:string|null;receipt_json:string|null}>;
+    for(const turn of waiting){
+      const couldHaveReachedProvider=!!(turn.provider_admission_intended_at||turn.provider_started_at
+        ||turn.provider_turn_id||turn.provider_input_acknowledged_at);
+      finishTurn(turn.id,'cancelled',null);
+      settleTurnDependencies(turn.id);
+      if(turn.input_id){
+        const prior=turn.receipt_json?JSON.parse(turn.receipt_json):{};
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({...prior,state:couldHaveReachedProvider?'uncertain':'canceled',
+            ...(couldHaveReachedProvider?{error:{code:'STOPPED_WITH_PRIOR_PROVIDER_ATTEMPT',
+              message:'The waiting retry was stopped; an earlier provider attempt may have taken effect.'}}:{})}),turn.input_id);
+      }
+      recordSessionEvent({eventId:`queue-cleared:${reason}:${turn.id}`,sessionId,turnId:turn.id,
+        ...(turn.input_id?{inputId:turn.input_id}:{}),kind:'queue_cleared',payload:{reason,couldHaveReachedProvider}});
+    }
+    // An accepted input can have a retained queue intent before a turn exists. A restart or
+    // Continue would otherwise turn it into fresh work after Stop had cleared the visible line.
+    const unbound=db.query(`SELECT id,receipt_json FROM session_inputs WHERE session_id=? AND kind='input'
+      AND turn_id IS NULL AND steering_id IS NULL
+      AND (receipt_json IS NULL OR json_extract(receipt_json,'$.admissionIntent')='queue')`).all(sessionId) as
+      Array<{id:string;receipt_json:string|null}>;
+    for(const input of unbound){
+      const prior=input.receipt_json?JSON.parse(input.receipt_json):{};
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+        .run(JSON.stringify({...prior,state:'canceled'}),input.id);
+      recordSessionEvent({eventId:`queue-cleared:${reason}:${input.id}`,sessionId,inputId:input.id,
+        kind:'queue_cleared',payload:{reason,couldHaveReachedProvider:false}});
+    }
+    return waiting.length+unbound.length;
+  }
   cancelAction(id:string,targetActionId:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId']);
     if(!targetActionId||targetActionId.length>200||targetActionId===actionId(input))throw new SessionOwnerError('Name the distinct action to cancel.');
@@ -2679,6 +2733,7 @@ export class SessionOwner {
     const operation=db.transaction(()=>{
       const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'stop',origin:'human',payload:input}).input;
       db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'").run(turn.id);
+      this.clearWaitingTurns(session.id,'stop');
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),saved.id);
       return saved;
     })();
