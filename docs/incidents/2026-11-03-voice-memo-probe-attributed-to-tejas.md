@@ -25,7 +25,9 @@ agent's own run cannot supply it over the SSH root-socket path.
 ## Fix
 
 The established additive author-correction table records this exact capture as an
-agent's probe while preserving its accepted bytes and receipt. The Mac watcher owner
+agent's probe while preserving its accepted bytes and receipt. A correction change
+refreshes the stored message display and its topic root so the Inbox thread agrees
+with the live history read. The Mac watcher owner
 was asked to refuse synthetic outbox files unless they come from a real completed
 Voice Memos job; it must leave ordinary real-job payloads unmarked.
 
@@ -33,5 +35,5 @@ Voice Memos job; it must leave ordinary real-job payloads unmarked.
 
 - **Seed:** The exact synthetic probe capture above exists in the server ledger with human origin and no agent marker.
 - **Action:** Install this release through the normal migration and reload the Inbox read.
-- **Expected:** The original capture and receipt remain; the read attributes it to an agent with the correction reason, and it is excluded from counts of Tejas's own words.
+- **Expected:** The original capture and receipt remain; both the prepared Inbox thread read and live history read attribute it to an agent with the correction reason, and it is excluded from counts of Tejas's own words.
 - **Replayable offline:** yes (seed that exact accepted input in isolated state and run the owner schema migration).

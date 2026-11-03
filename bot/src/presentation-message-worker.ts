@@ -187,6 +187,23 @@ function refreshClosedAnswer(generation:number,postId:string,changedRoots:Set<st
   writeDisplay(generation,post.sequence,post.sessionId,postId);
   changedRoots.add(post.root);
 }
+async function refreshCorrectedInputDisplay(generation:number,inputId:string,changedRoots:Set<string>){
+  let after=0;
+  while(true){
+    const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,
+      message_id AS messageId,root_input_id AS root FROM presentation_messages
+      WHERE generation=? AND input_id=? AND event_sequence>?
+      ORDER BY event_sequence LIMIT 100`).all(generation,inputId,after) as
+      {sequence:number;sessionId:number;messageId:string;root:string}[];
+    if(!rows.length)break;
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of rows){writeDisplay(generation,row.sequence,row.sessionId,row.messageId);changedRoots.add(row.root);}
+    })();
+    after=rows.at(-1)!.sequence;
+    await yieldProgress();
+  }
+}
 /** Existing closures were retained before this display version; refresh their posts in bounded pages. */
 async function upgradeAnswerClosures(generation:number){
   const version=(prepared.query('SELECT answer_closures_version AS version FROM presentation_message_meta WHERE singleton=1')
@@ -576,12 +593,14 @@ async function catchUp() {
   }
   const resolveRoot=inboxRootResolver(source);
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
+  const correctedInputs=new Set<string>();
   const changedReturnEvents=new Set<string>();
   const changedRoots=new Set<string>();
   const closedPosts=new Set<string>();
   const collapsedPosts=new Set<string>();
   const routedSources=new Set<string>();
   for(const change of changes){
+    if(change.source_table==='session_input_author_corrections')correctedInputs.add(change.row_key);
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
     if(change.source_table==='session_communication_events'||change.source_table==='session_peer_events')
       changedReturnEvents.add(change.row_key);
@@ -613,6 +632,7 @@ async function catchUp() {
     }
   }
   for(const inputId of linkedInputs)for(const root of await reassignLinkedInput(current.generation,inputId,resolveRoot))changedRoots.add(root);
+  for(const inputId of correctedInputs)await refreshCorrectedInputDisplay(current.generation,inputId,changedRoots);
   for(const root of movedRoots){await relocateRoot(current.generation,root);changedRoots.add(root);}
   let eventAfter=current.event_watermark;
   const eventHead=changes.reduce((latest,change)=>change.source_table==='session_owner_events'
