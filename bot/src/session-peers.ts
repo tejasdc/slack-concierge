@@ -1406,11 +1406,15 @@ export class SessionPeers {
     const target=getAcceptedSessionInput(row.target_input_id);
     const queued=target?.turn_id!==null&&target?.turn_id!==undefined
       &&!!db.query("SELECT 1 FROM turns WHERE id=? AND status='queued'").get(target.turn_id);
-    if(fingerprint===row.notified_fingerprint&&!queued)return;
+    const unchanged=fingerprint===row.notified_fingerprint;
+    if(unchanged&&!queued)return;
     try {
-      const answer=await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
-        policy:RETRY_POLICIES.peerNotify,
-        run:()=>client.request<{outcome:string|null}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/notify`,{},undefined,false),
+      const notify=()=>client.request<{outcome:string|null}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/notify`,{},undefined,false);
+      // An unchanged queued target only needs one origin check after reconnect.
+      // Reopening the full retry budget each interval would produce repeated
+      // retry-stopped repair notices while the origin is offline.
+      const answer=unchanged?await notify():await withRetry({operation:'peer-notify',key:`${row.request_id}:${fingerprint}`,
+        policy:RETRY_POLICIES.peerNotify,run:notify,
         classifyError:(error)=>error instanceof PeerError&&error.kind==='refused'
           &&!(error.status===404&&this.now()-row.created_at_ms<=PEER_REQUEST_ORPHAN_GRACE_MS)?'permanent':'transient',
       });
