@@ -57,6 +57,9 @@ Topic creation, routing and explicit agent links retain parent-child relations f
 Concierge is the shared session and request owner behind Thinkering. It is a personal,
 single-operator application. Thinkering is the product surface and Tejas's real use is the
 acceptance feedback.
+Mac Apple Voice Memos transcripts use the root-private local producer door as human Inbox
+captures, with stable recording IDs and "Voice Memos" attribution; see
+[local producer boundary](docs/runbooks/THINKERING-CAPTURE.md#local-producer-boundary).
 Session search derives shared Inbox work from request receipts and current thread placement; its bounded mutuals projection and ranking contract are in [session mutuals](docs/architecture/SESSION-MUTUALS.md).
 Work a thnkr.ing feature composes for an agent (writing partner, sentence feedback, Reader) is admitted as a service-origin input through [feature request admission](docs/contracts/feature-request-admission.md), never as Tejas.
 Saved journal-screen entries enter the existing journal keeper as service-origin inputs through the authenticated [journal observation admission](docs/contracts/journal-observation-admission.md), preserving authorship and action identity.

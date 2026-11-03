@@ -8,10 +8,11 @@
  * (2026-09-23: "Agents get their own test entrance, labelled as them").
  *
  * Usage: router-actions.sh test-capture --path <path> --source-input <id> --source-run <id>
- *          [--reply-to <concierge:N>] [--source-id <producer id>] -- <text>
+ *          [--reply-to <concierge:N>] [--source-id <producer id>]
+ *          [--recorded-at <ISO timestamp>] -- <text>
  * Paths: send-to-inbox, bug-report, pebble (the capture drop-off); iphone-share, action-button,
  * watch, mac (thnkr.ing's device route, with the agent test device key); notification-reply
- * (thnkr.ing, into --reply-to); monologue, alexa (Concierge's local door).
+ * (thnkr.ing, into --reply-to); monologue, alexa, voice-memo (Concierge's local door).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -67,9 +68,9 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
   const sessionId = flags.get('--reply-to') ?? fail('notification-reply needs --reply-to <concierge:N>, a session that notified recently.');
   await send(`${THNKRING}/api/notifications/reply`, { method: 'POST', body: JSON.stringify({ replyId: randomUUID(), sessionId, inputId: null, text }),
     headers: { ...agentHeader, 'content-type': 'application/json', authorization: `Bearer ${key(TEST_KEY_FILE)}` } });
-} else if (path === 'monologue' || path === 'alexa') {
-  // --source-id repeats an exact producer ID, so a retry can be checked to stay one capture.
-  const body = JSON.stringify({ source: { kind: path, id: flags.get('--source-id') ?? `agent-test-${randomUUID()}`, recordedAt: new Date().toISOString(), title: 'Agent test',
+} else if (path === 'monologue' || path === 'alexa' || path === 'voice-memo') {
+  // Supply the same source ID and recordedAt to exercise a producer's exact retry.
+  const body = JSON.stringify({ source: { kind: path, id: flags.get('--source-id') ?? `agent-test-${randomUUID()}`, recordedAt: flags.get('--recorded-at') ?? new Date().toISOString(), title: 'Agent test',
     metadata: { agentSource: { inputId, runId } } }, text, files: [] });
   const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
     const call = httpRequest({ socketPath: SOCKET, path: '/sessions/v1/inbox', method: 'POST', headers: { 'content-type': 'application/json' } }, response => {
@@ -80,5 +81,5 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
   console.log(JSON.stringify({ ok: result.status < 300, path, status: result.status, body: result.body.slice(0, 2000) }));
   process.exit(result.status < 300 ? 0 : 1);
 } else {
-  fail('Choose a path: send-to-inbox, bug-report, pebble, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa.');
+  fail('Choose a path: send-to-inbox, bug-report, pebble, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa, voice-memo.');
 }
