@@ -541,3 +541,12 @@ export function moveCodexAccountIntoUse(source: string): CodexAccountMove {
 export function codexProfileSource(id: string): string | null {
   return profileSources("codex").get(id) ?? null;
 }
+
+/** Resolve a saved Codex label to the same provider account id the live turn records. */
+export function codexAccountIdForLabel(label:string):string|null {
+  const active=currentAccount('codex');
+  if(active?.label===label)return active.id;
+  const profile=listProfiles('codex').find(item=>item.label===label);
+  const source=profile?codexProfileSource(profile.id):null;
+  return source?codexAccount(readJson(source))?.id??null:null;
+}

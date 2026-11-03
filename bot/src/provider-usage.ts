@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
-import { accountScope, currentAccount } from "./provider-accounts";
+import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
 import { recordSessionEvent } from "./session-inputs";
 
@@ -49,7 +49,8 @@ export function usageAttempt(provider: UsageProvider, model?: string, selectedAc
   const state = read(provider);
   const account = currentAccount(provider);
   const accountKey=selectedAccount?createHash('sha256').update(selectedAccount.toLowerCase()).digest('hex').slice(0,24):null;
-  const scope=provider==='codex'&&selectedAccount&&selectedAccount!==account?.label?`account:${accountKey}`
+  const scope=provider==='codex'&&selectedAccount&&selectedAccount!==account?.label
+    ?codexAccountIdForLabel(selectedAccount)??`account:${accountKey}`
     :accountKey&&provider==='claude-code'?`${accountKey}:${canonicalClaudeUsageModel(model!.trim())}`:usageScope(provider, model);
   return { provider, scope,
     // What a person should be told the limit applies to. The scope carries a

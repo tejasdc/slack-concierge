@@ -1,15 +1,16 @@
 import {createHash} from 'node:crypto';
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
 import { providerAccountUsage } from './provider-account-usage';
-import { accountReadingFresh,includedAllowanceWindows,refillsWithinHours } from './account-allowance-observation';
+import { accountReadingFresh,includedAllowanceWindows,refillsWithinHours,codexCreditsCanCover } from './account-allowance-observation';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
 import { NOTICE_AT_PERCENT, storedUsage } from './provider-usage-forecast';
-import { claudeAccountCachedReset } from './provider-usage';
+import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from './provider-usage';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias, providerDisplayName } from './aliases';
 import {modelCapacityRefused} from './provider-model-capacity';
 
 export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
-type Candidate = { provider: AutomaticProvider; account: string; used: number; resetsAt: number | null; windowResetAt: number | null };
+type Candidate = { provider: AutomaticProvider; account: string; used: number; paidCredits: boolean; resetsAt: number | null; windowResetAt: number | null };
+export const capacityCanStart=(candidate:Candidate):boolean=>candidate.used<100||candidate.paidCredits;
 
 /** New, unbound work only. A running session never changes provider. */
 function candidatesForNewWork(now: number): Candidate[] {
@@ -24,6 +25,7 @@ function candidatesForNewWork(now: number): Candidate[] {
       ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
     for (const room of rooms) {
       const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account,model) : null;
+      const codexRefusal = provider === 'codex' ? cachedUsageLimit(usageAttempt('codex',undefined,room.account)) : null;
       // A real usage refusal can make an account fail a fresh launch proof until its reset.
       // It is still a valid *wait* target when its stored login and reset are known.
       const canWaitForReset = !!cachedReset && !!storedClaude?.has(room.account);
@@ -39,13 +41,15 @@ function candidatesForNewWork(now: number): Candidate[] {
       // five-hour limits should be "limiting our judgment").
       const weighed = relevant.filter(window => !refillsWithinHours(window) || window.usedPercent >= 100);
       const basis = weighed.length ? weighed : relevant;
-      const used = cachedReset ? 100 : Math.max(...basis.map(window => window.usedPercent));
+      const used = cachedReset || codexRefusal ? 100 : Math.max(...basis.map(window => window.usedPercent));
       const spent = relevant.filter(window => window.usedPercent >= 100)
         .map(window => Date.parse(window.resetsAt ?? '')).filter(Number.isFinite);
       if (cachedReset) spent.push(cachedReset);
+      if (codexRefusal?.resetAt) spent.push(codexRefusal.resetAt);
       const tightest = basis.reduce((best, window) => window.usedPercent > best.usedPercent ? window : best);
       const windowResetAt = Date.parse(tightest.resetsAt ?? '');
-      candidates.push({ provider, account: account.label, used, resetsAt: spent.length ? Math.max(...spent) : null,
+      candidates.push({ provider, account: account.label, used,
+        paidCredits:provider==='codex'&&!codexRefusal&&codexCreditsCanCover(account),resetsAt: spent.length ? Math.max(...spent) : null,
         windowResetAt: Number.isFinite(windowResetAt) ? windowResetAt : null });
     }
   }
@@ -133,6 +137,8 @@ export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider)
     }
     return pool.at(-1)!.provider;
   }
+  const paid=candidates.find(candidate=>candidate.paidCredits);
+  if(paid)return paid.provider;
   const resetting = candidates.filter(candidate => candidate.resetsAt !== null)
     .sort((a,b) => a.resetsAt! - b.resetsAt!);
   if (resetting.length) return resetting[0]!.provider;

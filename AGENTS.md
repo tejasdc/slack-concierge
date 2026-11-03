@@ -1332,6 +1332,9 @@ previews with phase timing for slow calls and a compact exact archive proof; see
   breaks ties, and a newly selected account wins the next turn. Only banked work can bind to one account. A
   one-home machine retains its existing dispatch path. See
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
+- A Codex account's fresh usable credit balance can carry ordinary work after its included weekly
+  allowance is spent; a newer provider refusal still holds it. Manual reset confirmation belongs
+  to the account redeemed, even if another account is selected. See [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - **Nothing is said to him about which account a turn runs on.** Not a start, not a switch that
   worked, not a move onto the account he selected. Picking an account with room is the whole job
   of that rule, and a rule doing its job is not an event. He is told exactly once, by the existing

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
-import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity} from './provider-start-choice';
+import {budgetBriefWithProviderRoom,chooseProviderForNewWork,newWorkCapacity,capacityCanStart} from './provider-start-choice';
 import {clearModelCapacityRefusal,modelCapacityRefused,rememberModelCapacityRefusal} from './provider-model-capacity';
 import {needClaudeSignInRenewal,needSignInRenewal} from './signin-renewal';
 import {chooseClaudeDispatch,claudeAccountWithRoomBesides,claudeEveryAccountClearsAt,markClaudeHomeRefused,markClaudeHomeVerified} from './provider-account-dispatch';
@@ -320,7 +320,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
   } catch { return false; }
   const capacity=newWorkCapacity(other);
   const choice=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[other]);
-  if(!capacity||capacity.used>=100||!choice.model||modelCapacityRefused(other,choice.model))return false;
+  if(!capacity||!capacityCanStart(capacity)||!choice.model||modelCapacityRefused(other,choice.model))return false;
   return db.transaction(()=>{
     const session=getSessionById(input.session.id);
     const turn=db.query(`SELECT status,owner_instance_id,dispatch_attempt,saved_kind,outbound_text,stop_requested_at

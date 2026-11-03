@@ -2,11 +2,11 @@ import { db } from "./state";
 // Types only, so the reader can record into this module without the two importing each
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
-import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,withLocalCurrentAccount} from './account-allowance-observation';
+import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,accountCanTakeWork,withLocalCurrentAccount} from './account-allowance-observation';
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
-import { claudeAccountCachedReset } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, usageAttempt } from "./provider-usage";
 import { RESET_FACTS, resetAdvice } from "./provider-reset-facts";
 import { noticeTime } from "./notice-time";
 
@@ -284,7 +284,8 @@ export function accountAvailability(provider: AccountIdentityProvider,model?:str
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
-    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model) : null;
+    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model)
+      : provider === 'codex' ? cachedUsageLimit(usageAttempt('codex',undefined,account.label))?.resetAt??null : null;
     if (!accountReadingFresh(provider,usage,account,Date.now(),undefined,model))
       return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
     // An unreadable account is known only by a refusal: out until the reset it stated, otherwise left out.
@@ -292,7 +293,7 @@ export function accountAvailability(provider: AccountIdentityProvider,model?:str
     if (account.problem || !relevant.length)
       return refusedUntil === null ? [] : [{ account: account.label, selected: account.current, hasRoom: false, freeAt: refusedUntil }];
     const spent = relevant.filter(window => window.usedPercent >= 100).map(window => at(window.resetsAt));
-    const hasRoom = !spent.length && refusedUntil === null;
+    const hasRoom = accountCanTakeWork(provider,account,model) && refusedUntil === null;
     const resets = refusedUntil === null ? spent : [...spent, refusedUntil];
     const freeAt = hasRoom || resets.some(reset => reset === null) ? null : Math.max(...resets as number[]);
     return [{ account: account.label, selected: account.current, hasRoom, freeAt }];

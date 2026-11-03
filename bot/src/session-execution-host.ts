@@ -97,7 +97,7 @@ import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeRunsFromOwnHomes,forgetClaudeHomeCheck,markClaudeHomeRefused,markClaudeHomeVerified,savedWorkAccountRooms,sharedClaudeHome,selectedClaudeHome,admitProvenClaudeWaitingTurn} from './provider-account-dispatch';
 import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
-import {storedUsage,withResetAdvice} from './provider-usage-forecast';
+import {storedUsage,withResetAdvice,accountAvailability} from './provider-usage-forecast';
 import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
@@ -380,15 +380,27 @@ export class SessionExecutionHost {
     if(outcome.status==='used'&&outcome.accountId&&outcome.verifiedReadStartedAtMs){
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
-        if(cleared&&currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
-        else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but current launch availability is unconfirmed. Work remains held.'};
+        if(cleared){
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+        } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
         outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but recovery could not be confirmed. Work remains held.'};
       }
     }
-    if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none')
+    if(outcome.status==='used'||outcome.status==='redeemed'||outcome.status==='none'){
       await scheduleProviderAccountUsageRefresh().catch(()=>{});
+      // A read already in flight before redemption may have been joined above. It cannot
+      // update the Accounts row or authorize a move from the result of the reset.
+      if(outcome.status==='used'&&outcome.verifiedReadStartedAtMs){
+        const readAt=storedUsage('codex')?.accounts.find(item=>item.label===account)?.readAt;
+        if((Date.parse(readAt??'')||0)<outcome.verifiedReadStartedAtMs)
+          await scheduleProviderAccountUsageRefresh().catch(()=>{});
+      }
+      // A reset can belong to a saved account other than the selected one. Reconsider the
+      // normal guarded account move now, rather than waiting for its next periodic pass.
+      if(outcome.status==='used')await this.moveCodexOffSpentAccount();
+    }
     return outcome;
   }
   /** One deliberate, tool-free admission check. The held work moves only after this succeeds. */
@@ -1336,10 +1348,15 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
   const usage=storedUsage('codex');
   if(!inUse||!usage)return null;
   const current=usage.accounts.find(account=>account.label===inUse);
-  if(!current||!accountReadingFresh('codex',usage,current)||!current.windows.some(window=>window.usedPercent>=100))return null;
+  const availability=accountAvailability('codex');
+  const selected=availability.find(account=>account.account===inUse);
+  if(!current||!selected||current.windows.every(window=>window.usedPercent<100))return null;
   const used=(account:{windows:readonly {usedPercent:number}[]})=>Math.max(...account.windows.map(window=>window.usedPercent));
-  const room=usage.accounts.filter(account=>account.label!==inUse&&accountReadingFresh('codex',usage,account)&&!account.signedOut&&account.windows.length>0
-    &&account.windows.every(window=>window.usedPercent<100)).sort((a,b)=>used(a)-used(b));
+  const available=new Set(availability.filter(account=>account.hasRoom).map(account=>account.account));
+  const includedRoom=(account:typeof current)=>account.windows.length>0&&account.windows.every(window=>window.usedPercent<100);
+  const room=usage.accounts.filter(account=>account.label!==inUse&&available.has(account.label)&&!account.signedOut
+    &&(includedRoom(account)||!selected.hasRoom))
+    .sort((a,b)=>Number(includedRoom(b))-Number(includedRoom(a))||used(a)-used(b));
   const profiles=listProfiles('codex');
   for(const account of room){
     const profile=profiles.find(each=>each.label===account.label);
