@@ -6,7 +6,7 @@ import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, usageAttempt } from "./provider-usage";
-import { ACCOUNT_READING_MAX_AGE_MS, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
+import { ACCOUNT_READING_MAX_AGE_MS, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead } from "./provider-account-dispatch";
 import { needSignInRenewal } from "./signin-renewal";
@@ -342,6 +342,32 @@ async function readClaude(): Promise<ProviderUsage> {
     const facts = await claudeAccountFacts(label, ms => noticeTime(db, ms));
     accounts.push({ label, plan: facts?.plan ?? null, current: account?.active === true, windows, problem, readAt: readAtNow,
       usageCredits: facts?.usageCredits ?? null, apiCredits: facts?.apiCredits ?? null });
+  }
+  // Concierge files a signed-in account into its own home under ~/.claude-accounts; claude-swap
+  // tracks a separate list that reflects only accounts added through its own flow, so a sign-in
+  // through Accounts never appears in `cswap list` and its usage goes unobserved. On 2026-11-03
+  // hey@tejas.nyc was signed in while chann.app was out and the Inbox stayed blocked behind the
+  // chann.app reset for an hour — the release logic needs a Claude account with observed room,
+  // and none was observed because the new one was invisible here. Reading the home's own login
+  // through Anthropic's OAuth usage endpoint surfaces it, so dispatch and release see its room.
+  const cswapLabels = new Set(accounts.map(account => account.label));
+  for (const profile of listProfiles("claude-code")) {
+    if (!profile.signedIn || cswapLabels.has(profile.label)) continue;
+    const windows = await claudeWindowsFromOwnLogin(profile.label);
+    if (!windows) continue;
+    const facts = await claudeAccountFacts(profile.label, ms => noticeTime(db, ms));
+    accounts.push({
+      label: profile.label,
+      plan: facts?.plan ?? null,
+      // Which account agents will actually use is set by withAgentsAccountCurrent from the
+      // selected home; cswap's `active` flag is the terminal login, which does not apply here.
+      current: false,
+      windows: windows.map(window => ({ ...window, willLastToReset: null, runsOutAt: null })),
+      problem: null,
+      readAt: new Date().toISOString(),
+      usageCredits: facts?.usageCredits ?? null,
+      apiCredits: facts?.apiCredits ?? null,
+    });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
