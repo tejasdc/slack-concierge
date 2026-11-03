@@ -591,7 +591,10 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // The provider's source time chooses between two observations for the same label.
       // A fresh peer reading may replace a stale local cache; a fresh local one stays local.
       // The join is label-only and retained as such, never described as credential proof.
-      const borrowed=usage.problem||!usage.accounts.length
+      // Claude accounts added on the other machine must be discoverable even when every
+      // local login reads successfully. Otherwise two freshly exhausted Mac accounts hide
+      // a newly added server account from the Mac's local sign-in repair path.
+      const borrowed=provider === "claude-code" || usage.problem||!usage.accounts.length
         ||usage.accounts.some(account=>!accountReadingFresh(provider,usage,account))
         ?await peerAccounts(provider):[];
       if (borrowed.length) {
