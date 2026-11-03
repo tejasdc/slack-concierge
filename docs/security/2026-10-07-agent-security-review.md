@@ -276,3 +276,37 @@ previews). Key code facts, all confirmed by reading code or live state on 2026-1
   requester's; fulfilled destinations can be overwritten (remote-box `scripts/credential_portal.py`).
 - Firewall: no egress restriction on the server; Slack Socket Mode still connected; the Slack
   workspace has one human member.
+
+## Agent provenance and access rationale
+
+- **Provenance, not prisons.** What an agent writes shows as the agent's; what Tejas says shows as
+  his, with the door it came through ("You · iPhone Action Button", "You · web", `doorOf` in
+  `session-message-author.ts`). Agents keep full control of both machines, including repairing,
+  restarting or bypassing Concierge and starting agents outside it; nothing checks their commands
+  or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"), except
+  the refusal to rewrite pushed history he asked for the same evening (the bullet above), and the
+  refusal to read the Mac's Messages or Notification Center databases directly or photograph the
+  Messages app [decision: codes-hidden-only-for-money-and-identity]: the same pre-command hook refuses any call
+  naming them (`messages-database-policy.ts`; even in a commit or session message, so such words go
+  in a file passed with `-F` or `--text-file`), and agents read his texts with `router-actions.sh messages`
+  (`bot/scripts/messages-read.ts`, Mac only). Texts that look like codes, resets or sign-in links
+  (`text-code-withholding.ts`) are shown or hidden by thnkr.ing's one rule, asked over `ssh
+  remote-box` (`POST /codes/decide`): ordinary sites and his allow list shown, money and identity and
+  his hide list hidden, everything hidden when thnkr.ing cannot be asked. Refusals and
+  code reads are logged to `diagnostics/messages-reads.jsonl` in the state directory, never
+  with message words. It matches places, not intent, so a command that builds the path at runtime
+  a screenshot by window number, or a whole-screen capture gets through; only removing the Mac agents' Full Disk Access and screen
+  recording closes that, and that is his open decision
+  (`docs/security/2026-10-07-agent-security-review.md`; `docs/runbooks/ROUTER-ACTIONS.md`). His
+  doors (thnkr.ing sign-in, device keys, the capture drop-off, the owner socket's human routes)
+  record the sender as him, so an agent tests a delivery path through its own entrance,
+  `router-actions.sh test-capture` (`bot/scripts/agent-test-capture.ts`): the real pipeline, with
+  the agent's accepted input and run carried as `X-Concierge-Agent-Source` or `agentSource`, and
+  the owner records it as that agent (`agentTestSource` in `session-owner.ts`), shown in the Inbox
+  and starting no Inbox turn. Anything that still reached him as his gets an additive author
+  correction (`session_input_author_corrections`). His Slack user token is revoked. When a key file
+  changes, `bot/scripts/key-change-notice.ts` (remote-box units) tells him which keys, which agents
+  were working and that it takes effect at the next restart; it blocks nothing. Ask him before
+  changing what keeps him signed in: the 2026-09-23 sign-out was an agent deciding a sign-out was
+  cheap ([incident](../incidents/2026-09-23-signed-out-without-asking.md)). See
+  [agent test deliveries](../runbooks/THINKERING-CAPTURE.md#agent-test-deliveries).
