@@ -294,28 +294,29 @@ async function readCodex(): Promise<ProviderUsage> {
  * One Claude account's windows read from its own login, at most once per OWN_LOGIN_INTERVAL_MS (inside
  * the six minutes a reading counts as fresh), doubling the gap after each failure up to
  * OWN_LOGIN_MAX_BACKOFF_MS. Between reads, or when a read fails, the account keeps its last good
- * windows with the time they were taken. Read every three minutes with no memory, a 429 from
+ * windows with the time they were taken, as a good reading whose age is its time. Read every three minutes with no memory, a 429 from
  * Anthropic blanked hey@tejas.nyc, then his only Claude account with room (2026-11-03).
  */
 const OWN_LOGIN_INTERVAL_MS = 5 * 60_000;
 const OWN_LOGIN_MAX_BACKOFF_MS = 30 * 60_000;
 const ownLoginPacing = new Map<string, { nextAtMs: number; failures: number }>();
 async function pacedOwnLoginWindows(label: string, previous: AccountUsage | undefined):
-    Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null } | null> {
+    Promise<{ windows: UsageWindow[]; readAt: string | null; problem: string | null; fresh: boolean } | null> {
   const kept = previous && previous.windows.length && previous.readAt
     ? { windows: [...previous.windows], readAt: previous.readAt } : null;
   const pacing = ownLoginPacing.get(label) ?? { nextAtMs: 0, failures: 0 };
-  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: previous!.problem } : null;
+  // A kept reading is a good one whose time says how old it is, so the work router can still use it.
+  if (Date.now() < pacing.nextAtMs) return kept ? { ...kept, problem: null, fresh: false } : null;
   const own = await claudeWindowsFromOwnLogin(label);
   if (own) {
     ownLoginPacing.set(label, { nextAtMs: Date.now() + OWN_LOGIN_INTERVAL_MS, failures: 0 });
     return { windows: own.map(window => ({ ...window, resetsAt: iso(window.resetsAt), willLastToReset: null, runsOutAt: null })),
-      readAt: new Date().toISOString(), problem: null };
+      readAt: new Date().toISOString(), problem: null, fresh: true };
   }
   const failures = pacing.failures + 1;
   ownLoginPacing.set(label, { failures,
     nextAtMs: Date.now() + Math.min(OWN_LOGIN_INTERVAL_MS * 2 ** (failures - 1), OWN_LOGIN_MAX_BACKOFF_MS) });
-  return kept ? { ...kept, problem: "Showing the last reading; the latest could not be taken." } : null;
+  return kept ? { ...kept, problem: null, fresh: false } : null;
 }
 
 async function readClaude(): Promise<ProviderUsage> {
@@ -361,7 +362,8 @@ async function readClaude(): Promise<ProviderUsage> {
       const own = await pacedOwnLoginWindows(label, previous.get(label));
       if (own) {
         windows.splice(0, windows.length, ...own.windows);
-        problem = own.problem;
+        // Only a fresh read from the real login clears claude-swap's warning (such as a sign-in needed).
+        if (own.fresh) problem = null;
         readAtNow = own.readAt;
       }
     }
