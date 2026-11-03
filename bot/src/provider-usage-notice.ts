@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
-import { claudeAccountLaunchableHere, claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
+import { claudeAccountAwaitingSignIn, claudeAccountLaunchableHere, claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
@@ -118,7 +118,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
     // out is named as needing a sign-in, never as where the work moves (the Mac, 2026-11-02).
     const withRoom = accountsWithRoom(input.provider,input.model);
     const alternatives = input.provider==='claude-code' ? withRoom.filter(claudeAccountLaunchableHere) : withRoom;
-    const needSignIn = withRoom.filter(label => !alternatives.includes(label));
+    const needSignIn = input.provider==='claude-code' ? withRoom.filter(claudeAccountAwaitingSignIn) : [];
     // Each account's own state, so nothing reading this notice has to infer one account's
     // reset from another's: which is out, and until when.
     const accounts = accountAvailability(input.provider,input.model).map(room => ({ account: room.account, hasRoom: room.hasRoom,

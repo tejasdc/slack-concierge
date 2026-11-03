@@ -9,7 +9,7 @@ import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
-import {claudeAccountSelection,claudeHomeProven,recordClaudeHomeProof} from './provider-account-selection';
+import {claudeAccountSelection,claudeHomeProven,claudeHomeSignedOut,recordClaudeHomeProof,recordClaudeHomeSignedOut} from './provider-account-selection';
 import {log} from './log';
 import {accountFilesView,forgetAccountFiles} from './account-files-memo';
 import {accountAvailability} from './provider-usage-forecast';
@@ -128,12 +128,11 @@ const proving=new Set<string>();
 /** A home that just failed is not checked again for this long, so a dead login costs one check, not one per turn. */
 const RECHECK_AFTER_FAILURE_MS=10*60_000;
 const failedAt=new Map<string,number>();
-/** Homes whose latest check or turn found the login signed out, until one succeeds or a new login is filed. */
-const signedOutHomes=new Set<string>();
-export function markClaudeHomeVerified(home:string|null){if(home){provenHomes.add(home);failedAt.delete(home);signedOutHomes.delete(home);recordClaudeHomeProof(home,true);}}
-export function markClaudeHomeRefused(home:string|null){if(home){provenHomes.delete(home);failedAt.set(home,Date.now());signedOutHomes.add(home);recordClaudeHomeProof(home,false);}}
+export function markClaudeHomeVerified(home:string|null){if(home){provenHomes.add(home);failedAt.delete(home);recordClaudeHomeSignedOut(home,false);recordClaudeHomeProof(home,true);}}
+/** A failed check or turn. Only a sign-in refusal (`signedOut`) records the home as waiting for a sign-in. */
+export function markClaudeHomeRefused(home:string|null,signedOut=true){if(home){provenHomes.delete(home);failedAt.set(home,Date.now());if(signedOut)recordClaudeHomeSignedOut(home,true);recordClaudeHomeProof(home,false);}}
 /** A newly filed login or an explicit switch starts the home's evidence over. */
-export function forgetClaudeHomeCheck(home:string|null){if(home){provenHomes.delete(home);failedAt.delete(home);signedOutHomes.delete(home);recordClaudeHomeProof(home,false);}}
+export function forgetClaudeHomeCheck(home:string|null){if(home){provenHomes.delete(home);failedAt.delete(home);recordClaudeHomeSignedOut(home,false);recordClaudeHomeProof(home,false);}}
 function provenOrProve(account:string,home:string):boolean{
   if(provenHomes.has(home))return true;
   if(claudeHomeProven(home)){provenHomes.add(home);return true;}
@@ -144,7 +143,7 @@ function provenOrProve(account:string,home:string):boolean{
       // Work held because no account had room may now have one: release it to try again.
       if(check.ok){markClaudeHomeVerified(home);releaseUsageHeldWork('claude-code');releaseAuthHold('claude-code','home_proven');}
       else {
-        failedAt.set(home,Date.now());if(check.reason==='signed_out')signedOutHomes.add(home);
+        failedAt.set(home,Date.now());if(check.reason==='signed_out')recordClaudeHomeSignedOut(home,true);
         log('warn','claude_account_home_unproven',{account,reason:check.reason});
         if(check.reason==='signed_out')needClaudeSignInRenewal(account,'the background account check found it signed out');
       }
@@ -174,8 +173,18 @@ export function claudeAccountLaunchableHere(account:string):boolean{
   const home=sharedClaudeHome(account,undefined,false,false);
   if(!home)return false;
   if(provenHomes.has(home)||claudeHomeProven(home))return true;
-  if(signedOutHomes.has(home)||Date.now()-(failedAt.get(home)??0)<RECHECK_AFTER_FAILURE_MS){provenOrProve(account,home);return false;}
+  if(claudeHomeSignedOut(home)||Date.now()-(failedAt.get(home)??0)<RECHECK_AFTER_FAILURE_MS){provenOrProve(account,home);return false;}
   return account===selectedClaudeHome()?.label||provenOrProve(account,home);
+}
+/**
+ * Whether this account's own home on this machine was last seen signed out (by a turn's sign-in refusal or
+ * a background check), and no check has passed since. Narrower than not launchable: an incomplete home,
+ * a timeout or a wrong account is not a sign-in, and must not hold work that could move elsewhere.
+ */
+export function claudeAccountAwaitingSignIn(account:string):boolean{
+  if(!claudeRunsFromOwnHomes())return false;
+  const profile=listProfiles('claude-code').find(item=>item.label===account);
+  return !!profile&&claudeHomeSignedOut(accountHome('claude-code',profile.id));
 }
 function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink();} catch {return false;}}
 
