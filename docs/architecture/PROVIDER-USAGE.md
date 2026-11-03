@@ -149,6 +149,20 @@ also restarts its App Server when no turns are running, because that server keep
 credential in memory. A failed activation leaves the queue untouched. Claude's macOS
 Keychain login uses the existing sign-in activation path and Keychain change event.
 
+A usage reading with room is not an account this machine can run: the usage reader holds its own
+copy of each login, so a home whose login is signed out still reads as having room. One answer,
+`claudeAccountLaunchableHere`, says whether this machine can launch an account now (a proven home,
+or the selected one not just refused; a home whose latest check or turn found it signed out stays
+out until a check passes). The usage hold notice names only launchable accounts as where work
+moves, and lists the rest as `accountsNeedingSignIn`. The Claude-to-Codex transfer at an allowance
+wall does not run while an account with room only needs a sign-in: the work stays held in the
+session it was sent to. The renewal request a Mac sends its own browser agent names the Mac's
+login, never the server's. Before 2026-11-02 it said "the server's" from both machines, so the
+agent renewed the server's healthy login, reported success, and the Mac's stayed signed out; the
+notice promised the work would move to that account, and his 7:28 PM message moved to a Codex
+session instead while he was signing in. Record:
+`docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
+
 The first held input of an episode publishes one `provider_outage` event with an `auth`
 payload: account, machine and number of held inputs. Thinkering's existing notification
 courier pushes it without a provider turn. `provider_auth_hold_notified` and

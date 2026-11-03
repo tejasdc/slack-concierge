@@ -79,15 +79,20 @@ export function needClaudeSignInRenewal(account: string | null, why: string): bo
   return needSignInRenewal("claude-code", account, why);
 }
 
-/** What the Mac's browser agent is asked to do. No link or code is in it, and none may come back. */
+/**
+ * What the Mac's browser agent is asked to do. No link or code is in it, and none may come back. `local` means the refused login is this Mac's own: the request then
+ * names the Mac, never the server. It said "the server's" for both until 2026-11-02, so the agent renewed
+ * the server's healthy tejas@chann.app login, reported success, and the Mac's stayed signed out all evening.
+ */
 export function signInWorkerText(provider: RenewableProvider, account: string, local = false): string {
   const name = NAME[provider], site = SITE[provider];
+  const machine = local ? "this Mac" : "the server";
   const approve = provider === "codex"
     ? `Accounts shows a code and a link: open the link in Chrome, sign in to OpenAI as ${account} (switch account first if another one is showing), and enter the code there`
     : `approve it on claude.ai as ${account} (switch claude.ai's account first if another one is showing), and enter the one-time code into the waiting Accounts form`;
-  return `Renew the server's ${name} sign-in for ${account}: the server's login for it was refused. In Chrome on this Mac, open thnkr.ing `
-    + `Accounts, start ${account}'s ${name} sign-in for the server, ${approve}. Keep the link and the code out of every message, `
-    + `file and reply. Reply completed once Accounts shows ${account} signed in on the server. Reply needs_decision --only-he-can sign-in only `
+  return `Renew ${machine}'s ${name} sign-in for ${account}: ${machine}'s login for it was refused. In Chrome on this Mac, open thnkr.ing `
+    + `Accounts, start ${account}'s ${name} sign-in for ${machine}${local ? " (the Mac's row in Accounts, not the server's)" : ""}, ${approve}. Keep the link and the code out of every message, `
+    + `file and reply. Reply completed once Accounts shows ${account} signed in on ${machine}. Reply needs_decision --only-he-can sign-in only `
     + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`
     + (local ? `, and because this request comes from this Mac's own Concierge with nobody reading its answer, then also declare `
       + `sessions outcome needs_you --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)

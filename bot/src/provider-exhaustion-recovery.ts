@@ -1,6 +1,8 @@
 import {db,executionChanged,getSessionById} from './state';
 import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {newWorkCapacity} from './provider-start-choice';
+import {accountsWithRoom} from './provider-usage-forecast';
+import {claudeAccountLaunchableHere} from './provider-account-dispatch';
 import {sessionAddress} from './session-address';
 import {log} from './log';
 
@@ -153,6 +155,11 @@ export function recoverExhaustedClaudeWork():number {
   const claude=newWorkCapacity('claude-code');
   const codex=newWorkCapacity('codex');
   if(!claude||claude.used<100||!codex||codex.used>=100){scanAfterTurnId=0;return 0;}
+  // An account with room whose login here is signed out is a sign-in wait, not an allowance wall: his
+  // message stays held in the session he wrote it in until the sign-in lands. On 2026-11-02 the Mac moved
+  // his 7:28 PM message into a new Codex session while he was signing tejas@chann.app back in, and in
+  // the session he was reading it showed only as cancelled.
+  if(accountsWithRoom('claude-code').some(account=>!claudeAccountLaunchableHere(account))){scanAfterTurnId=0;return 0;}
   reconciling=true;
   try {
     let moved=0;

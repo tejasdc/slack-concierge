@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import { authHeldInputCount, db, getSessionById } from "./state";
 import { log } from "./log";
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount } from "./provider-accounts";
-import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
+import { claudeAccountLaunchableHere, claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
 import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { NOTICE_AT_PERCENT, WARN_LEAD_MS, accountAvailability, accountsNearlySpent, accountsWithRoom, accountsWithRoomBesides,
@@ -114,7 +114,11 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
   const inputId = turn.accepted_input_id;
   try {
     // Claude's failed attempt names its execution account. Selection is not evidence of it.
-    const alternatives = accountsWithRoom(input.provider,input.model);
+    // Room in a usage reading is not room this machine can use: an account whose login here is signed
+    // out is named as needing a sign-in, never as where the work moves (the Mac, 2026-11-02).
+    const withRoom = accountsWithRoom(input.provider,input.model);
+    const alternatives = input.provider==='claude-code' ? withRoom.filter(claudeAccountLaunchableHere) : withRoom;
+    const needSignIn = withRoom.filter(label => !alternatives.includes(label));
     // Each account's own state, so nothing reading this notice has to infer one account's
     // reset from another's: which is out, and until when.
     const accounts = accountAvailability(input.provider,input.model).map(room => ({ account: room.account, hasRoom: room.hasRoom,
@@ -133,7 +137,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
         alternatives: [],
         usage: {
           account, clearsAt: new Date(input.clearsAtMs).toISOString(),
-          heldInputs: held, accountsWithRoom: alternatives, accounts,
+          heldInputs: held, accountsWithRoom: alternatives, accountsNeedingSignIn: needSignIn, accounts,
           inboxClaudeExhausted,
           codexRoom: input.provider==='claude-code' ? (()=>{const codex=newWorkCapacity('codex');return codex?codex.used<100?'yes':'no':'unknown';})() : null,
           // The moment a banked reset is worth most: work is stopped, and this ends it now
@@ -145,7 +149,7 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
     // The account name belongs in his app, not in a log line.
     log("warn", "provider_usage_hold_notified", { provider: input.provider, session_id: turn.session_id,
       turn_id: input.turnId, clears_at: new Date(input.clearsAtMs).toISOString(),
-      held_inputs: held, accounts_with_room: alternatives.length });
+      held_inputs: held, accounts_with_room: alternatives.length, accounts_needing_sign_in: needSignIn.length });
   } catch (error) {
     log("error", "provider_usage_hold_notice_failed", { provider: input.provider, turn_id: input.turnId,
       error: error instanceof Error ? error.message : String(error) });
