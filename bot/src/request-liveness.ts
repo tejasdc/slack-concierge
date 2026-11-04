@@ -69,7 +69,7 @@ export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnsw
             WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${returns} AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId, sinceMs);
 }
 
-/** The worker ended its turn waiting on something that will wake it: its own live request, or a watch it registered (watches.ts). */
+/** The worker ended its turn with a returning request or a watch named by this request. */
 export function waitingOnDependency(sessionId: number, requestId: string, sinceMs = 0, untakenAnswers = true): boolean {
     return !!db.query(`SELECT 1 FROM watches watch WHERE watch.session_id=?
             AND (watch.state IN ('accepted','observing') OR watch.delivery_state='pending')

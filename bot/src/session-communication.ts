@@ -1718,6 +1718,7 @@ export class SessionCommunicationCoordinator {
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
                     || payload.answerGroup !== input.answer_group
+                    || payload.waitingOnWatch !== input.waiting_on_watch
                     || payload.notify !== (input.notify||undefined)
                     || payload.alsoMainThread !== (input.also_main_thread||undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
