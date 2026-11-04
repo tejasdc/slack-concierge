@@ -87,9 +87,25 @@ export class RunnerHostAccess implements HostAccess {
       const attempt = job.attempts.at(-1);
       // Started: the runner reported its attachment, or the job already moved on (custody decides).
       if (ended(job.state) || (attempt && this.attachedEvent())) {
+        const attached = this.attachedEvent();
         return { executionId: this.executionId, directory: "", unit: `runner:${attempt?.runner ?? "unknown"}`,
+          // The protocol the runner's own host speaks, so release preflights cover runner hosts too.
+          ...(typeof attached?.protocol === "number" ? { protocol: attached.protocol } : {}),
           hostScript: "", runtime: "", manifestDigest: createHash("sha256").update(JSON.stringify(payload)).digest("hex") };
       }
+      await nextActivity(this.jobId);
+    }
+  }
+
+  /**
+   * Whether the runner holding this job reached the owner after `sinceMs`, waiting up to `timeoutMs`:
+   * the evidence that a run taken over is really alive, which the survival proof requires.
+   */
+  async contactAfter(sinceMs: number, timeoutMs = 30_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if ((engine().lastContact(this.jobId) ?? 0) > sinceMs) return true;
+      if (Date.now() >= deadline) return false;
       await nextActivity(this.jobId);
     }
   }
@@ -108,10 +124,18 @@ export class RunnerHostAccess implements HostAccess {
     return new RunnerLink(this);
   }
 
+  /**
+   * The same decision a local host gets, from the job: a job no runner claimed yet is withdrawn here
+   * (only the coordinator that queued it waited for a claim; a later one must not leave it queued to
+   * start on a stale prompt hours later), a claimed job whose runner has not reported its host is
+   * held until it does, and an ended job settles from its recorded exit or is lost.
+   */
   async custody(): Promise<HostCustody> {
-    const job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);
+    let job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);
     if (!job) return "dead";
-    if (!ended(job.state)) return "answering";
+    if (job.state === "queued" && engine().withdraw(this.jobId, "the coordinator that queued it stopped before a runner claimed it")) return "dead";
+    job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER)!;
+    if (!ended(job.state)) return this.attachedEvent() ? "answering" : "held";
     for await (const frame of this.journal()) if (frame.k === "x") return "settle-from-record";
     return "dead";
   }

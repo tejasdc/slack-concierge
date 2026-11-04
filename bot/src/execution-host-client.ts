@@ -205,6 +205,8 @@ export class HostConnection implements HostLink {
 export type HostLaunch = {
   executionId: string; directory: string; unit: string; hostScript: string; runtime: string;
   manifestDigest: string;
+  /** The protocol the started host speaks, when it may differ from this release's (a runner's host). */
+  protocol?: number;
 };
 
 /** Where a host for this release lives: beside the router helpers this run is pinned to. */
@@ -250,6 +252,8 @@ export type HostPriority = "agent" | "waiter";
 
 export async function startHost(input: {
   stateDir: string; executionId: string; routerBotDir: string; runtime?: string; priority?: HostPriority;
+  /** Paths the host's unit cannot see at all (systemd InaccessiblePaths); a runner hides the owner's state. */
+  hiddenPaths?: string[];
   manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
 }): Promise<HostLaunch> {
   const directory = executionDirectory(input.stateDir, input.executionId);
@@ -273,6 +277,7 @@ export async function startHost(input: {
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group", "--property=IOAccounting=yes",
       ...(input.priority === "waiter" ? ["--nice=19", "--property=CPUWeight=1"] : []),
+      ...(input.hiddenPaths ?? []).map(path => `--property=InaccessiblePaths=-${path}`),
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,

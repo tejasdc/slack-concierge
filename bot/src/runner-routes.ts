@@ -43,6 +43,8 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
       return Response.json({ok:true,...queued},{status:queued.created?201:200});
     }
     if(request.method==='GET'&&path.startsWith('jobs/')) {
+      // A job's events are an agent's whole journal: only runners and the owner's own machine read them.
+      if(principal&&!RUNNER.test(principal))return Response.json({ok:false,error:'RUNNER_ONLY',detail:'Job records are read by runners only.'},{status:403});
       const job=engine().job(decodeURIComponent(path.slice('jobs/'.length)),Number(url.searchParams.get('after')??0)||0,url.searchParams.get('attempt')??undefined);
       return job?Response.json({ok:true,job}):Response.json({ok:false,error:'UNKNOWN_JOB'},{status:404});
     }

@@ -10,7 +10,8 @@ import { db, executionChanged, queuedTurnClaimRow, settleSupersededParkedTurn, t
 import { log, errorFields } from "./log";
 import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
-import { RUNNER_SUPERVISOR, RunnerHostAccess } from "./runner-host-access";
+import { RUNNER_SUPERVISOR, RunnerHostAccess, turnJobId } from "./runner-host-access";
+import { runnerLedger } from "./runner-ledger";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, stopSupersededHost, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
 /** This coordinator took the run over while its provider was still running. */
@@ -48,6 +49,8 @@ export function recordExecutionLaunched(executionId: string, launch: HostLaunch)
     WHERE execution_id=? AND state='intended'`)
     .run(launch.unit, launch.hostScript || null, launch.hostScript ? hostScriptDigest(launch.hostScript) : null, launch.runtime || null,
       launch.manifestDigest, Date.now(), executionId);
+  if (launch.protocol !== undefined)
+    db.query("UPDATE executions SET host_protocol=? WHERE execution_id=?").run(launch.protocol, executionId);
   // A run that now has independent custody no longer ends with this coordinator: a shutdown waiting
   // on it re-evaluates (index.ts observes execution changes).
   executionChanged();
@@ -106,8 +109,16 @@ export function pruneExecutionRecords(nowMs = Date.now()) {
   const old = db.query(`SELECT execution_id, directory FROM executions WHERE state IN ('released','lost') AND updated_at_ms < ? AND detail IS NOT 'pruned'`)
     .all(nowMs - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string; directory: string }[];
   for (const row of old) {
-    // A runner's record is its job's events in this ledger; there is no folder here to remove.
-    if (!row.directory) { db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id); continue; }
+    // A runner's record is its job's events in this ledger: they and the job's payload (its prompt
+    // and attachment bytes) go after the same month a local journal is kept.
+    if (!row.directory) {
+      db.transaction(() => {
+        db.query(`DELETE FROM runner_events WHERE attempt_id IN (SELECT attempt_id FROM runner_attempts WHERE job_id=?)`).run(turnJobId(row.execution_id));
+        db.query(`UPDATE runner_jobs SET payload_json='null' WHERE job_id=? AND state IN ('finished','unconfirmed')`).run(turnJobId(row.execution_id));
+        db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id);
+      })();
+      continue;
+    }
     try { rmSync(row.directory, { recursive: true, force: true }); db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id); }
     catch (error) { log("warn", "execution_record_prune_failed", { execution_id: row.execution_id, ...errorFields(error) }); }
   }
@@ -182,6 +193,8 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     return !!process && input.isOwnerAlive(process);
   };
   const adopted: Adoption[] = [], held: HeldExecution[] = [];
+  // The time this owner was down never counts against a runner that kept its agents waiting for it.
+  if (!input.onlyParked) runnerLedger().extendLiveLeases();
   // An old parked host must not keep writing a Claude conversation after a newer turn has
   // entered it. Stop only the old provider; keep the newer turn and its request custody.
   const superseded = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id

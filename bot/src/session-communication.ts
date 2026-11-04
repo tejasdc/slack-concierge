@@ -1405,7 +1405,7 @@ export class SessionCommunicationCoordinator {
             return this.sideCopyAnswer(actor,input,frozen);
         }
         if(input.onRunner!==undefined&&(input.onRunner!==true||!input.provider||input.provider==='chatgpt'||input.address||input.peer||input.outside))
-            throw new Error('--on-runner starts a new Claude Code session on this owner whose turns run on a runner: give --project and a Claude provider or Automatic, not an address, --peer, --outside or ChatGPT.');
+            throw new Error('--on-runner starts a new Claude Code session on this owner whose turns run on a runner: give --project and a Claude provider, not an address, --peer, --outside or ChatGPT.');
         if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
             throw new Error('An outside request starts a new local Codex session: --outside with --project and an optional Codex alias.');
         if(input.consult!==undefined) {

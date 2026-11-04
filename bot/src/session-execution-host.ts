@@ -1394,7 +1394,11 @@ export class SessionExecutionHost {
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
         log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
-        if(mode==='adopt'&&!status.exit)recordLiveAdoption(executionId);
+        // A runner's run counts as taken over alive only once its runner reaches this owner afterwards.
+        if(mode==='adopt'&&!status.exit){
+          if(runnerFiles){const since=Date.now();void new RunnerHostAccess(executionId).contactAfter(since).then(alive=>{if(alive)recordLiveAdoption(executionId);});}
+          else recordLiveAdoption(executionId);
+        }
       },
       onExited:exit=>recordExecutionExited(executionId,exit)},timeouts,runnerFiles);
   }

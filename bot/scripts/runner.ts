@@ -24,6 +24,7 @@ import {spawnSync} from 'node:child_process';
 import {ADOPTABLE_HOST_PROTOCOLS,HOST_PROTOCOL_VERSION,HostConnection,HostNotStartedError,connectWhenReady,executionDirectory,
   executionUnit,hostCustody,hostSocketPath,startHost,stopSupersededHost,streamJournal,type HostFrame} from '../src/execution-host-client';
 import {watchClaudeTranscript} from '../src/claude-transcript-watch';
+import {RUNNER_FENCE_MS} from '../src/runner-leases';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -38,7 +39,7 @@ const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
 
-type HeldAttempt={jobId:string;epoch:number;kind?:string;executionId?:string;manifest?:unknown};
+type HeldAttempt={jobId:string;epoch:number;kind?:string;executionId?:string;manifest?:unknown;watches?:Record<string,string>};
 type Held=Record<string,HeldAttempt>;
 const readHeld=():Held=>{try{return JSON.parse(readFileSync(held,'utf8'));}catch{return {};}};
 const writeHeld=(value:Held)=>{writeFileSync(held+'.tmp',JSON.stringify(value),{mode:0o600});renameSync(held+'.tmp',held);};
@@ -89,7 +90,8 @@ function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvi
     PATH:[join(botDir,'scripts'),...new Set([...runPath,...basePath])].join(':'),
     CONCIERGE_STATE_DIR:stateDir!,CONCIERGE_STATE_DB:join(stateDir!,'no-ledger-on-a-runner.db'),
     CONCIERGE_ROUTER_BOT_DIR:botDir,CONCIERGE_BUN_BIN:process.execPath,
-    CONCIERGE_OWNER_URL:manifest.environment.CONCIERGE_OWNER_URL||owner!,
+    // The address this runner reaches the owner at is the one known to work from here.
+    CONCIERGE_OWNER_URL:owner!,
     CONCIERGE_RUNNER_NAME:process.env.CONCIERGE_RUNNER_NAME??'',
     // thnkr.ing's network entrance, reached with the same run token (Thinkering's step 2).
     ...(process.env.THINKERING_CAPABILITY_URL?{THINKERING_CAPABILITY_URL:process.env.THINKERING_CAPABILITY_URL}:{})};
@@ -135,18 +137,37 @@ class Turn {
       if(answer.error==='STALE_EPOCH'||answer.error==='UNKNOWN_ATTEMPT')this.lose(new Error(answer.detail??answer.error));
       return;
     }
+    this.lastContact=Date.now();
     this.queue=this.queue.filter(event=>event.seq>answer.ackedSeq!);
     for(const command of answer.commands??[])this.offer(command);
+  }
+  private lastContact=Date.now();
+  private fenced=false;
+  /**
+   * Out of touch with the owner for RUNNER_FENCE_MS: the owner may soon settle this turn as lost and
+   * a later turn may resume the same conversation, so the agent must stop acting now. The attempt is
+   * kept: if the owner comes back before the lease passes, the next sync refuses or continues it.
+   */
+  fenceIfSilent() {
+    if(this.stopped||this.fenced||Date.now()-this.lastContact<RUNNER_FENCE_MS)return;
+    this.fenced=true;
+    say('runner_turn_fenced',{job:this.job.jobId,silentMs:Date.now()-this.lastContact});
+    spawnSync('systemctl',['stop',`${executionUnit(this.executionId)}.service`],{timeout:15_000});
   }
   get attempt(){return {attemptId:this.job.attemptId,epoch:this.epoch};}
 
   private async finish(result:unknown) {
     if(this.stopped)return;
     // Every event is stored before the job ends: the owner reads an ended job's events as complete.
-    for(let attempt=0;this.queue.length&&attempt<120&&!this.stopped;attempt++)await Bun.sleep(500);
+    // An owner out of reach is waited for; the lease, not this loop, decides when the turn is lost.
+    while(this.queue.length&&!this.stopped)await Bun.sleep(500);
     if(this.stopped)return;
-    try{await call('finish',{attemptId:this.job.attemptId,epoch:this.epoch,operationId:`finish:${this.job.attemptId}`,result});}
-    catch(error){if(!lostCustody(error))throw error;}
+    // The same operation id makes a repeated finish harmless; an unreachable owner is waited for.
+    for(;!this.stopped;) {
+      try{await call('finish',{attemptId:this.job.attemptId,epoch:this.epoch,operationId:`finish:${this.job.attemptId}`,result});break;}
+      catch(error){if(lostCustody(error))break;say('runner_finish_retry',{job:this.job.jobId,error:String(error)});await Bun.sleep(2_000);}
+    }
+    if(this.stopped)return;
     this.end();
     say('runner_turn_finished',{job:this.job.jobId,result});
   }
@@ -189,6 +210,7 @@ class Turn {
       }
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,
+        hiddenPaths:(process.env.CONCIERGE_RUNNER_HIDE_PATHS??'').split(':').filter(Boolean),
         manifest:{executable,args:manifest.args,cwd:manifest.cwd,environment:this.environment,initialInput:manifest.initialInput,initialMeta:manifest.initialMeta}});
     } catch(error) {
       if(error instanceof HostNotStartedError)return this.finish({notStarted:error.message});
@@ -199,8 +221,11 @@ class Turn {
   }
 
   /** A restarted runner takes the turn back: reattach after the host frames the owner already holds. */
-  async resume() {
+  async resume(watches:Record<string,string>={}) {
     this.environment=turnEnvironment(this.job.payload?.manifest??{environment:{},inheritEnvironment:true});
+    // Transcript watches the owner asked for before the restart go on; reading from the start again
+    // reports pickups made meanwhile, and the owner ignores ones it already counted.
+    for(const [id,sessionUuid] of Object.entries(watches))this.watch(id,sessionUuid,true);
     await this.follow(false);
   }
 
@@ -258,15 +283,24 @@ class Turn {
     }
   }
 
+  private watch(id:string,sessionUuid:string,fromStart:boolean) {
+    this.watches.get(id)?.();
+    this.watches.set(id,watchClaudeTranscript({sessionUuid,fromStart,environment:this.environment,
+      onPickup:pickup=>this.emit({k:'pickup',watch:id,pickup:{text:pickup.text,uuid:pickup.uuid}})}));
+    updateHeld(state=>{const held=state[this.job.attemptId];if(held)held.watches={...held.watches,[id]:sessionUuid};});
+  }
+
   private async apply(command:{commandId:string;kind:string;body:any}):Promise<unknown> {
     const body=command.body??{};
     if(command.kind==='watch-transcript') {
-      this.watches.get(body.id)?.();
-      this.watches.set(body.id,watchClaudeTranscript({sessionUuid:String(body.sessionUuid),fromStart:body.fromStart===true,environment:this.environment,
-        onPickup:pickup=>this.emit({k:'pickup',watch:body.id,pickup:{text:pickup.text,uuid:pickup.uuid}})}));
+      this.watch(String(body.id),String(body.sessionUuid),body.fromStart===true);
       return {watching:true};
     }
-    if(command.kind==='unwatch-transcript'){this.watches.get(body.watch)?.();this.watches.delete(body.watch);return {stopped:true};}
+    if(command.kind==='unwatch-transcript'){
+      this.watches.get(body.watch)?.();this.watches.delete(body.watch);
+      updateHeld(state=>{delete state[this.job.attemptId]?.watches?.[body.watch];});
+      return {stopped:true};
+    }
     if(command.kind==='stop-superseded')return {stopped:await stopSupersededHost(this.directory,this.executionId)};
     const connection=this.connection;
     if(!connection)throw new Error('not attached to the host yet');
@@ -306,7 +340,7 @@ if(Object.keys(before).length){
     const turn=new Turn({jobId:prior.jobId,attemptId:attempt.attemptId,payload:{executionId:prior.executionId,manifest:prior.manifest}},attempt.epoch,
       {ackedSeq:attempt.ackedSeq,hostSeq:lastEvent?.frame?.h??0});
     turns.set(attempt.attemptId,turn);
-    void turn.resume();
+    void turn.resume(prior.watches);
   }
   say('runner_reacquired',{attempts});
 }
@@ -315,6 +349,7 @@ if(Object.keys(before).length){
  * grows with runners, not with the number of agents each runs.
  */
 let syncing=false;
+setInterval(()=>{for(const turn of turns.values())turn.fenceIfSilent();},5_000);
 setInterval(async()=>{
   if(syncing||!turns.size)return;
   syncing=true;

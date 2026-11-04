@@ -28,7 +28,15 @@ const wake=(jobId:string)=>queueMicrotask(()=>runnerActivity.emit(jobId));
  *   operation id. An expired job is requeued only when it declared replay safe; otherwise it is
  *   settled `unconfirmed` for its coordinator to reconcile (a provider may still have acted).
  */
-export const LEASE_MS=90_000;
+/**
+ * Five minutes: long enough that an owner restart or a short network loss does not end every
+ * runner's agents, short enough that a dead runner's turn is settled soon. A runner stops its own
+ * agents when it has not reached the owner for RUNNER_FENCE_MS, before the owner could judge the
+ * lease passed, so an agent never acts after its turn was settled as lost.
+ */
+export const LEASE_MS=300_000;
+export const RUNNER_FENCE_MS=LEASE_MS-60_000;
+const CONTACT_RESOLUTION_MS=5_000;
 export const HEARTBEAT_MS=15_000;
 
 export type RunnerJobState='queued'|'leased'|'finished'|'unconfirmed';
@@ -81,6 +89,10 @@ export function initializeRunnerSchema(db:Database) {
     result_at_ms INTEGER
   );
   CREATE INDEX IF NOT EXISTS runner_commands_open ON runner_commands(job_id,created_at_ms) WHERE result_at_ms IS NULL;`);
+  // When the runner last reached the owner for this attempt: a later owner's evidence that the runner
+  // is alive after a takeover (added after the first release of this table).
+  if(!(db.query("SELECT 1 FROM pragma_table_info('runner_attempts') WHERE name='last_contact_at_ms'").get()))
+    db.exec('ALTER TABLE runner_attempts ADD COLUMN last_contact_at_ms INTEGER');
 }
 
 type Attempt={attempt_id:string;job_id:string;runner:string;epoch:number;state:string;lease_expires_at_ms:number;acked_seq:number};
@@ -191,8 +203,9 @@ export class RunnerLeases {
         const attempt=this.holding(runner,item.attemptId,item.epoch);
         const {ackedSeq}=item.events?.length?this.appendEvents(runner,item.attemptId,item.epoch,item.events):{ackedSeq:attempt.acked_seq};
         const now=this.now();
-        if(attempt.lease_expires_at_ms-now<LEASE_MS-HEARTBEAT_MS)
-          this.db.query('UPDATE runner_attempts SET lease_expires_at_ms=? WHERE attempt_id=?').run(now+LEASE_MS,item.attemptId);
+        // One write per attempt every few seconds at most, however often the runner syncs.
+        this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=?,last_contact_at_ms=?
+          WHERE attempt_id=? AND COALESCE(last_contact_at_ms,0)<=?`).run(now+LEASE_MS,now,item.attemptId,now-CONTACT_RESOLUTION_MS);
         const commands=(this.db.query(`SELECT command_id,kind,body_json FROM runner_commands
           WHERE job_id=? AND result_at_ms IS NULL ORDER BY created_at_ms,command_id`).all(attempt.job_id) as {command_id:string;kind:string;body_json:string}[])
           .map(row=>({commandId:row.command_id,kind:row.kind,body:JSON.parse(row.body_json)}));
@@ -202,6 +215,16 @@ export class RunnerLeases {
         throw error;
       }
     })).immediate();
+  }
+
+  /**
+   * At the owner's start, before adoption: every live lease is extended from now, so the owner's own
+   * downtime never counts against a runner that was waiting for it. A runner that really died still
+   * expires one lease later.
+   */
+  extendLiveLeases() {
+    return this.db.query(`UPDATE runner_attempts SET lease_expires_at_ms=MAX(lease_expires_at_ms,?) WHERE state='live'`)
+      .run(this.now()+LEASE_MS).changes;
   }
 
   /**
@@ -292,6 +315,12 @@ export class RunnerLeases {
       wake(attempt.job_id);
       return {finished:true,repeated:false,result};
     }).immediate();
+  }
+
+  /** When the runner holding a job's latest live attempt last reached the owner, if it has. */
+  lastContact(jobId:string):number|null {
+    const row=this.db.query(`SELECT last_contact_at_ms FROM runner_attempts WHERE job_id=? AND state='live' ORDER BY started_at_ms DESC LIMIT 1`).get(jobId) as {last_contact_at_ms:number|null}|null;
+    return row?.last_contact_at_ms??null;
   }
 
   /**

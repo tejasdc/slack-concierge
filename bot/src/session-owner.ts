@@ -1353,6 +1353,8 @@ export class SessionOwner {
     const selected=this.requestTarget({...input,choiceKey:input.requestId},fromClaude);
     // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
+    // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
+    if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
     const {provider,...metadata}={...selected,...(input.outside?{outside:true}:{}),...(input.onRunner?{onRunner:true}:{})};
     if(input.standingRole){
       assertStandingAgentFolder(this.defaultCwd,input.standingRole,metadata.cwd);

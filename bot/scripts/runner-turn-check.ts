@@ -166,7 +166,19 @@ try {
   await assert.rejects(waiting.result,(error:unknown)=>error instanceof HostNotStartedError&&/no runner claimed/.test(String(error)));
   assert.equal(JSON.parse((db.query('SELECT result_json FROM runner_jobs WHERE job_id=?').get(turnJobId(unclaimed)) as any).result_json).withdrawn!=null,true);
 
-  console.log('runner turns: output, follow-ups, attachments, runner-built environment, release after settlement, coordinator takeover, runner restart and unstarted refusals hold');
+  // 6. A later owner's custody: a job no runner claimed is withdrawn (never left to start on a stale
+  // prompt); a claimed job whose runner has not reported its host is held, not taken for live.
+  const leases=new RunnerLeases(db);
+  const orphan=newExecutionId();
+  leases.enqueue({jobId:turnJobId(orphan),kind:'turn',payload:{}});
+  assert.equal(await new RunnerHostAccess(orphan).custody(),'dead');
+  assert.equal(JSON.parse((db.query('SELECT result_json FROM runner_jobs WHERE job_id=?').get(turnJobId(orphan)) as any).result_json).withdrawn!=null,true);
+  const starting=newExecutionId();
+  leases.enqueue({jobId:turnJobId(starting),kind:'turn',payload:{}});
+  assert.ok(leases.claim('elsewhere',['turn']));
+  assert.equal(await new RunnerHostAccess(starting).custody(),'held');
+
+  console.log('runner turns: output, follow-ups, attachments, runner-built environment, release after settlement, coordinator takeover, runner restart and unstarted refusals and later-owner custody hold');
 } catch(error) {
   console.error(runnerLog.join(''));
   console.error((db.query('SELECT job_id,state,result_json FROM runner_jobs').all() as any[]).map(row=>JSON.stringify(row)).join('\n'));
