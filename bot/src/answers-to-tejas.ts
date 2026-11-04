@@ -82,7 +82,7 @@ function quoteVerdict(actorInputId: string, quote: string): Verdict {
  * The question as he will read it: the agent's question, then his words and why they leave it
  * open. Refuses when either field is missing or the quoted words are not his.
  */
-export function questionForTejas(input: { actorInputId: string; question: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
+export function questionForTejas(input: { actorInputId: string; question: string; lead?: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
   const kind = requireOnlyHeCan(input.onlyHeCan);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
     throw new Error('Only-he-can device questions ask for one action on a physical device in their first sentence, such as "Please unlock your iPhone." or "Can you unlock your Mac so I can continue?"; later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
@@ -91,8 +91,22 @@ export function questionForTejas(input: { actorInputId: string; question: string
   const decision = kind === 'approval' ? approvalDecision(input.decisionId, input.approvalAction) : undefined;
   const { hisWords, why } = requireHisWords(input, QUESTION_FIELDS_REQUIRED, decision);
   const citation = decision ? `\nRequired by permanent decision: ${decision} (${input.approvalAction})` : '';
-  return `${input.question.trim()}\n\n${hisWordsLine(hisWords, why)}\nOnly you can: ${ONLY_HE_CAN[kind]}${citation}`;
+  return `${leadFirst(input.lead, input.question)}\n\n${hisWordsLine(hisWords, why)}\nOnly you can: ${ONLY_HE_CAN[kind]}${citation}`;
 }
+
+/**
+ * The agent's one-line summary first, then its text: his phone notice shows the start of a question,
+ * and on 2026-11-02 a decision whose text opened with an unrelated email paragraph never showed him
+ * the class result. Replies already require that line; a needs_you outcome requires it too.
+ */
+export function leadFirst(lead: string | undefined, text: string): string {
+  const line = lead?.trim() ?? '', body = text.trim();
+  if (!line) return body;
+  return !body || normalized(body).startsWith(normalized(line)) ? (body || line) : `${line}\n\n${body}`;
+}
+
+export const NEEDS_YOU_SUMMARY_REQUIRED =
+  'needs_you leads with --summary "<one line, at most 200 characters: what he must decide and the result it depends on>"; it opens his phone notice, so background and other news go in the text after it.';
 
 /** The kind of thing only he can do; anything else is refused with the list. */
 export function requireOnlyHeCan(kind: unknown, message = ONLY_HE_CAN_REQUIRED): OnlyHeCan {

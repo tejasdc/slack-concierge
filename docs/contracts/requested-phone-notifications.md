@@ -51,6 +51,15 @@ push. The notifier still suppresses a push while Tejas is viewing that exact
 thread and keeps its normal per-thread slot and device delivery record.
 Routine progress and completed work do not acquire this default.
 
+The question's first line is the notice's first line, and it is the agent's own one-line
+`--summary`: every final reply already requires one, and a `needs_you` outcome now requires
+it too (at most 200 characters, saying what he must decide and the result it depends on). The
+owner places it before the agent's text and his words, on the Inbox filing (since 2026-11-04),
+the requester's returned decision, the recorded question and a Mac worker's need. A thread
+question already has its own `decision` line. Before this, on 2026-11-02 a booking agent's
+decision opened with an unrelated email paragraph, and the class result and his choice sat
+past what the Lock Screen showed ([failure record](../incidents/2026-11-02-decision-notice-buried-the-result.md)).
+
 ### A thread worker waiting on him
 
 An agent working on an Inbox thread that declares `needs_you` at the end of a turn reaches him through
