@@ -151,6 +151,7 @@ export async function startSessionRuntime() {
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
   await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
+  void host.reconcileCodexProcessAudits().catch(error=>log('error','codex_process_audit_recovery_failed',errorFields(error)));
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null);
   host.markOwnerServing();
@@ -180,6 +181,10 @@ export async function startSessionRuntime() {
     } catch(error){log('error','ghost_running_turn_sweep_failed',errorFields(error));}
   },60_000);
   ghostSweep.unref?.();
+  const processAuditSweep=setInterval(()=>{
+    if(!draining)void host.reconcileCodexProcessAudits().catch(error=>log('error','codex_process_audit_recovery_failed',errorFields(error)));
+  },60_000);
+  processAuditSweep.unref?.();
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
@@ -189,7 +194,7 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearInterval(globalPauseReconcile);clearInterval(ghostSweep);clearInterval(processAuditSweep);clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     const hosted=hostedTurns(active);
     for(const turnId of active){

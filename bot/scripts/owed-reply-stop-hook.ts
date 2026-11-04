@@ -98,63 +98,6 @@ function closeRunBrowsers(runId: string | null) {
   }
 }
 
-// A Codex shell inherits the exact Concierge run ID, but its children share the App Server's
-// long-lived cgroup. A Stop hook can therefore find a detached job without guessing from age or
-// command text. The hook and its ancestors are the one legitimate live branch at this boundary.
-function leftoverCodexProcesses(runId: string): { pid: number; name: string }[] {
-  if (provider !== 'codex' || process.platform !== 'linux') return [];
-  const ancestors = new Set<number>();
-  let ancestor = process.pid;
-  while (ancestor > 1 && !ancestors.has(ancestor)) {
-    ancestors.add(ancestor);
-    try {
-      const status = readFileSync(`/proc/${ancestor}/status`, 'utf8');
-      ancestor = Number(/^PPid:\s*(\d+)$/m.exec(status)?.[1] ?? 0);
-    } catch { break; }
-  }
-  const remaining: { pid: number; name: string }[] = [];
-  for (const entry of readdirSync('/proc')) {
-    if (!/^\d+$/.test(entry)) continue;
-    const pid = Number(entry);
-    if (ancestors.has(pid)) continue;
-    try {
-      const environment = readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
-      if (!environment.includes(`CONCIERGE_SOURCE_RUN_ID=${runId}`)) continue;
-      // The provider coordinator and tool shells still carry this run ID at Stop. Their
-      // concierge-exec unit is owned by Concierge and kills its whole cgroup on release.
-      // A process outside that unit may outlive its finished turn unowned.
-      let cgroup = '';
-      try { cgroup = readFileSync(`/proc/${pid}/cgroup`, 'utf8'); } catch { /* Unknown ownership stays reportable. */ }
-      if (/^0::\/agents\.slice\/concierge-exec-[^/\n]+\.service(?:\/|$)/m.test(cgroup)) continue;
-      const executable = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] ?? '';
-      // Browsers already have their own exact-owner cleanup and idle shutdown.
-      if (executable.includes('agent-browser') || /\/(?:chrome|chrome_crashpad_handler)$/.test(executable)) continue;
-      remaining.push({ pid, name: readFileSync(`/proc/${pid}/comm`, 'utf8').trim() });
-    } catch { /* A process may exit while /proc is being scanned. */ }
-  }
-  return remaining;
-}
-
-function flagLeftoverCodexProcesses(source: { input_id: string; run_id: string } | null) {
-  if (!source || provider !== 'codex' || background) return;
-  const remaining = leftoverCodexProcesses(source.run_id);
-  if (!remaining.length) return;
-  // These may include a deliberately started service. Report the exact run once instead of
-  // killing an unknown program; the Inbox request remains open until someone assigns ownership.
-  const tool = join(homedir(), '.local', 'bin', 'router-actions.sh');
-  const title = 'A finished Codex turn left background processes running';
-  const detail = 'Concierge found non-browser processes still running when this Codex agent turn ended. Their exact run identity was retained with this report. Inspect the processes, stop unneeded work, and give intentional long-running work a durable owner. A finished turn must not leave unowned work consuming server resources.';
-  const result = spawnSync(tool, ['report', '--source-input', source.input_id, '--source-run', source.run_id,
-    '--action-id', `leftover-processes-${source.run_id}`, '--title', title, '--', detail],
-    { encoding: 'utf8', timeout: 6_000, maxBuffer: 64 * 1024 });
-  if (result.status !== 0) {
-    console.error(JSON.stringify({ event: 'codex_leftover_process_report_failed', runId: source.run_id,
-      processes: remaining, reason: result.error?.message ?? result.stderr.trim().slice(0, 300) }));
-  } else {
-    console.error(JSON.stringify({ event: 'codex_leftover_process_reported', runId: source.run_id,
-      processes: remaining }));
-  }
-}
 // The hook itself has 20 seconds (claude-code.ts), so a restart is waited out only within that.
 const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra }, RETRY_POLICIES.ownerRestartInHook);
 
@@ -196,7 +139,6 @@ try {
     if (owed.length) await ask({ offer: owed.map(request => request.request_id) });
   } else if (!background) {
     closeRunBrowsers(childStop ? null : source?.run_id ?? null);
-    if (!childStop) flagLeftoverCodexProcesses(source);
   }
 } catch {
   // The owner may be restarting. Codex's own conversation identity is still enough to close
