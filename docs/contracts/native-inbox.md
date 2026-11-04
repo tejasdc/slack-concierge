@@ -455,7 +455,8 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   from a nearby thread message. The router inspects prior effects before sending remaining work;
   it cannot close the request
   as failed merely because an agent could not finish. Declined or withdrawn closure of a human
-  request requires a later human message in that thread as evidence; an agent issue report may
+  request requires a later human message in that thread as evidence (his message routed into
+  the thread counts, named by its routed copy or its original id); an agent issue report may
   be declined with its reason when it needs no work. A superseded
   close names a real replacement Inbox request that is still open or completed and carries
   the same source, unless a later human message in the thread authorizes the change. It cannot
