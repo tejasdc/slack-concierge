@@ -320,14 +320,16 @@ export class SessionCommunicationCoordinator {
         topicRoot: string | null, targetSessionId: number | null): Promise<EarlierWork | null> {
         const target = targetSessionId ? getSessionById(targetSessionId) : null;
         if (input.requestedEffect !== 'work' || input.saved || input.provider === 'chatgpt' || target?.provider_id === 'chatgpt'
-            || (target && sessionMetadata(target).interactionPolicy === 'consultation-only')) return null;
+            || (target && (sessionMetadata(target).interactionPolicy === 'consultation-only' || takesManySubjects(target) || isWritingSession(target)))) return null;
+        // A recipient already working this thread holds its history; a follow-up is not a fresh start.
+        if (target && topicRoot && db.query(`SELECT 1 FROM session_communication_requests WHERE target_session_id=?
+            AND (thread_root_input_id=? OR (topic_root_input_id=? AND thread_root_input_id IS NULL)) LIMIT 1`).get(target.id, topicRoot, topicRoot)) return null;
         const inbox = inboxSession();
         const owner = this.dependencies.owner;
-        return earlierWorkFor({summary: input.summary, text: input.text, topicRoot, nowMs: this.now(),
+        return earlierWorkFor({summary: input.summary, text: input.text, topicRoot, recipient: targetSessionId, sendingTurn: actor.turn, nowMs: this.now(),
             exclude: [actor.session, ...(targetSessionId ? [targetSessionId] : []), ...(inbox ? [inbox.id] : [])],
-            search: owner ? body => owner.search(body) as Promise<{results?: any[]}> : null,
-            titleOf: id => { const session = getSessionById(id); return session ? (owner.catalogueLabels(session).title ?? `Session ${id}`) : `Session ${id}`; },
-            answerability: id => this.answerability(id)});
+            titleOf: id => { const session = getSessionById(id); return session ? (owner?.catalogueLabels(session).title ?? `Session ${id}`) : `Session ${id}`; },
+            answerability: id => { try { return this.answerability(id); } catch { return 'how it can be asked is unknown'; } }});
     }
     /** How an earlier session can be asked now, in the words a receiving agent acts on. */
     private answerability(sessionId: number): string {
@@ -354,7 +356,7 @@ export class SessionCommunicationCoordinator {
         if (input.files?.length || input.attachments?.length || input.captureId) throw new Error('A side copy answers from the conversation alone; it cannot inspect attached files.');
         const {session} = frozen, meta = sessionMetadata(session);
         const question = input.text.trim().slice(0, 8000);
-        const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}`)}`;
+        const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}:${question}`)}`;
         const asked = await awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
             cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null, running: false, passage: '', question, earlier: [],
             agentAsker: `concierge:${actor.session}`}), 90_000));
@@ -1266,7 +1268,7 @@ export class SessionCommunicationCoordinator {
         // handed-off session itself is frozen. Asking it used to fail with "not currently
         // messageable", which agents read as "this agent cannot answer" (2026-11-04).
         let forwardedFrom:string|null=null;
-        if(input.address&&!input.resurrect&&!this.dependencies.peers?.splitAddress(input.address)) {
+        if(input.address&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)) {
             for(let hop=0;hop<8;hop++) {
                 const resolved=this.address(input.address!);
                 const next=this.messageable(resolved)?null:supersededAddress(resolved.session);
@@ -1283,11 +1285,13 @@ export class SessionCommunicationCoordinator {
         // unmarked requests from the lab coordinator arrived information-only and three agents
         // declined to build what Tejas had asked for (2026-10-08).
         if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
-        const frozen=input.address&&!input.provider&&!input.routeMessageId&&!input.resurrect&&!this.dependencies.peers?.splitAddress(input.address)
+        const frozen=input.address&&!input.provider&&!input.routeMessageId&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)
             ?this.frozenSession(this.address(input.address).session):null;
         if(frozen) {
             if(input.requestedEffect==='work')
                 throw new Error(`This session is ${frozen.state}, so its work stays as it was left. Ask it a question with --requested-effect informational and a side copy of its conversation answers, or start a new session that consults it with --consult ${sessionAddress(frozen.session)}.`);
+            if(input.thread||input.return_to_requester||input.after?.length||input.pace?.length||input.consult||input.saved)
+                throw new Error(`This session is ${frozen.state}; a side copy of its conversation answers a question only as this command's result, so ask without --thread, --return-to-requester, --after-request or saved-work options and carry the answer on yourself.`);
             return this.sideCopyAnswer(actor,input,frozen);
         }
         if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
@@ -1432,9 +1436,6 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Idempotency conflict: this source/action already names a different request.');
             return this.receipt(previous);
         }
-        // Looked up once, when the request is first accepted; a retry returned the receipt above.
-        const history=await this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),
-            input.provider?null:this.address(input.address!).session);
         let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
         const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
@@ -1465,6 +1466,9 @@ export class SessionCommunicationCoordinator {
         for (const earlier of pace)
             if (this.row(earlier).source_session_id !== actor.session)
                 throw new Error('A request may be paced only behind this session’s own requests.');
+        // Looked up once, after every refusal above, when the request is first accepted; a retry
+        // returned the receipt earlier.
+        const history=await this.earlierWork(actor,input,topicRoot??null,target?.session??null);
         const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
         if(consultation||history) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
