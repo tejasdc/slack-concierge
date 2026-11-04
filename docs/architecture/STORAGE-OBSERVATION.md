@@ -215,6 +215,13 @@ performance gate by itself: readers and releases must enforce their separate cos
 Routine owner memory readings also export the observation-loss counter, with RSS, heap,
 external and array-buffer sizes. They do not walk the heap when it is already large. The
 external host observer owns process/swap/pressure evidence during a blocked event loop.
+
+An operator or outside sampler can ask the owner what it holds with `kill -WINCH <owner pid>`:
+it writes live object counts by type and the allocator's statistics to
+`$CONCIERGE_STATE_DIR/diagnostics/heap-census-<time>.json` (`owner-cpu-profile.ts`), at most once
+in five minutes. Validated on a stand-in with the production Bun before use: 0.3 s of paused loop
+at 1.2 GB and 0.7 s at 2.6 GB, no added memory. `~/workspace/agent-scripts/owner-ramp-sampler.sh`
+sends it when the owner's memory crosses a chosen size.
 # Interactive read refusal
 
 ## Execution isolation
