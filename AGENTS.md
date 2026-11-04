@@ -82,6 +82,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [routing handoffs](docs/contracts/native-inbox.md#routing-handoffs-on-the-source-message),
   [human questions](docs/architecture/HUMAN-QUESTIONS.md), and
   [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+- Closing a human Inbox request requires evidence for that exact obligation;
+  a shared thread, later message or shared source alone cannot withdraw or
+  supersede it. See [native Inbox](docs/contracts/native-inbox.md) and the
+  [closure failure record](docs/incidents/2026-11-04-unrelated-evidence-could-close-human-work.md).
 
 ## Find the authority
 
