@@ -245,8 +245,11 @@ export function withdrawOpenNeed(input:{sessionId:number;needEventId:string;reas
   const meta=sessionMetadata(session);
   const need=(meta.needs??[]).find(item=>item.eventId===input.needEventId);
   if(!need||need.outcome==='response')throw new Error('That needs_you question is no longer open. Refresh its exact attention identity.');
-  if(!db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='turn_outcome' AND json_extract(payload_json,'$.outcome')='needs_you'").get(need.eventId,input.sessionId))
-    throw new Error('Only an exact declared needs_you outcome can be withdrawn here.');
+  const declaration=db.query(`SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND (
+    (kind='turn_outcome' AND json_extract(payload_json,'$.outcome')='needs_you') OR
+    (kind='needs_you' AND json_extract(payload_json,'$.requesterDecision')=1 AND json_extract(payload_json,'$.inputId')=?))`)
+    .get(need.eventId,input.sessionId,need.inputId);
+  if(!declaration)throw new Error('Only an exact declared or returned needs_you can be withdrawn here.');
   const reason=input.reason.trim().slice(0,2000);
   if(!reason)throw new Error('Withdrawal requires a reason.');
   const at=new Date().toISOString();
