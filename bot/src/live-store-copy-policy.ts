@@ -85,9 +85,12 @@ function mentionedScripts(command: string, cwd: string): string {
 }
 
 export const LIVE_STORE_COPY_REFUSAL = 'Refused: this would copy a live Concierge database with a raw command. On 2026-10-10 a raw '
-  + '`.backup` of the live ledger restarted under writes, wrote 52.8 GB and stalled his pages. Copy one database through '
-  + 'the bounded entrance: `python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py <source.db> '
-  + '<private/new-path.db>` (docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md), or read it with read-only queries.';
+  + '`.backup` of the live ledger restarted under writes, wrote 52.8 GB and stalled his pages. Query the live database '
+  + 'where it is, with no copy: `python3 /root/workspace/slack-concierge/scripts/ledger-read.py "SELECT ..."` '
+  + '(bounded in time and rows; `--database meaning-index` or an absolute path for another store). Only for offline '
+  + 'work on many rows, copy one database through the bounded entrance, which refuses a copy that would take its disk '
+  + 'under the floor: `python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py <source.db> '
+  + '<private/new-path.db>` (docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md).';
 
 // Absolute, home-relative and dot-relative paths, including SQLite `file:` URIs.
 const PATH_ARGUMENT = /(?:file:)?((?:~|\.{1,2})?\/[^\s'"`;&|()<>?]+)/g;
