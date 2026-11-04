@@ -2371,8 +2371,16 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInp
 export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
-  const inboxOrigin=provenance?.originatingHuman?.sessionId
+  let inboxOrigin=provenance?.originatingHuman?.sessionId
     ??(provenance?.effectScope==='work'?provenance.source?.sessionId:null);
+  // A missing request row prevents the ordinary provenance walk. The retained source
+  // input and its exact run still establish an Inbox dispatch without guessing a thread.
+  if(!inboxOrigin&&turnInput?.origin==='agent'&&turnInput.kind==='request'&&turnInput.source_input_id&&turnInput.source_run_id){
+    const source=getAcceptedSessionInput(turnInput.source_input_id);
+    const sourceRun=source?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
+      .get(source.turn_id,source.session_id) as {native_run_id:string|null}|null:null;
+    if(sourceRun?.native_run_id===turnInput.source_run_id)inboxOrigin=`concierge:${source!.session_id}`;
+  }
   const askedIn=inboxOrigin?conciergeSessionNumber(inboxOrigin):null;
   const inbox=askedIn!==null?getSessionById(askedIn):null;
   if(!inbox||!sessionMetadata(inbox).inbox||!input.text.trim())return null;
