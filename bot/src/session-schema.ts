@@ -673,7 +673,14 @@ export function initializeSessionOwnerSchema(db: Database) {
         -- its rowid range instead of re-sorting every open row.
         CREATE INDEX IF NOT EXISTS session_peer_open_reconcile ON session_peer_requests(outcome) WHERE outcome IS NULL;
         CREATE INDEX IF NOT EXISTS session_peer_requests_canceled ON session_peer_requests(outcome) WHERE outcome='canceled';
-        CREATE INDEX IF NOT EXISTS sessions_inbox ON sessions(id) WHERE json_extract(native_metadata_json,'$.inbox')=1;`);
+        CREATE INDEX IF NOT EXISTS sessions_inbox ON sessions(id) WHERE json_extract(native_metadata_json,'$.inbox')=1;
+        -- Session search resolves each archive hit to its imported session; without this it parsed all
+        -- 5,800 sessions' metadata (11 MB of JSON) about ten times per search (2026-11-04).
+        CREATE INDEX IF NOT EXISTS sessions_imported_source ON sessions(json_extract(native_metadata_json,'$.source.id'),json_extract(native_metadata_json,'$.source.branch'))
+          WHERE json_extract(native_metadata_json,'$.origin')='imported';
+        -- Thread refresh lists forwarded replies on every usage reading; it parsed every request's payload.
+        CREATE INDEX IF NOT EXISTS session_communication_forwarded ON session_communication_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_peer_forwarded ON session_peer_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
       // author exist, so another instance's ledger is untouched. A correction never re-labels in the
