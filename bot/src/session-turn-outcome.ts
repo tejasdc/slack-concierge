@@ -5,7 +5,6 @@ import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-to
 import {log} from './log';
 import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
-import {turnRoutedHumanInput} from './inbox-routing-result';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -198,11 +197,7 @@ export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;i
   // A turn that answers his own message and ends `done` by marker, with no stated reason, is
   // raised to `response`: silence about his message needs the reason the action demands, and
   // a turn that has already ended cannot be refused, so it is told to him instead.
-  const routed=turnRoutedHumanInput(db,session.id,result.turnId,inputId);
-  // Older marker-only router turns cannot be refused after they end. Their route receipt is
-  // the public answer; an intentional response must have been posted into the thread.
-  const outcome=routed&&declared.outcome==='done'?'done'
-    :declared.outcome==='done'&&answersHisOwnMessage(session.id,inputId)?'response':declared.outcome;
+  const outcome=declared.outcome==='done'&&answersHisOwnMessage(session.id,inputId)?'response':declared.outcome;
   if(outcome!==declared.outcome)log('warn','turn_done_on_his_message_raised',{session_id:session.id,turn_id:result.turnId,input_id:inputId});
   const text=(declared.question??declared.message).trim().slice(0,2000)||(['needs_you','response'].includes(outcome)?'See the latest answer.':'');
   recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,

@@ -548,13 +548,14 @@ internal carrier request withheld from Conversation. The source message's route 
 points to that carrier request for details; routing the same source into several destinations
 produces several entries under that source, not a guessed destination from the latest turn.
 
-A router turn that routes Tejas's input and declares `done` has no second conversation reply
+A router turn that routes Tejas's input and explicitly declares `done` has no second conversation reply
 from its closing text. The closing text stays in the session history. A requested answer or
 necessary question is posted into the thread deliberately; declaring `response` or `needs_you`
 after routing is refused until the turn posts there. A routed turn that fails, or an older
 unclassified closing answer, remains visible rather than silently losing substance. The
-prepared Inbox ledger removes already indexed `done` narration when upgraded and also when
-the outcome arrives after its result. The route request and receipt are the durable evidence
+prepared Inbox ledger removes already indexed explicit `done` narration when upgraded and also when
+the outcome arrives after its result. Marker-only legacy closes remain visible because their
+unclassified text might contain an answer. The route request and receipt are the durable evidence
 of delivery; closing prose never establishes that the recipient accepted work.
 
 The work item names both the requesting and receiving sessions, so a delivery or cancellation

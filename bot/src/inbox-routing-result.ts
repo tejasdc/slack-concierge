@@ -1,12 +1,13 @@
 import type {Database} from 'bun:sqlite';
 
-/** A router turn that handed its human input onward has its answer on the source message's
- * route/request receipt. Closing prose is retained in the agent transcript, not a second
- * conversation reply. An intentional answer to Tejas is a post in the thread. */
+/** A router turn that explicitly finished after a handoff has its answer on the source
+ * message's route/request receipt. Closing prose stays in the agent transcript. Marker-only
+ * legacy closes remain visible because they may contain an unclassified answer. */
 export const routedHumanResultSql=`event.kind='result' AND input.request_id IS NULL
   AND EXISTS (SELECT 1 FROM session_owner_events declaration
     WHERE declaration.session_id=event.session_id AND declaration.turn_id=event.turn_id
-      AND declaration.kind='turn_outcome' AND json_extract(declaration.payload_json,'$.outcome')='done')
+      AND declaration.kind='turn_outcome' AND declaration.event_id GLOB 'turn_outcome:action:*'
+      AND json_extract(declaration.payload_json,'$.outcome')='done')
   AND (
   EXISTS (SELECT 1 FROM session_communication_requests handoff
     WHERE handoff.source_session_id=event.session_id AND handoff.source_turn_id=event.turn_id
