@@ -7,6 +7,7 @@ import {installSessionProjection,projectSessionProviderMessage} from '../src/ses
 import {reconcileRecoverableTurns} from '../src/turn-recovery';
 import {ProviderDispatchError} from '../src/provider-failures';
 import {getAcceptedSessionInput,recordSessionEvent,updateSessionMetadata} from '../src/session-inputs';
+import {inboxHistory} from '../src/session-inbox';
 import {acquireDatabaseTestLock} from './db-lock';
 import type {AgentProvider} from '../src/providers';
 
@@ -23,6 +24,20 @@ const create=()=>host.owner.create({clientActionId:randomUUID(),provider:'codex'
 const view=(id:string)=>host.owner.get(id).session;
 const action=(id:string,kind:string,generation?:number,value?:string)=>host.owner.action(id,{clientActionId:randomUUID(),action:{kind,...(generation===undefined?{}:{generation}),...(value===undefined?{}:{value})}});
 const attention=(id:string,generation:number)=>expect(view(id)).toMatchObject({generation,needsAttention:true,unread:true});
+
+test('a returned Inbox turn relays its closing answer once before recording the display marker',async()=>{
+  const inbox=create(),sessionId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(sessionId,{inbox:true});
+  const claim=claimNextQueuedTurn('attention-owner')!;
+  db.query("UPDATE session_inputs SET origin='service' WHERE id=?").run(claim.accepted_input_id);
+  await host.deliverResult({turnId:claim.turn_id,sessionId,inputId:claim.accepted_input_id!,
+    text:'The closing answer.',sessionUUID:null,toolsUsed:[]});
+  expect(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:relay:${claim.turn_id}`)).toBeTruthy();
+  expect(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`result:posted:${claim.turn_id}`)).toBeTruthy();
+  const shown=inboxHistory(getSessionById(sessionId)!,null,20)!.messages;
+  expect(shown.filter(message=>message.content==='The closing answer.')).toHaveLength(1);
+  expect(shown.some(message=>message.id===`result:${claim.turn_id}`)).toBeFalse();
+});
 
 test('native setup failure advances attention once and stale read/dismiss cannot hide a later failure',()=>{
   const first=create(),claim=claimNextQueuedTurn('attention-owner')!;
