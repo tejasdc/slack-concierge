@@ -35,6 +35,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
 - [Peer instances](runbooks/PEER-INSTANCES.md) — the Mac Concierge under launchd, the token-guarded tailnet owner API, and cross-instance `sessions ask --peer`.
+- [ChatGPT answer obligations](architecture/CHATGPT-ANSWER-OBLIGATIONS.md) — exact task custody, acknowledged returns, handling, and retained repair.
 - [Historical Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — disabled procedure retained for provenance; do not run its lanes or tests for current work.
 - [Historical Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — disabled procedure retained for provenance; do not use it as a release gate.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.

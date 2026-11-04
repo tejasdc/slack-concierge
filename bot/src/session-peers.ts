@@ -24,6 +24,8 @@ import {noticeTime} from './provider-free-notice';
 import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
 import {recordRequesterDecisionReturn} from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,
+  recordChatGptReturnReceipt,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptTask,parseChatGptTask,type ChatGptTask} from './chatgpt-obligations';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
@@ -529,6 +531,7 @@ export class SessionPeers {
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;summary?:string;text:string;
+    forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
@@ -537,12 +540,65 @@ export class SessionPeers {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     const client=this.client(input.peer);
     const effect=input.requestedEffect??'informational';
-    const encoded=JSON.stringify({peer:input.peer,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
+    const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
+    const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,answerGuaranteeVersion:1,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
-      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{})});
+      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
+      ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
+    const existingCorrection=input.correctionOf?prior():null;
+    if(existingCorrection){
+      const taskRef=input.forTask?parseChatGptTask(input.forTask):null;
+      if(existingCorrection.payload_hash!==hash(encode(taskRef)))throw new Error('Idempotency conflict: this source/action already names a different request.');
+      return this.receipt(existingCorrection);
+    }
+    let addressedRemote:string|null=null;
+    let addressedProvider:string|null=null;
+    if(input.address){
+      let tuple:any=null;try{tuple=JSON.parse(Buffer.from(input.address.slice(8),'base64url').toString());}catch{}
+      addressedRemote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
+      const admitted=addressedRemote?db.query(`SELECT json_extract(payload_json,'$.provider') AS provider FROM session_peer_requests
+        WHERE peer=? AND remote_session_id=? AND json_extract(payload_json,'$.provider') IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1`)
+        .get(input.peer,addressedRemote) as {provider:string}|null:null;
+      addressedProvider=addressedRemote?this.cachedView(input.peer,addressedRemote)?.provider??admitted?.provider??null:null;
+      if(addressedRemote&&!addressedProvider){
+        try{
+          const exact=await client.request<any>('GET',`/sessions/v1/sessions/${encodeURIComponent(addressedRemote)}/view`,undefined,8_000);
+          const view=exact?.session;
+          if(view?.id===addressedRemote&&view.address===input.address&&typeof view.provider==='string'&&view.provider){
+            this.remember(input.peer,[view]);
+            addressedProvider=view.provider;
+          }
+        }catch(error){this.note(input.peer,error);}
+      }
+      // An unknown addressed target could be ChatGPT. Before retaining the ask we need
+      // its exact provider, but a missing catalogue cache alone is not a refusal.
+      if(!addressedRemote||!addressedProvider)throw new Error('The addressed peer session needs a current discovered provider identity before this ask.');
+    }
+    const toChatGpt=input.provider==='chatgpt'||addressedProvider==='chatgpt';
+    if((input.forTask||input.recoveryOf||input.correctionOf)&&!toChatGpt)throw new Error('--for-task, --recovery-of and --correction-of belong to a ChatGPT question.');
+    if(toChatGpt&&input.threadRoot&&!input.returnToRequester)
+      throw new Error('A ChatGPT question for a named thread must also return to its asking agent; add --return-to-requester.');
+    const task:ChatGptTask|null=toChatGpt?resolveChatGptTask(actor.session,actor.inputId,input.forTask):null;
+    if(input.correctionOf){
+      if(input.recoveryOf||input.provider||!input.address||!input.forTask||!input.files?.length||input.attachments?.length||input.captureId)
+        throw new Error('Peer attachment correction needs the original ChatGPT address, exact task and corrected --file.');
+      const originalCorrection=this.row(input.correctionOf);
+      const old=JSON.parse(originalCorrection.payload_json);
+      const obligation=chatGptObligationForAttempt(input.correctionOf);
+      if(originalCorrection.peer!==input.peer||originalCorrection.source_session_id!==actor.session
+        ||originalCorrection.remote_session_id!==addressedRemote||originalCorrection.remote_address!==input.address
+        ||originalCorrection.outcome!=='failed'||old.text!==input.text||old.taskRef?.kind!==task?.kind||old.taskRef?.id!==task?.id
+        ||obligation?.obligation_id!==input.correctionOf||obligation.active_request_id!==input.correctionOf
+        ||obligation.state!=='reconcile_receipt'||obligation.asker_session_id!==actor.session
+        ||obligation.target_session_id!==`${input.peer}/${addressedRemote}`||obligation.question_text!==input.text)
+        throw new Error('The original peer request does not own this failed ChatGPT question, task and target.');
+      const oldHashes=new Set((old.files??[]).map((file:any)=>file.sha256));
+      if(!input.files.some(file=>!oldHashes.has(createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex'))))
+        throw new Error('The correction needs at least one attached file with changed bytes.');
+    }
+    const encoded=encode(task);
     const digest=hash(encoded);
-    const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
     const previous=prior();
     if(previous){if(previous.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(previous);}
     const id=requestIdFor(actor.inputId,input.action_id);
@@ -564,16 +620,27 @@ export class SessionPeers {
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries Tejas’s exact Inbox message ${input.routedFrom.messageId} into this session. Answer here; its original thread shows only the routing receipt.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
-    const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
+    const delivery={requestId:id,answerGuaranteeVersion:1,
+      ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
+      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
-      ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(files.length?{files}:{})};
+      ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(input.correctionOf?{correctionOf:input.correctionOf}:{}),...(files.length?{files}:{})};
     const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
       const raced=prior();
       if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
       const now=this.now();
       db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id,topic_root_input_id)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:DUE_MS),now,input.threadRoot??null,input.routedFrom?.root??topicRootFor(input.threadRoot,actor.inputId)??'');
+      if(task){
+        bindDirectChatGptTaskSource(task,actor.inputId,actor.session);
+        const targetSessionId=addressedRemote?`${input.peer}/${addressedRemote}`:`${input.peer}/request:${id}`;
+        // A correction retains its new request while the original duty stays active.
+        // The target's exact proof and acceptance activate its replacement attempt.
+        if(input.recoveryOf)admitChatGptContextFollowUp({requestId:id,obligationId:input.recoveryOf,task,
+          askerSessionId:actor.session,targetSessionId,now});
+        else if(!input.correctionOf)admitChatGptObligation({requestId:id,task,askerSessionId:actor.session,question:input.text,targetSessionId,now});
+      }
       const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
         payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
           ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
@@ -593,26 +660,9 @@ export class SessionPeers {
       let tuple:any=null;try{tuple=JSON.parse(Buffer.from((input.address??'').slice(8),'base64url').toString());}catch{}
       return {sessionId:Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:'',address:input.address??'',operationId:`request:${id}`};
     };
-    if(input.routedFrom){
-      // Commit the route and the exact replayable delivery before contacting the peer. A Mac
-      // acceptance can never leave a destination copy without a source receipt.
-      retain(queuedAddress(),true);
-      this.wake();
-      return this.receipt(this.row(id));
-    }
-    let accepted:{sessionId:string;address:string;operationId:string};
-    let queued=false;
-    try {
-      accepted=await client.request('POST','/sessions/v1/peers/requests',delivery);
-      this.unreachable.delete(input.peer);
-      if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')throw new Error('The peer did not return the accepted session.');
-    } catch(error) {
-      this.note(input.peer,error);
-      if(!(error instanceof PeerError&&error.kind==='unreachable'))throw error;
-      accepted=queuedAddress();
-      queued=true;
-    }
-    retain(accepted,queued);
+    // The owner retains every peer ask, including the exact ChatGPT obligation, before
+    // network contact. A crash or lost HTTP response can only replay this same request ID.
+    retain(queuedAddress(),true);
     this.wake();
     return this.receipt(this.row(id));
   }
@@ -621,7 +671,7 @@ export class SessionPeers {
     const execution=remote?.execution;
     const queued=row.status==='queued_offline';
     return {request_id:row.request_id,status:row.status,outcome:row.outcome,peer:row.peer,source_session_id:`concierge:${row.source_session_id}`,
-      availability:queued?{reachable:false,note:`${row.peer} is offline; this ask is queued here and will be delivered when ${row.peer} wakes.`}:this.availability(row.peer),
+      availability:queued?{...this.availability(row.peer),note:`This ask is retained here for dispatch to ${row.peer}; no peer receipt is confirmed yet.`}:this.availability(row.peer),
       target_address:row.remote_address?this.presentedAddress(row.peer,row.remote_address):null,target:row.remote_session_id?this.cachedView(row.peer,row.remote_session_id):null,target_session_id:row.remote_session_id?this.presentedSession(row.peer,row.remote_session_id):null,target_input_id:row.remote_operation_id,
       operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
       routed_request_id:null,target_turn_id:null,due_at_ms:row.due_at_ms,overdue_at_ms:row.overdue_at_ms,result:row.result_json?JSON.parse(row.result_json):null,
@@ -689,6 +739,17 @@ export class SessionPeers {
     return eventId;
   }
   private settle(row:PeerRequestRow,outcome:string,text:string,output:unknown=null,disposition:WorkDisposition|null=null) {
+    const requestPayload=JSON.parse(row.payload_json);
+    if(requestPayload.answerGuaranteeVersion===1&&requestPayload.requestedEffect==='work'&&row.status!=='queued_offline'){
+      const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
+      if(remote?.answerGuaranteeVersion!==1||remote.answerTaskReady!==true){
+        const eventId=`peer-answer-settlement-hold:${row.request_id}`;
+        if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
+          this.event(row,'overdue',{text:`The ${row.peer} work request ${row.request_id} cannot close as ${outcome} until that peer confirms its exact task has no unresolved ChatGPT answers. Its failed attempt and original request remain held for recovery.`,
+            health:'peer task answer reconciliation',agentReminder:true},eventId);
+        return false;
+      }
+    }
     db.transaction(()=>{
       if(this.row(row.request_id).outcome)return;
       const payload={outcome,text,output,responding_session_id:this.presentedSession(row.peer,row.remote_session_id),...(disposition?{workDisposition:disposition}:{})};
@@ -698,12 +759,15 @@ export class SessionPeers {
         if(declared.workDisposition!=='completed')throw new Error('A final reply already exists for this request.');
         // The result keeps the files that reply carried.
         db.query("UPDATE session_peer_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome,JSON.stringify({...payload,...(declared.attachments?.length?{attachments:declared.attachments}:{}),event_id:final.event_id,declaredDisposition:'completed'}),row.request_id);
+        recordChatGptAttemptResult({requestId:row.request_id,outcome,answerEventId:final.event_id,now:this.now(),reason:text});
         return;
       }
       const event_id=this.event(row,'final',payload);
       db.query("UPDATE session_peer_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome,JSON.stringify({...payload,event_id}),row.request_id);
+      recordChatGptAttemptResult({requestId:row.request_id,outcome,answerEventId:event_id,now:this.now(),reason:text});
     })();
     this.wake();
+    return true;
   }
   /** A reply the peer's recipient forwarded here; the peer's own reply ledger already holds it. */
   receiveReply(requestId:string,body:unknown) {
@@ -738,6 +802,20 @@ export class SessionPeers {
     if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length&&!(input.kind==='final'&&input.replyBody==='')))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
+    if(final&&JSON.parse(row.payload_json).answerGuaranteeVersion===1){
+      const proof=input.settlementProof;
+      const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
+      const preUpgradeReceipt=remote?.answerGuaranteeVersion===1&&remote.acceptedAnswerGuaranteeVersion===null
+        &&remote.answerTaskReady===true&&remote.requestId===requestId&&remote.sessionId===row.remote_session_id;
+      const citedOpen=Array.isArray(proof?.openObligationIds)&&proof.openObligationIds.length>0
+        &&proof.openObligationIds.every((id:unknown)=>typeof id==='string'&&id.length>0)
+        &&new Set(proof.openObligationIds).size===proof.openObligationIds.length
+        &&proof.unresolvedObligations===proof.openObligationIds.length
+        &&(disposition==='failed'||disposition==='needs_decision');
+      if(!preUpgradeReceipt&&(proof?.version!==1||proof.requestId!==requestId||proof.recipientPeer!==row.peer
+        ||proof.targetSessionId!==row.remote_session_id||!(proof.unresolvedObligations===0||citedOpen)))
+        return {recorded:'refused',reason:'The peer final did not prove its exact task has no unresolved ChatGPT answers.'};
+    }
     const requestPayload=JSON.parse(row.payload_json);
     const requestedEffect=requestPayload.requestedEffect;
     if(input.alsoMainThread&&!requestPayload.forwardedReply?.messageThreadRootId)
@@ -783,6 +861,7 @@ export class SessionPeers {
         .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
+        ...(final?{settlementProof:input.settlementProof}:{}),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
         ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
         ...(attachments.length?{attachments}:{}),
@@ -815,7 +894,7 @@ export class SessionPeers {
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
@@ -834,22 +913,120 @@ export class SessionPeers {
     await this.dispatch(row);
     return {outcome:this.row(requestId).outcome};
   }
+  private activatePeerAttachmentCorrection(row:PeerRequestRow,accepted:any) {
+    const payload=JSON.parse(row.payload_json);
+    const originalId=payload.correctionOf;
+    if(!originalId)return;
+    if(accepted?.attachmentCorrectionVersion!==1||accepted.correctionOf!==originalId
+      ||accepted.answerGuaranteeVersion!==1||typeof accepted.originalRunId!=='string'||!accepted.originalRunId
+      ||typeof accepted.reason!=='string'||!accepted.reason.startsWith('CHATGPT_ATTACHMENT_REJECTED:'))
+      throw new Error('The peer did not prove its original pre-Send attachment rejection for this correction.');
+    const original=this.row(originalId);
+    if(original.remote_session_id!==accepted.sessionId||original.remote_address!==accepted.address)
+      throw new Error('The peer correction target changed from the original request.');
+    admitChatGptAttachmentCorrection({requestId:row.request_id,obligationId:originalId,task:payload.taskRef,
+      askerSessionId:row.source_session_id,targetSessionId:`${row.peer}/${accepted.sessionId}`,question:payload.text,
+      originalRunId:accepted.originalRunId,reason:accepted.reason,now:this.now()});
+    // A fast peer answer may have been recorded while this admission response was in flight.
+    // Reapply its exact retained result after the new attempt mapping exists.
+    const current=this.row(row.request_id);
+    if(current.outcome){
+      const result=current.result_json?JSON.parse(current.result_json):{};
+      recordChatGptAttemptResult({requestId:row.request_id,outcome:current.outcome,
+        answerEventId:typeof result.event_id==='string'?result.event_id:undefined,now:this.now()});
+      if(typeof result.event_id==='string'){
+        const event=db.query('SELECT accepted_input_id,status FROM session_peer_events WHERE event_id=?').get(result.event_id) as {accepted_input_id:string|null;status:string}|null;
+        if(event?.status==='received'&&event.accepted_input_id)
+          recordChatGptReturnReceipt({eventId:result.event_id,returnInputId:event.accepted_input_id,now:this.now()});
+      }
+    }
+  }
   private async dispatch(row:PeerRequestRow) {
     if(row.outcome||this.stopped)return;
     const client=this.dependencies.clients.get(row.peer);
-    if(!client){this.settle(row,'failed',`Peer ${row.peer} is no longer configured on this instance.`);return;}
+    if(!client){if(row.status!=='version_hold')this.settle(row,'failed',`Peer ${row.peer} is no longer configured on this instance.`);return;}
+    // Reconcile the original request ID after a peer upgrade. The old acceptance is never
+    // replayed; the upgraded receiver checks the exact retained task, including legacy asks.
+    if(row.status==='version_hold'){
+      try{
+        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+        if(remote?.answerGuaranteeVersion!==1)return;
+        db.transaction(()=>{
+          db.query("UPDATE session_peer_requests SET status='recorded',remote_status_json=?,delivery_json=NULL WHERE request_id=? AND status='version_hold'")
+            .run(JSON.stringify(remote),row.request_id);
+          bindChatGptPeerTarget(row.request_id,`${row.peer}/${remote.sessionId}`,this.now());
+        })();
+        row=this.row(row.request_id);
+      }catch(error){this.note(row.peer,error);return;}
+    }
     if(row.status==='queued_offline'){
       if(!row.delivery_json){this.settle(row,'failed','The queued delivery body is missing.');return;}
+      const queuedDelivery=JSON.parse(row.delivery_json);
+      if(queuedDelivery.correctionOf){
+        const original=chatGptObligationForAttempt(queuedDelivery.correctionOf);
+        if(!original||original.state==='withdrawn_by_tejas'||original.state==='resolved'){
+          if(row.remote_status_json===null){
+            this.settle(row,'canceled','The original ChatGPT answer duty is no longer open, so this corrected request was not sent.');
+            return;
+          }
+          // A prior POST may have reached the peer despite a lost response. Inspect that
+          // same request ID; never issue another corrected browser send after withdrawal.
+          try{
+            const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+            if(remote?.requestId===row.request_id&&typeof remote.sessionId==='string'){
+              this.settle(row,'canceled','The original answer duty ended after this exact corrected request may have reached the peer.');
+              db.query('UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_status_json=?,delivery_json=NULL WHERE request_id=?')
+                .run(remote.sessionId,remote.address??row.remote_address,JSON.stringify(remote),row.request_id);
+              await this.revokeCanceledRemote(row.request_id);
+              return;
+            }
+          }catch(error){this.note(row.peer,error);}
+          const eventId=`peer-correction-withdrawn-uncertain:${row.request_id}`;
+          if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
+            this.event(row,'overdue',{text:`The original ChatGPT duty ended while corrected request ${row.request_id} had an uncertain peer admission. Its exact receipt still needs reconciliation; no replacement send will occur.`,
+              health:'peer correction admission uncertain',agentReminder:true},eventId);
+          return;
+        }
+        db.query("UPDATE session_peer_requests SET remote_status_json=coalesce(remote_status_json,?) WHERE request_id=? AND status='queued_offline'")
+          .run(JSON.stringify({admissionAttemptedAtMs:this.now()}),row.request_id);
+        row=this.row(row.request_id);
+      }
       let accepted:any;
-      try{accepted=await client.request('POST','/sessions/v1/peers/requests',JSON.parse(row.delivery_json));this.unreachable.delete(row.peer);}
+      try{
+        const delivery=queuedDelivery;
+        accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
+        if(delivery.correctionOf)this.activatePeerAttachmentCorrection(row,accepted);
+        this.unreachable.delete(row.peer);
+      }
       catch(error){
         this.note(row.peer,error);
-        if(error instanceof PeerError&&error.kind!=='unreachable'){this.settle(row,'failed',error.message);return;}
+        // A rejected or interrupted HTTP exchange is not proof that the receiver did not
+        // retain this request. Keep its original ID and body for idempotent reconciliation.
+        if(error instanceof PeerError&&error.kind!=='unreachable'){
+          const eventId=`peer-admission-uncertain:${row.request_id}`;
+          if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
+            this.event(row,'overdue',{text:`The ${row.peer} admission for request ${row.request_id} returned an error. Its exact request is retained for reconciliation; no new request identity will be sent. ${error.message}`,
+              health:'peer admission uncertain',agentReminder:true},eventId);
+        }
+        return;
+      }
+      if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')
+        throw new Error('The peer did not return the exact accepted session and operation.');
+      if(accepted.answerGuaranteeVersion!==1){
+        db.transaction(()=>{
+          db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,status='version_hold' WHERE request_id=? AND status='queued_offline'")
+            .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
+          holdChatGptPeerVersion(row.request_id,this.now());
+          this.event(row,'overdue',{text:`${row.peer} accepted request ${row.request_id} without the answer-obligation version. The request remains open for exact receipt reconciliation after that peer upgrades; it will not be sent again.`,
+            health:'peer answer guarantee unconfirmed',agentReminder:true});
+        })();
+        this.wake();
         return;
       }
       db.transaction(()=>{
         db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
           .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
+        bindChatGptPeerTarget(row.request_id,`${row.peer}/${accepted.sessionId}`,this.now());
         recordSessionEvent({eventId:`peer-delivered:${row.request_id}`,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',
           payload:{requestId:row.request_id,kind:'progress',text:`${row.peer} is back; the queued request was delivered to ${this.presentedSession(row.peer,accepted.sessionId)}.`}});
       })();
@@ -871,6 +1048,17 @@ export class SessionPeers {
       return;
     }
     remote={...remote,observedAt:new Date(this.now()).toISOString()};
+    if(JSON.parse(row.payload_json).answerGuaranteeVersion===1&&remote.answerGuaranteeVersion!==1){
+      db.transaction(()=>{
+        db.query("UPDATE session_peer_requests SET status='version_hold',remote_status_json=? WHERE request_id=? AND outcome IS NULL")
+          .run(JSON.stringify(remote),row.request_id);
+        holdChatGptPeerVersion(row.request_id,this.now());
+        this.event(row,'overdue',{text:`${row.peer} reported request ${row.request_id} without the answer-obligation version. Its exact effect is held for reconciliation; no replacement send is made.`,
+          health:'peer answer guarantee unconfirmed',agentReminder:true});
+      })();
+      this.wake();
+      return;
+    }
     void this.refreshCatalogue(row.peer);
     // Polled on every wake: rewrite only what changed, ignoring the poll's own timestamp, so an
     // unchanged peer request is not a commit the database's other writers queue behind.
@@ -1042,6 +1230,10 @@ export class SessionPeers {
     const error=unacknowledged?'The provider did not acknowledge this specific return; its linked turn outcome does not prove receipt.':observed.steering?.error??null;
     db.query('UPDATE session_peer_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:error,accepted.id);
     db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:error,event.event_id);
+    if(received){
+      if(event.kind==='final')recordChatGptReturnReceipt({eventId:event.event_id,returnInputId:accepted.id,now:this.now()});
+      for(const joined of group.joining)recordChatGptReturnReceipt({eventId:joined.event_id,returnInputId:accepted.id,now:this.now()});
+    }
   }
   /** Whether this request's agent replies post into an Inbox thread, by the rule postThreadEvent applies. */
   private answersInThread(row:PeerRequestRow):boolean {
@@ -1121,6 +1313,7 @@ export class SessionPeers {
     const observed=readInputExecution(input);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
     db.query('UPDATE session_peer_events SET status=? WHERE event_id=?').run(received?'received':['failed','uncertain','canceled'].includes(observed.state)?observed.state:input.turn_id?'admitted':'held',eventId);
+    if(received)recordChatGptReturnReceipt({eventId,returnInputId:inputId,now:this.now()});
   }
   /**
    * A request whose work on the peer has ended without a final reply, with nothing there still
@@ -1146,8 +1339,9 @@ export class SessionPeers {
     const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
     const lastText=(partial?JSON.parse(partial.payload_json).text:null)??execution.text??null;
     const worker=this.presentedSession(row.peer,row.remote_session_id);
-    this.settle(row,'unanswered',`${worker} on ${row.peer} ended its work without sending a final reply, and nothing there is still working on it, so this is closed as stalled. Nothing was re-run. Its last text, if any, is in this result's output; a final reply it sends later still returns here.`,
+    const closed=this.settle(row,'unanswered',`${worker} on ${row.peer} ended its work without sending a final reply, and nothing there is still working on it, so this is closed as stalled. Nothing was re-run. Its last text, if any, is in this result's output; a final reply it sends later still returns here.`,
       {session_id:worker,turn_id:execution.turnId??null,run_id:execution.runId??null,execution_status:execution.status,stalled:true,last_text:lastText});
+    if(!closed)return false;
     log('info','session_peer_request_closed_stalled',{request_id:row.request_id,peer:row.peer,execution_status:execution.status});
     return true;
   }
@@ -1215,7 +1409,7 @@ export class SessionPeers {
     return row;
   }
   deliveryFor(inputId:string){return db.query('SELECT * FROM session_peer_deliveries WHERE target_input_id=?').get(inputId) as DeliveryRow|null;}
-  accept(body:unknown) {
+  async accept(body:unknown,correctedAttachmentRoute=false) {
     const input=object(body);
     const requestId=input.requestId;
     if(typeof requestId!=='string'||!/^[0-9a-f-]{36}$/.test(requestId))throw new SessionOwnerError('A peer request needs its UUID.');
@@ -1223,6 +1417,19 @@ export class SessionPeers {
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
     if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
     if(typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('Nonempty request text required.');
+    if(correctedAttachmentRoute!==!!input.correctionOf)
+      throw new SessionOwnerError('Attachment corrections use only the dedicated peer correction route.',409,'PEER_CORRECTION_ROUTE');
+    const targetProvider=typeof input.provider==='string'?input.provider
+      :typeof input.address==='string'?resolveSessionAddress(input.address).provider_id:null;
+    if(input.answerGuaranteeVersion!==undefined&&input.answerGuaranteeVersion!==1)
+      throw new SessionOwnerError('Unsupported peer answer-obligation version.',409,'ANSWER_GUARANTEE_VERSION');
+    if(targetProvider==='chatgpt'){
+      const claim=input.answerObligation;
+      if(input.answerGuaranteeVersion!==1||!claim||claim.attemptId!==requestId
+        ||typeof claim.id!=='string'||!claim.id||!claim.task||typeof claim.task.kind!=='string'||typeof claim.task.id!=='string')
+        throw new SessionOwnerError('A peer ChatGPT ask needs its exact versioned task and question obligation.',409,'ANSWER_GUARANTEE_REQUIRED');
+    }else if(input.answerObligation!==undefined)
+      throw new SessionOwnerError('Only a ChatGPT request can carry an answer obligation.',409,'ANSWER_GUARANTEE_TARGET');
     let machineNeed:MachineNeed|undefined;
     if(this.self==='mac'&&(typeof input.provider==='string'||input.requestedEffect==='work'&&!input.forwardedReply)) {
       try { machineNeed=input.machineNeed?.kind==='provider-renewal'
@@ -1250,6 +1457,13 @@ export class SessionPeers {
     const existing=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=?').get(requestId) as DeliveryRow|null;
     if(existing){
       const retained=existing.origin_provenance_json?JSON.parse(existing.origin_provenance_json):{};
+      if((retained.correctionOf??null)!==(input.correctionOf??null))
+        throw new SessionOwnerError('Idempotency conflict: peer correction identity changed.',409);
+      if(correctedAttachmentRoute&&retained.correctionPayloadHash!==hash(JSON.stringify(input)))
+        throw new SessionOwnerError('Idempotency conflict: corrected peer request bytes changed.',409,'PEER_CORRECTION_CHANGED');
+      if(retained.answerGuaranteeVersion!==input.answerGuaranteeVersion
+        ||JSON.stringify(retained.answerObligation??null)!==JSON.stringify(input.answerObligation??null))
+        throw new SessionOwnerError('Idempotency conflict: peer guarantee changed.',409);
       if(retained.forwardedIntent&&JSON.stringify(retained.forwardedIntent)!==JSON.stringify(forwardedIntent))
         throw new SessionOwnerError('Idempotency conflict: forwarded request payload changed.',409);
       if(JSON.stringify(retained.routedFrom??null)!==JSON.stringify(input.routedFrom??null))
@@ -1260,8 +1474,32 @@ export class SessionPeers {
       if(target.turn_id===null)this.dependencies.owner.dispatch(target);
       return this.accepted(existing);
     }
+    let correctionProof:{runId:string;reason:string;attachmentHashes:string[]}|null=null;
+    if(correctedAttachmentRoute){
+      if(targetProvider!=='chatgpt'||typeof input.address!=='string'||typeof input.correctionOf!=='string'
+        ||!input.files?.length||input.provider!==undefined||input.answerGuaranteeVersion!==1
+        ||input.answerObligation?.id!==input.correctionOf)
+        throw new SessionOwnerError('Peer attachment correction needs an exact original ChatGPT request and corrected files.',409,'PEER_CORRECTION_INVALID');
+      const original=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=?').get(input.correctionOf) as DeliveryRow|null;
+      const prior=original?.origin_provenance_json?JSON.parse(original.origin_provenance_json):null;
+      const target=resolveSessionAddress(input.address);
+      if(!original||original.peer!==origin.peer||original.origin_session_id!==origin.sessionId
+        ||original.target_session_id!==target.id||original.target_input_id!==`request:${input.correctionOf}`
+        ||prior?.answerObligation?.id!==input.correctionOf
+        ||JSON.stringify(prior.answerObligation.task)!==JSON.stringify(input.answerObligation.task)
+        ||prior.message!==input.message
+        ||db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final' LIMIT 1").get(input.correctionOf))
+        throw new SessionOwnerError('The original peer delivery does not own this exact question, task and ChatGPT target.',409,'PEER_CORRECTION_CUSTODY');
+      correctionProof=await owner.proveRejectedChatGptAttachment(target.id,original.target_input_id);
+      const hashes=new Set(correctionProof.attachmentHashes);
+      if(!input.files.some((file:{base64:string})=>!hashes.has(createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex'))))
+        throw new SessionOwnerError('The corrected peer attachment must have changed bytes.',409,'PEER_CORRECTION_UNCHANGED');
+    }
     // The sender's own words stay beside the delivery text its preamble wraps for the provider.
     const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(input.answerGuaranteeVersion===1?{answerGuaranteeVersion:1}:{}),...(input.answerObligation?{answerObligation:input.answerObligation}:{}),
+      ...(correctionProof?{correctionOf:input.correctionOf,correctionPayloadHash:hash(JSON.stringify(input)),
+        correctionProof:{runId:correctionProof.runId,reason:correctionProof.reason}}:{}),
       ...(machineNeed?{machineNeed}:{}),
       ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{}),...(forwardedIntent?{forwardedIntent}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{})};
@@ -1292,10 +1530,17 @@ export class SessionPeers {
     this.wake();
     return this.accepted(created);
   }
-  private accepted(row:DeliveryRow){const session=getSessionById(row.target_session_id)!;return {sessionId:`concierge:${session.id}`,address:sessionAddress(session),operationId:row.target_input_id};}
+  private accepted(row:DeliveryRow){const session=getSessionById(row.target_session_id)!;
+    const provenance=JSON.parse(row.origin_provenance_json??'{}');
+    const version=provenance.answerGuaranteeVersion;
+    return {sessionId:`concierge:${session.id}`,address:sessionAddress(session),operationId:row.target_input_id,
+      ...(provenance.correctionProof?{attachmentCorrectionVersion:1,correctionOf:provenance.correctionOf,
+        originalRunId:provenance.correctionProof.runId,reason:provenance.correctionProof.reason}:{}),
+      ...(version===1?{answerGuaranteeVersion:1}:{})};}
   /** What the origin needs to settle its request: the exact execution facts, never an outcome guessed here. */
   status(requestId:string) {
     const row=this.delivery(requestId);
+    const acceptedAnswerGuaranteeVersion=JSON.parse(row.origin_provenance_json??'{}').answerGuaranteeVersion;
     const input=getAcceptedSessionInput(row.target_input_id);
     if(!input)throw new SessionOwnerError('Accepted request input is missing.',404);
     const observed=readInputExecution(input);
@@ -1317,11 +1562,16 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
-    return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
+    const answerTask={kind:'peer_delivery' as const,id:`${row.peer}:${requestId}`};
+    let answerTaskReady=false;
+    try{requireChatGptTaskResolved(answerTask);answerTaskReady=true;}catch{}
+    return {requestId,answerGuaranteeVersion:1,acceptedAnswerGuaranteeVersion:acceptedAnswerGuaranteeVersion===1?1:null,
+      answerTaskReady,unresolvedChatGptObligations:openChatGptObligations(answerTask).length,
+      sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,stoppedByTejasAtMs:turn.status==='cancelled'?stoppedByTejas(turn.id)?.atMs??null:null,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
       // A continuation held for a sign-in or a reset is this request's hold, told to its sender.
@@ -1361,6 +1611,7 @@ export class SessionPeers {
       ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
       :null;
     return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+      ...(payload.settlementProof?{settlementProof:payload.settlementProof}:{}),
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
       responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
@@ -1425,7 +1676,7 @@ export class SessionPeers {
         source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`}),this.now());
     this.wake();
   }
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;waitingOnWatch?:string;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;waitingOnWatch?:string;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;openChatGptIds?:string[];evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -1442,7 +1693,12 @@ export class SessionPeers {
     const target=getAcceptedSessionInput(row.target_input_id);
     if(!target?.turn_id)throw new Error('This request has not been delivered to this session yet.');
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
+    const version=JSON.parse(row.origin_provenance_json??'{}').answerGuaranteeVersion;
+    const openIds=openChatGptObligations({kind:'peer_delivery',id:`${row.peer}:${row.request_id}`}).map(obligation=>obligation.obligation_id);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
+      ...(input.final&&version===1?{settlementProof:{version:1,requestId:row.request_id,recipientPeer:this.self,
+        targetSessionId:`concierge:${row.target_session_id}`,unresolvedObligations:openIds.length,
+        ...(openIds.length?{openObligationIds:openIds}:{})}}:{}),
       ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
       ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.waitingOnWatch?{waitingOnWatch:input.waitingOnWatch}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
       // Custody on this instance; the forward reads these exact bytes for the origin.
@@ -1455,6 +1711,7 @@ export class SessionPeers {
     const prior=db.query('SELECT * FROM session_peer_replies WHERE action_key=?').get(key) as ReplyRow|null;
     if(prior){if(prior.request_id!==row.request_id||prior.payload_json!==JSON.stringify(payload))throw new Error('Idempotency conflict: reply action has a different payload.');return this.deliveryReceipt(row);}
     db.transaction(()=>{
+      if(input.final)requireChatGptTaskDisposition({kind:'peer_delivery',id:`${row.peer}:${row.request_id}`},input.workDisposition,input.openChatGptIds??[]);
       if(input.final&&db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))throw new Error('This request already has a final reply awaiting the peer’s confirmation.');
       const eventId=randomUUID();
       db.query('INSERT INTO session_peer_replies(event_id,request_id,action_key,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?,?)').run(eventId,row.request_id,key,input.final?'final':'progress',JSON.stringify(payload),this.now());

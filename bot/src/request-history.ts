@@ -152,6 +152,9 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const started=performance.now();
   const omissions:string[]=[];
   const excluded=new Set(input.exclude);
+  // Sessions the sender gave work to in this same turn are its siblings, not earlier work: in the
+  // 2026-11-04 live test the sender's own earlier test sessions were two of the six "earlier" ones.
+  if(input.sendingTurn!==null)for(const row of db.query('SELECT DISTINCT target_session_id AS id FROM session_communication_requests WHERE source_turn_id=?').all(input.sendingTurn) as {id:number}[])excluded.add(row.id);
   const thread=input.topicRoot?threadRequests(input.topicRoot,input.nowMs,input.recipient,input.sendingTurn):[];
   const inThread=new Set(thread.map(row=>row.target_session_id));
   const query=oneLine(`${input.summary??''} ${input.text}`,600);

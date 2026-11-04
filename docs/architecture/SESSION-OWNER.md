@@ -1,5 +1,7 @@
 # Unified session ownership
 
+The [ChatGPT answer obligation contract](CHATGPT-ANSWER-OBLIGATIONS.md) adds exact task custody and retained repair to requests that ask ChatGPT. A provider attempt or turn ending does not discharge that duty.
+
 Concierge owns one session catalogue and execution ledger. Thinkering provides the authenticated surface and private source/browser capabilities. Slack is an optional input and projection adapter. The [wire contract](../contracts/session-owner-v1.md) is the shared API authority; the [joint proposal](../plans/2026-09-15-unified-session-convergence.md) preserves the approved scope and amendments.
 
 ## Identity and admission

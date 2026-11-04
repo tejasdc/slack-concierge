@@ -28,6 +28,7 @@ import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
 import { isHisChatGpt } from './aliases';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
@@ -435,7 +436,7 @@ export class SessionCommunicationCoordinator {
             events:(db.query('SELECT event_id,payload_json,final,created_at_ms FROM session_external_replies WHERE request_id=? ORDER BY created_at_ms').all(id) as any[])
                 .map(event=>({event_id:event.event_id,final:!!event.final,payload:JSON.parse(event.payload_json),created_at_ms:event.created_at_ms}))};
     }
-    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;workDisposition?:WorkDisposition;attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
         const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
@@ -466,6 +467,7 @@ export class SessionCommunicationCoordinator {
             ...(input.evidence?{evidence:input.evidence}:{})};
         const eventId=randomUUID();
         db.transaction(()=>{
+            if(input.final)requireChatGptTaskDisposition({kind:'external_request',id:request.request_id},input.workDisposition,input.openChatGptIds);
             db.query('INSERT INTO session_external_replies(event_id,request_id,action_key,payload_json,final,created_at_ms) VALUES(?,?,?,?,?,?)')
                 .run(eventId,request.request_id,key,JSON.stringify(payload),input.final?1:0,this.now());
             if(input.final){
@@ -928,6 +930,78 @@ export class SessionCommunicationCoordinator {
             return {...receipt,duplicate:false};
         })();
     }
+    handleChatGptAnswer(input:{source:CommunicationSource;action_id:string;obligation_id:string;answer_event_id:string;
+        handling:'used'|'context_supplied'|'scoped';reason?:string;follow_up_request_id?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        if(!actor.inputId)throw new Error('Handling a ChatGPT answer needs the exact accepted source input and run.');
+        const receipt={obligationId:input.obligation_id,answerEventId:input.answer_event_id,handling:input.handling};
+        return db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'chatgpt-answer-handled',...receipt,reason:input.reason??null,
+                    followUpRequestId:input.follow_up_request_id??null},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.obligation_id});
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            resolveChatGptAnswer({obligationId:input.obligation_id,askerSessionId:actor.session,answerEventId:input.answer_event_id,
+                actionId:input.action_id,handling:input.handling,reason:input.reason,followUpRequestId:input.follow_up_request_id,
+                sourceInputId:actor.inputId,now:this.now()});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
+            return {...receipt,duplicate:false};
+        })();
+    }
+    classifyLegacyChatGpt(input:{source:CommunicationSource;action_id:string;request_id:string;for_task:string;
+        provider:'chatgpt'|'other';reason:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        if(!actor.inputId)throw new Error('Historical classification needs the asking session’s exact accepted source input and run.');
+        return db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'chatgpt-legacy-classification',requestId:input.request_id,
+                    task:input.for_task,provider:input.provider,reason:input.reason},sourceInputId:actor.inputId,
+                sourceRunId:nativeRunId(actor.turn),requestId:input.request_id});
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            const result=classifyLegacyChatGptAsk({requestId:input.request_id,task:input.for_task,provider:input.provider,
+                askerSessionId:actor.session,reason:input.reason,now:this.now()});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(result),saved.input.id);
+            this.wake();
+            return {...result,duplicate:false};
+        })();
+    }
+    /** Resume the original native run only after the capability proves its browser send never
+     * happened. The owner checks that proof and requeues the same run, not a new question. */
+    async recoverChatGptNeverSent(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        if(!actor.inputId)throw new Error('ChatGPT recovery needs the asking session’s exact accepted input and live run.');
+        const retainedAction={sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+            kind:'action' as const,origin:'agent' as const,payload:{kind:'chatgpt-never-sent-recovery',requestId:input.request_id},
+            sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.request_id};
+        if(db.query('SELECT 1 FROM session_inputs WHERE scope=? AND action_id=?').get(retainedAction.scope,input.action_id)){
+            const previous=retainSessionInput(retainedAction);
+            if(!previous.duplicate)throw new Error('The recovery action changed during duplicate lookup.');
+            return {...JSON.parse(previous.input.receipt_json??'{}'),duplicate:true};
+        }
+        const request=this.row(input.request_id);
+        const obligation=chatGptObligationForAttempt(input.request_id);
+        if(request.source_session_id!==actor.session||!request.target_input_id
+            ||!obligation||obligation.active_request_id!==input.request_id||obligation.asker_session_id!==actor.session
+            ||['resolved','withdrawn_by_tejas'].includes(obligation.state))
+            throw new Error('This asking session has no open obligation for that exact original ChatGPT request.');
+        if(getSessionById(request.target_session_id)?.provider_id!=='chatgpt')
+            throw new Error('The exact original request does not target a ChatGPT session.');
+        const result=await this.dependencies.owner.requeueProvenUnsentChatGpt(request.target_session_id,request.target_input_id);
+        const receipt=db.transaction(()=>{
+            const saved=retainSessionInput(retainedAction);
+            if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
+            recordChatGptOriginalRequeued({requestId:input.request_id,runId:result.runId,now:this.now()});
+            const retained={requestId:input.request_id,obligationId:obligation.obligation_id,...result};
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+                .run(JSON.stringify(retained),saved.input.id);
+            return {...retained,duplicate:false};
+        })();
+        this.wake();
+        return receipt;
+    }
     /** The asking session or Inbox router may retire one exact open needs_you, without redeclaring its turn. */
     withdrawAttention(input:{source:CommunicationSource;action_id:string;address:string;need_event_id:string;reason:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1223,6 +1297,12 @@ export class SessionCommunicationCoordinator {
         project?: string;
         title?: string;
         text: string;
+        /** Exact work task that needs this ChatGPT answer when this run holds several tasks. */
+        for_task?:string;
+        /** Exact original obligation for a missing-context follow-up, never an ambiguous-send retry. */
+        recovery_of?:string;
+        /** Original request whose attachment was definitively rejected before Send. */
+        correction_of?:string;
         after?: string[];
         pace?: string[];
         attachments?:string[];
@@ -1413,6 +1493,7 @@ export class SessionCommunicationCoordinator {
                 if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
             }
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
+                forTask:input.for_task,recoveryOf:input.recovery_of,correctionOf:input.correction_of,
                 requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),
                 ...(routedFrom?{routedFrom}:{})});
@@ -1445,6 +1526,9 @@ export class SessionCommunicationCoordinator {
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})};
         const encoded = JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
+            ...(input.for_task?{forTask:input.for_task}:{}),
+            ...(input.recovery_of?{recoveryOf:input.recovery_of}:{}),
+            ...(input.correction_of?{correctionOf:input.correction_of}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
             ...(input.summary?{summary:input.summary}:{}),...(input.answer_view?{answerView:input.answer_view}:{}),
             ...(input.return_to_requester?{returnToRequester:true}:{}),
@@ -1464,6 +1548,25 @@ export class SessionCommunicationCoordinator {
         }
         let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
+        let correctionProof:{runId:string;reason:string;attachmentHashes:string[]}|null=null;
+        if(input.correction_of){
+            if(input.recovery_of||input.provider||!targetSession||targetSession.provider_id!=='chatgpt'
+                ||!input.for_task||!input.files?.length||input.attachments?.length||input.captureId)
+                throw new Error('Attachment correction needs the original ChatGPT address, exact task, and a corrected --file.');
+            const original=this.row(input.correction_of);
+            const obligation=chatGptObligationForAttempt(input.correction_of);
+            if(!obligation||obligation.obligation_id!==input.correction_of||obligation.active_request_id!==input.correction_of
+                ||obligation.state!=='reconcile_receipt'||obligation.asker_session_id!==actor.session
+                ||`${obligation.task_kind}:${obligation.task_id}`!==input.for_task
+                ||obligation.target_session_id!==`concierge:${targetSession.id}`||obligation.question_text!==input.text
+                ||original.source_session_id!==actor.session||original.target_session_id!==targetSession.id
+                ||original.outcome!=='failed'||!original.target_input_id)
+                throw new Error('The original failed ChatGPT request does not own this exact unanswered question, task, and target.');
+            correctionProof=await this.dependencies.owner.proveRejectedChatGptAttachment(targetSession.id,original.target_input_id);
+            const originalHashes=new Set(correctionProof.attachmentHashes);
+            if(!input.files.some(file=>!originalHashes.has(createHash('sha256').update(Buffer.from(file.base64,'base64')).digest('hex'))))
+                throw new Error('The correction needs at least one attached file with changed bytes.');
+        }
         const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
         if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
@@ -1517,6 +1620,11 @@ export class SessionCommunicationCoordinator {
             // ChatGPT has no session tools and answers with its turn, so it gets only the asker's
             // words: given the request protocol it tried to run router-actions.sh (2026-10-09).
             const toChatgpt=input.provider==='chatgpt'||targetSession?.provider_id==='chatgpt';
+            if(input.for_task&&!toChatgpt)throw new Error('--for-task belongs to a ChatGPT question.');
+            if(input.recovery_of&&!toChatgpt)throw new Error('--recovery-of belongs to a ChatGPT question.');
+            if(input.correction_of&&!toChatgpt)throw new Error('--correction-of belongs to a ChatGPT question.');
+            if(toChatgpt&&threadRoot&&!input.return_to_requester)
+                throw new Error('A ChatGPT question for a named thread must also return to its asking agent; add --return-to-requester.');
             const isHisChat = isHisChatGpt({
                 origin: targetSession ? sessionMetadata(targetSession).origin : undefined,
                 model: targetSession ? sessionMetadata(targetSession).model : undefined,
@@ -1554,6 +1662,17 @@ export class SessionCommunicationCoordinator {
                     // 15-minute reminder clock starts there, not at the fire time itself.
                     input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!+STILL_WAITING_AFTER_MS:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
                     now,sourceInput,`request:${id}`,threadRoot,topicRoot??'');
+            if(toChatgpt){
+                const task=resolveChatGptTask(actor.session,sourceInput,input.for_task);
+                bindDirectChatGptTaskSource(task,sourceInput,actor.session);
+                if(input.recovery_of)admitChatGptContextFollowUp({requestId:id,obligationId:input.recovery_of,task,
+                    askerSessionId:actor.session,targetSessionId:`concierge:${selected.session}`,now});
+                else if(input.correction_of&&correctionProof)admitChatGptAttachmentCorrection({requestId:id,obligationId:input.correction_of,task,
+                    askerSessionId:actor.session,targetSessionId:`concierge:${selected.session}`,question:input.text,
+                    originalRunId:correctionProof.runId,reason:correctionProof.reason,now});
+                else admitChatGptObligation({requestId:id,task,askerSessionId:actor.session,question:input.text,
+                    targetSessionId:`concierge:${selected.session}`,now});
+            }
             if (sourceInput) {
                 if(!input.provider&&!consultation&&!(input.saved&&requestedRole))retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
@@ -1738,6 +1857,7 @@ export class SessionCommunicationCoordinator {
         final: boolean;
         answers_question?: boolean;
         workDisposition?: WorkDisposition;
+        openChatGptIds?:string[];
         evidence?:unknown[];
         attachments?:string[];
         files?:AttachedFile[];
@@ -1858,6 +1978,8 @@ export class SessionCommunicationCoordinator {
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,lead:input.summary,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
         else if(input.workDisposition==='completed')
             input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,allDone:input.all_done})};
+        if(input.final&&['failed','needs_decision'].includes(input.workDisposition??'')&&input.openChatGptIds?.length)
+            input={...input,text:`${input.text}\n\nChatGPT answers still owed: ${input.openChatGptIds.join(', ')}. The exact questions remain open for recovery; this report does not close them.`};
         if(outsideRequest)
             return this.externalReply(input)!;
         const attached = !!(input.attachments?.length || files(input.files).length);
@@ -1877,7 +1999,7 @@ export class SessionCommunicationCoordinator {
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
                 closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,input.checked,input.not_checked):undefined,
-                final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
+                final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,openChatGptIds:input.openChatGptIds,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
         // there: a forwarded reply of his, and equally work the router sent for a question it
@@ -1981,6 +2103,7 @@ export class SessionCommunicationCoordinator {
             return noted(this.receipt(this.row(request.request_id)));
         }
         db.transaction(() => {
+            if(input.final)requireChatGptTaskDisposition({kind:'local_request',id:request.request_id},input.workDisposition,input.openChatGptIds);
             // The owner's own inference from a finished turn is not the recipient's word, so a
             // recipient still working past it can answer, and that answer returns to the requester.
             const current = this.currentFinal(request.request_id);
@@ -2124,12 +2247,89 @@ export class SessionCommunicationCoordinator {
                 // The result keeps the files that reply carried: they are its answer as much as its words.
                 db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?")
                     .run(outcome,JSON.stringify({...payload,...(declared.attachments?.length?{attachments:declared.attachments}:{}),event_id:final.event_id,declaredDisposition:'completed'}),request.request_id);
+                recordChatGptAttemptResult({requestId:request.request_id,outcome,answerEventId:final.event_id,now:this.now(),reason:text});
                 return;
             }
             const event_id = this.event(request, 'final', payload);
             db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome, JSON.stringify({ ...payload, event_id }), request.request_id);
+            recordChatGptAttemptResult({requestId:request.request_id,outcome,answerEventId:event_id,now:this.now(),reason:text});
         })();
         this.wake();
+    }
+    /** A retained native receipt can correct the owner's earlier failed final for this same
+     * question. The prior failure and its return remain history; the new final is returned
+     * separately so the requester sees the correction. This never sends provider input. */
+    restoreChatGptAnswer(requestId: string): boolean {
+        const restored=db.transaction(() => {
+            const request=db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(requestId) as RequestRow|null;
+            if(!request||request.outcome!=='failed'||!request.target_input_id||!request.result_json)return false;
+            const obligation=chatGptObligationForAttempt(requestId);
+            if(!obligation||obligation.active_request_id!==requestId||['resolved','withdrawn_by_tejas'].includes(obligation.state))return false;
+            const target=getSessionById(request.target_session_id);
+            const input=getAcceptedSessionInput(request.target_input_id);
+            if(target?.provider_id!=='chatgpt'||!input||input.session_id!==target.id||input.request_id!==requestId||!input.turn_id)return false;
+            const turn=db.query('SELECT * FROM turns WHERE id=? AND session_id=?').get(input.turn_id,target.id) as {
+                id:number;status:string;turn_kind:string;accepted_input_id:string|null;native_run_id:string|null;
+                provider_input_acknowledged_at:string|null;provider_turn_id:string|null;agent_text:string|null;
+            }|null;
+            if(!turn||turn.status!=='done'||turn.turn_kind!=='native'||turn.accepted_input_id!==input.id
+                ||!turn.native_run_id||!turn.provider_input_acknowledged_at||!turn.agent_text?.trim())return false;
+            if(this.sharedTurnRequests(turn.id).length!==1)return false;
+            const oldFinal=this.currentFinal(requestId) as (EventRow&{action_key:string|null})|null;
+            const oldResult=JSON.parse(request.result_json);
+            if(!oldFinal||oldFinal.action_key!==null||oldResult.event_id!==oldFinal.event_id
+                ||JSON.parse(oldFinal.payload_json).outcome!=='failed')return false;
+            const proofRows=db.query(`SELECT payload_json FROM session_owner_events INDEXED BY session_owner_events_turn_kind
+                WHERE turn_id=? AND kind='capability' AND input_id=?
+                  AND json_extract(payload_json,'$.kind') IN ('start','reconcile','observe') ORDER BY sequence DESC`)
+                .all(turn.id,input.id) as {payload_json:string}[];
+            const evidence=proofRows.map(({payload_json})=>JSON.parse(payload_json)).filter(value=>
+                value.run?.runId===turn.native_run_id&&value.run?.inputId===input.id
+                &&value.run?.sessionId===`concierge:${target.id}`);
+            const validResult=(result:any)=>result?.state==='completed'&&result.text===turn.agent_text
+                &&result.turnId===turn.provider_turn_id&&typeof result.sessionId==='string'
+                &&result.sessionId===result.nativeBinding?.sessionId
+                &&typeof result.nativeBinding?.accountScope==='string';
+            const terminalResults=evidence.flatMap(value=>{
+                if(['start','reconcile'].includes(value.kind)){
+                    const receipt=value.receipt;
+                    return receipt?.state==='completed'&&validResult(receipt.result)
+                        ?[receipt.result]:[];
+                }
+                return value.kind==='observe'&&validResult(value.observation?.result)
+                    &&value.observation?.runId===turn.native_run_id
+                    &&value.observation?.events?.some((event:any)=>event.kind==='result'
+                        &&event.runId===turn.native_run_id&&event.inputId===input.id
+                        &&event.payload?.text===turn.agent_text&&event.payload?.turnId===turn.provider_turn_id
+                        &&event.payload?.sessionId===value.observation.result.sessionId)
+                    ?[value.observation.result]:[];
+            });
+            const proven=terminalResults.some(result=>evidence.some(value=>{
+                if(!['start','reconcile'].includes(value.kind))return false;
+                const receipt=value.receipt;
+                return receipt?.runId===turn.native_run_id
+                    &&['recorded','running','completed'].includes(receipt.state)
+                    &&(!receipt.nativeBinding||receipt.nativeBinding.sessionId===result.sessionId
+                        &&receipt.nativeBinding.accountScope===result.nativeBinding.accountScope);
+            }));
+            if(!proven)return false;
+            const effect=JSON.parse(request.payload_json).requestedEffect;
+            const outcome=effect==='work'?'undetermined':'answered';
+            const eventId=randomUUID();
+            db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=? AND superseded_by_event_id IS NULL')
+                .run(eventId,oldFinal.event_id);
+            const payload={outcome,text:turn.agent_text,responding_session_id:`concierge:${target.id}`,
+                output:{turn_id:turn.id,session_id:`concierge:${target.id}`,run_id:turn.native_run_id,input_id:input.id,
+                    sha256:hash(turn.agent_text),text:turn.agent_text,recovered_from_event_id:oldFinal.event_id,
+                    delivery_note:'The original ChatGPT operation was reconciled to this answer. The earlier failure is superseded; no new question was sent.'}};
+            this.event(request,'final',payload,null,eventId);
+            db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?")
+                .run(outcome,JSON.stringify({...payload,event_id:eventId}),requestId);
+            recordChatGptAttemptResult({requestId,outcome,answerEventId:eventId,now:this.now(),reason:'Exact provider receipt recovered the original question.'});
+            return true;
+        })();
+        if(restored)this.wake();
+        return restored;
     }
     private binding(request: RequestRow) {
         if (request.target_input_id) {
@@ -2177,6 +2377,19 @@ export class SessionCommunicationCoordinator {
                 .get(request.source_input_id, `return:${resultEventId}`);
         })??null;
     }
+    private holdFailedChatGptRequest(request:RequestRow,reason:string):boolean {
+        const obligation=chatGptObligationForAttempt(request.request_id);
+        if(!obligation||obligation.active_request_id!==request.request_id
+            ||['resolved','withdrawn_by_tejas'].includes(obligation.state))return false;
+        const now=this.now();
+        const needsRepair=obligation.state==='awaiting_answer';
+        if(needsRepair)recordChatGptAttemptResult({requestId:request.request_id,outcome:'failed',now,reason});
+        recordSessionEvent({eventId:`chatgpt-original-attempt-failed:${request.request_id}`,
+            sessionId:request.source_session_id,inputId:request.source_input_id,kind:'response',
+            payload:{requestId:request.request_id,kind:'overdue',text:`The original ChatGPT request ${request.request_id} failed before an answer returned: ${reason}. Its answer is still owed to this task. Concierge is inspecting that exact run and receipt; do not continue as if it answered or send a replacement. ${chatGptAnswerCommand(obligation)}`}});
+        if(needsRepair)this.wake();
+        return true;
+    }
     private async dispatch(request: RequestRow) {
         if (request.outcome || this.stopped)
             return;
@@ -2214,6 +2427,7 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_communication_requests SET due_at_ms=max(due_at_ms,?) WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                 .run(this.now()+STILL_WAITING_AFTER_MS, request.request_id);
         if(routed?.status==='failed') {
+            if(this.holdFailedChatGptRequest(request,routed.error??'The target could not receive this request.'))return;
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
             return;
         }
@@ -2247,6 +2461,7 @@ export class SessionCommunicationCoordinator {
             AND (routed_request_id IS NOT ?1 OR target_turn_id IS NOT ?2 OR input_kind IS NOT ?3 OR status IS NOT ?4)`)
             .run(routed.request_id, routed.turn_id, routed.input_kind, routed.status, request.request_id);
         if (routed.status === 'failed') {
+            if(this.holdFailedChatGptRequest(request,routed.error??'The target could not receive this request.'))return;
             this.settle(request, 'failed', routed.error ?? 'The target could not receive this request.');
             return;
         }
@@ -2266,6 +2481,7 @@ export class SessionCommunicationCoordinator {
             const steering = routed.steering_id?db.query('SELECT status FROM turn_steering_messages WHERE id=?').get(routed.steering_id) as any
                 : db.query('SELECT status FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(routed.turn_id, routed.message_ts) as any;
             if (steering?.status === 'failed') {
+                if(this.holdFailedChatGptRequest(request,'The provider did not accept this live request.'))return;
                 this.settle(request, 'failed', 'The provider did not accept this live request.');
                 return;
             }
@@ -2325,6 +2541,7 @@ export class SessionCommunicationCoordinator {
             ended = next;
         }
         if (ended.status === 'cancelled') {
+            if(this.holdFailedChatGptRequest(request,'The original provider turn was canceled without an answer.'))return;
             // His own Stop is his choice, not news; any other cancellation is work someone must follow up.
             const stop = stoppedByTejas(ended.id);
             this.settle(request, 'canceled', stop ? stoppedByTejasText(stop.atMs) : cancelledWithoutHisStopText(),
@@ -2334,6 +2551,7 @@ export class SessionCommunicationCoordinator {
         // Plain words say why, so the requester can tell a refused account from an interrupted run
         // (a bare "ended with error" was read as the release cutting two runs off, September 23,
         // 2026); the provider's own text stays with the request for diagnosis.
+        if(this.holdFailedChatGptRequest(request,endedWorkInPlainWords(turn.agent_text)))return;
         this.settle(request, 'failed', endedWorkInPlainWords(turn.agent_text),
             { ...output, ...(turn.agent_text ? { providerError: String(turn.agent_text).slice(0, 2000) } : {}) });
     }
@@ -2439,7 +2657,11 @@ export class SessionCommunicationCoordinator {
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
                     deliveryNote:alreadyPostedInThread?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
                     files:Array.isArray(payload.attachments)?payload.attachments.length:0,
-                    followUp:(()=>{const responder=getSessionById(coveredResponder);return responder?sessionAddress(responder):null;})()}),
+                    followUp:(()=>{const responder=getSessionById(coveredResponder);return responder?sessionAddress(responder):null;})()})
+                    +[event,...group.joining].flatMap(returnEvent=>{
+                        const row=db.query('SELECT * FROM session_chatgpt_obligations WHERE answer_event_id=? AND state NOT IN (\'resolved\',\'withdrawn_by_tejas\')').get(returnEvent.event_id) as ChatGptObligationRow|null;
+                        return row?[`\n\nChatGPT answer still owed for ${row.obligation_id}. After reading this exact return, record how you handled it: ${chatGptAnswerCommand(row)}`]:[];
+                    }).join(''),
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
                 ...(alreadyPostedInThread?{alreadyPostedInThread:true}:{})});
@@ -2461,6 +2683,7 @@ export class SessionCommunicationCoordinator {
             const error=received?null:deliveryError;
             db.query('UPDATE session_communication_events SET status=?,error=? WHERE accepted_input_id=? AND (status IS NOT ? OR error IS NOT ?)').run(status,error,accepted.id,status,error);
             db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=? AND (accepted_input_id IS NOT ? OR status IS NOT ? OR error IS NOT ?)').run(accepted.id,status,error,event.event_id,accepted.id,status,error);
+            if(event.kind==='final'&&received)recordChatGptReturnReceipt({eventId:event.event_id,returnInputId:accepted.id,now:this.now()});
             return;
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
@@ -2491,6 +2714,7 @@ export class SessionCommunicationCoordinator {
         const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
         const status = received ? 'received' : ['failed','uncertain','canceled'].includes(observed.state) ? observed.state : input.turn_id ? 'admitted' : 'held';
         db.query('UPDATE session_communication_events SET status=? WHERE event_id=? AND status IS NOT ?').run(status, eventId, status);
+        if(received)recordChatGptReturnReceipt({eventId,returnInputId:inputId,now:this.now()});
     }
     /**
      * The sender hears at once when the work it asked for is parked on the recipient's
@@ -2640,9 +2864,88 @@ export class SessionCommunicationCoordinator {
             await new Promise<void>(resolve => setImmediate(resolve));
         }
     }
+    private recoverChatGptObligation(row:ChatGptObligationRow) {
+        const now=this.now();
+        let current=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND due_at_ms<=?
+            AND state NOT IN ('resolved','withdrawn_by_tejas')`).get(row.obligation_id,now) as ChatGptObligationRow|null;
+        if(!current)return;
+        if(this.restoreChatGptAnswer(current.active_request_id))return;
+        if(current.next_action==='observe_original_requeued_run'){
+            const proof=db.query(`SELECT json_extract(evidence_json,'$.runId') AS run_id
+                FROM session_chatgpt_obligation_events WHERE obligation_id=? AND action_id LIKE 'original-requeued:%'
+                ORDER BY created_at_ms DESC LIMIT 1`).get(current.obligation_id) as {run_id:string|null}|null;
+            const active=proof?.run_id?db.query('SELECT status FROM turns WHERE native_run_id=?').get(proof.run_id) as {status:string}|null:null;
+            if(active&&['queued','running'].includes(active.status)){
+                db.query('UPDATE session_chatgpt_obligations SET due_at_ms=?,updated_at_ms=? WHERE obligation_id=? AND due_at_ms<=?')
+                    .run(now+300_000,now,current.obligation_id,now);
+                return;
+            }
+        }
+        const source=getSessionById(current.asker_session_id);
+        const request=(db.query('SELECT source_input_id,source_turn_id FROM session_communication_requests WHERE request_id=?').get(current.active_request_id)
+            ??db.query('SELECT source_input_id,source_turn_id FROM session_peer_requests WHERE request_id=?').get(current.active_request_id)) as {source_input_id:string;source_turn_id:number}|null;
+        if(!source||!request?.source_input_id||!this.dependencies.owner?.canSend(source)){
+            const reason=!source?'asking session no longer exists':!request?.source_input_id?'original asking input is unavailable':'asking session is paused, archived, or otherwise unmessageable';
+            const changed=holdUnmessageableChatGptAsker(current.obligation_id,now,reason);
+            if(changed&&source&&request?.source_input_id){
+                const held=db.query('SELECT generation FROM session_chatgpt_obligations WHERE obligation_id=?').get(current.obligation_id) as {generation:number};
+                recordSessionEvent({eventId:`chatgpt-asker-hold:${current.obligation_id}:${held.generation}`,sessionId:source.id,
+                    inputId:request.source_input_id,kind:'response',payload:{requestId:current.active_request_id,kind:'overdue',
+                        text:`ChatGPT answer obligation ${current.obligation_id} is held: ${reason}. Its original request and next repair action remain retained; no browser resend occurs.`}});
+            }
+            return;
+        }
+        if(resumeMessageableChatGptAsker(current.obligation_id,now)){
+            current=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(current.obligation_id) as ChatGptObligationRow;
+            recordSessionEvent({eventId:`chatgpt-asker-resume:${current.obligation_id}:${current.generation}`,sessionId:source.id,
+                inputId:request.source_input_id,kind:'response',payload:{requestId:current.active_request_id,kind:'progress',
+                    text:`ChatGPT answer obligation ${current.obligation_id} is messageable again; its exact repair action is resuming.`}});
+        }
+        const inputId=`chatgpt-repair:${current.obligation_id}:${current.generation}`;
+        const prior=getAcceptedSessionInput(inputId);
+        if(prior){
+            const observed=readInputExecution(prior);
+            if(!['completed','failed','canceled','uncertain'].includes(observed.state)){
+                this.dependencies.owner.dispatch(prior);
+                db.query('UPDATE session_chatgpt_obligations SET due_at_ms=?,updated_at_ms=? WHERE obligation_id=? AND due_at_ms<=?')
+                    .run(now+300_000,now,current.obligation_id,now);
+                return;
+            }
+        }
+        const completedRepairs=(db.query(`SELECT count(*) AS count FROM session_chatgpt_obligation_events
+            WHERE obligation_id=? AND action_id LIKE 'repair:%' AND rowid>COALESCE((SELECT max(rowid)
+              FROM session_chatgpt_obligation_events WHERE obligation_id=? AND
+              (action_id LIKE 'answer:%' OR action_id LIKE 'return:%' OR action_id LIKE 'original-requeued:%'
+                OR action_id LIKE 'follow-up:%')),0)`).get(current.obligation_id,current.obligation_id) as {count:number}).count;
+        if(completedRepairs>=3){
+            db.query('UPDATE session_chatgpt_obligations SET due_at_ms=?,updated_at_ms=? WHERE obligation_id=? AND due_at_ms<=?')
+                .run(now+21_600_000,now,current.obligation_id,now);
+            recordSessionEvent({eventId:`chatgpt-repair-persistent:${current.obligation_id}:${current.generation}`,sessionId:source.id,
+                inputId:request.source_input_id,kind:'response',payload:{requestId:current.active_request_id,kind:'overdue',
+                    text:`ChatGPT question ${current.obligation_id} remains unresolved after three repair turns. Its task and original browser operation remain retained. The owner now checks the exact receipt and answer return without starting more repair turns. A new provider answer or explicit recovery action will resume handling; no browser resend is authorized.`}});
+            return;
+        }
+        db.transaction(()=>{
+            const fresh=db.query('SELECT generation FROM session_chatgpt_obligations WHERE obligation_id=? AND due_at_ms<=?')
+                .get(current.obligation_id,now) as {generation:number}|null;
+            if(!fresh)return;
+            const next=fresh.generation+1;
+            const nextDelay=Math.min(300_000*2**Math.min(completedRepairs,7),21_600_000);
+            db.query('UPDATE session_chatgpt_obligations SET generation=?,due_at_ms=?,updated_at_ms=? WHERE obligation_id=?')
+                .run(next,now+nextDelay,now,current.obligation_id);
+            db.query(`INSERT INTO session_chatgpt_obligation_events(event_id,obligation_id,action_id,state,evidence_json,created_at_ms)
+                VALUES(?,?,?,?,?,?)`).run(`chatgpt-obligation:${current.obligation_id}:repair:${next}`,current.obligation_id,
+                    `repair:${next}`,current.state,JSON.stringify({priorInputId:prior?.id??null,requestId:current.active_request_id}),now);
+            this.dependencies.owner!.admit({sessionId:source.id,inputId:`chatgpt-repair:${current.obligation_id}:${next}`,
+                origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),
+                requestId:current.active_request_id,text:`ChatGPT answer obligation ${current.obligation_id} for ${current.task_kind}:${current.task_id} remains open. Exact question: ${current.question_text}\nActive request: ${current.active_request_id}. State: ${current.state}; next action: ${current.next_action}. ${chatGptAnswerCommand(current)} Inspect the original browser operation and retained conversation/receipt, then get the exact answer back and declare how it was handled. If the original receipt proves Send was never pressed, use sessions chatgpt-recover ${current.active_request_id} --action-id <stable-action> to requeue that original run. A timeout, generic failed turn, or ambiguous receipt does not authorize another send. If this repair attempt cannot finish, the owner will wake this same obligation again.`});
+        })();
+    }
     private async reconcile() {
         let startedPeers = false;
         if (!this.startupReconciled) {
+            const legacy=migrateOpenLegacyChatGptAsks(this.now());
+            if(legacy.scanned)log('info','chatgpt_legacy_reconciliation',{...legacy});
             if (!await releaseLateRetainedReturns(() => this.stopped)) return;
             if (this.stopped) return;
             this.startupReconciled = true;
@@ -2707,6 +3010,9 @@ export class SessionCommunicationCoordinator {
             if (this.stopped) break;
             await auditUndeliveredReturns(this.now(), () => this.stopped);
             await this.scanExternalRequests();
+            await this.scanRows<ChatGptObligationRow>('session_chatgpt_obligations',`SELECT rowid AS reconciliation_rowid,* FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
+                WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL AND due_at_ms<=?
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,row=>this.recoverChatGptObligation(row),this.now());
             await this.scanRows<RequestRow>('session_communication_requests','SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
                 request => this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id))));
             await this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events INDEXED BY session_communication_outbox WHERE status<>'received' AND status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
@@ -2752,9 +3058,12 @@ export class SessionCommunicationCoordinator {
         const next = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL`).get() as {
             due: number | null;
         };
-        if (next.due === null && !this.pendingAcceptedRecovery)
+        const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
+            WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
+        if (next.due === null && chatGptNext.due===null && !this.pendingAcceptedRecovery)
             return;
-        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,Math.max(0, (next.due??Infinity) - this.now()));
+        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
+            Math.max(0,(next.due??Infinity)-this.now()),Math.max(0,(chatGptNext.due??Infinity)-this.now()));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
         else {

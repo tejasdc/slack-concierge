@@ -120,7 +120,8 @@ export interface ChatGptProviderInput {
   nativeBinding: ChatGptBinding | null;
 }
 
-export type CapabilityFailure = { code: string; message: string };
+export type ChatGptPreSendFailure = { stage: string; code: string; detail?: string };
+export type CapabilityFailure = { code: string; message: string; preSend?: ChatGptPreSendFailure };
 export interface ChatGptResult {
   sessionId: string | null;
   turnId: string | null;
@@ -128,6 +129,7 @@ export interface ChatGptResult {
   state: "completed" | "failed" | "canceled" | "uncertain";
   error: CapabilityFailure | string | null;
   nativeBinding: ChatGptBinding | null;
+  preSend?: ChatGptPreSendFailure;
 }
 
 export interface ChatGptReceipt {
@@ -296,6 +298,17 @@ function verifyResult(value: ChatGptResult) {
     verifyBinding(value.nativeBinding);
     verify(value.sessionId === value.nativeBinding.sessionId, "Result conversation identity does not match its binding.");
   }
+  if (value.preSend !== undefined) {
+    verify(value.state === "failed" && isRecord(value.preSend)
+      && nonempty(value.preSend.stage) && nonempty(value.preSend.code)
+      && (value.preSend.detail === undefined || typeof value.preSend.detail === "string"),
+      "Invalid provider pre-Send failure evidence.");
+  }
+}
+
+function preSendFailureText(preSend: ChatGptPreSendFailure | undefined, fallback: string): string {
+  return preSend === undefined ? fallback
+    : `${preSend.code}: nothing was sent; the send stopped at ${preSend.stage}${preSend.detail ? ` (${preSend.detail})` : ""}.`;
 }
 
 function failureText(error: ChatGptResult["error"] | ChatGptReceipt["error"], fallback: string) {
@@ -456,6 +469,12 @@ export class SessionCapabilityClient {
       && (value.acknowledgedAt === null || nonempty(value.acknowledgedAt)), "Provider receipt changed its run identity or shape.");
     if (value.nativeBinding !== null) verifyBinding(value.nativeBinding);
     if (value.result !== null) {
+      // A prepared new-chat rejection has no conversation yet. Thinkering's result event
+      // omits that optional binding and uses an empty session id; retain null explicitly.
+      if (value.nativeBinding === null && value.result.nativeBinding === undefined && value.result.turnId === null)
+        value.result.nativeBinding = null;
+      if (value.result.nativeBinding === null && value.result.sessionId === '' && value.result.turnId === null)
+        value.result.sessionId = null;
       verifyResult(value.result);
       verify(value.result.state === value.state, "Provider receipt disagrees with its native result.");
       verify(isDeepStrictEqual(value.nativeBinding, value.result.nativeBinding), "Provider receipt disagrees with its native result binding.");
@@ -611,8 +630,13 @@ export class SessionCapabilityClient {
       binding = candidate;
       input.onProviderThreadStarted?.(candidate.sessionId);
     };
-    const finish = async (result: ChatGptResult): Promise<RunResult> => {
+    const finish = async (result: ChatGptResult, receiptPreSend?: ChatGptPreSendFailure): Promise<RunResult> => {
       verifyResult(result);
+      if (receiptPreSend !== undefined) {
+        verify(result.state === "failed" && nonempty(receiptPreSend.stage) && nonempty(receiptPreSend.code)
+          && (result.preSend === undefined || isDeepStrictEqual(result.preSend, receiptPreSend)),
+          "Provider receipt and terminal result disagree on the pre-Send failure.");
+      }
       await acceptBinding(result.nativeBinding);
       if (result.sessionId !== null) verify(result.sessionId === binding?.sessionId, "Provider result changed its native conversation.");
       if (turnId !== null && result.turnId !== null) verify(turnId === result.turnId, "Provider result changed its native turn.");
@@ -624,7 +648,8 @@ export class SessionCapabilityClient {
       if (result.state === "failed") {
         const neverSent = result.error === "CHATGPT_NOT_SENT" || result.error === "CHATGPT_SEND_FAILED";
         throw new SessionCapabilityError(neverSent ? result.error : "CHATGPT_RUN_FAILED",
-          failureText(result.error, "ChatGPT execution failed."), 409);
+          preSendFailureText(result.preSend ?? receiptPreSend,
+            failureText(result.error, "ChatGPT execution failed.")), 409);
       }
       return { text: result.text, sessionUUID: result.sessionId, providerTurnId: turnId, toolsUsed: [] };
     };
@@ -669,7 +694,7 @@ export class SessionCapabilityClient {
       await context.onEvidence({ kind: context.follow ? "reconcile" : "start", run, receipt });
       await acceptBinding(receipt.nativeBinding);
       if (receipt.acknowledgedAt !== null) input.onInputAcknowledged?.();
-      if (receipt.result !== null) return await finish(receipt.result);
+      if (receipt.result !== null) return await finish(receipt.result, receipt.error?.preSend);
       if (receipt.state === "uncertain") throw new SessionCapabilityError(receipt.error?.code ?? "CHATGPT_SEND_UNCONFIRMED", failureText(receipt.error, "ChatGPT send remains uncertain."), null, true);
       if (receipt.state === "failed") throw new SessionCapabilityError(receipt.error?.code ?? "CHATGPT_START_FAILED", failureText(receipt.error, "ChatGPT start failed."), 409);
       if (receipt.state === "canceled") {
@@ -703,7 +728,9 @@ export class SessionCapabilityClient {
             verifyIdentity(event.payload as any);
             if (event.kind === "result") {
               verifyResult(event.payload as unknown as ChatGptResult);
-              verify(observation.result !== null && isDeepStrictEqual(event.payload, observation.result), "Observed result event differs from its retained result.");
+              const { preSend: _preSend, ...retainedEventShape } = observation.result ?? {};
+              verify(observation.result !== null && isDeepStrictEqual(event.payload, retainedEventShape),
+                "Observed result event differs from its retained result.");
             }
           } else verifyHistory({ messages: [event.payload.message as CapabilityMessage], nextCursor: null });
         }

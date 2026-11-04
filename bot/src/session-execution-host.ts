@@ -5,10 +5,10 @@ import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
-import {recordResultTurnOutcome} from './session-turn-outcome';
+import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
 import type {TurnSteeringController} from './steering';
 import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
@@ -22,6 +22,7 @@ import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {ProviderDispatchError} from './provider-failures';
+import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
@@ -67,10 +68,12 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
   // Only he can sign in to Google or pass a check the browser could not: tell him at once, with
   // its own Inbox thread and push, so nobody waits blind (Tejas, 2026-10-09: "I'm notified
   // immediately so the agents are like not waiting"). One notice per hour.
-  if(['CHATGPT_SIGNIN_NEEDS_TEJAS','CHATGPT_CHALLENGE_UNPASSED','CHATGPT_AUTH_REQUIRED'].includes(code)){
+  if(['CHATGPT_SIGNIN_NEEDS_TEJAS','CHATGPT_CHALLENGE_UNPASSED','CHATGPT_AUTH_REQUIRED','CHATGPT_ACCOUNT_MISMATCH'].includes(code)){
     try{publishProviderFreeNotice(db,{key:`chatgpt-signin:${Math.floor(Date.now()/3_600_000)}`,kind:'chatgpt_signin',
       text:code==='CHATGPT_CHALLENGE_UNPASSED'
         ?'ChatGPT Pro is blocked because its "verify you are human" check needs a click that only you can make, so agents\' questions to it fail until then. Open the server\'s screen from your Mac and click the check once.'
+        :code==='CHATGPT_ACCOUNT_MISMATCH'
+        ?'ChatGPT Pro is signed in to a different account than tejastej.dc@gmail.com, so agents\' questions to it are stuck. Open the server\'s screen from your Mac and sign in to tejastej.dc@gmail.com in ChatGPT Pro. Concierge will keep each question open and tell its agent to recover the answer.'
         :'ChatGPT Pro is signed out, so agents\' questions to it fail until you sign in again. Open the server\'s screen from your Mac and sign in once.'});}catch{}
     return;
   }
@@ -235,6 +238,8 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
+      requeueProvenUnsentChatGpt:(session,operation)=>this.requeueProvenUnsentChatGpt(session,operation),
+      proveRejectedChatGptAttachment:(session,operation)=>this.proveRejectedChatGptAttachment(session,operation),
       auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         chooseClaudeLaunch:model=>chooseClaudeDispatch(null,0,undefined,model),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
@@ -879,7 +884,14 @@ export class SessionExecutionHost {
       }
     } catch(error) {log('error','inbox_answer_relay_failed',{turn_id:result.turnId,...errorFields(error)});}
     // Only a delivered result can carry the turn's outcome; failures stay finished without saying.
-    recordResultTurnOutcome(result);
+    try { recordResultTurnOutcome(result); }
+    catch(error) {
+      log('error','delivered_result_outcome_record_failed',{turn_id:result.turnId,...errorFields(error)});
+      // The retained answer is the primary effect. A rejected or unavailable outcome marker
+      // cannot make its delivery fail; leave a quiet, reviewable outcome when possible.
+      try {recordUnsaidTurnOutcome({id:result.turnId,session_id:result.sessionId,accepted_input_id:result.inputId});}
+      catch(fallbackError){log('error','delivered_result_unsaid_record_failed',{turn_id:result.turnId,...errorFields(fallbackError)});}
+    }
     return 'delivered';
   }
   private retainResult(result:NativeTurnResult) {
@@ -1291,6 +1303,75 @@ export class SessionExecutionHost {
       if(confirmed)failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,reason);
       else interruptOrphanedTurn(claim.turn_id,this.options.instanceId,`Native fork outcome is uncertain; it will not be repeated. ${reason}`);
     }
+  }
+  private async requeueProvenUnsentChatGpt(session:SessionRow,operation:AcceptedSessionInput):Promise<{status:'requeued'|'already_queued'|'already_running';runId:string}> {
+    if(session.provider_id!=='chatgpt'||!this.capabilityClient||operation.session_id!==session.id||operation.turn_id===null)
+      throw new Error('Safe ChatGPT requeue needs the original native operation in its exact provider session.');
+    const turn=db.query('SELECT * FROM turns WHERE id=? AND session_id=? AND turn_kind=\'native\'')
+      .get(operation.turn_id,session.id) as any;
+    if(!turn||!turn.native_run_id||session.status==='archived'||sessionMetadata(session).suspended)
+      throw new Error('The original ChatGPT turn is unavailable or its asking session cannot run.');
+    const saved=JSON.parse(operation.receipt_json??'{}');
+    const admission=saved.admission as ChatGptAdmission|undefined;
+    if(!admission||admission.provider!=='chatgpt'||admission.inputId!==operation.id
+      ||admission.runId!==turn.native_run_id||admission.bindingGeneration!==session.binding_generation
+      ||stablePayload(admission.nativeBinding)!==stablePayload(sessionMetadata(session).nativeBinding??null))
+      throw new Error('The original ChatGPT admission or conversation binding changed.');
+    if(turn.status==='queued'||turn.status==='running')return {status:turn.status==='queued'?'already_queued':'already_running',runId:turn.native_run_id};
+    if(turn.status!=='error')throw new Error('Only a terminal original turn with no-send proof can be requeued.');
+    const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
+    const receipt=await this.capabilityClient.reconcile(run);
+    if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
+      ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
+      ||!['CHATGPT_NOT_SENT','CHATGPT_SEND_FAILED'].includes(String(receipt.result.error))
+      ||stablePayload(receipt.nativeBinding)!==stablePayload(admission.nativeBinding))
+      throw new Error('The original ChatGPT receipt does not prove that Send never happened; reconcile it without resending.');
+    this.capabilityEvidence(operation,turn.id,{kind:'reconcile',run,receipt});
+    const current=getSessionById(session.id)!;
+    if(current.binding_generation!==session.binding_generation||current.status==='archived'||sessionMetadata(current).suspended
+      ||stablePayload(sessionMetadata(current).nativeBinding??null)!==stablePayload(admission.nativeBinding))
+      throw new Error('The ChatGPT binding or session eligibility changed during receipt inspection.');
+    const requeued=requeueProvenUnsentNativeChatGptTurn({turnId:turn.id,sessionId:session.id,
+      inputId:operation.id,runId:run.runId,nextAttemptMs:Date.now()+providerRetryDelayMs(turn.dispatch_attempt)});
+    if(!requeued)throw new Error('The original ChatGPT turn changed or later work was sent; it was not requeued.');
+    recordSessionEvent({eventId:`chatgpt-proven-unsent-requeue:${turn.id}:${turn.dispatch_attempt}`,sessionId:session.id,
+      inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:'exact_provider_receipt_proved_no_send',runId:run.runId}});
+    this.options.wake();
+    return {status:'requeued',runId:run.runId};
+  }
+  /** A corrected attachment is a new immutable input. Only the original provider receipt can
+   * authorize linking that input to the unanswered question; a generic failed turn cannot. */
+  private async proveRejectedChatGptAttachment(session:SessionRow,operation:AcceptedSessionInput):Promise<{runId:string;reason:string;attachmentHashes:string[]}> {
+    if(session.provider_id!=='chatgpt'||!this.capabilityClient||operation.session_id!==session.id||operation.turn_id===null)
+      throw new Error('Attachment correction needs the original ChatGPT operation in its exact session.');
+    const turn=db.query("SELECT * FROM turns WHERE id=? AND session_id=? AND turn_kind='native'")
+      .get(operation.turn_id,session.id) as any;
+    if(!turn||turn.status!=='error'||!turn.native_run_id||turn.owner_instance_id!==null
+      ||turn.provider_input_acknowledged_at!==null||turn.provider_turn_id!==null||turn.outbound_text!==null
+      ||turn.stop_requested_at!==null)
+      throw new Error('The original turn has no terminal, unsent attachment rejection to correct.');
+    const admission=(JSON.parse(operation.receipt_json??'{}').admission) as ChatGptAdmission|undefined;
+    if(!admission||admission.provider!=='chatgpt'||admission.inputId!==operation.id
+      ||admission.runId!==turn.native_run_id||admission.bindingGeneration!==session.binding_generation
+      ||!Array.isArray(admission.attachments)||admission.attachments.length===0
+      ||stablePayload(admission.nativeBinding)!==stablePayload(sessionMetadata(session).nativeBinding??null))
+      throw new Error('The original attachment admission or conversation binding changed.');
+    const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
+    const receipt=await this.capabilityClient.reconcile(run);
+    const reason=receipt.result?.error;
+    if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
+      ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
+      ||typeof reason!=='string'||!reason.startsWith('CHATGPT_ATTACHMENT_REJECTED:')
+      ||stablePayload(receipt.nativeBinding)!==stablePayload(admission.nativeBinding)
+      ||stablePayload(receipt.result.nativeBinding??null)!==stablePayload(receipt.nativeBinding??null))
+      throw new Error('The exact ChatGPT receipt does not prove an attachment was rejected before Send.');
+    this.capabilityEvidence(operation,turn.id,{kind:'reconcile',run,receipt});
+    const current=getSessionById(session.id)!;
+    if(current.binding_generation!==session.binding_generation||current.status==='archived'
+      ||sessionMetadata(current).suspended
+      ||stablePayload(sessionMetadata(current).nativeBinding??null)!==stablePayload(admission.nativeBinding))
+      throw new Error('The ChatGPT session changed during attachment-rejection inspection.');
+    return {runId:run.runId,reason,attachmentHashes:admission.attachments.map(file=>file.sha256)};
   }
   private async recover(session:SessionRow,operation:AcceptedSessionInput) {
     if(operation.turn_id===null)return;

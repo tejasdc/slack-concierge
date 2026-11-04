@@ -101,13 +101,13 @@ async function child() {
   address:sessionAddress(target),text:'Exact peer forwarded reply',requestedEffect:'work',
   forwardedReply:{inboxInputId:'fixture-source',topicId:'fixture-topic'}};
  db.exec("CREATE TRIGGER fixture_refuse_peer_turn BEFORE INSERT ON turns BEGIN SELECT RAISE(ABORT,'fixture peer turn insertion failed'); END");
- assert.throws(()=>peers.accept(peerBody),/fixture peer turn insertion failed/);
+ await assert.rejects(()=>peers.accept(peerBody),/fixture peer turn insertion failed/);
  assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,1,
   'the accepted peer request keeps its durable live-delivery intent when dispatch fails');
  db.exec('DROP TRIGGER fixture_refuse_peer_turn');
- peers.accept(peerBody);
- peers.accept(peerBody);
- assert.throws(()=>peers.accept({...peerBody,text:'Changed words under the same peer ID'}),/Idempotency conflict/);
+ await peers.accept(peerBody);
+ await peers.accept(peerBody);
+ await assert.rejects(()=>peers.accept({...peerBody,text:'Changed words under the same peer ID'}),/Idempotency conflict/);
  phase('peer-forward-verified');
  assert.equal((db.query('SELECT count(*) AS n FROM session_peer_deliveries WHERE request_id=?').get(peerBody.requestId) as {n:number}).n,1);
  assert.equal((db.query('SELECT count(*) AS n FROM turns WHERE accepted_input_id=?').get(`request:${peerBody.requestId}`) as {n:number}).n,1);
