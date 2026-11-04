@@ -19,6 +19,8 @@ The current unbound Claude Code command on the server authenticates as `tejas@ch
 
 The correction routes fresh agent-shell commands through the local owner’s existing account chooser, verifies Claude Code’s effective subscription login before the model request, and preserves explicit pins and continued conversations. The server's live shell alias and its one-shot provisioning template now resolve `claude` through the command path. The Mac's alias already does so. The launcher is included in immutable server releases and Mac pinned helpers. A missing owner or competing credential refuses before launch. A provider limit after work may have begun is never blindly replayed on another account.
 
+The first installed release exposed a wiring error that the source bundle and review missed: the owner's new launch-choice entrance referenced the chooser without importing it. A live request returned `chooseClaudeDispatch is not defined` before any Claude child ran. The follow-up adds the missing import. The same live entrance must return a selected account before the acceptance scenario below can pass.
+
 ## Acceptance scenario
 
 - **Seed:** On the server, the default Claude login has an exhausted weekly allowance and a separate signed-in account home has room. Start new Codex and Claude agent shells on the installed Concierge release.
