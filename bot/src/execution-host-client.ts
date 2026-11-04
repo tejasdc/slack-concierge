@@ -408,8 +408,11 @@ export type HostedExecution = {
   /** Start a new execution, attach to one still running, or settle one whose host left a finished record. */
   mode: "launch" | "adopt" | "adopt-record";
   executionId: string;
-  /** The provider CLI by absolute path: the host's supervisor gives it no PATH of its own. */
-  executable: string;
+  /**
+   * The provider CLI by absolute path: the host's supervisor gives it no PATH of its own. Only a
+   * launch needs it; taking back a running execution must not depend on finding the CLI again.
+   */
+  executable?: string;
   stateDir: string;
   /** The release's helper folder the host program is taken from; by default the run's own pinned one. */
   routerBotDir?: string;
@@ -661,6 +664,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       const begin = async () => {
         if (execution.mode === "launch") {
           const executable = execution.executable;
+          if (!executable) throw new HostUnavailableError("the run names no provider executable to launch");
           const routerBotDir = execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR;
           if (!routerBotDir) throw new HostUnavailableError("the run names no release helper folder to start its host from");
           // From here a host may exist even if this call fails (a supervisor that accepted the start
