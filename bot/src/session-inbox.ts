@@ -7,9 +7,10 @@ import {inboxRequestRoot,routeTitle,topicRouteAnchor} from './inbox-request-root
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
-import {messageRouteReceipts} from './message-route-receipts';
+import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
+import {routedHumanResultSql} from './inbox-routing-result';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -87,6 +88,9 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     -- A request addressed to the Inbox router is agent coordination, not a message to Tejas.
     -- Its durable input and reply remain available through the request protocol.
     AND NOT (event.kind IN ('accepted','result') AND COALESCE(input.origin='agent' AND input.request_id IS NOT NULL,0))
+    -- Routing belongs to his source message's handoff. The router's closing narration is
+    -- retained in its turn, never projected as a second conversation reply.
+    AND NOT (${routedHumanResultSql})
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
@@ -152,7 +156,7 @@ export function inboxMessage(row:any) {
     .all(row.session_id,row.event_id) as {payload_json:string}[]:[];
   const closingLines=[...new Set(closings.map(item=>JSON.parse(item.payload_json).closingLine).filter((line):line is string=>typeof line==='string'&&!!line))];
   const closingLine=closingLines.length?closingLines.join('\n'):null;
-  const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
+  const routes=row.input_id&&!agent?messageDeliveryReceipts(db,row.input_id):[];
   const requestContent=request?threadRequestDisplay(db,eventPayload):'';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
     ...(typeof (post?eventPayload.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?eventPayload.messageThreadRootId:payload.messageThreadRootId}:{}),

@@ -8,6 +8,7 @@ import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './prese
 import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
+import {routedHumanResultSql} from './inbox-routing-result';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
@@ -104,6 +105,10 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='agent_request_visibility_version');
   if(!hadAgentRequestVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN agent_request_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadRoutingResultVisibility=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='routing_result_visibility_version');
+  if(!hadRoutingResultVisibility)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -146,8 +151,8 @@ const withoutHeader=(text:string)=>{
   const end=text.indexOf('\n\n');return end<0?'':text.slice(end+2);
 };
 
-const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version FROM presentation_message_meta WHERE singleton=1')
-  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number};
+const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version FROM presentation_message_meta WHERE singleton=1')
+  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
 let lastSearchMaintenance=0;
@@ -525,7 +530,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=1,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -572,11 +577,42 @@ async function upgradeAgentRequestVisibility(generation:number){
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET agent_request_visibility_version=1 WHERE singleton=1').run();})();
 }
 
+/** Remove already prepared router narration after a durable handoff. Exact turn history stays. */
+async function upgradeRoutingResultVisibility(generation:number){
+  const changedRoots=new Set<string>();
+  let after=0;
+  while(true){
+    const rows=prepared.query(`SELECT event_sequence AS sequence,root_input_id AS root
+      FROM presentation_messages WHERE generation=? AND event_sequence>?
+        AND message_id GLOB 'result:*' ORDER BY event_sequence LIMIT 100`)
+      .all(generation,after) as {sequence:number;root:string}[];
+    if(!rows.length)break;
+    const hidden=rows.filter(row=>!!source.query(`SELECT 1 FROM session_owner_events event
+      LEFT JOIN session_inputs input ON input.id=event.input_id
+      WHERE event.sequence=? AND ${routedHumanResultSql}`).get(row.sequence));
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of hidden){
+        prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
+        changedRoots.add(row.root);
+      }
+    })();
+    after=rows.at(-1)!.sequence;
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET routing_result_visibility_version=1 WHERE singleton=1').run();})();
+}
+
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
+  if(!current.routing_result_visibility_version){await upgradeRoutingResultVisibility(current.generation);return;}
   upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
@@ -600,6 +636,16 @@ async function catchUp() {
   const collapsedPosts=new Set<string>();
   const routedSources=new Set<string>();
   for(const change of changes){
+    if(change.source_table==='session_communication_requests'||change.source_table==='session_peer_requests'){
+      const request=source.query(`SELECT json_extract(payload_json,'$.forwardedReply.inboxInputId') AS sourceMessageId
+        FROM ${change.source_table} WHERE request_id=?`).get(change.row_key) as {sourceMessageId:string|null}|null;
+      if(request?.sourceMessageId)routedSources.add(request.sourceMessageId);
+    }
+    if(change.source_table==='session_inputs'){
+      const input=source.query("SELECT CASE WHEN json_extract(receipt_json,'$.forwardedTo') IS NOT NULL THEN id END AS sourceMessageId FROM session_inputs WHERE id=?")
+        .get(change.row_key) as {sourceMessageId:string|null}|null;
+      if(input?.sourceMessageId)routedSources.add(input.sourceMessageId);
+    }
     if(change.source_table==='session_input_author_corrections')correctedInputs.add(change.row_key);
     if(change.source_table==='inbox_topic_roots')movedRoots.add(change.row_key);
     if(change.source_table==='session_communication_events'||change.source_table==='session_peer_events')
@@ -611,6 +657,16 @@ async function catchUp() {
       if(row?.kind==='topic_route'||row?.kind==='session_route'){
         const sourceMessageId=JSON.parse(row.payload_json).sourceMessageId;
         if(typeof sourceMessageId==='string')routedSources.add(sourceMessageId);
+      }
+      if(row?.kind==='topic'&&JSON.parse(row.payload_json).change==='forwarded'&&row.input_id)
+        routedSources.add(row.input_id);
+      if(row?.kind==='request'){
+        const requestId=JSON.parse(row.payload_json).requestId;
+        if(typeof requestId==='string'){
+          const forwarded=source.query("SELECT json_extract(payload_json,'$.forwardedReply.inboxInputId') AS sourceMessageId FROM session_communication_requests WHERE request_id=?")
+            .get(requestId) as {sourceMessageId:string|null}|null;
+          if(forwarded?.sourceMessageId)routedSources.add(forwarded.sourceMessageId);
+        }
       }
       if(row?.kind==='response'){
         const requestId=JSON.parse(row.payload_json).requestId;
@@ -728,8 +784,18 @@ async function catchUp() {
       const results=source.query(`SELECT sequence,session_id AS sessionId,event_id AS messageId FROM session_owner_events
         WHERE turn_id=? AND kind='result'`).all(turnId) as {sequence:number;sessionId:number;messageId:string}[];
       for(const row of results){
-        if(prepared.query('SELECT 1 FROM presentation_messages WHERE generation=? AND event_sequence=?').get(current.generation,row.sequence))
-          writeDisplay(current.generation,row.sequence,row.sessionId,row.messageId);
+        const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
+          .get(current.generation,row.sequence) as {root:string}|null;
+        if(!prior)continue;
+        const hidden=source.query(`SELECT 1 FROM session_owner_events event
+          LEFT JOIN session_inputs input ON input.id=event.input_id
+          WHERE event.sequence=? AND ${routedHumanResultSql}`).get(row.sequence);
+        if(hidden){
+          prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
+          prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
+          prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
+          changedRoots.add(prior.root);
+        }else writeDisplay(current.generation,row.sequence,row.sessionId,row.messageId);
       }
     }
     for(const change of changes){

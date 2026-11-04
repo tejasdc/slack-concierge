@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
 import {routeTitle} from './inbox-request-root';
-import {messageRouteReceipts} from './message-route-receipts';
+import {messageDeliveryReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 
@@ -83,7 +83,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const closing=post?database.query('SELECT payload_json FROM session_owner_events WHERE event_id=?')
     .get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
   const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
-  const routes=row.input_id&&!agent?messageRouteReceipts(database,row.input_id):[];
+  const routes=row.input_id&&!agent?messageDeliveryReceipts(database,row.input_id):[];
   const raw={id:agent?row.event_id:row.input_id,sourceSessionId:sessionId,role:agent?'assistant':'user',
     ...(typeof (post?event.messageThreadRootId:payload.messageThreadRootId)==='string'?{messageThreadRootId:post?event.messageThreadRootId:payload.messageThreadRootId}:{}),
     ...(routes.length?{routedTo:routes[0],routedToAll:routes}:{}),

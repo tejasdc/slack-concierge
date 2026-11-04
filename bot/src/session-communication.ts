@@ -12,6 +12,7 @@ import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, invalidateTopicRoots, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand, unfiledReceivedInputs } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
+import {turnRoutedHumanInput} from './inbox-routing-result';
 import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
@@ -786,9 +787,13 @@ export class SessionCommunicationCoordinator {
             ?questionForTejas({actorInputId:actor.inputId,question:stated,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
+        const routed=turnRoutedHumanInput(db,actor.session,actor.turn,actor.inputId);
         // Silence about his own message is never the router's judgement alone: `done` on a turn
-        // that answers something he sent needs the reason he need not read it, as a field.
-        if(input.outcome==='done'&&!quiet&&answersHisOwnMessage(actor.session,actor.inputId))throw new Error(QUIET_REASON_REQUIRED);
+        // that answers something he sent needs a reason unless the route receipt is the answer.
+        if(input.outcome==='done'&&!quiet&&answersHisOwnMessage(actor.session,actor.inputId)&&!routed)throw new Error(QUIET_REASON_REQUIRED);
+        if(routed&&(input.outcome==='response'||input.outcome==='needs_you')
+            &&!turnPostedInto(actor.session,actor.turn,inboxThreadRoot(actor.session,actor.inputId)??actor.inputId))
+            throw new Error('The routing receipt already shows the handoff. Post a substantive answer or question into this thread before declaring a response; closing text is never a second thread reply after routing.');
         // A turn opened by another agent's return or request into a thread owes that thread a
         // post: its closing text never shows there, so an outcome declared without a post
         // would leave the answer nowhere he looks (2026-09-24, two hours).
