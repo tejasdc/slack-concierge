@@ -710,6 +710,17 @@ promote_candidate_release() {
     "$CANDIDATE_ARTIFACT_PATH/control/antigravity-account-statusline.sh"
 }
 
+# Runs after success is recorded and outside the failure traps, at low priority, so a slow or
+# failed prune never fails an update; the next update tries again. The promoted release's own
+# manager does it, reading the ledger's references through the serving owner. Control recovery
+# does not prune: its ledger reads are offline.
+prune_old_releases() {
+  [ -n "$CANDIDATE_ARTIFACT_PATH" ] || return 0
+  ionice -c3 nice -n19 env CONCIERGE_STATE_DIR="$STATE_DIR" \
+    "$BUN_BIN" run "$CANDIDATE_ARTIFACT_PATH/control/release-manager.js" prune \
+    || echo "Old release pruning failed; the next update retries it." >&2
+}
+
 install_router_actions() {
   local source="$CONTROL_SYSTEMD_DIR/router-actions.sh"
   if [ ! -f "$source" ]; then
@@ -1175,6 +1186,7 @@ deploy() {
     record_deployment_success
   fi
   trap - EXIT ERR INT TERM
+  [ -z "$DEPLOY_RUN_ID" ] || prune_old_releases
 
   echo "=== deploy complete ==="
   git log -1 --oneline

@@ -13,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -430,6 +431,9 @@ export class TrustedRootReleaseManager {
           || existing.control_source_tree_digest !== controlSourceTreeDigest) {
           throw new Error("Existing release digest does not match the prepared source.");
         }
+        // Reused by a new attempt, so it counts as newly prepared for release retention.
+        const now = new Date();
+        utimesSync(artifactPath, now, now);
       } else {
         makeReadOnly(outputRoot);
         renameSync(outputRoot, artifactPath);
@@ -540,4 +544,85 @@ export class TrustedRootReleaseManager {
     this.activateControl(artifactPath);
     return manifest;
   }
+
+  /**
+   * Removes sealed releases nothing can still run. Every successful update used to leave its
+   * artifact behind forever: 767 of them (9.8 GB) on 2026-11-04 with the root filesystem at 89%.
+   * Kept: the current and control pointers, the paths the ledger still names (the last-known-good
+   * rollback and the host scripts of executions not yet released), the newest releases by
+   * preparation time, and any release a live process or systemd unit names, because agent
+   * execution hosts keep running from the release that launched them across later updates.
+   * Removal renames first, so an interrupted prune never leaves a half-deleted release under a
+   * digest name; leftovers from an interrupted prune are finished on the next one.
+   */
+  pruneReleases(ledgerReferences: string[], recent = RETAINED_RECENT_RELEASES) {
+    const releases = join(this.environment.releaseRoot, "releases");
+    const named = readdirSync(releases).filter(name => /^[0-9a-f]{64}$/.test(name));
+    const kept = new Set<string>(named.map(name => ({ name, at: lstatSync(join(releases, name)).mtimeMs }))
+      .sort((left, right) => right.at - left.at).slice(0, recent).map(release => release.name));
+    for (const path of [this.currentArtifactPath(), this.controlArtifactPath()]) {
+      if (path) kept.add(basename(path));
+    }
+    const releasePath = releaseDigestPattern(this.environment.releaseRoot);
+    for (const reference of ledgerReferences) for (const match of reference.matchAll(releasePath)) kept.add(match[1]!);
+    for (const digest of releasesNamedByProcessesAndUnits(this.environment.releaseRoot)) kept.add(digest);
+    const removed: string[] = [];
+    for (const name of named) {
+      if (kept.has(name)) continue;
+      const retiring = join(releases, `.pruning-${name}`);
+      renameSync(join(releases, name), retiring);
+      removed.push(name);
+    }
+    for (const name of readdirSync(releases)) {
+      if (name.startsWith(".pruning-")) rmSync(join(releases, name), { recursive: true, force: true });
+    }
+    return { kept: [...kept].filter(name => named.includes(name)).sort(), removed };
+  }
 }
+
+// About 25 releases are prepared on a busy day; twenty keeps most of a day (the release before
+// the one just promoted, failed candidates, a few rollbacks by hand) at about 13 MB each.
+const RETAINED_RECENT_RELEASES = 20;
+const UNIT_DIRECTORIES = ["/run/systemd/transient", "/run/systemd/system", "/etc/systemd/system"];
+
+/**
+ * Release digests any running process or installed unit names by path: in its command line,
+ * environment, working directory, executable, open files or memory maps. A process that ends
+ * mid-scan is skipped; any other failure to read throws, because "could not look" must never pass
+ * for "nothing uses it".
+ */
+export function releasesNamedByProcessesAndUnits(releaseRoot: string): Set<string> {
+  const pattern = releaseDigestPattern(releaseRoot);
+  const found = new Set<string>();
+  const collect = (text: string) => { for (const match of text.matchAll(pattern)) found.add(match[1]!); };
+  const gone = (error: unknown) => ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "");
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const proc = `/proc/${entry}`;
+    try {
+      collect(readFileSync(`${proc}/cmdline`, "utf8"));
+      collect(readFileSync(`${proc}/environ`, "utf8"));
+      collect(readFileSync(`${proc}/maps`, "utf8"));
+      for (const link of ["cwd", "exe"]) {
+        try { collect(readlinkSync(`${proc}/${link}`)); } catch (error) { if (!gone(error)) throw error; }
+      }
+      for (const fd of readdirSync(`${proc}/fd`)) {
+        try { collect(readlinkSync(`${proc}/fd/${fd}`)); } catch (error) { if (!gone(error)) throw error; }
+      }
+    } catch (error) {
+      if (!gone(error)) throw error;
+    }
+  }
+  for (const directory of UNIT_DIRECTORIES) {
+    if (!existsSync(directory)) continue;
+    for (const name of readdirSync(directory)) {
+      const path = join(directory, name);
+      try { if (lstatSync(path).isFile()) collect(readFileSync(path, "utf8")); } catch (error) { if (!gone(error)) throw error; }
+    }
+  }
+  return found;
+}
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const releaseDigestPattern = (releaseRoot: string) =>
+  new RegExp(`${escapeRegExp(join(releaseRoot, "releases"))}/([0-9a-f]{64})`, "g");

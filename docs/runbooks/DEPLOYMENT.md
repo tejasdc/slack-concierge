@@ -120,6 +120,18 @@ Claude and Codex hooks; the installed launchers run those bundles from `current`
 source files in an agent checkout. The service working directory is the installed
 release. Git history and deployment repair read the deployment-owned source.
 The old shared-checkout preservation events remain historical records only.
+
+Release retention: after a promoted update records success, the promoted release's
+`release-manager.js prune` removes old sealed releases at low priority. It keeps
+`current`, `control`, what the ledger names through the serving owner (the
+last-known-good and the host scripts of executions not yet released), the twenty newest
+releases by preparation time, and every release a live process (command line,
+environment, working directory, open files, maps) or a systemd unit file names, because
+agent execution hosts keep running from the release that launched them. It refuses to run
+without the serving owner, control recovery does not prune, and a failed prune never fails
+the update; the next one retries. Before this, every update's release stayed forever (767
+releases, 9.8 GB, on 2026-11-04).
+
 The Codex worktree guard still refuses writable delegated work in the canonical
 agent checkout and continues to protect concurrent agents.
 

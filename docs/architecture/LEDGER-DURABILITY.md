@@ -145,7 +145,9 @@ Rollout on 2026-10-10: remote-box's mount unit was deployed first and the image 
 sparse, loop device with direct I/O); the release that installed the move step went live at 18:49
 UTC, and the update after it performs the move. The original files stay beside their links as
 `*.before-own-filesystem-<time>` until the move has run for a day, then they are removed to return
-their space (the root filesystem was at 98% that day). The first owner after the move looked for
+their space (the root filesystem was at 98% that day). Nothing removed them until 2026-11-04: the
+move step now deletes a kept original (and its `-wal`/`-shm`) once it is a day old and no process
+holds it open, on the first update after that. The first owner after the move looked for
 the log beside the link, not the real file, so its sync thread never started and commits stayed
 synchronous on the loop (`ledgerDurability.mode` `synchronous`, `fsync` of the log in the owner's
 stack); the durability boundary now resolves the link before starting its threads.

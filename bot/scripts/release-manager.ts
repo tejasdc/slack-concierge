@@ -165,7 +165,21 @@ try {
     const manifest = manager.activateControl(required("--artifact"));
     finish(0, { status: "control-activated", ...manifest });
   }
-  throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|set-control|current|lkg>");
+  if (command === "prune") {
+    // The ledger's references (the rollback target, and the host scripts of executions not yet
+    // released) are read from the serving owner; with no owner serving, nothing is pruned.
+    if (!ownerServedReleaseCommand) throw new Error("Pruning needs the serving owner; nothing was pruned.");
+    const release = await lastKnownGoodRelease();
+    if (!release) throw new Error("No last-known-good release has been recorded; nothing was pruned.");
+    const response = await fetch('http://localhost/internal/deployment-release-files-in-use', {
+      unix: join(stateDir!, 'request-owner.sock'), method: 'GET',
+    } as RequestInit);
+    const inUse = await response.json();
+    if (!response.ok || !Array.isArray(inUse)) throw new Error(`Serving owner refused the in-use release read: ${JSON.stringify(inUse)}`);
+    const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
+    finish(0, { status: "pruned", kept, removed: removed.length });
+  }
+  throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

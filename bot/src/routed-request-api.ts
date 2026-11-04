@@ -22,6 +22,7 @@ import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   getLastKnownGoodRelease,promoteDeploymentRelease,completeDeploymentRunOnOwner,
   failDeploymentRun,recordPreservedCheckout} from './deployment-state';
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
+import {releaseFilesInUse} from './executions';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 
 function requestFailure(request:Request,error:unknown):Response {
@@ -149,6 +150,8 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
       if(request.method==='GET'&&url.pathname==='/internal/deployment-last-known-good'&&owner)
         return Response.json(getLastKnownGoodRelease());
+      if(request.method==='GET'&&url.pathname==='/internal/deployment-release-files-in-use'&&owner)
+        return Response.json(releaseFilesInUse());
       if(request.method==='POST'&&url.pathname==='/internal/native-pipeline-continuation'&&owner){
         const input=await request.json() as any;
         if(typeof input?.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.id))

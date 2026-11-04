@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import { ledgerWriteResults } from '../src/ledger-write-results';
 import { otherHolders } from './ledger-file-holders';
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, realpathSync, renameSync, rmSync,
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmSync,
   statSync, statfsSync, symlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -81,6 +81,32 @@ async function fencedCopyAndSwap(source: string, destination: string, retired: s
   }
 }
 
+/**
+ * The original kept beside the link is a rollback for the move's first day only. Nothing removed
+ * it after that: the 2.5 GB state.db original from 2026-10-10 was still on the root filesystem on
+ * 2026-11-04 with the disk at 89%. A copy something still holds open stays.
+ */
+const KEPT_ORIGINAL_MS = 24 * 60 * 60 * 1000;
+// Housekeeping inside the update's stopped window: a failure here is reported and the update goes
+// on, because otherwise every later update would stop on the same step.
+function retireKeptOriginals(name: string) {
+  try {
+    const kept = new RegExp(`^${name.replace(/\./g, '\\.')}\\.before-own-filesystem-\\d{8}T\\d{6}Z$`);
+    for (const entry of readdirSync(stateDir)) {
+      if (!kept.test(entry)) continue;
+      const original = join(stateDir, entry);
+      if (Date.now() - statSync(original).mtimeMs < KEPT_ORIGINAL_MS) continue;
+      const parts = [original, `${original}-wal`, `${original}-shm`];
+      if (otherHolders(parts).length) { say(`${entry} is open elsewhere; kept`); continue; }
+      for (const part of parts) rmSync(part, { force: true });
+      fsyncPath(stateDir);
+      say(`removed ${entry}, kept since the move as its rollback`);
+    }
+  } catch (error) {
+    say(`could not retire kept originals of ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 if (back) {
   for (const name of ['state.db', 'meaning-index.db']) {
     const link = join(stateDir, name);
@@ -100,7 +126,7 @@ for (const name of ['state.db', 'meaning-index.db']) {
   const here = join(stateDir, name), there = join(ledgerHome, name);
   const entry = lstatSync(here, { throwIfNoEntry: false });
   if (!entry) continue;
-  if (entry.isSymbolicLink()) { say(`${name} already lives on ${ledgerHome}`); continue; }
+  if (entry.isSymbolicLink()) { say(`${name} already lives on ${ledgerHome}`); retireKeptOriginals(name); continue; }
   // The original stays authoritative until its path is swapped, so a destination left by an
   // interrupted earlier move is stale: it is set aside, never used.
   for (const leftover of [there, `${there}.moving`]) if (existsSync(leftover)) {
