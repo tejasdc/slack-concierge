@@ -1,6 +1,6 @@
-import {db} from './state';
 import {agentTokenKey,mintAgentToken} from './agent-run-tokens';
-import {RunnerLeases,RunnerProtocolError} from './runner-leases';
+import {RunnerProtocolError} from './runner-leases';
+import {runnerLedger} from './runner-ledger';
 
 /**
  * The owner's runner protocol routes (docs/architecture/RUNNERS.md). A runner reaches them only
@@ -9,8 +9,7 @@ import {RunnerLeases,RunnerProtocolError} from './runner-leases';
  * serve the owner's own machine instead: minting a runner's token (local socket only) and the
  * marked probe job any agent may queue to check the runner path end to end.
  */
-let leases:RunnerLeases|null=null;
-const engine=()=>leases??=new RunnerLeases(db);
+const engine=runnerLedger;
 const RUNNER=/^runner:([a-z][a-z0-9-]{1,40})$/;
 const PROBE_KINDS=['probe'];
 
@@ -58,6 +57,7 @@ export async function runnerRoutes(request:Request,url:URL):Promise<Response> {
     if(path==='reacquire')return Response.json({ok:true,attempts:engine().reacquire(runner,Array.isArray(input.attemptIds)?input.attemptIds.map(String):[])});
     const attemptId=String(input.attemptId??''),epoch=Number(input.epoch);
     if(path==='heartbeat')return Response.json({ok:true,...engine().heartbeat(runner,attemptId,epoch)});
+    if(path==='sync')return Response.json({ok:true,attempts:engine().sync(runner,Array.isArray(input.attempts)?input.attempts:[])});
     if(path==='events')return Response.json({ok:true,...engine().appendEvents(runner,attemptId,epoch,Array.isArray(input.events)?input.events:[])});
     if(path==='command-results')return Response.json({ok:true,...engine().commandResults(runner,attemptId,epoch,Array.isArray(input.results)?input.results:[])});
     if(path==='finish'){

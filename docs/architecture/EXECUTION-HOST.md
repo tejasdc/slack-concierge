@@ -424,6 +424,14 @@ adopted. `hostProtocolsInUse()` and `releaseFilesInUse()` give a candidate relea
 cleanup the facts they must respect; releases are not pruned today (250 kept on 2026-10-07). The
 preflight that refuses a candidate missing a protocol in use belongs to the deploy-without-gate step.
 
+## Hosts on a runner
+
+A Claude Code turn can also run in a host on a runner machine: same host program and protocol, started
+by the runner, with the journal reaching this ledger as the runner job's events and commands going
+back as job commands (supervisor `runner`). Adoption, replay, held runs, release after settlement and
+survival proof follow the rules above through the same host-access interface; see
+[runners](RUNNERS.md#turns-on-a-runner-built-for-claude-code-turns).
+
 ## Not covered yet
 
 - Forks and legacy Slack turns keep direct child processes.

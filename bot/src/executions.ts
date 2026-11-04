@@ -10,6 +10,7 @@ import { db, executionChanged, queuedTurnClaimRow, settleSupersededParkedTurn, t
 import { log, errorFields } from "./log";
 import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
+import { RUNNER_SUPERVISOR, RunnerHostAccess } from "./runner-host-access";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, stopSupersededHost, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
 /** This coordinator took the run over while its provider was still running. */
@@ -30,21 +31,23 @@ export function retainExecutionIntent(input: { executionId: string; turnId: numb
   provider: string; directory: string; processor: unknown; coordinatorInstanceId: string;
   /** `codex-daemon`: the provider's own daemon holds the turn, so there is no host; it is live at once.
    * `capability-host`: Thinkering's ChatGPT capability holds the send and its answer; also live at once. */
-  supervisor?: "codex-daemon" | "capability-host" }) {
+  supervisor?: "codex-daemon" | "capability-host" | typeof RUNNER_SUPERVISOR }) {
   const now = Date.now();
   db.query(`INSERT INTO executions (execution_id, turn_id, dispatch_attempt, session_id, provider, host_protocol, supervisor,
       directory, processor_json, state, coordinator_instance_id, created_at_ms, updated_at_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(input.executionId, input.turnId, input.dispatchAttempt, input.sessionId, input.provider, HOST_PROTOCOL_VERSION,
       input.supervisor ?? HOST_SUPERVISOR, input.directory, JSON.stringify(input.processor),
-      input.supervisor ? "live" : "intended", input.coordinatorInstanceId, now, now);
+      input.supervisor && input.supervisor !== RUNNER_SUPERVISOR ? "live" : "intended", input.coordinatorInstanceId, now, now);
   executionChanged();
 }
 
 export function recordExecutionLaunched(executionId: string, launch: HostLaunch) {
+  // A runner's host program is on the runner; this machine holds no release file for it.
   db.query(`UPDATE executions SET unit=?, host_script=?, host_digest=?, runtime=?, manifest_digest=?, state='live', updated_at_ms=?
     WHERE execution_id=? AND state='intended'`)
-    .run(launch.unit, launch.hostScript, hostScriptDigest(launch.hostScript), launch.runtime, launch.manifestDigest, Date.now(), executionId);
+    .run(launch.unit, launch.hostScript || null, launch.hostScript ? hostScriptDigest(launch.hostScript) : null, launch.runtime || null,
+      launch.manifestDigest, Date.now(), executionId);
   // A run that now has independent custody no longer ends with this coordinator: a shutdown waiting
   // on it re-evaluates (index.ts observes execution changes).
   executionChanged();
@@ -103,6 +106,8 @@ export function pruneExecutionRecords(nowMs = Date.now()) {
   const old = db.query(`SELECT execution_id, directory FROM executions WHERE state IN ('released','lost') AND updated_at_ms < ? AND detail IS NOT 'pruned'`)
     .all(nowMs - EXECUTION_RECORD_RETENTION_MS) as { execution_id: string; directory: string }[];
   for (const row of old) {
+    // A runner's record is its job's events in this ledger; there is no folder here to remove.
+    if (!row.directory) { db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id); continue; }
     try { rmSync(row.directory, { recursive: true, force: true }); db.query("UPDATE executions SET detail='pruned' WHERE execution_id=?").run(row.execution_id); }
     catch (error) { log("warn", "execution_record_prune_failed", { execution_id: row.execution_id, ...errorFields(error) }); }
   }
@@ -122,6 +127,10 @@ async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
   // A ChatGPT send lives in Thinkering's capability, keyed by its run id from before the send: the
   // next coordinator asks it for that exact run (reconcile, then observe), so it is always followable.
   if (execution.supervisor === "capability-host") return "answering";
+  if (execution.supervisor === RUNNER_SUPERVISOR) {
+    const custody = await new RunnerHostAccess(execution.execution_id).custody();
+    return custody === "answering" ? "answering" : custody === "held" ? "unresponsive" : custody === "settle-from-record" ? "gone-with-exit" : "gone";
+  }
   // The same decision a live run makes when its connection breaks (hostCustody): the unit name is
   // derived from the execution id, so a launch that crashed before recording it is still checked.
   const custody = await hostCustody(execution.directory, execution.execution_id);
@@ -177,7 +186,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
   // entered it. Stop only the old provider; keep the newer turn and its request custody.
   const superseded = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
     WHERE t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
-      AND e.supervisor IN ('systemd','launchd') AND e.state IN ('intended','live','exited') AND e.dispatch_attempt=t.dispatch_attempt
+      AND e.supervisor IN ('systemd','launchd','runner') AND e.state IN ('intended','live','exited') AND e.dispatch_attempt=t.dispatch_attempt
       AND EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
         AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
           OR later.provider_input_acknowledged_at IS NOT NULL))`)
@@ -186,7 +195,8 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     try {
       const probe = await probeHost(execution);
       if ((probe === 'answering' || probe === 'unresponsive')
-        && !await stopSupersededHost(execution.directory,execution.execution_id)) return;
+        && !await (execution.supervisor === RUNNER_SUPERVISOR ? new RunnerHostAccess(execution.execution_id).stopSuperseded()
+          : stopSupersededHost(execution.directory,execution.execution_id))) return;
       if (probe === 'gone') recordExecutionLost(execution.execution_id,'The superseded execution host stopped without a recorded exit.');
       if (settleSupersededParkedTurn(execution.turn_id))
         log('warn','superseded_parked_execution_stopped',{turn_id:execution.turn_id,execution_id:execution.execution_id});
@@ -229,7 +239,7 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     // launch would have recorded: it is live from here, for shutdown and adoption alike.
     if (execution.state === "intended" && probe === "answering")
       db.query("UPDATE executions SET state='live', unit=?, updated_at_ms=? WHERE execution_id=? AND state='intended'")
-        .run(executionUnit(execution.execution_id), Date.now(), execution.execution_id);
+        .run(execution.supervisor === RUNNER_SUPERVISOR ? "runner" : executionUnit(execution.execution_id), Date.now(), execution.execution_id);
     const claim = queuedTurnClaimRow(execution.turn_id);
     if (!claim) continue;
     const mode = probe === "gone-with-exit" ? "adopt-record" as const : "adopt" as const;
@@ -295,6 +305,13 @@ export async function releaseExecution(execution: ExecutionRow) {
     // The turn is settled: its conversation's filed helpers go, unless a later turn filed its own.
     const thread = (db.query("SELECT agent_session_uuid FROM sessions WHERE id=?").get(execution.session_id) as { agent_session_uuid: string | null } | null)?.agent_session_uuid;
     if (thread && process.env.CONCIERGE_STATE_DIR) unpinCodexThreadHooks(process.env.CONCIERGE_STATE_DIR, thread, execution.execution_id);
+    return;
+  }
+  if (execution.supervisor === RUNNER_SUPERVISOR) {
+    // The runner lets the host go only on this command, sent after the turn is settled; a job that
+    // already ended (its lease passed, or released before) holds nothing.
+    const access = new RunnerHostAccess(execution.execution_id);
+    if (await access.release()) recordExecutionReleased(execution.execution_id);
     return;
   }
   if (execution.state === "exited" && await releaseHost(execution.directory, execution.execution_id)) recordExecutionReleased(execution.execution_id);

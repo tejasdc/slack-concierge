@@ -120,6 +120,8 @@ import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
+import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
+import {agentRunEnvironment} from './agent-run-tokens';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -1099,7 +1101,7 @@ export class SessionExecutionHost {
     const attempted=new Set<string>(),completed=new Set<string>(),failed=new Set<string>();
     let readable=true;
     try {
-      for await(const frame of streamJournal(execution.directory)) {
+      for await(const frame of execution.supervisor===RUNNER_SUPERVISOR?new RunnerHostAccess(execution.execution_id).journal():streamJournal(execution.directory)) {
         if(frame.k==='i'&&frame.d?.meta?.kind==='steering'&&typeof frame.d.meta.clientMessageId==='string')attempted.add(frame.d.id);
         if(frame.k==='c'&&frame.d?.op==='written')completed.add(frame.d.id);
         if(frame.k==='c'&&frame.d?.op==='write-failed')failed.add(frame.d.id);
@@ -1160,11 +1162,15 @@ export class SessionExecutionHost {
     // a re-preparation that could differ from what the agent already read.
     let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
+    // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
+    // carries its files' bytes and a run token, and nothing in it relies on this machine.
+    const onRunner=!adoption&&session.provider_id==='claude-code'&&turnRunsOnRunner(metadata);
+    const stagedFiles:{path:string;base64:string}[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
       if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
-        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(attachment.transcriptText?{slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const}:await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       let canvasApplicationContext:string|null=null;
@@ -1210,6 +1216,8 @@ export class SessionExecutionHost {
             if(!adoption&&!executionHostsEnabled())throw new ProviderCapabilityUnavailableError('execution','Google work requires a durable execution host on this machine.');
             actual=adoption?this.adoptedRun(prepared,adoption)
               :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
+          } else if(onRunner) {
+            actual=this.hostedRun(prepared,claim,session,kept,process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE||'claude',stagedFiles);
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
             actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept,launchClaudeExecutable);
           } else if(privateCodex) {
@@ -1267,10 +1275,18 @@ export class SessionExecutionHost {
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
-        CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:''},
+        CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:'',
+        // A runner's agents can reach this owner only over its network entrance, with this run's token.
+        ...(onRunner?agentRunEnvironment({turnId:claim.turn_id,sessionId:session.id},process.env,{network:true}):{})},
       ...(boundAccount?{boundAccount}:{}),
       // Admission was recorded when this run first started; taking it back is not a new admission.
       ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}
+        :onRunner
+          // The runner finds the Claude CLI on its own machine; a missing one is its definite refusal.
+          ?{beforeProviderAdmission:()=>{
+            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+          }}
         :session.provider_id==='claude-code'&&executionHostsEnabled()
           ?{beforeProviderAdmission:()=>{
             try{launchClaudeExecutable=claudeExecutable();}
@@ -1298,20 +1314,23 @@ export class SessionExecutionHost {
    * account, never re-derived.
    */
   private hostedRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
-    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string):Parameters<AgentProvider['run']>[0] {
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},executable?:string,
+    runnerFiles?:{path:string;base64:string}[]):Parameters<AgentProvider['run']>[0] {
     const executionId=newExecutionId(),stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,...data}=prepared as any;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:session.provider_id,
-      directory:executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data}});
-    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable)} as any;
+      directory:runnerFiles?'':executionDirectory(stateDir,executionId),coordinatorInstanceId:this.options.instanceId,processor:{...kept,run:data},
+      ...(runnerFiles?{supervisor:RUNNER_SUPERVISOR}:{})});
+    return {...prepared,transport:this.hostedTransport('launch',executionId,stateDir,executable,undefined,runnerFiles)} as any;
   }
   private adoptedRun(prepared:Parameters<AgentProvider['run']>[0],adoption:Adoption,executable?:string):Parameters<AgentProvider['run']>[0] {
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!);
     return {...prepared,...adoption.processor.run,adopted:true,
       ...(executable===MANAGED_CODEX?{legacyPrivateCodex:true}:{}),
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome),
-      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable)} as any;
+      transport:this.hostedTransport(adoption.mode,adoption.execution.execution_id,stateDir,executable,undefined,
+        adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
   private trackedCodexRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
     kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
@@ -1362,18 +1381,22 @@ export class SessionExecutionHost {
       onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),
       onRecoveredSteering:(clientMessageId:string,outcome:'acknowledged'|'unacknowledged')=>this.recoveredSteering(clientMessageId,outcome)} as any;
   }
-  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null}) {
+  /** `runnerFiles` places the host on a runner (an empty list when taking a runner's run back). */
+  private hostedTransport(mode:'launch'|'adopt'|'adopt-record',executionId:string,stateDir:string,executable?:string,timeouts?:{inactivityMs:number|null},
+    runnerFiles?:{path:string;base64:string}[]) {
     // From the owner, not the run's environment: an information-only consultation runs without it.
-    const routerBotDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
+    const routerBotDir=runnerFiles?undefined:providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
     // Only a launch resolves the CLI. On 2026-11-04 Claude Code was reinstalled during a Concierge
     // restart; adoption looked it up, found no `claude` and parked 25 agents that were still running.
-    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,executable:executable??(mode==='launch'?claudeExecutable():undefined),
+    return new HostedClaudeCodeTransport({mode,executionId,stateDir,routerBotDir,
+      ...(runnerFiles?{access:new RunnerHostAccess(executionId)}:{}),
+      executable:executable??(mode==='launch'?claudeExecutable():undefined),
       onLaunched:launch=>recordExecutionLaunched(executionId,launch),
       onAttached:status=>{
         log('info','execution_host_attached',{execution_id:executionId,mode,host_pid:status.hostPid,provider_pid:status.providerPid,replayed:status.until,provider_running:!status.exit});
         if(mode==='adopt'&&!status.exit)recordLiveAdoption(executionId);
       },
-      onExited:exit=>recordExecutionExited(executionId,exit)},timeouts);
+      onExited:exit=>recordExecutionExited(executionId,exit)},timeouts,runnerFiles);
   }
   private retainAdmission(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,actual:Parameters<AgentProvider['run']>[0],attachments:ReturnType<SessionOwner['attachments']>) {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);
@@ -1610,4 +1633,15 @@ function codexAccountWithRoomWhileInUseIsSpent():{label:string;source:string}|nu
     if(source)return {label:account.label,source};
   }
   return null;
+}
+
+/**
+ * Whether a new Claude turn runs on a runner (RUNNERS.md). `CONCIERGE_TURN_RUNNERS`: `all` moves every
+ * new Claude turn; `marked` (the default) only sessions started with `sessions ask --on-runner`; `off`
+ * none. Turns already running keep the place they started in.
+ */
+export function turnRunsOnRunner(metadata:{onRunner?:unknown},mode=process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked'):boolean {
+  if(mode==='all')return true;
+  if(mode==='off')return false;
+  return metadata.onRunner===true;
 }
