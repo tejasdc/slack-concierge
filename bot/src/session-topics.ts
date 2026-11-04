@@ -223,7 +223,8 @@ type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;st
   /** When he pinned it; pinned threads lead the Open list in either order. */
   pinnedAt?:string|null};
 type StoredRequest={requestId:string;topicId:string;title:string;brief:string;state:'open'|'closed';disposition:string|null;
-  revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string};
+  revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string;
+  completionFloor?:number;reopenedAt?:string|null};
 type StoredQuestion={questionId:string;topicId:string;revision:number;state:QuestionState;blocking:boolean;optional:boolean;
   context:'ready'|'agent_checking';brief:any;owner:any|null;sources:string[];replaces:string|null;replacedBy:string|null;
   answer:any|null;recovered:boolean;legacyNeedEventId:string|null;kind:QuestionKind;origin:QuestionOrigin;
@@ -394,7 +395,8 @@ const toStoredTopic=(row:any):StoredTopic=>({topicId:row.topic_id,sessionId:row.
   createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null});
 const toStoredRequest=(row:any):StoredRequest=>({requestId:row.request_id,topicId:row.topic_id,title:row.title,brief:row.brief,
   state:row.state,disposition:row.disposition,revision:row.revision,sources:JSON.parse(row.sources_json),dispatches:JSON.parse(row.dispatches_json),
-  closure:row.closure_json?JSON.parse(row.closure_json):null,createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
+  closure:row.closure_json?JSON.parse(row.closure_json):null,createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,
+  completionFloor:row.completion_floor??0,reopenedAt:iso(row.reopened_at)});
 const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,topicId:row.topic_id,revision:row.revision,state:row.state,
   blocking:!!row.blocking,optional:!!row.optional,context:row.context,brief:JSON.parse(row.brief_json),
   owner:row.owner_json?JSON.parse(row.owner_json):null,sources:JSON.parse(row.sources_json),replaces:row.replaces,replacedBy:row.replaced_by,
@@ -414,14 +416,14 @@ function upsertTopic(topic:StoredTopic) {
       topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy),topic.pinnedAt??null);
 }
 function upsertRequest(request:StoredRequest) {
-  db.query(`INSERT INTO inbox_requests(request_id,topic_id,title,brief,state,disposition,revision,sources_json,dispatches_json,closure_json,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+  db.query(`INSERT INTO inbox_requests(request_id,topic_id,title,brief,state,disposition,revision,sources_json,dispatches_json,closure_json,created_at,updated_at,completion_floor,reopened_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(request_id) DO UPDATE SET topic_id=excluded.topic_id,title=excluded.title,brief=excluded.brief,state=excluded.state,
       disposition=excluded.disposition,revision=excluded.revision,sources_json=excluded.sources_json,dispatches_json=excluded.dispatches_json,
-      closure_json=excluded.closure_json,updated_at=excluded.updated_at`)
+      closure_json=excluded.closure_json,updated_at=excluded.updated_at,completion_floor=excluded.completion_floor,reopened_at=excluded.reopened_at`)
     .run(request.requestId,request.topicId,request.title,request.brief,request.state,request.disposition,request.revision,
       JSON.stringify(request.sources),JSON.stringify(request.dispatches),request.closure?JSON.stringify(request.closure):null,
-      request.createdAt,request.updatedAt);
+      request.createdAt,request.updatedAt,request.completionFloor??0,request.reopenedAt??null);
 }
 function upsertQuestion(question:StoredQuestion) {
   db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,kind,origin,generation,created_at,updated_at,defer_until)
@@ -1390,6 +1392,13 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
       ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
+  if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
+    ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))&&!evidence.some(id=>{
+    const post=db.query("SELECT payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'").get(id) as {payload_json:string;created_at:string}|null;
+    if(!post||new Date(iso(post.created_at)!).getTime()<new Date(request.reopenedAt!).getTime())return false;
+    const payload=JSON.parse(post.payload_json);
+    return topicOfRoot(String(payload.threadRoot??''))===topic.topicId&&(!latest||payload.requestId===latest.id);
+  }))throw new TopicError('This request was reopened after its last linked answer. Name a new checked answer in this thread, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
@@ -2038,7 +2047,9 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return agentMutation(actor,actionId(),{kind:'topic-request-reopen',requestId:body?.request_id,reason:why},()=>{
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
-        const next={...request,state:'open' as const,disposition:null,closure:null,revision:request.revision+1,updatedAt:nowIso()};
+        const at=nowIso();
+        const next={...request,state:'open' as const,disposition:null,closure:null,
+          completionFloor:request.dispatches.length,reopenedAt:at,revision:request.revision+1,updatedAt:at};
         const topicNext=bumped(topic);
         return {change:{kind:'topic_request',payload:{change:'request_reopened',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},result:{request:next}};
       });
@@ -2262,7 +2273,8 @@ export function topicHumanAction(topicId:string,body:any) {
         const requests=topic.closure?.by?.kind==='human'?topicRequests(topicId)
           .filter(request=>request.state==='closed'&&request.disposition==='withdrawn'&&request.closure?.at===topic.closure?.at
             &&request.closure?.by?.kind==='human'&&String(request.closure?.reason??'').startsWith('Thread closed by Tejas:'))
-          .map(request=>({...request,state:'open' as const,disposition:null,closure:null,revision:request.revision+1,updatedAt:at})):[];
+          .map(request=>({...request,state:'open' as const,disposition:null,closure:null,
+            completionFloor:request.dispatches.length,reopenedAt:at,revision:request.revision+1,updatedAt:at})):[];
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
         return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions,requests}},
           result:{topic:next,restored:questions.length,requests:requests.length}};
@@ -3190,7 +3202,9 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
       const dispatches=[...request.dispatches,dispatch].sort((first:any,second:any)=>
         (created.get(first.requestId)??forward.createdAtMs)-(created.get(second.requestId)??forward.createdAtMs));
       const reopen=request.state==='closed';
-      const next={...request,dispatches,...(reopen?{state:'open' as const,disposition:null,closure:null}:{}),revision:request.revision+1,updatedAt:nowIso()};
+      const at=nowIso();
+      const next={...request,dispatches,...(reopen?{state:'open' as const,disposition:null,closure:null,
+        completionFloor:request.dispatches.length,reopenedAt:new Date(forward.createdAtMs-1).toISOString()}:{}),revision:request.revision+1,updatedAt:at};
       const topic=topicRow(topicId);
       const why=reopen?'His later reply to the agent reopened this request.':'His reply to the agent working on it is part of its work.';
       const change=reopenedForNewWork({kind:'topic_request',payload:{change:'linked',topicId,topic:bumped(topic),request:next,by:OWNER_BY,reason:why,revision:topic.revision+1}});
@@ -3296,7 +3310,10 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))||unlinkedQuestionImplies(question,request,openRequests)));
     let disposition:string|null=null,why='';
     let completionChecked=false;
-    if(latest?.outcome==='answered'&&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
+    if(works.length>(request.completionFloor??0)&&latest
+      &&latest.createdAtMs>=new Date(iso(request.reopenedAt)??request.createdAt).getTime()
+      &&latest.outcome==='answered'
+      &&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
       try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
       catch(error){if(!(error instanceof TopicError))throw error;}
       // The explicit completed reply accepts either a live check or an honest reason no live
@@ -3311,7 +3328,8 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     if(!disposition) {
       const sharedPost=latest?.outcome==='answered'&&latest.disposition==='completed'&&!latest.notCheckedReason
         ?sharedAnswerPostId(latest.id):null;
-      let how=!latest?'has had no agent assigned'
+      let how=latest&&works.length<=(request.completionFloor??0)?'was reopened after its last linked completion; inspect the remaining obligation and record a new checked answer'
+        :!latest?'has had no agent assigned'
         :sharedPost!==null?`answered as done in a dispatch shared by several requests; verify this request against ${sharedPost||'its retained answer post'} separately`
         :latest.outcome==='answered'&&latest.disposition==='completed'&&latest.notCheckedReason?`reported completion without a live check (${latest.notCheckedReason}); verify the result without repeating an acknowledged effect`
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'

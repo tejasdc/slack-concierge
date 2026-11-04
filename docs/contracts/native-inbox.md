@@ -442,7 +442,10 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   `--not-checked` answer leaves the task open and returns verification to the router;
   that verification does not repeat an acknowledged external effect. His own Stop
   ends only the stopped attempt; the router is told not to restart it or its
-  effects without new instruction. A failed,
+  effects without new instruction. A reopened request records how many dispatches
+  it already had. An answer from that earlier set cannot close it automatically again;
+  the router must link the continuation or name a checked answer posted after reopening.
+  A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
   A request with an open decision question waiting on Tejas gets no recovery input. A decision
