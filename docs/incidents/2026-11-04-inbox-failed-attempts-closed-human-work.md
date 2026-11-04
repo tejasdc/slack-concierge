@@ -1,7 +1,7 @@
 ---
 failure: Failed or cancelled agent attempts closed unfinished Inbox tasks without a guaranteed recovery attempt.
 date: 2026-11-04
-fix_commits: [b7fbfdda, 3ac5f463, d49be617, 605c3488]
+fix_commits: [b7fbfdda, 3ac5f463, d49be617, 605c3488, 02a61f6d]
 cause_status: confirmed
 ---
 
@@ -98,7 +98,8 @@ for reconciliation. The complete explicit-reply query used only for recovery ret
 ## Repair invariant
 
 An agent attempt may fail, stall, be cancelled or be handed back. The human
-request remains open until an explicit completed-and-checked result, a live
+request remains open until an explicit completed result with its required live
+check or an honest reason no live check was possible, a live
 question only Tejas can answer, a proven replacement request, or Tejas's later
 instruction to withdraw it. An agent cannot turn its own failure into a final
 human-task disposition. The owner records one durable recovery input per

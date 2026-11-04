@@ -403,7 +403,7 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   rule starts before accepting new work after installation; older unlinked replies belong
   to the historical audit, not an automatic replay.
 - Once nothing sent for an open request is running, an answer explicitly marked completed
-  with a real check closes it `completed`
+  with the required live check or a recorded reason why no live check was possible closes it `completed`
   under `refuseUnfinishedCompletion`; his own Stop withdraws the stopped attempt. A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.

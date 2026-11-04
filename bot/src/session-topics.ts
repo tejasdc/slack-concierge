@@ -15,7 +15,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
-import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
+import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
 import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
@@ -1344,7 +1344,7 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
 }
 /**
  * A request he made closes as completed only when the latest linked attempt explicitly finished
- * and was checked, every earlier attempt ended, and no decision question remains open. On 2026-10-02 a request closed
+ * with the required check or not-checked reason, every earlier attempt ended, and no decision question remains open. On 2026-10-02 a request closed
  * completed with the reason "paid bodies not read", over a worker reply that said the same, and
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
@@ -1357,7 +1357,7 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
     })
     ||topicRoots(topic.topicId).some(id=>{
       const input=getAcceptedSessionInput(id);
-      return input?.origin==='human'&&new Date(input.created_at).getTime()<=new Date(request.createdAt).getTime();
+      return input?.origin==='human'&&new Date(iso(input.created_at)!).getTime()<=new Date(iso(request.createdAt)!).getTime();
     });
 }
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
@@ -1369,7 +1369,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     if(row.outcome!=='answered')return false;
     if(row.requested_effect==='informational')return true;
     if(!row.result_json)return false;
-    try{return JSON.parse(row.result_json).workDisposition==='completed'&&!notSeenWorkingOf(row.result_json);}
+    try{return JSON.parse(row.result_json).workDisposition==='completed';}
     catch{return false;}
   };
   // The latest dispatch is where the work stands: an earlier one that asked a question or
@@ -1381,7 +1381,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     if(humanRequest(topic,request)&&!evidence.some(id=>{
       const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
       const root=inboxThreadRoot(topic.sessionId,id);
-      return !!(message?.role==='assistant'&&message.createdAt&&new Date(message.createdAt).getTime()>=new Date(request.createdAt).getTime()
+      return !!(message?.role==='assistant'&&message.createdAt&&new Date(iso(message.createdAt)!).getTime()>=new Date(iso(request.createdAt)!).getTime()
         &&root&&topicOfRoot(root)===topic.topicId);
     }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
@@ -1928,7 +1928,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         if(disposition==='failed')throw new TopicError('An agent failure cannot close the underlying request. Send the remaining work onward.',409,'REQUEST_RECOVERY_REQUIRED');
         const laterHumanEvidence=evidence.some(id=>{
           const input=getAcceptedSessionInput(id);
-          if(input?.origin!=='human'||new Date(input.created_at).getTime()<new Date(request.createdAt).getTime())return false;
+          if(input?.origin!=='human'||new Date(iso(input.created_at)!).getTime()<new Date(iso(request.createdAt)!).getTime())return false;
           const root=inboxThreadRoot(input.session_id,input.id);
           return !!root&&topicOfRoot(root)===request.topicId;
         });
@@ -2773,16 +2773,10 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  */
 const OWNER_BY:TopicBy={kind:'owner'};
 type Work={id:string;outcome:string|null;disposition:string|null;requestedEffect:string|null;target:string|null;createdAtMs:number;stalled:boolean;
-  stoppedByTejas?:boolean;
-  /** Completed without a live check: what its worker said has not been seen working yet. */
-  notSeenWorking?:string|null};
+  stoppedByTejas?:boolean};
 const dispositionOf=(resultJson:string|null)=>{
   if(!resultJson)return null;
   try{const value=JSON.parse(resultJson).workDisposition;return typeof value==='string'?value:null;}catch{return null;}
-};
-const notSeenWorkingOf=(resultJson:string|null)=>{
-  if(!resultJson)return null;
-  try{return notSeenWorking(JSON.parse(resultJson).closingLine);}catch{return null;}
 };
 const stoppedByTejasOf=(resultJson:string|null)=>{
   if(!resultJson)return false;
@@ -2790,9 +2784,9 @@ const stoppedByTejasOf=(resultJson:string|null)=>{
 };
 function workRow(id:string):Work|null {
   const local=db.query("SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as any;
-  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(local.result_json),stoppedByTejas:stoppedByTejasOf(local.result_json)};
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(local.result_json)};
   const peer=db.query("SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as any;
-  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(peer.result_json),stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
@@ -2973,7 +2967,7 @@ function recoverySource(request:StoredRequest):{inputId:string;runId:string;unce
     if(!input?.turn_id)continue;
     const provenance=input.origin==='human'?null:sessionInputProvenance(input);
     if(input.origin!=='human'&&(!provenance?.originatingHuman||provenance.effectScope!=='work'))continue;
-    if(input.origin==='human'&&new Date(input.created_at).getTime()>new Date(request.createdAt).getTime())continue;
+    if(input.origin==='human'&&new Date(iso(input.created_at)!).getTime()>new Date(iso(request.createdAt)!).getTime())continue;
     return {inputId:input.id,runId:nativeRunId(input.turn_id),uncertain:index>=linked.length};
   }
   return null;
@@ -2988,7 +2982,7 @@ function nextRecoveryAttempt(item:Stuck):number|null {
   // A recovered input can be cancelled before it acquires a turn. That is a terminal
   // delivery, not a reason to leave the human request silent forever.
   const interval=Math.min(24*60*60*1000,15*60*1000*2**Math.min(attempt-1,7));
-  const due=Date.now()-new Date(latest.created_at).getTime()>=interval;
+  const due=Date.now()-new Date(iso(latest.created_at)!).getTime()>=interval;
   const payload=JSON.parse(latest.payload_json);
   const inputId=typeof payload.recoveryInputId==='string'?payload.recoveryInputId:null;
   if(!inputId)return due?attempt:null;
@@ -3025,7 +3019,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     }
     const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
     if(works.some(work=>work.outcome===null&&!work.stalled))continue;
-    if(!works.length&&Date.now()-new Date(request.createdAt).getTime()<15*60*1000)continue;
+    if(!works.length&&Date.now()-new Date(iso(request.createdAt)!).getTime()<15*60*1000)continue;
     const latest=works.at(-1);
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
     const decisionViews=questionsOfRequest(topicId,request).filter(question=>question.kind==='decision')
@@ -3038,10 +3032,9 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     if(latest?.outcome==='answered'&&(latest.disposition==='completed'||latest.requestedEffect==='informational')) {
       try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
       catch(error){if(!(error instanceof TopicError))throw error;}
-      // Work done but never seen working is not done: on 2026-10-31 a phone repair closed as done,
-      // and its thread with it, 45 seconds after its answer said his phone had not run the fix yet
-      // (aaaad41d). It stays open, with that answer in the thread, until someone who has seen it
-      // working (or he) closes it.
+      // The explicit completed reply accepts either a live check or an honest reason no live
+      // check was possible. Its not-checked reason remains visible in the answer; the owner
+      // cannot infer unfinished work from that reason alone.
       if(completionChecked){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
     } else if(latest?.outcome==='canceled'&&latest.stoppedByTejas&&!waitingOnHim) {
       disposition='withdrawn';why='Tejas stopped the work.';
@@ -3110,8 +3103,9 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
 
 /**
  * The owner's pass over every open thread, every thread with his reply still being worked on,
- * and every closed thread that still has an open request. A person closing a thread does not
- * make an unfinished request disappear from recovery. Runs on the reading cadence and startup.
+ * and every closed thread that still has an open request. A human Close withdraws the
+ * requests it named; a closed thread with other open work still receives recovery.
+ * Runs on the reading cadence and startup.
  */
 export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown) {
   const session=inboxSession();
