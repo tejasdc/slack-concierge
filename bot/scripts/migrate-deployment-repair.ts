@@ -5,6 +5,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
+import { canonicalSql } from '../src/canonical-sql';
 import { checkSqliteBackup as checks, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
 
 /**
@@ -20,10 +21,11 @@ function schemaShape(database: Database): SchemaShape {
   const tables: Record<string, string[]> = {}, objects: Record<string, string> = {};
   for (const row of rows) {
     if (row.type === "table") tables[row.name] = (database.query("SELECT name FROM pragma_table_info(?)").all(row.name) as { name: string }[]).map(column => column.name).sort();
-    else objects[`${row.type}:${row.name}`] = row.sql.replace(/\s+/g, " ").trim();
+    else objects[`${row.type}:${row.name}`] = canonicalSql(row.sql);
   }
   return { tables, objects };
 }
+
 if (process.argv.includes("--empty-schema")) {
   const scratchDirectory = process.env.CONCIERGE_STATE_DIR;
   if (!scratchDirectory || !realpathSync(scratchDirectory).startsWith(`${realpathSync(tmpdir())}/concierge-schema-plan-`))
@@ -213,10 +215,12 @@ if (backupIfNeeded) {
     : { status: 'no_schema_change', backup_path: null, changes }));
   process.exit(0);
 }
+// What this migration will add, read with the coordinator stopped. It also bounds the check after
+// the migration to the tables the migration could have written.
+const changes = backupOnly ? [] : schemaChanges();
 if (schemaOnly && !namedBackup) {
   // No copy was taken because the release would change nothing. Confirm that with the coordinator
   // stopped; if it no longer holds, copy now rather than change the schema without one.
-  const changes = schemaChanges();
   if (!changes.length) {
     console.log(JSON.stringify({ status: 'unchanged', backup_path: null }));
     process.exit(0);
@@ -253,13 +257,49 @@ try {
   process.exit(1);
 }
 
-// The whole-ledger integrity and foreign-key checks run after COMMIT, on a read transaction. Run
-// inside the writer reservation they held the live service's writer for 32 s at 18:28 on
-// 2026-10-09 (1.9 GB ledger): every owner write, heartbeats included, waited out its busy timeout
-// and failed. The schema change is additive, the same checks already passed on the completed
-// backup, and a failure here stops the deployment with that backup named.
+/**
+ * The tables this migration could have written: each added table or column, and the table under
+ * each added index or trigger. Null when a change names something else, so the whole ledger is
+ * checked. Views hold no rows.
+ */
+function touchedTables(database: Database, changed: string[]): string[] | null {
+  const tables = new Set<string>();
+  for (const change of changed) {
+    const added = /^(?:table (.+)|column ([^.]+)\..+)$/.exec(change);
+    if (added) { tables.add(added[1] ?? added[2]!); continue; }
+    const object = /^(index|trigger|view):(.+)$/.exec(change);
+    if (!object) return null;
+    if (object[1] === 'view') continue;
+    const row = database.query("SELECT tbl_name FROM sqlite_master WHERE type=? AND name=?").get(object[1]!, object[2]!) as { tbl_name: string } | null;
+    if (!row) return null;
+    tables.add(row.tbl_name);
+  }
+  return [...tables].sort();
+}
+
+function checkTables(database: Database, tables: string[]) {
+  for (const table of tables) {
+    const quoted = `"${table.replaceAll('"', '""')}"`;
+    const integrity = database.query(`PRAGMA integrity_check(${quoted})`).all() as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok')
+      throw new Error(`SQLite integrity_check(${table}) failed: ${JSON.stringify(integrity)}`);
+    const foreignKeys = database.query(`PRAGMA foreign_key_check(${quoted})`).all();
+    if (foreignKeys.length) throw new Error(`SQLite foreign_key_check(${table}) failed: ${JSON.stringify(foreignKeys)}`);
+  }
+}
+
+// The checks run after COMMIT, on a read transaction. Run inside the writer reservation they held
+// the live service's writer for 32 s at 18:28 on 2026-10-09 (1.9 GB ledger): every owner write,
+// heartbeats included, waited out its busy timeout and failed. The schema change is additive, so
+// only the tables it added to are checked again. The same import also runs the row updates every
+// Concierge start runs unchecked, and the backup's checks cover the copy, not this file; a
+// release with no schema change was never whole-checked here either. Checking all 8.4 GB here
+// took about two minutes with Concierge stopped on 2026-11-04, longer than an agent's command
+// waits for it to come back. A failure here stops the deployment with that backup named.
 try {
-  checks(migrationDatabase);
+  const tables = touchedTables(migrationDatabase as unknown as Database, changes);
+  if (tables) checkTables(migrationDatabase as unknown as Database, tables);
+  else checks(migrationDatabase);
 } catch (error) {
   console.error(JSON.stringify({ status: "migrated_check_failed", backup_path: backupPath,
     error: error instanceof Error ? error.message : String(error) }));

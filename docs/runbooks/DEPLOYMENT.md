@@ -751,7 +751,10 @@ A normal update copies the ledger only when the release being installed would ch
 schema. The runner calls that release's own migrator with `--backup-if-needed` before the
 coordinator stops: it builds the release's schema in a scratch database and compares it with the
 live ledger (missing tables or columns, and indexes, triggers or views that are missing or whose
-SQL differs). With no difference it prints `no_schema_change` and copies nothing, and the
+SQL differs; spacing and keyword case outside quoted text are not differences, because
+SQLite keeps each object's text as first written and two indexes written with different
+spacing made every update from 2026-11-04 copy and re-check the 8.4 GB ledger with Concierge
+stopped for over two minutes). With no difference it prints `no_schema_change` and copies nothing, and the
 schema phase (`--schema-only` with no backup path) re-checks with the coordinator stopped,
 copies first if a difference has appeared, and otherwise exits `unchanged` without the
 whole-ledger checks. `--plan` prints the comparison read-only. Copying 2.3 GB on every update
@@ -802,7 +805,9 @@ and that exact backup. The migrator checks systemd's loaded unit, inactive/faile
 zero main PID and zero control PID before opening a writable connection. An admission
 gate alone is insufficient: continuing agent executions still write through the owner.
 The schema phase applies only additive columns/tables inside one `BEGIN IMMEDIATE`,
-checks integrity and foreign keys after `COMMIT`, closes the migrator, then the runner
+checks integrity and foreign keys after `COMMIT` on only the tables it changed (the table of
+each added index or trigger, each added table or column; the whole ledger when a change names
+something else), closes the migrator, then the runner
 starts the coordinator and checks health and adoption. Execution hosts are never stopped.
 Control recovery uses the same ordering. The combined manual command also requires the
 coordinator fully stopped; it cannot run schema work against a serving owner.
@@ -899,7 +904,9 @@ because a fresh overlay assertion was run inside the inherited boundary. The cor
 candidate-owned and does not require replacing the installed controller.
 
 The writer reservation covers only the schema change:
-the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and, held inside
+the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and about two minutes
+on the 8.4 GB ledger with Concierge stopped (2026-11-04), longer than an agent command's
+90-second wait for Concierge to come back, so only changed tables are re-checked; held inside
 the reservation, made every live owner write fail with `SQLITE_BUSY`; a FULL
 checkpoint likewise blocked writers. A post-commit check failure exits
 `migrated_check_failed` with the backup path, which stops the update. On migration
