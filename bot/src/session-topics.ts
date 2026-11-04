@@ -1366,8 +1366,8 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
 }
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const local=db.query("SELECT outcome,result_json,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string|null}|null;
-    return local??db.query("SELECT outcome,result_json,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string|null}|null;
+    const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;created_at_ms:number;stalled_at_ms:number|null;requested_effect:string|null}|null;
+    return local??db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;created_at_ms:number;stalled_at_ms:number|null;requested_effect:string|null}|null;
   };
   const done=(row:{outcome:string|null;result_json:string|null;requested_effect:string|null})=>{
     if(row.outcome!=='answered')return false;
@@ -1379,7 +1379,8 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   // The latest dispatch is where the work stands: an earlier one that asked a question or
   // failed was answered by sending the work again (2026-10-04, a proposal answered
   // needs_decision, then built by a second dispatch). Anything still running is unfinished.
-  const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}));
+  const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
+    .sort((left,right)=>(left.row?.created_at_ms??0)-(right.row?.created_at_ms??0)||left.id.localeCompare(right.id));
   const latest=dispatches.at(-1);
   if(!latest){
     if(humanRequest(topic,request)&&!evidence.some(id=>{
@@ -1972,7 +1973,9 @@ export function topicsCommand(actor:TopicActor,body:any) {
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
           outcome:(local??peer).outcome??null,state:(local??peer).status??null,
           ...(ownTopic!==topic.topicId?{sharedAcrossTopic:true}:{})};
-        const dispatches=[...request.dispatches.filter((existing:any)=>existing.requestId!==dispatchId),dispatch];
+        const dispatches=[...request.dispatches.filter((existing:any)=>existing.requestId!==dispatchId),dispatch]
+          .sort((left:any,right:any)=>(workRow(left.requestId)?.createdAtMs??0)-(workRow(right.requestId)?.createdAtMs??0)
+            ||String(left.requestId).localeCompare(String(right.requestId)));
         const next={...request,dispatches,revision:request.revision+1,updatedAt:nowIso()};
         const topicNext=bumped(topic);
         return {change:{kind:'topic_request',payload:{change:'linked',topicId:topic.topicId,topic:topicNext,request:next,by,revision:topicNext.revision}},result:{request:next}};
@@ -3292,7 +3295,8 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
           revision:topicNext.revision,questions:[]}))settled++;
       continue;
     }
-    const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
+    const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work)
+      .sort((left,right)=>left.createdAtMs-right.createdAtMs||left.id.localeCompare(right.id));
     if(works.some(work=>work.outcome===null&&!work.stalled))continue;
     if(!works.length&&Date.now()-new Date(iso(request.createdAt)!).getTime()<15*60*1000)continue;
     const latest=works.at(-1);

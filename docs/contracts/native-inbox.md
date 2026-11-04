@@ -445,6 +445,9 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   effects without new instruction. A reopened request records how many dispatches
   it already had. An answer from that earlier set cannot close it automatically again;
   the router must link the continuation or name a checked answer posted after reopening.
+  Linked attempts are evaluated in admission order, including when an older failed
+  attempt is discovered and linked after its checked successor. The old failure remains
+  visible without becoming current merely because it was linked last.
   A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
