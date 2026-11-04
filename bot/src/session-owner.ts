@@ -114,6 +114,19 @@ function automaticProvider(canStart: (provider: AutomaticProvider) => boolean, c
     throw new SessionOwnerError(error instanceof Error ? error.message : String(error),503,'PROVIDER_CAPACITY_UNKNOWN');
   }
 }
+/**
+ * Why a native session takes no messages and how it still answers questions. Search showed these
+ * as only "send: false", which agents read as "this agent cannot answer" (2026-11-04); the ask
+ * path now reaches a handed-off session's successor and answers an archived or paused one from a
+ * side copy (session-communication.ts).
+ */
+function answersQuestionsOnly(session:SessionRow,meta:ReturnType<typeof sessionMetadata>):string|null {
+  const successor=supersededAddress(session.id);
+  if(successor)return `Handed off: asking this session reaches the session that continues it, ${successor}.`;
+  if((meta.origin??'native')!=='native'||!['claude-code','codex'].includes(session.provider_id)||!session.agent_session_uuid)return null;
+  if(session.status!=='archived'&&!meta.suspended)return null;
+  return `${session.status==='archived'?'Archived':'Paused'}: takes no work, but a side copy of its conversation answers questions; ask it with --requested-effect informational.`;
+}
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
 // How long a commit may sit unrun before its update counts as stuck rather than about to start.
@@ -1117,6 +1130,7 @@ export class SessionOwner {
     const attentionOpen=meta.inbox?preparedAttention!.needs:openNeeds(meta);
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
+    const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
@@ -1146,7 +1160,7 @@ export class SessionOwner {
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,policyLabel:meta.canvasObservation?'Canvas voice record — observed speech and action outcomes; no provider turns':consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
+      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta))}};
   }
   /**
    * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
