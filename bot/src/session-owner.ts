@@ -56,7 +56,7 @@ import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {localSessionNumber} from './peer-identity';
-import {sessionInputProvenance} from './session-inputs';
+import {humanAuthored,sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
@@ -1204,7 +1204,8 @@ export class SessionOwner {
   private settledReceipts=new Map<string,ReturnType<SessionOwner['buildReceipt']>>();
   receipt(input:AcceptedSessionInput) {
     const cached=this.settledReceipts.get(input.id);
-    if(cached)return cached;
+    // Author corrections can arrive after a receipt settles; never cache send authority.
+    if(cached)return {...cached,humanAuthored:humanAuthored(input)};
     const built=this.buildReceipt(input);
     if(receiptSettled(built))this.settledReceipts.set(input.id,built);
     return built;
@@ -1227,7 +1228,7 @@ export class SessionOwner {
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
-    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
