@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS canvas_project_ensures (
   project TEXT NOT NULL,
   inside TEXT,
   title TEXT NOT NULL,
+  title_clock INTEGER NOT NULL DEFAULT 0,
   purpose TEXT NOT NULL,
   template TEXT NOT NULL,
   state TEXT NOT NULL CHECK(state IN ('awaiting_policy','creating','ready','failed')),
@@ -778,6 +779,7 @@ addColumn("channels", "bot_user_id", "bot_user_id TEXT");
 addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "canvas_projected_commit", "canvas_projected_commit TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
+addColumn("canvas_project_ensures", "title_clock", "title_clock INTEGER NOT NULL DEFAULT 0");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
 addColumn("channels", "list_access_level", "list_access_level TEXT");
