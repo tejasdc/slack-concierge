@@ -56,7 +56,17 @@ not promise an atomic read and click; a UI change between those calls remains a 
 race. The menu may remain open after the read; rerunning this click could toggle it closed.
 The Mac agent must inspect the resulting menu before any further action. Another
 window, a shortcut, an assumed numeric item, navigation, and data mutation remain
-refused; the same-app window and storage path have not been proven.
+refused under the File-inspection need. A separate recorded work need naming
+`New Window` and the exact53 retirement purpose admits only the policy-supplied
+Computer Use program for that action. It selects the exact app again, reads the
+open File menu's full accessibility tree, requires a Thinkering window header and
+exactly one `New Window` child of that menu, clicks the fresh child number through
+the same app handle, then reads the resulting accessibility tree and screenshot.
+If the File menu closed or the child changed, no click runs. No existing window is
+closed or navigated by this program. The menu selection and final read cannot prove
+that both windows share IndexedDB; the app's exact53 retirement result and the old
+window's recount must supply that evidence. The new window's loaded release must
+be observed separately before attributing the consumer's behavior to it.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
 human reply, including when another agent request follows it. A later Mac request

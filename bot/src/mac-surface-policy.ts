@@ -13,6 +13,12 @@ var thnkrRetirementFileMenuMatches = thnkrRetirementMenuBarBlocks.flatMap(([, ch
 if (thnkrRetirementWindowLines.length !== 1 || thnkrRetirementMenuBarBlocks.length !== 1 || thnkrRetirementFileMenuMatches.length !== 1) throw new Error("Exact thnkr.ing File menu not found");
 await thnkrRetirementMenuApp.click(Number(thnkrRetirementFileMenuMatches[0][1]));
 await thnkrRetirementMenuApp.getAXState({disableDiffing:true});`;
+export const RETIREMENT_NEW_WINDOW_PROGRAM=String.raw`var thnkrRetirementNewWindowApp = await cua.getApp("${AUTHORIZED_WEB_APP}");
+var thnkrRetirementOpenFileState = await thnkrRetirementNewWindowApp.getAXState({disableDiffing:true});
+var thnkrRetirementFileMenuMatches = [...thnkrRetirementOpenFileState.matchAll(/^0 File, Secondary Actions: Cancel, Pick\n\t\d+ menu Secondary Actions: Cancel\n\t\t(\d+) New Window$/gm)];
+if (!thnkrRetirementOpenFileState.startsWith('Window: "thnkr.ing", App: Thinkering.\n') || thnkrRetirementFileMenuMatches.length !== 1) throw new Error("Exact thnkr.ing File > New Window item not found");
+await thnkrRetirementNewWindowApp.click(Number(thnkrRetirementFileMenuMatches[0][1]));
+await thnkrRetirementNewWindowApp.getAXStateAndScreenshot({disableDiffing:true});`;
 
 type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string;effectScope?:string};
 
@@ -38,6 +44,11 @@ function authorizedCurrentWebAppNeed(need:RecordedNeed,toolName:string):boolean 
 function authorizedRetirementFileMenuOpen(need:RecordedNeed,toolName:string,code:string):boolean {
   return authorizedRetirementInspectionNeed(need,toolName)&&need.why.includes('File menu')
     &&code===RETIREMENT_FILE_MENU_PROGRAM;
+}
+
+function authorizedRetirementNewWindowOpen(need:RecordedNeed,toolName:string,code:string):boolean {
+  return authorizedRetirementInspectionNeed(need,toolName)&&need.why.includes('New Window')
+    &&code===RETIREMENT_NEW_WINDOW_PROGRAM;
 }
 
 function restrictedWebAppTask(need:RecordedNeed,toolName:string,toolInput:unknown):need is Exclude<RecordedNeed,string> {
@@ -99,7 +110,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppRead(need,toolName,code)
       &&!authorizedScopedRead(need,toolName,code)
       &&!authorizedWebAppInspectorOpen(need,toolName,code)
-      &&!authorizedRetirementFileMenuOpen(need,toolName,code)) {
+      &&!authorizedRetirementFileMenuOpen(need,toolName,code)
+      &&!authorizedRetirementNewWindowOpen(need,toolName,code)) {
     if(!authorizedCurrentWebAppNeed(need,toolName))return !COMPUTER_CONTROL.test(toolName)
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : need.humanInputId===RETIREMENT_AUTHORIZING_HUMAN_INPUT
@@ -108,7 +120,7 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
       : 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.';
     return authorizedRetirementInspectionNeed(need,toolName)
-      ? 'This human work authorization covers exact thnkr.ing app reads and one guarded File-menu inspection program. A second window, other apps, page input, reload and whole-screen calls remain refused.'
+      ? 'This human work authorization covers exact thnkr.ing app reads, guarded File-menu inspection, and guarded New Window selection when the recorded need names it. Other apps, page input, reload and whole-screen calls remain refused.'
       : typeof need!=='string'&&need.humanInputId!==AUTHORIZING_HUMAN_INPUT
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
       : 'This authorization covers the exact thnkr.ing web app: passive inspection, or opening Web Inspector with the exact-bundle shortcut when that action is named in the recorded Mac-app need. Other app, browser, page input and whole-screen actions remain refused.';
@@ -118,7 +130,8 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&kind!=='provider-renewal'
       &&/\b(?:Google Chrome|Chrome|Safari|Thinkering)\b/i.test(code)
       &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedScopedRead(need,toolName,code)
-      &&!authorizedWebAppInspectorOpen(need,toolName,code)&&!authorizedRetirementFileMenuOpen(need,toolName,code))
+      &&!authorizedWebAppInspectorOpen(need,toolName,code)&&!authorizedRetirementFileMenuOpen(need,toolName,code)
+      &&!authorizedRetirementNewWindowOpen(need,toolName,code))
     return code.includes('com.apple.Safari.WebApp.')
       ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
       : 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';

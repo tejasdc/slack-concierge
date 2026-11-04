@@ -82,7 +82,7 @@ import {directTopicList} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,createTopicByHuman,inboxAttention,inboxDismiss,invalidateTopicRoots,openAgentReport,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -1844,16 +1844,19 @@ export class SessionOwner {
     return [original,...(body.attachments??[])];
   }
   async reportAgentIssue(body:unknown) {
-    const input=object(body);only(input,['source','actionId','title','text','files']);
+    const input=object(body);only(input,['source','actionId','title','text','files','issueKey']);
     const source=object(input.source);only(source,['inputId','runId']);
     const agent=agentTestSource(source)!;
     if(typeof input.actionId!=='string'||!input.actionId.trim()||input.actionId.length>200
       ||typeof input.title!=='string'||!input.title.trim()||input.title.length>200
       ||typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('An agent report needs a stable action, short title and observation.',400,'AGENT_REPORT_INVALID');
     const id=createHash('sha256').update(JSON.stringify([agent.inputId,agent.runId,input.actionId])).digest('hex');
+    if(input.issueKey!==undefined&&input.issueKey!=='codex-leftover-process')
+      throw new SessionOwnerError('Unknown agent issue grouping key.',400,'AGENT_REPORT_INVALID');
     const capture={source:{kind:'agent-report',id,recordedAt:new Date().toISOString(),title:input.title,
       metadata:{agentSource:{inputId:agent.inputId,runId:agent.runId,
-        ...(this.selfMachine==='cloud'?{}:{peer:this.selfMachine,sessionId:agent.sessionId})}}},text:input.text,files:input.files??[]};
+        ...(this.selfMachine==='cloud'?{}:{peer:this.selfMachine,sessionId:agent.sessionId})},
+        ...(input.issueKey?{issueKey:input.issueKey}:{})}},text:input.text,files:input.files??[]};
     if(this.selfMachine==='cloud')return this.acceptInboxCapture(capture);
     if(!this.peers)throw new SessionOwnerError('The server Inbox is unreachable.',503,'INBOX_PEER_UNAVAILABLE');
     return this.peers.client('cloud').request('POST','/sessions/v1/inbox',capture);
@@ -1895,6 +1898,28 @@ export class SessionOwner {
       &&Number.isSafeInteger(agentSource.sessionId)&&Number(agentSource.sessionId)>0;
     const agent=remoteAgent?null:agentTestSource(agentSource);
     if(source.kind==='agent-report'&&!agent&&!remoteAgent)throw new SessionOwnerError('An agent report needs its verified source input and run.',403,'AGENT_REPORT_SOURCE_REQUIRED');
+    const issueKey=(source.metadata as Record<string,unknown>|undefined)?.issueKey;
+    if(issueKey!==undefined&&!(source.kind==='agent-report'&&issueKey==='codex-leftover-process'
+      &&source.title==='A finished Codex turn left background processes running'))
+      throw new SessionOwnerError('Unknown agent issue grouping key.',400,'AGENT_REPORT_INVALID');
+    if(issueKey==='codex-leftover-process'){
+      const prior=db.query(`SELECT request.request_id,request.topic_id,json_extract(request.sources_json,'$[0].inputId') AS input_id,
+          json_extract(first.payload_json,'$.capture.source.id') AS source_id
+        FROM inbox_requests request JOIN session_inputs first
+          ON first.id=json_extract(request.sources_json,'$[0].inputId')
+        WHERE request.state='open' AND request.title=? AND request.request_id LIKE 'req:agent-report:%'
+          AND json_extract(first.payload_json,'$.capture.source.metadata.issueKey')=?
+        ORDER BY request.created_at LIMIT 1`).get(source.title,issueKey) as {request_id:string;topic_id:string;input_id:string;source_id:string}|null;
+      if(prior?.input_id?.startsWith('capture:')){
+        const accepted=getAcceptedSessionInput(prior.input_id);
+        if(accepted){
+          if(prior.source_id!==source.id)appendAgentReportObservation(prior.request_id,source.id,String(input.text));
+          return {inbox:{sessionId:`concierge:${accepted.session_id}`,address:sessionAddress(getSessionById(accepted.session_id)!)},
+          item:this.inboxCapture(prior.input_id.slice('capture:'.length)),operation:{...this.receipt(accepted),id:accepted.id},
+          report:{topicId:prior.topic_id,requestId:prior.request_id},deduplicated:true};
+        }
+      }
+    }
     if(input.urgency!==undefined&&(outsideAgent||agent||remoteAgent||reader))
       throw new SessionOwnerError('Only a human capture may choose urgent delivery.',403,'CAPTURE_URGENCY_FORBIDDEN');
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
