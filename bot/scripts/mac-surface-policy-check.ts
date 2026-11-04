@@ -38,6 +38,30 @@ assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',to
 const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b',effectScope:'work'};
 const canvasNeed={...webAppNeed,humanInputId:'capture:7bad480ccf4350922acb3ac750cc0ba0b7a990f596acd92b5fe98403f6f0e7a0'};
 const recoveryNeed={...webAppNeed,humanInputId:'capture:5b6622afea9fe89950abaf423874a4b1e48a0c92420527f40a9570643d5ece8b'};
+const retirementNeed={kind:'mac-app',why:'Inspect only com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 current thnkr.ing window and normal File menu for second-window delivery of authorized exact53 retirement',humanInputId:'capture:2a296c24ca627e68981feab3c3e56a32b3e43cf317d0eb545ee4cab23801270b',effectScope:'work'};
+const retirementCall="var thnkrMenuApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
+const retirementRead="var thnkrRetirementInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrRetirementInspectionApp.getAXStateAndScreenshot()";
+for(const code of [retirementCall,retirementRead])
+  assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
+for(const code of ["await cua.getApp('Safari')",'await cua.getState()',"await cua.getApp('com.apple.Safari.WebApp.other')",
+  'await thnkrMenuApp.getAXState()',"await thnkrMenuApp.click(42)","await thnkrMenuApp.pressKey('super+r')",
+  "var thnkrRetirementInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrRetirementInspectionApp.click(42)",
+  "var thnkrRetirementInspectionApp = await cua.getApp('Safari'); await thnkrRetirementInspectionApp.getAXState()",
+  "var thnkrInspectorApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrInspectorApp.pressKey('alt+super+i')"])
+  assert.ok(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
+for(const need of [retirementNeed,recoveryNeed])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'functions.exec',toolInput:{code:'await tools.mcp__cua_repl__js({code:"await cua.getState()"})'}}));
+for(const need of [{...retirementNeed,effectScope:'informational'},
+  {...retirementNeed,humanInputId:'capture:other'},
+  {...retirementNeed,why:retirementNeed.why.replace('exact53 retirement','old recovery')},
+  {...retirementNeed,why:retirementNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},
+  {...retirementNeed,why:`${webAppNeed.why} Open Web Inspector.`}])
+  for(const code of [retirementCall,retirementRead])
+    assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
+for(const need of [{...retirementNeed,effectScope:'informational'},
+  {...retirementNeed,why:'Inspect this app without a retirement purpose'},
+  {...retirementNeed,why:`${webAppNeed.why} Open Web Inspector.`}])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}}));
 const webInspectorNeed={...webAppNeed,why:`${webAppNeed.why} Open Web Inspector on that exact app to inspect reachable unsaved editor state.`};
 const webInspectorOpen=`var thnkrInspectorApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrInspectorApp.pressKey('alt+super+i')`;
 const webAppCall="let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
