@@ -1,8 +1,8 @@
 const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
-const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
-const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
-const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
+export const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
+export const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
+export const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
 
 type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string};
 

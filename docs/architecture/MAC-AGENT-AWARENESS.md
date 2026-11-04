@@ -20,6 +20,16 @@ only while the accepted Mac request is active. Selecting the app does not establ
 that the requested page is still present; the Mac agent must inspect and report that
 separately before acting on its contents. The current identifiers and direct human
 authorization are recorded in the November 3 Mac request and policy check.
+When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
+forwarded reply has no provider run. Its retained forward request proves the exact
+human reply. A later Mac request from that reply may carry the earlier web-app
+authorization only if the original human instruction belongs to the same worker
+session and joined the turn that started from that Inbox topic's linked dispatch,
+and the new Mac-app need names the exact bundle and page. The peer delivery keeps
+the new request as its immediate source and the original instruction as its human
+task provenance; neither provider-facing text nor an agent-supplied old run can
+create this link. The Mac hook still checks each Computer Use operation against the
+read-only exact-app policy.
 This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).

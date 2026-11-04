@@ -27,7 +27,34 @@ import {sessionAuthor} from './session-message-author';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {parseMachineNeed,type MachineNeed} from './machine-need';
+import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
 import {endedWorkInPlainWords} from './provider-failures';
+
+/** The original human grant survives a physical-device reply only within its recorded task. */
+function continuedWebAppAuthorization(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>,provenance:ReturnType<typeof sessionInputProvenance>,input:{peer:string;address?:string;machineNeed?:MachineNeed}) {
+  const need=input.machineNeed;
+  if(input.peer!=='mac'||!input.address||need?.kind!=='mac-app'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
+    ||!sourceInput||!provenance?.originatingHuman||sourceInput.kind!=='input')return null;
+  const forwarded=db.query(`SELECT source_input_id,thread_root_input_id,payload_json FROM session_communication_requests
+    WHERE target_input_id=? AND target_session_id=? AND source_input_id=?`).get(sourceInput.id,actor.session,sourceInput.source_input_id) as
+    {source_input_id:string;thread_root_input_id:string|null;payload_json:string}|null;
+  const humanReply=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
+  if(!forwarded||!humanReply||!humanAuthored(humanReply)||provenance.originatingHuman.inputId!==humanReply.id
+    ||JSON.parse(forwarded.payload_json)?.forwardedReply?.inboxInputId!==humanReply.id)return null;
+  const original=getAcceptedSessionInput(AUTHORIZING_HUMAN_INPUT);
+  if(!original||!humanAuthored(original)||original.session_id!==actor.session)return null;
+  const currentTopic=forwarded.thread_root_input_id?topicOfRoot(forwarded.thread_root_input_id):null;
+  const task=currentTopic&&original.turn_id?db.query(`SELECT 1 FROM turns run
+    JOIN session_communication_requests request ON request.target_input_id=run.accepted_input_id
+    JOIN inbox_requests topic ON topic.topic_id=?
+    JOIN json_each(topic.dispatches_json) dispatch ON json_extract(dispatch.value,'$.requestId')=request.request_id
+    WHERE run.id=? AND run.session_id=? AND request.target_session_id=? LIMIT 1`)
+    .get(currentTopic,original.turn_id,actor.session,actor.session):null;
+  if(!task)return null;
+  const payload=JSON.parse(original.payload_json);
+  return {inputId:original.id,runId:original.turn_id?nativeRunId(original.turn_id):'',sessionId:`concierge:${original.session_id}`,
+    ...(payload.capture?.id?{captureId:payload.capture.id}:{})};
+}
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -470,12 +497,13 @@ export class SessionPeers {
     const sourceInput=getAcceptedSessionInput(actor.inputId)!;
     const provenance=sessionInputProvenance(sourceInput);
     const runId=nativeRunId(actor.turn);
+    const continuedGrant=continuedWebAppAuthorization(actor,sourceInput,provenance,input);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
     const routedOriginal=input.routedFrom?.authorKind==='human'?getAcceptedSessionInput(input.routedFrom.messageId):null;
     const known=routedOriginal&&humanAuthored(routedOriginal)
       ?{inputId:routedOriginal.id,runId:routedOriginal.turn_id?nativeRunId(routedOriginal.turn_id):'',sessionId:`concierge:${routedOriginal.session_id}`,
         ...(JSON.parse(routedOriginal.payload_json).capture?.id?{captureId:JSON.parse(routedOriginal.payload_json).capture.id}:{})}
-      :provenance?.originatingHuman??(humanAuthored(sourceInput)
+      :continuedGrant??provenance?.originatingHuman??(humanAuthored(sourceInput)
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
