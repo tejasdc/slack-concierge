@@ -43,6 +43,7 @@ import { ChatGptDispatchError } from './session-capability-client';
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
+import { agentRunEnvironment } from "./agent-run-tokens";
 import { SESSION_INPUT_INSTRUCTIONS } from "./session-input-context";
 import {
   abandonTurnArtifactBatch,
@@ -669,6 +670,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           CONCIERGE_SLACK_THREAD_TS: input.threadTs,
         }),
         CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
+        ...agentRunEnvironment({turnId:input.turnId,sessionId:input.session.id}),
       },
       ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),

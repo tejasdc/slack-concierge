@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {initializePeerCatalogueSchema} from './peer-catalogue-sync';
 import {initializePresentationChanges} from './presentation-changes';
+import {initializeRunnerSchema} from './runner-leases';
 
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
@@ -788,6 +789,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           AND (agent_session_uuid IS NULL OR agent_session_uuid = '')
           AND json_extract(native_metadata_json, '$.source.nativeId') IS NOT NULL;`);
       initializePresentationChanges(db);
+      initializeRunnerSchema(db);
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     // Immediate: it reads the schema and then writes (idempotent inserts, index statements). A
