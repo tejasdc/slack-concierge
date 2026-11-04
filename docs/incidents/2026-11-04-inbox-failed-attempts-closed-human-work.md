@@ -133,3 +133,35 @@ The candidate audit was read-only. Source/build checks alone do not prove the
 installed owner or a user's visible Inbox behavior. Review, merge, installation,
 marked test requests and historical reopens are recorded as separate evidence
 when they occur.
+
+## Reconciled outcome and installed check
+
+The Inbox router reconciled the 100 candidate Inbox rows, 77 forwarded replies,
+and 35 exact-message sends by source. Thirteen rows shared a source, leaving 199
+distinct tasks in the audit. At 19:45 UTC, 139 were done with checked evidence,
+15 had been explicitly stopped, 41 were assigned to active recovery, and three
+had a live only-he-can question. Eighteen closed requests were reopened and
+linked to current work. Five follow-ups that never started because their Claude
+launcher could not find the program were cancelled and re-sent. The final
+residual was an Uber Eats refund: Uber refused both refund and credit without
+a photo. The Inbox router linked an open question asking whether Tejas wants
+to leave it there or pursue a separate card dispute. It did not repeat the
+complaint. The resulting audit is 139 done and checked, 15 explicitly stopped,
+41 actively assigned, four only-he-can questions, and zero untracked. The
+per-task report and action log are retained locally under
+`/root/workspace/agent-scripts/audit/` rather than committing private task
+details to the project repository.
+
+The first marked test, after the first repair was installed, failed one agent
+attempt and saw its Inbox request remain open; a later checked replacement
+closed it. The follow-up guard shipped in release
+`36108324f8503f9945ae572ce0259c7c7f6f8adb`, whose deployment run succeeded
+at 20:01:36 UTC. A second marked test routed one exact message to an agent and
+saw the owner create request `req:b4107d9f-fad3-48d5-8775-0c20e22b3490`
+atomically with dispatch `6012d37c`. That attempt replied completed but
+not checked; the request stayed open and the Inbox received a verification
+notice. A separate checked attempt `cb7328b3` then settled, and the owner
+closed the request completed at 20:08:41 UTC with that exact attempt as
+evidence. Both tests used the agent-marked capture entrance and made no
+external change. These checks establish the server owner and Inbox records;
+they do not claim a physical-device UI check.
