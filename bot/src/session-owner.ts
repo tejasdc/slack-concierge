@@ -2556,7 +2556,7 @@ export class SessionOwner {
   async messageAction(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
-    if(!['reaction','save','follow','unthread'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
+    if(!['reaction','save','follow','unthread'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||(action.kind==='unthread'?action.present!==undefined:typeof action.present!=='boolean'))throw new SessionOwnerError('Exact message action required.');
     // Following belongs to the conversation, not to a message's delivery state: a queued or
     // unanswered message the owner accepted can be followed before any provider history exists.
     const retained=await this.retainedMessage(session,action.messageId)??(action.kind==='follow'?this.acceptedInputText(session,action.messageId):null);
