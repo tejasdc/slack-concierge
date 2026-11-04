@@ -116,7 +116,7 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
         + (onWorkerMachine
           ? `; it runs on this same Mac, so its answer stays with the request and it tells Tejas itself if only he can act. Check Accounts later shows ${account} signed in; nothing else is yours. `
           : `; its answer comes back to you. When it answers completed, check Accounts shows ${account} signed in and end done. If it answers needs_decision because Chrome's own `
-            + `${SITE[provider]} sign-in for that account has expired, that is the one thing only he can do: declare needs_you --only-he-can sign-in, `
+            + `${SITE[provider]} sign-in for that account has expired, that is the one thing only he can do: declare needs_you --summary "<one line: what to sign in to, as whom>" --only-he-can sign-in, `
             + `telling him to sign in to ${SITE[provider]} as ${account} in Chrome on his Mac, nothing else. `)
         + `Do not start another sign-in yourself.` });
     if (recorded) log("warn", "signin_renewal_needed", { provider, account, why });
@@ -150,6 +150,6 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
     + `Reply completed once Accounts shows ${account} signed in on ${machine}. Reply needs_decision --only-he-can sign-in only `
     + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`
     + (local ? `, and because this request comes from this Mac's own Concierge with nobody reading its answer, then also declare `
-      + `sessions outcome needs_you --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)
+      + `sessions outcome needs_you --summary "<one line>" --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)
     + `. Do not start a second sign-in while one is waiting.`;
 }

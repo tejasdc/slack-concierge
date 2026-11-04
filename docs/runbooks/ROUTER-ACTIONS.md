@@ -449,11 +449,12 @@ router-actions.sh sessions reply <request-id> --also <request-id> --also <reques
 What reaches Tejas carries its reasons, and the owner refuses it otherwise:
 
 ```bash
-# A question: his exact words that started the work, and what they leave open.
+# A question: one line he can decide from (it opens his phone notice), his exact words that
+# started the work, and what they leave open. Details and other news go in the text after it.
 router-actions.sh sessions outcome needs_you <source-flags> --action-id A \
-  --only-he-can ambiguous --his-words '<copied from his message>' --why-not-answered '<what only he can decide>' -- '<the question>'
+  --summary '<what he must decide and the result it depends on>' --only-he-can ambiguous --his-words '<copied from his message>' --why-not-answered '<what only he can decide>' -- '<the question>'
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition needs_decision \
-  --summary '<one line>' --only-he-can ambiguous --his-words '<…>' --why-not-answered '<…>' -- '<the question>'
+  --summary '<what he must decide and the result>' --only-he-can ambiguous --his-words '<…>' --why-not-answered '<…>' -- '<the question>'
 # Completed work: what was exercised on the real system and what was seen, or why nothing could be.
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition completed \
   --checked '<what you ran live, and what you saw>' -- '<the answer>'
