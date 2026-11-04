@@ -15,6 +15,7 @@ import { RETRY_POLICIES } from "./retry-policies";
 import { nextRetry } from "./retry-core";
 import { log } from "./log";
 import { ledgerDurable } from "./ledger-durability-barrier";
+import { ProviderDispatchError } from "./provider-failures";
 
 import HOST_PROTOCOLS from "./host-protocols.json";
 /**
@@ -58,7 +59,7 @@ const launchdDomain = () => `gui/${process.getuid?.() ?? 0}`;
 /** The Claude CLI by absolute path, resolved by the coordinator; a host's supervisor gives it no PATH. */
 export function claudeExecutable() {
   const configured = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude";
-  const found = configured.includes("/") ? configured : Bun.which(configured);
+  const found = configured.includes("/") ? (existsSync(configured) ? configured : null) : Bun.which(configured);
   if (!found) throw new HostUnavailableError(`cannot find the Claude CLI (${configured}) on this coordinator's PATH`);
   return found;
 }
@@ -505,6 +506,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       // ended. Nothing in between can act on the live process (design §3.1 step 4).
       let replayUntil = 0, ready = false, replayEnded = false, lastSeen = 0, received = 0;
       let replayFrames=0,replayBytes=0,replayMaxFrameMs=0,journalBytes:number|null=null;
+      let providerPid:number|null=null,spawnError:string|null=null,initialWritten=false;
       let streamingReplay = false;
       let replayOutcomes = new Map<string, "written" | "failed">();
       // Frames can arrive in the same chunk as the attach answer, before the history's end is known
@@ -518,6 +520,9 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
         if(replayed){replayFrames++;if(frame.k==="o"||frame.k==="e")replayBytes+=Buffer.byteLength(String(frame.d));}
         if (frame.k === "o") input.onStdout(`${frame.d}\n`, replayed ? frame.t : undefined);
         else if (frame.k === "e") input.onStderr(String(frame.d));
+        else if (frame.k === "h" && typeof frame.d?.providerPid === "number") providerPid=frame.d.providerPid;
+        else if (frame.k === "c" && frame.d?.op === "spawn-error") spawnError=String(frame.d.error??'provider spawn failed');
+        else if (frame.k === "c" && frame.d?.op === "written" && frame.d?.id === "initial") initialWritten=true;
         else if (frame.k === "i" && replayed && frame.d?.id !== "initial") {
           const outcome = outcomes?.get(frame.d.id) ?? "unknown";
           // A write the host recorded as failed never reached the provider and rebuilds nothing.
@@ -529,7 +534,11 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
           // The host keeps its record until the turn's result is durably settled; the turn's owner
           // releases it afterwards (releaseHost), so a crash in between still finds it.
           if (!replayEnded) { replayEnded = true; input.onReplayEnd?.(); }
-          if (terminationError) finish(terminationError); else finish(null, exit);
+          if (terminationError) finish(terminationError);
+          else if (spawnError && providerPid === null && !initialWritten)
+            finish(new ProviderDispatchError({message:`The provider command could not start: ${spawnError}`,
+              failureClass:"retryable",terminalConfirmed:true,toolsUsed:[],localPrerequisiteUnavailable:true}));
+          else finish(null, exit);
           return;
         }
         if (!replayed && (frame.k === "o" || frame.k === "e")) resetInactivity();

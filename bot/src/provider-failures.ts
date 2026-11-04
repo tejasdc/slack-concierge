@@ -44,6 +44,8 @@ export class ProviderDispatchError extends Error {
   /** The provider's typed refusal says this model has no serving capacity. */
   readonly modelAtCapacity: boolean;
   readonly threadWriterConflict: boolean;
+  /** A local launch prerequisite failed before provider admission, so no provider budget is spent. */
+  readonly localPrerequisiteUnavailable: boolean;
   /**
    * The failure belongs to one provider conversation (opening or resuming its thread), not
    * to the account, so it spends that conversation's retry budget alone. On 2026-10-21 one
@@ -71,6 +73,7 @@ export class ProviderDispatchError extends Error {
     immediateRetry?: boolean;
     modelAtCapacity?: boolean;
     threadWriterConflict?: boolean;
+    localPrerequisiteUnavailable?: boolean;
     threadScoped?: boolean;
     clearsAtMs?: number | null;
   }) {
@@ -85,6 +88,7 @@ export class ProviderDispatchError extends Error {
     this.immediateRetry = input.immediateRetry === true;
     this.modelAtCapacity = input.modelAtCapacity === true || isModelCapacityRefusal(input.message);
     this.threadWriterConflict = input.threadWriterConflict === true || isCodexThreadWriterConflict(input.message);
+    this.localPrerequisiteUnavailable = input.localPrerequisiteUnavailable === true;
     this.threadScoped = input.threadScoped === true;
     const clears = input.clearsAtMs;
     this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
