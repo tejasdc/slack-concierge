@@ -14,7 +14,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
-import {readTodos,type TodoState} from './question-todos';
+import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -1504,6 +1504,7 @@ function questionBrief(item:any) {
     ...(typeof item.hisWords==='string'&&item.hisWords.trim()?{hisWords:item.hisWords.trim()}:{}),
     ...(typeof item.whyNotSettled==='string'&&item.whyNotSettled.trim()?{whyNotSettled:item.whyNotSettled.trim()}:{}),
     ...(typeof item.onlyHeCan==='string'&&item.onlyHeCan.trim()?{onlyHeCan:item.onlyHeCan.trim()}:{}),
+    ...(typeof item.todo==='string'&&item.todo.trim()?{todo:item.todo.trim()}:{}),
     ...(typeof item.decisionId==='string'&&item.decisionId.trim()?{decisionId:item.decisionId.trim()}:{}),
     ...(typeof item.approvalAction==='string'&&item.approvalAction.trim()?{approvalAction:item.approvalAction.trim()}:{}),
     // A reading item may name the exact messages he is to read; otherwise they are resolved
@@ -1518,6 +1519,10 @@ function questionBrief(item:any) {
  */
 function withHisWords(brief:any,by:TopicBy):any {
   const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
+  // A step he must take names the to-do it is about, as worker questions do; its state was read
+  // from thnkr.ing before this command ran (the routed request API refuses a finished one).
+  if(STEP_ASKS.has(kind)&&!brief.todo)
+    throw new TopicError('This question asks him to do a step himself, so it names the to-do it is about: "todo": "<his to-do id>", or "todo": "none" when no to-do for this step exists. If he already ticked it off, he has done it: do not ask.',400,'QUESTION_NEEDS_TODO');
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(brief.decision))
     throw new TopicError('An onlyHeCan device question asks for one action on a physical device in its first sentence, such as "Please unlock your iPhone." or "Can you unlock your Mac so I can continue?"; later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in whyNotSettled why only Tejas can take this step.');
   if(kind!=='approval'&&(brief.decisionId!==undefined||brief.approvalAction!==undefined))
@@ -2366,7 +2371,8 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
 export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
-  const linked=(db.query("SELECT question_id FROM inbox_questions WHERE state IN ('open','partial') AND kind='decision' AND json_extract(owner_json,'$.todoId') IS NOT NULL").all() as {question_id:string}[]);
+  const linked=(db.query(`SELECT question_id FROM inbox_questions WHERE state IN ('open','partial') AND kind='decision'
+    AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')`).all() as {question_id:string}[]);
   if(!linked.length)return 0;
   let todos:Map<string,TodoState>;
   try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
@@ -2378,7 +2384,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
       const row=db.query('SELECT * FROM inbox_questions WHERE question_id=?').get(question_id) as any;
       if(!row)continue;
       const question=toStoredQuestion(row);
-      const todo=todos.get(String(question.owner?.todoId??''));
+      const todo=todos.get(String(question.owner?.todoId??question.brief?.todo??''));
       if(!OPEN_QUESTION_STATES.some(state=>state===question.state)||!todo||(todo.status!=='done'&&todo.status!=='dropped'))continue;
       const at=nowIso(),reason=todo.status==='done'?`He marked his to-do "${todo.text}" done.`:`He dropped his to-do "${todo.text}".`;
       db.transaction(()=>{
