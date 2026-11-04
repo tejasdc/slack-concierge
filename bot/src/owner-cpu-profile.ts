@@ -1,4 +1,4 @@
-import {profile} from 'bun:jsc';
+import {heapStats,profile} from 'bun:jsc';
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {log} from './log';
@@ -64,8 +64,43 @@ export function startOwnerMemoryReadings() {
  * refused until that is understood; CONCIERGE_OWNER_CPU_PROFILE=1 turns it back on deliberately.
  */
 const PROFILE_ENABLED=process.env.CONCIERGE_OWNER_CPU_PROFILE==='1';
+
+/**
+ * What the owner holds, on demand: `kill -WINCH <pid>` writes the live JavaScript object counts by
+ * type to `$CONCIERGE_STATE_DIR/diagnostics/heap-census-<time>.json`. The owner's memory climbs
+ * from about 0.5 to 1.5-4.5 GB over minutes several times a day and falls back within a minute
+ * (2026-11-03); nothing said what it held. Never automatic: an outside sampler sends the signal at a
+ * chosen size. Validated on a stand-in with the production Bun: 0.3 s at 1.2 GB and 0.7 s at
+ * 2.6 GB of one paused loop, no added memory, live objects only. At most once in five minutes.
+ * SIGWINCH is ignored by default, so a stray one does nothing else.
+ */
+const CENSUS_EVERY_MS=5*60_000;
+let censusAt=0;
+function writeHeapCensus() {
+  if(Date.now()-censusAt<CENSUS_EVERY_MS){log('warn','owner_heap_census_refused',{reason:'rate'});return;}
+  censusAt=Date.now();
+  try {
+    const before=process.memoryUsage(),started=performance.now();
+    const stats=heapStats();
+    const ms=Math.round(performance.now()-started),after=process.memoryUsage();
+    const mb=(n:number)=>Math.round(n/2**20);
+    const top=(counts:Record<string,number>)=>Object.fromEntries(Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,60));
+    const directory=join(process.env.CONCIERGE_STATE_DIR??'/tmp','diagnostics');
+    mkdirSync(directory,{recursive:true});
+    const path=join(directory,`heap-census-${new Date(censusAt).toISOString().replace(/[:.]/g,'-')}.json`);
+    writeFileSync(path,JSON.stringify({at:new Date(censusAt).toISOString(),census_ms:ms,
+      before:{rss_mb:mb(before.rss),heap_used_mb:mb(before.heapUsed),external_mb:mb(before.external),array_buffers_mb:mb(before.arrayBuffers)},
+      after:{rss_mb:mb(after.rss),heap_used_mb:mb(after.heapUsed),external_mb:mb(after.external),array_buffers_mb:mb(after.arrayBuffers)},
+      heap_size_mb:mb(stats.heapSize),heap_capacity_mb:mb(stats.heapCapacity),extra_mb:mb(stats.extraMemorySize),
+      objects:stats.objectCount,protected_objects:stats.protectedObjectCount,
+      types:top(stats.objectTypeCounts),protected_types:top(stats.protectedObjectTypeCounts),mimalloc:(stats as any).mimalloc},null,1));
+    log('info','owner_heap_census_written',{path,census_ms:ms,objects:stats.objectCount,rss_mb:mb(before.rss),heap_used_after_mb:mb(after.heapUsed)});
+  } catch(error){log('warn','owner_heap_census_failed',{error:String(error)});}
+}
+
 export function installOwnerCpuProfileSignal() {
   startOwnerMemoryReadings();
+  process.on('SIGWINCH',writeHeapCensus);
   process.on('SIGURG',()=>{
     if(!PROFILE_ENABLED){log('warn','owner_cpu_profile_refused',{reason:'disabled after it preceded 40 GB runaways on 2026-10-07'});return;}
     if(running)return;
