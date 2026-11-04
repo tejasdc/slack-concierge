@@ -36,10 +36,10 @@ the request's words under `WHAT CAME BEFORE`. The request's retained payload rec
 (`history`). A first-time problem simply has no block.
 
 **Speed and failure.** The thread history is an indexed ledger read. The question is embedded
-once and compared against both the session index and the failure ledger within one 4 s bound
-(measured 2026-11-04: the embedding takes 1.3 s at the median, up to 6 s under load; two 1.5 s
-bounds missed nearly every lookup). What has not answered is named under "Not consulted"
-rather than waited on. Any error in the lookup becomes a line telling the agent to search itself
+once, at search priority, and compared against both the session index and the failure ledger
+within one 10 s bound (measured 2026-11-04: the embedding takes 1.3 s at the median and 4.5-7 s
+while the index catches up after a restart; 1.5 s and 4 s bounds missed the live tests). What has
+not answered is named under "Not consulted" rather than waited on. Any error in the lookup becomes a line telling the agent to search itself
 (`request_history_failed`); it never refuses the request. The lookup runs once, when the request is first accepted; an idempotent retry
 returns the existing receipt. Each lookup logs `request_history_looked_up` with its time.
 Peer (Mac) requests get the same block in their words; the peer's stored words are reused on

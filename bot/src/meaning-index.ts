@@ -338,6 +338,12 @@ export class MeaningIndex {
    * The same search for a question already embedded with queryVectors, so a caller comparing one
    * question against sessions and other documents pays for one embedding (request-history.ts).
    */
+  /** A question embedded at search priority: indexing steps aside for it as it does for a search, where queryVectors waits behind searches. */
+  async questionVector(query:string):Promise<Float32Array> {
+    this.searching++;
+    try{const [vector]=await this.engine.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
+    finally{this.searching--;}
+  }
   searchVector(vector:Float32Array,limit:number):MeaningSearch {
     const indexed=this.count;
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
