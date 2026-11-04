@@ -133,6 +133,16 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
 export function getAcceptedSessionInput(id:string) {
   return db.query('SELECT * FROM session_inputs WHERE id=?').get(id) as AcceptedSessionInput|null;
 }
+/**
+ * A run owes a reply only to a request it was handed: steered into it, or started as its own turn.
+ * A request still waiting in the queue, including a scheduled one before its time, belongs to the
+ * turn that will carry it. On 2026-11-04 the Inbox router's Stop hook listed a request scheduled
+ * for 14:00 as owed during an unrelated 09:53 run, and the router answered it four hours early.
+ */
+export function handedToARun(id:string) {
+  return !!db.query(`SELECT 1 FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+    WHERE input.id=? AND turn.status<>'queued'`).get(id);
+}
 /** Resolve retained delegation links, never actor/provenance claims inside message text. */
 /** A request a peer instance delivered here: its source lives in the peer's ledger, retained on the delivery row. */
 function peerDeliveryProvenance(input:AcceptedSessionInput) {
