@@ -1,7 +1,7 @@
 ---
 failure: Failed or cancelled agent attempts closed unfinished Inbox tasks without a guaranteed recovery attempt.
 date: 2026-11-04
-fix_commits: []
+fix_commits: [b7fbfdda, 3ac5f463, d49be617, 605c3488]
 cause_status: confirmed
 ---
 
@@ -48,6 +48,10 @@ unchecked attempts, and repeats a recovery input if a router turn ends without
 progress. It also reads unfinished requests in closed threads and requires a
 later answer as evidence when the router closes a human task without dispatching
 another agent. The command wrapper refuses parent-task closure from native helpers.
+His Close control withdraws the requests it names; the older human-closed threads
+are reconciled the same way. An agent or owner closing a thread cannot withdraw
+his work. Recovery counts attempts across replacement failures, so a loop does not
+reset its delay or suppress the notice to him.
 
 ## Acceptance scenario
 
@@ -78,6 +82,19 @@ closure, requiring separate task-level review. Two genuine open requests reside
 in a human-closed topic; the human closure explicitly said the two open requests
 went with it, so they are not automatically reopened.
 
+A second supported diagnostic snapshot on November 4 found 93 currently open Inbox
+requests: 20 with no linked dispatch, 20 with a live attempt, 28 whose latest attempt
+asked for a decision, 20 whose latest attempt answered, two failed and one cancelled.
+Two of the open rows are in a thread Tejas explicitly closed; the repair records their
+withdrawal from his Close action. The same snapshot found 77 human replies forwarded
+to agents but not linked to any Inbox request: 63 answered, four failed, eight needing
+a decision, one cancelled and one still open. They are a separate historical audit
+cohort. The owner records the activation boundary for automatic new-reply tracking,
+so installing this change does not manufacture 77 historical request rows before
+their earlier effects are checked. The Inbox router received the exact retained IDs
+for reconciliation. The complete explicit-reply query used only for recovery returned
+688 rows in 0.54 seconds on that snapshot; normal list reads remain bounded.
+
 ## Repair invariant
 
 An agent attempt may fail, stall, be cancelled or be handed back. The human
@@ -85,7 +102,7 @@ request remains open until an explicit completed-and-checked result, a live
 question only Tejas can answer, a proven replacement request, or Tejas's later
 instruction to withdraw it. An agent cannot turn its own failure into a final
 human-task disposition. The owner records one durable recovery input per
-request/attempt, and repeats that input after the router turn ends without
+request and repeat count, and repeats that input after the router turn ends without
 linked progress, with a bounded delay. The router must inspect previous effects
 before a new dispatch. A missing source link triggers provenance investigation
 instead of silent omission or an invented human instruction.

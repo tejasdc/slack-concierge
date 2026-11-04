@@ -1330,7 +1330,12 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
 function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
-  return request.sources.some(source=>getAcceptedSessionInput(source.inputId)?.origin==='human')
+  if(request.requestId.startsWith('req:agent-report:'))return false;
+  return request.sources.some(source=>{
+      const input=getAcceptedSessionInput(source.inputId);
+      const provenance=input?.origin==='agent'?sessionInputProvenance(input):null;
+      return input?.origin==='human'||(!!provenance?.originatingHuman&&provenance.effectScope==='work');
+    })
     ||topicRoots(topic.topicId).some(id=>{
       const input=getAcceptedSessionInput(id);
       return input?.origin==='human'&&new Date(input.created_at).getTime()<=new Date(request.createdAt).getTime();
@@ -1338,7 +1343,7 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
 }
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const local=db.query('SELECT outcome,result_json,stalled_at_ms,requested_effect FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string}|null;
+    const local=db.query("SELECT outcome,result_json,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string|null}|null;
     return local??db.query("SELECT outcome,result_json,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string|null}|null;
   };
   const done=(row:{outcome:string|null;result_json:string|null;requested_effect:string|null})=>{
@@ -2143,8 +2148,12 @@ export function topicHumanAction(topicId:string,body:any) {
       case 'close':{
         const why=text(action.reason,'reason',4000),scope=optionalText(action.scope,'scope',2000);
         const questions=expireOpen(topicQuestions(topicId),`Thread closed: ${why}`,at);
-        const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:topicRequests(topicId).map(request=>request.requestId)}});
-        return {change:{kind:'topic',payload:{change:'closed',topicId,topic:next,scope,by,reason:why,revision:next.revision,questions}},result:{topic:next,expired:questions.length}};
+        const owned=topicRequests(topicId);
+        const requests=owned.filter(request=>request.state==='open').map(request=>({...request,state:'closed' as const,disposition:'withdrawn',
+          closure:{by,at,reason:`Thread closed by Tejas: ${why}`,evidence:[String(body.clientActionId??'')]},revision:request.revision+1,updatedAt:at}));
+        const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:owned.map(request=>request.requestId)}});
+        return {change:{kind:'topic',payload:{change:'closed',topicId,topic:next,scope,by,reason:why,revision:next.revision,questions,requests}},
+          result:{topic:next,expired:questions.length,withdrawn:requests.length}};
       }
       case 'file':{
         const filed=fileNeed(session,topic,text(action.need,'need',200),by);
@@ -2154,8 +2163,13 @@ export function topicHumanAction(topicId:string,body:any) {
       case 'reopen':{
         const why=text(action.reason,'reason',4000);
         const questions=restoreExpiredByClosure(topic,at);
+        const requests=topic.closure?.by?.kind==='human'?topicRequests(topicId)
+          .filter(request=>request.state==='closed'&&request.disposition==='withdrawn'&&request.closure?.at===topic.closure?.at
+            &&request.closure?.by?.kind==='human'&&String(request.closure?.reason??'').startsWith('Thread closed by Tejas:'))
+          .map(request=>({...request,state:'open' as const,disposition:null,closure:null,revision:request.revision+1,updatedAt:at})):[];
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
-        return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
+        return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions,requests}},
+          result:{topic:next,restored:questions.length,requests:requests.length}};
       }
       case 'pin':case 'unpin':{
         const next=bumped(topic,{pinnedAt:kind==='pin'?topic.pinnedAt??at:null});
@@ -2751,7 +2765,7 @@ const stoppedByTejasOf=(resultJson:string|null)=>{
   try{return JSON.parse(resultJson)?.output?.stoppedBy==='tejas';}catch{return false;}
 };
 function workRow(id:string):Work|null {
-  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,requested_effect FROM session_communication_requests WHERE request_id=?').get(id) as any;
+  const local=db.query("SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as any;
   if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(local.result_json),stoppedByTejas:stoppedByTejasOf(local.result_json)};
   const peer=db.query("SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as any;
   return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(peer.result_json),stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
@@ -2759,7 +2773,8 @@ function workRow(id:string):Work|null {
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
 function forwardedReplies():Forward[] {
-  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,requested_effect,thread_root_input_id,
+  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
+      json_extract(payload_json,'$.requestedEffect') AS requested_effect,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_communication_requests
     WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
     .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),requestedEffect:row.requested_effect,target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
@@ -2861,9 +2876,18 @@ function closeThreadIfFinished(topicId:string,cause:string):boolean {
 }
 
 /** A reply joins earlier work only when its addressed answer proves which work it continues. */
+function forwardRecoveryStartMs(sessionId:number):number {
+  const eventId='topic-forward-recovery-start';
+  const existing=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
+  if(existing)return Number(JSON.parse(existing.payload_json).atMs);
+  const atMs=Date.now();
+  recordSessionEvent({eventId,sessionId,kind:'topic_request',payload:{change:'forward_recovery_started',atMs}});
+  return atMs;
+}
 function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
   const roots=new Set(topicRoots(topicId));
   const mine=forwards.filter(forward=>!!forward.root&&roots.has(forward.root));
+  const recoveryStart=forwardRecoveryStartMs(topicRow(topicId).sessionId);
   let linked=0;
   for(const forward of mine) {
     // A shared agent and thread do not establish that his new message continues earlier work.
@@ -2873,7 +2897,8 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     const byAnswer=answered?requests.filter(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===answered)):[];
     const bySource=forward.inboxInputId?requests.filter(request=>request.sources.some(source=>source.inputId===forward.inboxInputId)):[];
     const targets=byAnswer.length===1?byAnswer:bySource.length===1?bySource:[];
-    if(!targets.length&&forward.inboxInputId&&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
+    if(!targets.length&&forward.createdAtMs>=recoveryStart&&forward.inboxInputId
+      &&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
       const source=getAcceptedSessionInput(forward.inboxInputId);
       if(source?.origin==='human') {
         const topic=topicRow(topicId);
@@ -2931,13 +2956,10 @@ function recoverySource(request:StoredRequest):{inputId:string;runId:string;unce
 }
 /** A recovery remains due until another dispatch is linked or a checked completion closes it. */
 function nextRecoveryAttempt(item:Stuck):number|null {
-  const prefix=`topic-flag:${item.key}:`;
+  const prefix=`topic-recovery:${item.key}:`;
   const latest=db.query(`SELECT event_id,payload_json,created_at FROM session_owner_events WHERE event_id>=? AND event_id<? ORDER BY sequence DESC LIMIT 1`)
     .get(prefix,`${prefix}\uffff`) as {event_id:string;payload_json:string;created_at:string}|null;
-  if(!latest){
-    // Old one-shot flags have no tracked continuation. Give them a fresh durable attempt.
-    return db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`topic-flag:${item.key}`)?1:0;
-  }
+  if(!latest)return 0;
   const attempt=Number(latest.event_id.slice(prefix.length))+1;
   // A recovered input can be cancelled before it acquires a turn. That is a terminal
   // delivery, not a reason to leave the human request silent forever.
@@ -2964,11 +2986,23 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
   let settled=0;
   const replies=latestHumanReply(read,topicRoots(topicId));
   for(const request of topicRequests(topicId).filter(item=>item.state==='open')) {
+    const topic=topicRow(topicId);
+    if(topic.state==='closed'&&topic.closure?.by?.kind==='human'
+      &&Array.isArray(topic.closure.requests)&&topic.closure.requests.includes(request.requestId)) {
+      const at=nowIso();
+      const next={...request,state:'closed' as const,disposition:'withdrawn',
+        closure:{by:topic.closure.by,at:topic.closure.at??at,reason:`Thread closed by Tejas: ${topic.closure.reason??''}`,
+          evidence:[topicId]},revision:request.revision+1,updatedAt:at};
+      const topicNext=bumped(topic);
+      if(recordOwnerTopicChange(topic.sessionId,`topic-human-close-request:${request.requestId}:${topic.closure.at}`,'topic_request',
+        {change:'request_closed',topicId,topic:topicNext,request:next,by:OWNER_BY,reason:'Tejas closed the thread with this request in it.',
+          revision:topicNext.revision,questions:[]}))settled++;
+      continue;
+    }
     const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
     if(works.some(work=>work.outcome===null&&!work.stalled))continue;
     if(!works.length&&Date.now()-new Date(request.createdAt).getTime()<15*60*1000)continue;
     const latest=works.at(-1);
-    const topic=topicRow(topicId);
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
     const decisionViews=questionsOfRequest(topicId,request).filter(question=>question.kind==='decision')
       .map(question=>questionView(question,replies));
@@ -3005,7 +3039,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       if(pendingAnswer)how+=`; Tejas's answer ${pendingAnswer.inputId} is waiting to be processed`;
       const source=recoverySource(request);
       stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
-        key:`${request.requestId}:${request.revision}:${latest?.id??'unassigned'}`,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});
+        key:request.requestId,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});
       continue;
     }
     const at=nowIso();
@@ -3060,7 +3094,10 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
   const forwards=forwardedReplies();
-  const read=readIndex(session.id,true);
+  const hasOpenDecision=!!db.query(`SELECT 1 FROM inbox_questions question
+    JOIN inbox_requests request ON request.topic_id=question.topic_id AND request.state='open'
+    WHERE question.state IN ('open','partial') AND question.kind='decision' LIMIT 1`).get();
+  const read=hasOpenDecision?readIndex(session.id,true):{humanReplies:new Map<string,HumanReply[]>()};
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
   const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
@@ -3088,7 +3125,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
         admit({sessionId:session.id,inputId,origin:'service',sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
           sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
           text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link). Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
-      recordSessionEvent({eventId:`topic-flag:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
+      recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
       if(item.attempt>=2&&humanRequest(topicRow(item.topicId),requestRow(item.requestId))) {
         const eventId=`recovery-still-open:${item.requestId}`;
@@ -3285,6 +3322,7 @@ export function retitleRecoveredTopics() {
 export function migrateInboxTopics(options:{batch?:number}={}) {
   const session=inboxSession();
   if(!session)return {migrated:false,reason:'no_inbox_session'};
+  forwardRecoveryStartMs(session.id);
   if(migrationDone(session.id))return {migrated:false,reason:'already_migrated'};
   invalidateTopicRoots();
   const index=entryIndex();

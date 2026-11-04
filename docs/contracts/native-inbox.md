@@ -399,7 +399,9 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   thread or agent does not establish that a new question continues earlier work: the October 16
   Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread. If the
   forwarded reply has no one proven earlier request, it becomes its own request, sourced to
-  his exact reply and linked to the forwarded agent attempt.
+  his exact reply and linked to the forwarded agent attempt. The owner records when this
+  rule starts before accepting new work after installation; older unlinked replies belong
+  to the historical audit, not an automatic replay.
 - Once nothing sent for an open request is running, an answer explicitly marked completed
   with a real check closes it `completed`
   under `refuseUnfinishedCompletion`; his own Stop withdraws the stopped attempt. A failed,
@@ -431,9 +433,12 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   names the later answer in that same thread as evidence. A bare completion claim with no
   linked work or answer is refused. Verification-only agent test reports remain distinct
   from human requests.
-- Upkeep also reads open requests in threads Tejas closed. Closing a thread changes its
-  presentation; it does not by itself settle an agent attempt or erase the task's recovery
-  obligation. Explicit human withdrawal is recorded separately.
+- His Close action names the requests still open in that thread. It withdraws those requests
+  in the same durable topic event; Undo restores those exact requests. Upkeep recognizes
+  older human Close events that left their named requests open and records the same
+  withdrawal before considering recovery. A thread Concierge or an agent closed while work
+  remained does not withdraw it: upkeep reads those open requests and returns them to the
+  router. Close does not stop an agent's already running turn.
 - A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
   owner) at the moment its last request or question ends or an agent's final answer arrives,
   when no request is open, nothing waits on him (an unread answer counts, as does a question set
@@ -524,7 +529,8 @@ action with `state:'read'`, `acknowledge --item <questionId>` on a reading item,
 "mark seen" `dismiss` on the Inbox session up to a generation; opening the thread is a
 reading position, never an end), `superseded` (a replacement), `withdrawn`/`declined`
 (whoever asked, or him), `deferred` (him), and `expired`: `topics close` and his Close end
-every open question in the thread with "Thread closed: <reason>", `request close` ends only
+every open question in the thread with "Thread closed: <reason>"; his Close also withdraws
+the open requests named on its confirmation. `request close` ends only
 the questions whose `owner.requestId` or `owner.dispatchRequestId` names that request, and a
 worker's final reply with `completed` or `failed` ends the questions it declared for that
 request (a `needs_decision` final keeps them; that reply is the question). `brief.endedBecause`
