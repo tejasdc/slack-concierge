@@ -3,6 +3,23 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { log } from "./log";
 
+/** Processor seconds a process has used so far, or -1 when it cannot be read. `ps` works on Linux and macOS alike. */
+function processorSeconds(pid: number | undefined): Promise<number> {
+  if (!pid) return Promise.resolve(-1);
+  return new Promise((resolve) => {
+    const reader = spawn("ps", ["-o", "cputime=", "-p", String(pid)]);
+    let out = "";
+    reader.stdout.on("data", (chunk) => { out += chunk; });
+    reader.on("error", () => resolve(-1));
+    reader.on("close", () => {
+      const match = out.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/);
+      if (!match) return resolve(-1);
+      const [, days, hours, minutes, seconds] = match;
+      resolve(Number(days ?? 0) * 86400 + Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds));
+    });
+  });
+}
+
 // The one warm speech engine, a resident child process chosen by platform. Both engines speak
 // the same one-request-per-line protocol, so everything above this file is one code path.
 //
@@ -126,15 +143,30 @@ class ResidentEngine {
     if (!child) throw new EngineUnavailable(`${this.spec.name}_not_running`);
     const id = `r${++this.sequence}`;
     return new Promise<EngineResult>((resolve, reject) => {
-      // Parakeet runs at roughly ten times real time on the box and Apple's engine far faster
-      // on a Mac; anything slower than this is a wedged engine, killed so the next request
-      // gets a fresh one.
-      const timer = setTimeout(() => {
+      // A wedged engine is killed so the next request gets a fresh one. Wedged means it stopped
+      // working, not that it is slow: Parakeet runs at roughly ten times real time on an idle box,
+      // but at load 60 on 12 processors (2026-11-04) it ran slower than real time while working,
+      // was killed at the old 60 s + audio-length deadline, and its recording went to whisper.cpp,
+      // which took 16.6 minutes for 3.8 minutes of speech while the phone and Watch waited. So
+      // when the deadline passes the engine is stopped only if it also used no processor time
+      // since the last look; a working engine gets another look a minute later.
+      let cpuSeen = -1;
+      const look = async () => {
+        if (!this.pending.has(id)) return;
+        const cpu = await processorSeconds(child.pid);
+        if (cpu >= 0 && cpu > cpuSeen) {
+          if (cpuSeen >= 0) log("info", "transcriber_slow", { engine: this.spec.name, audio_ms: audioMs, cpu_s: Math.round(cpu) });
+          cpuSeen = cpu;
+          const entry = this.pending.get(id);
+          if (entry) entry.timer = setTimeout(() => void look(), 60_000);
+          return;
+        }
         this.pending.delete(id);
-        log("warn", "transcriber_timeout", { engine: this.spec.name, audio_ms: audioMs });
+        log("warn", "transcriber_timeout", { engine: this.spec.name, audio_ms: audioMs, idle: cpu >= 0 });
         child.kill("SIGKILL");
         reject(new EngineUnavailable(`${this.spec.name}_timeout`));
-      }, 60_000 + audioMs);
+      };
+      const timer = setTimeout(() => void look(), 60_000 + audioMs);
       this.pending.set(id, { resolve, reject, timer, warm });
       child.stdin.write(`${id}\t${pcmPath}\n`);
     });
