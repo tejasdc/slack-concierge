@@ -77,13 +77,16 @@ async function closestSessions(query:string):Promise<{found:{id:number;score:num
   const answer=await index.search(query,30);
   if(!answer.available)return {found:[],omission:`Earlier sessions were not compared: ${answer.reason??'the meaning index is unavailable'}.`};
   const best=new Map<number,number>();
-  const imported=db.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id')=? LIMIT 1");
-  for(const hit of answer.hits){
-    if(hit.score<MIN_MEANING)continue;
-    const id=hit.target.kind==='session'?hit.target.sessionId
-      :hit.target.kind==='archive'?(imported.get(hit.target.sourceId) as {id:number}|null)?.id??null:null;
-    if(id!==null&&(best.get(id)??0)<hit.score)best.set(id,hit.score);
-    if(best.size>=MAX_SESSIONS*3)break;
+  const keep=(id:number,score:number)=>{if((best.get(id)??0)<score)best.set(id,score);};
+  const strong=answer.hits.filter(hit=>hit.score>=MIN_MEANING);
+  for(const hit of strong)if(hit.target.kind==='session')keep(hit.target.sessionId,hit.score);
+  // Imported transcripts Concierge already holds, found in one read rather than one scan per match.
+  const sources=[...new Set(strong.flatMap(hit=>hit.target.kind==='archive'?[hit.target.sourceId]:[]))].slice(0,30);
+  if(sources.length){
+    const rows=db.query(`SELECT id,json_extract(native_metadata_json,'$.source.id') AS source FROM sessions
+      WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id') IN (${sources.map(()=>'?').join(',')})`).all(...sources) as {id:number;source:string}[];
+    const bySource=new Map(rows.map(row=>[row.source,row.id]));
+    for(const hit of strong)if(hit.target.kind==='archive'){const id=bySource.get(hit.target.sourceId);if(id!==undefined)keep(id,hit.score);}
   }
   return {found:[...best.entries()].map(([id,score])=>({id,score})).sort((a,b)=>b.score-a.score),omission:null};
 }
