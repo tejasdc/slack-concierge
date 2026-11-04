@@ -31,7 +31,12 @@ canonical owner supplies only current sign-in ephemera through its private, memo
 endpoint; a requested fresh account check enters the owner's explicit refresh command before
 the executor assembles the account view. If that live state is unavailable, Accounts reports
 unavailable instead of inventing a sign-in state. Peer account and file reads use the existing
-peer API, with the same target identity and timeout semantics.
+peer API, with the same target identity and timeout semantics. Both the owner and this executor
+keep other machines' last account answers in one shared store (`peer-account-answers.ts`). The
+owner's sign-in ephemera carry when a sign-in action it carried to each machine last finished
+(`peerAuthActedAtMs`), and an answer read before that is never served as current, so a
+thnkr.ing reading taken after a sign-in starts or ends always reflects it (2026-11-04: a
+30-second-old answer could otherwise say a just-started Mac sign-in was not waiting).
 
 The composed foreground release fixture requires the Accounts response to contain exactly
 Claude, Codex and Antigravity by provider identity, independent of ordering. Its scratch
