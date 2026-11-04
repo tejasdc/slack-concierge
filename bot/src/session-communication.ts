@@ -892,6 +892,11 @@ export class SessionCommunicationCoordinator {
         this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
         return this.dependencies.owner.saveInboxNote({sourceInputId,sourceRunId:nativeRunId(actor.turn),sourceSessionId:actor.session,actionId:input.action_id,...(typeof input.summary==='string'?{summary:input.summary}:{}),...(typeof input.addTo==='string'?{addTo:input.addTo}:{}),...(typeof input.person==='string'?{person:input.person}:{}),...(input.journal==='entry'||input.journal==='checkin'?{journal:input.journal}:{}),...(typeof input.messageId==='string'?{messageId:input.messageId}:{captureId:input.captureId})});
     }
+    /** Whether a request paced with --after-settled still has to wait for this earlier request. */
+    private pacingWaitsOn(id: string): boolean {
+        const earlier = this.row(id);
+        return !earlier.outcome && earlier.stalled_at_ms === null;
+    }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
         if (!row)
@@ -2026,7 +2031,12 @@ export class SessionCommunicationCoordinator {
         const dependencies = payload.after.map(id => this.row(id));
         if (dependencies.some(value => !value.outcome))
             return;
-        if ((payload.pace ?? []).some(id => !this.row(id).outcome))
+        // A paced request waits for the earlier request to settle, or to stall: Concierge marks a
+        // request stalled when its recipient's run ended twice without a final reply, and nothing
+        // settles it after that. Waiting for settlement alone held 18 nightly findings for 11.5
+        // hours behind one stalled request (2026-11-03/04). The stalled request stays open, so a
+        // late answer still settles it; pacing just stops waiting on a peer that stopped.
+        if ((payload.pace ?? []).some(id => this.pacingWaitsOn(id)))
             return;
         // Missing confirmation is a decision needed by the requester, not proof
         // that the prerequisite work failed. Keep its continuation unadmitted.
@@ -2376,7 +2386,7 @@ export class SessionCommunicationCoordinator {
             // nothing. The nightly review got about ten such reminders for queued findings on
             // 2026-11-02.
             const queuedBehind=JSON.parse(request.payload_json) as {after?:string[];pace?:string[]};
-            if([...(queuedBehind.after??[]),...(queuedBehind.pace??[])].some(id=>!this.row(id).outcome)) {
+            if((queuedBehind.after??[]).some(id=>!this.row(id).outcome)||(queuedBehind.pace??[]).some(id=>this.pacingWaitsOn(id))) {
                 db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
                     .run(now + STILL_WAITING_AFTER_MS, request.request_id);
                 return;

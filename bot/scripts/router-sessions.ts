@@ -137,7 +137,7 @@ Sessions live on several Concierge instances (sessions peers lists them; mac is 
 ${REQUEST_PROTOCOL}
 A run that follows an interruption can still answer requests delivered to the earlier run.
 --after-request waits for the named request to settle. When it settles without confirmed success (decision needed, or an older request settled unanswered or undetermined), a request you asked before that outcome reached you stays held for your decision: cancel it with sessions cancel, or ask again. A request you ask after seeing that outcome is your decision and is delivered.
---after-settled paces a request without making it depend on the earlier one: it is delivered once each named request settles, whatever the outcome (answered, failed or canceled). Use it to keep only a few of your requests working at once; use --after-request when the later work needs the earlier one to have succeeded.
+--after-settled paces a request without making it depend on the earlier one: it is delivered once each named request settles, whatever the outcome (answered, failed or canceled), or stalls (its recipient ended twice without a final reply). Use it to keep only a few of your requests working at once; use --after-request when the later work needs the earlier one to have succeeded.
 Use sessions cancel <request-id> to withdraw your own request, for example one you have superseded; a request not yet handed to its recipient is never delivered afterwards, and a worker already holding it is told to stop.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
