@@ -1064,7 +1064,7 @@ export class SessionPeers {
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
         stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
         answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
-        answerGroup:declared.answerGroup??null,
+        answerGroup:declared.answerGroup??null,summary:typeof declared.summary==='string'?declared.summary:null,
         answerSource:declared.source?.input_id&&declared.source?.run_id
           ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
         noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
