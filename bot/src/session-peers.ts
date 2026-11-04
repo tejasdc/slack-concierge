@@ -852,7 +852,8 @@ export class SessionPeers {
         const current=this.row(row.request_id);
         if(current.outcome||current.stalled_at_ms!==null)return;
         const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
-        this.event(row,'overdue',{text:stalledNotice(remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,reason:remote.stalled.reason});
+        this.event(row,'overdue',{text:stalledNotice(remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,
+          reason:remote.stalled.reason,noticeGroup:`stalled:${row.peer}:${row.remote_session_id}:${remote.execution?.turnId??remote.stalled.atMs}`});
         db.query('UPDATE session_peer_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
       log('warn','session_peer_request_stalled',{request_id:row.request_id,peer:row.peer,reason:remote.stalled.reason});
@@ -1008,6 +1009,9 @@ export class SessionPeers {
         stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
         answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
         answerGroup:declared.answerGroup??null,
+        answerSource:declared.source?.input_id&&declared.source?.run_id
+          ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
+        noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
         hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
         messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
         alsoMainThread:declared.alsoMainThread===true,
@@ -1101,7 +1105,9 @@ export class SessionPeers {
             db.query('UPDATE session_peer_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
               .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
           } else {
-            this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
+            const remote=JSON.parse(current.remote_status_json??'{}');
+            this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true,
+              noticeGroup:`prompt-overdue:${current.peer}:${current.remote_session_id}:${remote.execution?.turnId??current.remote_operation_id}`});
             db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
           }
         })();
@@ -1351,7 +1357,7 @@ export class SessionPeers {
         source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`}),this.now());
     this.wake();
   }
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;waitingOnWatch?:string;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -1370,7 +1376,7 @@ export class SessionPeers {
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
       ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
-      ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
+      ...(input.answersQuestion?{answersQuestion:true}:{}),...(input.waitingOnWatch?{waitingOnWatch:input.waitingOnWatch}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
       // Custody on this instance; the forward reads these exact bytes for the origin.
       ...(input.attachments?.length?{attachments:input.attachments}:{}),
       ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),

@@ -54,23 +54,35 @@ export const AWAITING_INSPECTION = 'outcome IS NULL AND overdue_at_ms IS NULL AN
 /** A request this session sent that is still able to wake it with its answer. */
 export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnswers = true): boolean {
     const live = `outcome IS NULL AND stalled_at_ms IS NULL AND (overdue_at_ms IS NULL OR created_at_ms>=${REMINDERS_SINCE_MS})`;
+    const returns = "(json_extract(request.payload_json,'$.returnToRequester')=1 OR (request.thread_root_input_id IS NULL AND json_extract(request.payload_json,'$.forwardedReply') IS NULL AND json_extract(request.payload_json,'$.routedMessage') IS NULL))";
     return !!db.query(`SELECT 1 FROM session_communication_requests request
         LEFT JOIN session_inputs target ON target.id=request.target_input_id
         LEFT JOIN turns saved_turn ON saved_turn.id=target.turn_id
-        WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${live}
+        WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${live} AND ${returns}
           AND NOT (saved_turn.saved_kind IS NOT NULL AND saved_turn.status='queued') LIMIT 1`).get(sessionId, sinceMs)
-        || !!db.query(`SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND created_at_ms>=? AND ${live} LIMIT 1`).get(sessionId, sinceMs)
+        || !!db.query(`SELECT 1 FROM session_peer_requests request WHERE source_session_id=? AND created_at_ms>=? AND ${live} AND ${returns} LIMIT 1`).get(sessionId, sinceMs)
         // A request that has just been answered still wakes this session until its answer is taken
         // in: on 2026-10-08 three requests were reported stalled in the same second their worker's
         // own sub-request settled, before the return that woke it had started a turn.
         || untakenAnswers && !!db.query(`SELECT 1 FROM session_communication_requests request
             JOIN session_communication_events answer ON answer.request_id=request.request_id AND answer.kind='final'
-            WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId, sinceMs);
+            WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${returns} AND answer.status IN ('recorded','admitted') LIMIT 1`).get(sessionId, sinceMs);
 }
 
 /** The worker ended its turn waiting on something that will wake it: its own live request, or a watch it registered (watches.ts). */
 export function waitingOnDependency(sessionId: number, sinceMs = 0, untakenAnswers = true): boolean {
     return !!db.query("SELECT 1 FROM watches WHERE session_id=? AND created_at_ms>=? AND (state IN ('accepted','observing') OR delivery_state='pending') LIMIT 1").get(sessionId, sinceMs)
+        || !!db.query(`SELECT 1 FROM watches watch WHERE watch.session_id=?
+            AND (watch.state IN ('accepted','observing') OR watch.delivery_state='pending')
+            AND (EXISTS (SELECT 1 FROM session_communication_requests request
+                JOIN session_communication_events reply ON reply.request_id=request.request_id AND reply.kind='progress'
+                WHERE request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
+                  AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)
+              OR EXISTS (SELECT 1 FROM session_peer_deliveries request
+                JOIN session_peer_replies reply ON reply.request_id=request.request_id AND reply.kind='progress'
+                WHERE request.target_session_id=? AND request.closed_at_ms IS NULL AND request.created_at_ms>=?
+                  AND json_extract(reply.payload_json,'$.waitingOnWatch')=watch.watch_id)) LIMIT 1`)
+            .get(sessionId,sessionId,sinceMs,sessionId,sinceMs)
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
 }
 
@@ -128,7 +140,7 @@ export const reportBackNotice = (label: string, command: string) =>
     + 'using this input\'s source pair. If the work is not finished, finish it first or say exactly what is left.';
 
 export const stalledNotice = (reason: string, lastPartial: string | null) =>
-    `The agent stopped before answering this request: ${reason}. `
+    `The agent's turn ended with this request unfinished and no reliable continuation: ${reason}. `
     + (lastPartial ? `Its last partial reply said: "${lastPartial.slice(0, 600)}". ` : 'It sent no partial reply. ')
     + 'The request stays open, and a late answer will still arrive here.';
 

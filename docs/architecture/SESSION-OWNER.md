@@ -507,6 +507,31 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   "Please update as soon as one agent you get there. What if one agent is like doing some minor work and an another
   agent is doing two hours of work?" [decision: answers-delivered-when-they-arrive]). A stall or overdue notice is checked
   against the request at delivery and dropped when the request is already answered, and an answer withdraws a notice
-  about it not yet taken up. A worker waiting on its own sub-request or watch started after the request is not stalled
+  about it not yet taken up. A worker waiting on its own returning sub-request or watch started after the request is not stalled
   (`waitingOnDependency`). Every ask and final reply carries a one-line `--summary` shown first; `--answer-view
   summary` lets the asker see only it. See [exchange kinds](../plans/2026-10-08-exchange-kinds.md).
+
+- **One agent event occupies one thread row.** Progress from one agent run with the same words,
+  files and answer status reuses the first post across requests in a topic. A stopped or prompt
+  overdue turn has one service post across those requests. Each request keeps its own event,
+  reminder, answer obligation and final disposition. A bodyless final still closes against that
+  request's prompt-answer event, even when another request carried the visible post. Distinct
+  closing facts remain append-only and appear beneath that shared post. Mac replies
+  carry their source run through the same posting rule. The November 4 duplicate posts in the
+  think-aloud thread are retired by append-only collapse events; raw replies remain evidence.
+
+- **A release wait has a wake condition.** The agent registers a renewing file watch on the
+  product's current-release link, then names its watch ID with `sessions reply --partial
+  --waiting-on-watch`. The reply command checks that the watch belongs to that agent and is
+  active. An existing renewing watch can serve a later request too: the partial reply binds
+  that request to the watch. While it is active, the stranded check sees a live
+  dependency; when the link points to another release, the watch sends one service input to the
+  agent so it can check the installed revision and close or continue the request. The file watcher
+  follows the link for file or directory changes and, for new watches, also records the exact
+  symlink target. An atomic link swap is observed even if the old and new release directories
+  happen to have the same metadata; older active watches retain their original comparison.
+  A peer agent uses the same local watch
+  on its own machine. An open request with no actual wake condition still receives the stalled
+  notice after its report-back attempt; waiting prose alone does not hide a silent stop.
+  A child request placed in a named thread counts as a wake only with an explicit return to
+  the requester; thread-only delivery cannot keep the worker's other work open silently.

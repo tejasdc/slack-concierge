@@ -13,7 +13,7 @@
  * one service input with the stable id `watch:<watch-id>:<event>`.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { db,globalPauseState,getSessionById } from "./state";
 import {sessionMetadata} from './session-inputs';
@@ -114,6 +114,8 @@ export type PathVersion = {
   entryCount: number | null;
   /** name -> [size, mtimeMs]; kept only for a small directory, to name what changed. */
   entries: Record<string, [number, number]> | null;
+  /** New registrations also pin the link target; older baselines omit it and keep their old comparison. */
+  linkTargetDigest?:string|null;
 };
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -126,6 +128,9 @@ export function observePath(path: string): PathVersion {
       return { type: "absent", mode: "absent", size: null, mtimeMs: null, digest: null, entryCount: null, entries: null };
     throw error;
   }
+  let linkTargetDigest:string|null=null;
+  try {if(lstatSync(path).isSymbolicLink())linkTargetDigest=sha256(readlinkSync(path));}
+  catch { /* The ordinary target observation below still decides whether the path changed. */ }
   if (stat.isDirectory()) {
     const names = readdirSync(path);
     if (names.length > MAX_DIRECTORY_ENTRIES)
@@ -137,11 +142,11 @@ export function observePath(path: string): PathVersion {
     }
     const digest = sha256(Object.entries(entries).map(([name, [size, mtime]]) => `${name}\0${size}\0${mtime}`).join("\n"));
     return { type: "directory", mode: "directory-entries", size: null, mtimeMs: null, digest, entryCount: Object.keys(entries).length,
-      entries: Object.keys(entries).length <= NAMED_ENTRIES_LIMIT ? entries : null };
+      entries: Object.keys(entries).length <= NAMED_ENTRIES_LIMIT ? entries : null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
   }
   if (stat.isFile() && stat.size <= WATCH_HASH_LIMIT_BYTES)
-    return { type: "file", mode: "content-hash", size: stat.size, mtimeMs: stat.mtimeMs, digest: sha256(readFileSync(path)), entryCount: null, entries: null };
-  return { type: stat.isFile() ? "file" : "other", mode: "mtime-size", size: stat.size, mtimeMs: stat.mtimeMs, digest: null, entryCount: null, entries: null };
+    return { type: "file", mode: "content-hash", size: stat.size, mtimeMs: stat.mtimeMs, digest: sha256(readFileSync(path)), entryCount: null, entries: null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
+  return { type: stat.isFile() ? "file" : "other", mode: "mtime-size", size: stat.size, mtimeMs: stat.mtimeMs, digest: null, entryCount: null, entries: null, ...(linkTargetDigest?{linkTargetDigest}:{}) };
 }
 
 /** Why `now` is not the baseline version, or null when it is the same version. */
@@ -152,6 +157,8 @@ export function versionChange(baseline: PathVersion, now: PathVersion): string |
     return `it changed from a ${baseline.type} to a ${now.type}`;
   }
   if (now.type === "absent") return null;
+  if (baseline.linkTargetDigest&&now.linkTargetDigest&&baseline.linkTargetDigest!==now.linkTargetDigest)
+    return "the link points to another release";
   if (now.type === "directory") {
     if (now.digest === baseline.digest) return null;
     if (baseline.entries && now.entries) {
