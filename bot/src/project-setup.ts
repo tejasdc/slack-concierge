@@ -26,7 +26,7 @@ type Order={orderId:string;kind:'project.setup';origin:Origin;project:string;fol
 // A peer that predates placement decisions must not silently create a grouped project at root.
 export const PROJECT_FOLDERS_OPERATION='project.setup.placement.v1';
 const GROUP=/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-type CanvasEnsureRow={board_id:string;client_action_id:string;project:string;inside:string|null;title:string;purpose:string;template:string;state:'awaiting_policy'|'creating'|'ready'|'failed';policy_revision_id:string|null;created_project:number;error:string|null;created_at_ms:number;updated_at_ms:number};
+type CanvasEnsureRow={board_id:string;client_action_id:string;project:string;inside:string|null;title:string;title_clock:number;purpose:string;template:string;state:'awaiting_policy'|'creating'|'ready'|'failed';policy_revision_id:string|null;created_project:number;error:string|null;created_at_ms:number;updated_at_ms:number};
 type CanvasPolicyRow={revision_id:string;group_name:string;template:string;consultation_request_id:string;source_session_id:number;source_input_id:string;source_run_id:string;created_at_ms:number};
 const canvasBoard=(value:unknown)=>{
   if(typeof value!=='string'||!value.trim()||value.length>200||/[\r\n\0]/.test(value))throw new Error('Canvas identity is invalid.');
@@ -269,6 +269,9 @@ export class ProjectSetup {
     return {project,local:'done',path:destination,commit,orders};
   }
   private canvasRow(board:string){return db.query('SELECT * FROM canvas_project_ensures WHERE board_id=?').get(board) as CanvasEnsureRow|null;}
+  canvasProjectTitles(){
+    return new Map((db.query("SELECT project,title FROM canvas_project_ensures WHERE policy_revision_id IS NOT NULL AND inside IS NULL AND state='ready' AND created_project=1").all() as Array<{project:string;title:string}>).map(row=>[row.project,row.title]));
+  }
   private canvasPolicy(){return db.query('SELECT * FROM canvas_project_policies ORDER BY created_at_ms DESC,rowid DESC LIMIT 1').get() as CanvasPolicyRow|null;}
   private canvasName(title:string,board:string){
     const placeholder=/^canvas(?:\s+\d+)?$/i.test(title)||/^(?:new|untitled)\s+canvas$/i.test(title);
@@ -303,7 +306,7 @@ export class ProjectSetup {
     const macState=macPath?'ready':order&&TERMINAL.has(order)?'unavailable':order||row.state==='creating'&&!!local?'pending':'unavailable';
     const state=local?'ready':row.state==='failed'?'failed':'pending';
     const created=!!row.created_project||!!row.policy_revision_id&&!!local;
-    return {state,boardId:row.board_id,project:{name:row.project,inside:row.inside,sessionProject:sessionName,ownerId:this.self,
+    return {state,boardId:row.board_id,title:row.title,project:{name:row.project,inside:row.inside,sessionProject:sessionName,ownerId:this.self,
       serverPath:local?.cwd??null,macPath,macState,
       template:row.template,created},retryAfterMs:state==='pending'||row.state==='creating'||macState==='pending'?1000:null,policyRevisionId:row.policy_revision_id,error:row.error};
   }
@@ -332,15 +335,22 @@ export class ProjectSetup {
     await localReady;
   }
   async ensureCanvas(input:unknown){
-    const data=exactKeys(input,['clientActionId','boardId','boardTitle','existingProject']);const actionId=canvasAction(data.clientActionId),board=canvasBoard(data.boardId),title=canvasTitle(data.boardTitle);
+    const data=exactKeys(input,['clientActionId','boardId','boardTitle','boardClock','existingProject']);const actionId=canvasAction(data.clientActionId),board=canvasBoard(data.boardId),title=canvasTitle(data.boardTitle);
+    const titleClock=data.boardClock===undefined?0:data.boardClock;
+    if(!Number.isSafeInteger(titleClock)||titleClock<0)throw new Error('Canvas title revision is invalid.');
     const requestedExisting=data.existingProject===undefined?null:(()=>{const existing=exactKeys(data.existingProject,['name','inside']);return {name:existingName(existing.name),inside:canvasInside(existing.inside)};})();
     const actionBoard=db.query('SELECT board_id FROM canvas_project_ensures WHERE client_action_id=?').get(actionId) as {board_id:string}|null;
     if(actionBoard&&actionBoard.board_id!==board)throw new Error('Canvas project action identity already belongs to another Canvas.');
     let row=this.canvasRow(board);
     if(row){
       const explicit=row.state==='ready'&&row.policy_revision_id===null&&!row.created_project;
-      if(row.client_action_id!==actionId||explicit!==!!requestedExisting||requestedExisting&&(row.project!==requestedExisting.name||row.inside!==requestedExisting.inside))
+      if(row.client_action_id!==actionId||!explicit&&!!requestedExisting||requestedExisting&&(row.project!==requestedExisting.name||row.inside!==requestedExisting.inside))
         throw new Error('Canvas project action identity already has different immutable inputs.');
+      if(titleClock>row.title_clock){
+        db.query('UPDATE canvas_project_ensures SET title=?,title_clock=?,updated_at_ms=? WHERE board_id=? AND title_clock<?')
+          .run(title,titleClock,Date.now(),board,titleClock);
+        row=this.canvasRow(board)!;
+      }
     }
     if(!row){
       let project:string,inside:string|null=null,state:'ready'|'awaiting_policy'='awaiting_policy',created=0;
@@ -351,8 +361,8 @@ export class ProjectSetup {
         project=name;state='ready';
       }else project=this.canvasName(title,board);
       const purpose=canvasPurpose(title),now=Date.now(),policy=state==='ready'?null:this.canvasPolicy();
-      db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
+      db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,title_clock,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,titleClock,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
       row=this.canvasRow(board)!;
     }
     if(row.state==='ready')return this.canvasView(row);
