@@ -79,5 +79,5 @@ function resolvesToFile(path:string):boolean {try {return statSync(path).isFile(
 /** The registered project a folder belongs to: itself, or the project it is inside. Task lists and instructions belong to the project, not its subfolders. */
 export function containingProject(workspaceRoot:string,cwd:string):SessionProject|null {
   return sessionProjects(workspaceRoot).filter(project=>cwd===project.cwd||cwd.startsWith(`${project.cwd}/`))
-    .sort((left,right)=>left.cwd.length-right.cwd.length)[0]??null;
+    .sort((left,right)=>right.cwd.length-left.cwd.length)[0]??null;
 }

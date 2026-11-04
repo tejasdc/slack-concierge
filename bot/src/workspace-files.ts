@@ -100,7 +100,7 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   if (!stats.isFile()) throw new WorkspaceFileError('That path is not a file.', 404, 'FILE_UNAVAILABLE');
   if (stats.size > MAX_BYTES) throw new WorkspaceFileError(`That file is ${Math.round(stats.size / 1024)} KB; this viewer opens files up to ${MAX_BYTES / 1024 / 1024} MB.`, 413, 'FILE_TOO_LARGE');
   const project = sessionProjects(root).filter(candidate => within(candidate.cwd, path))
-    .sort((left,right)=>left.cwd.length-right.cwd.length)[0] ?? null;
+    .sort((left,right)=>right.cwd.length-left.cwd.length)[0] ?? null;
   return {
     machine: input.machine,
     path,
