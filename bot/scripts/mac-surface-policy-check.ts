@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {macSurfaceRefusal} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
+import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
 const check=(command:string,need='',platform='darwin',toolName='Bash')=>
   macSurfaceRefusal({command,need,platform,toolName,toolInput:{command}});
@@ -34,6 +35,21 @@ assert.match(macSurfaceRefusal({command:null,need:'browser-fallback',platform:'d
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}})??'',/accepted Mac/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-file',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}})??'',/accepted Mac/);
 assert.equal(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Voice Memos")'}}),null);
+const webAppNeed={kind:'mac-app',why:'Inspect the already-open thnkr.ing web app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792 page faf63877-6536-4ac6-86e9-5d63e03d3369, directly authorized by Tejas.',humanInputId:'f66f15dd-e251-4537-a9cd-347d0548434b'};
+const webAppCall="let app = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792');";
+assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}}),null);
+assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await app.getAXState()'}}),null);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,why:'Inspect the Mac app'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
+assert.match(macSurfaceRefusal({command:null,need:{kind:'mac-app',why:'Inspect the already-open thnkr.ing app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
+assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,humanInputId:'another-human-request'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Safari')"}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/personal browser/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall+" await cua.getApp('Safari');"}})??'',/only read-only/);
+assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'functions.exec',toolInput:{code:`await tools.mcp__cua_repl__js({code:${JSON.stringify(webAppCall)}})`}})??'',/only read-only/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}})??'',/personal browser/);
 assert.equal(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Google Chrome")'}}),null);
 assert.match(macSurfaceRefusal({command:null,need:'provider-renewal',platform:'darwin',toolName:'mcp__claude-in-chrome__navigate',toolInput:{url:'https://claude.ai'}})??'',/personal Chrome/);
@@ -52,4 +68,14 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'const cmd="open -a Google Chrome https://thnkr.ing"; await tools.exec_command({cmd})'}})??'',/Dynamic shell/);
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'const cmd="xcrun simctl boot ABC"; await tools.exec_command({cmd})'}})??'',/Dynamic shell/);
 assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:'functions.exec',toolInput:{code:'const metadata={cmd:"rg docs"}; const cmd="open -a Google Chrome"; await tools.exec_command({cmd})'}})??'',/Dynamic shell/);
+for(const question of ['Can you click the button in the app?','Can you open Safari?','Can you enter the code in the web app?',
+  'Can you sign in to the website?','Can you recover the eight notes in thnkr.ing?',
+  'Can you unlock the Mac and copy the notes from the app?','Can you unlock the Mac and copy the eight notes?',
+  'Can you unlock your Mac, then click Save?','Can you unlock the Mac and scroll the app?',
+  'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
+  'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
+for(const question of ['Can you unlock your Mac so the agent can continue?',
+  'Can you unlock the Mac so the agent can read the app?','Can you take a photo of the paper?'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
 console.log('Mac surface policy refused the unsafe actions and kept server and read-only work available.');

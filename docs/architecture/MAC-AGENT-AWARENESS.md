@@ -7,11 +7,28 @@ commands in Claude and Codex turns, including server SSH commands aimed at the M
 background Simulator command-line automation only with a native iOS need on that accepted
 turn. Codex Computer Use also requires a recorded desktop-capable need, and Claude in
 Chrome remains refused because it controls his personal browser. Concierge's own
-provider sign-in repair request is the sole Computer Use exception for the saved
+provider sign-in repair request is the only Computer Use exception for the saved
 Chrome account; the Mac owner checks the retained repair request before admitting it.
+For Tejas's directly authorized, already-open thnkr.ing Safari web app, a Mac-app
+request must name its exact bundle and page IDs, and its retained provenance must lead
+to Tejas's authorizing human input. The Mac owner returns that provenance and reason
+to the hook. For this human task, Computer Use admits only a direct `getApp` call
+selecting that bundle and subsequent read-only app-state calls; a generic Safari
+selector, another web app or browser, whole-screen call, nested tool call, or a
+Mac-app request without both IDs remains refused. The exception lives
+only while the accepted Mac request is active. Selecting the app does not establish
+that the requested page is still present; the Mac agent must inspect and report that
+separately before acting on its contents. The current identifiers and direct human
+authorization are recorded in the November 3 Mac request and policy check.
 This is a tool boundary;
 arbitrary programs outside the managed provider stream remain
 outside it. See [peer instances](../runbooks/PEER-INSTANCES.md#what-runs-on-the-mac).
+
+The question gate accepts a device-only claim only when its question names a physical
+prerequisite and does not ask Tejas to operate an app or website. The agent first uses
+its computer-use route. If that route reaches a physical prerequisite such as unlocking
+the Mac, the question names that prerequisite instead of asking him to perform the app
+action.
 
 The Mac session owner observes Claude and Codex tool starts in the existing provider
 progress stream. The server owner also observes tool calls that SSH to Tejas's Mac,

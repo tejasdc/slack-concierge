@@ -1,5 +1,25 @@
 const CHROME_CONTROL=/claude[-_]in[-_]chrome/i;
 const COMPUTER_CONTROL=/cua[_-]?repl|computer[._-]?use|skycomputeruse/i;
+const AUTHORIZED_WEB_APP='com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792';
+const AUTHORIZED_PAGE='faf63877-6536-4ac6-86e9-5d63e03d3369';
+const AUTHORIZING_HUMAN_INPUT='f66f15dd-e251-4537-a9cd-347d0548434b';
+
+type RecordedNeed=string|{kind:string;why?:string;humanInputId?:string};
+
+function authorizedWebAppInspection(need:RecordedNeed,toolName:string,code:string):boolean {
+  if(typeof need==='string'||need.kind!=='mac-app'||need.humanInputId!==AUTHORIZING_HUMAN_INPUT||typeof need.why!=='string'
+      ||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
+      ||!COMPUTER_CONTROL.test(toolName))return false;
+  const quoted=AUTHORIZED_WEB_APP.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp(`^\\s*(?:(?:let|const|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*)?await\\s+cua\\.getApp\\(\\s*(['"])${quoted}\\1\\s*\\)\\s*;?\\s*$`).test(code);
+}
+
+function authorizedWebAppRead(need:RecordedNeed,toolName:string,code:string):boolean {
+  if(typeof need==='string'||need.kind!=='mac-app'||need.humanInputId!==AUTHORIZING_HUMAN_INPUT
+      ||typeof need.why!=='string'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
+      ||!COMPUTER_CONTROL.test(toolName))return false;
+  return /^\s*await\s+app\.(?:getAXState|getAXStateAndScreenshot|getScreenshot)\(\s*\)\s*;?\s*$/.test(code);
+}
 
 function namedToolCall(name:RegExp,code:string):boolean {
   return new RegExp(`\\btools\\.[\\w$]*(?:${name.source})[\\w$]*\\s*\\(`,'i').test(code);
@@ -12,7 +32,7 @@ export function macComputerUseCall(toolName:string,toolInput:unknown):boolean {
 }
 
 /** Refuse common agent tool paths that would take over Tejas's Mac desktop. */
-export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:string;platform:string}):string|null {
+export function macSurfaceRefusal(input:{command:string|null;toolName:string;toolInput:unknown;need:RecordedNeed;platform:string}):string|null {
   const {command,toolName,toolInput,need,platform}=input;
   const raw=command??'';
   const tool=toolName.toLowerCase();
@@ -20,12 +40,21 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return 'Direct agent browser control on Tejas’s Mac is refused. Use the server, or the isolated Mac browser after a recorded server failure.';
   const details=toolInput&&typeof toolInput==='object'?toolInput as Record<string,unknown>:{};
   const code=typeof details.code==='string'?details.code:'';
+  const kind=typeof need==='string'?need:need.kind;
+  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
+      &&typeof need!=='string'&&need.humanInputId===AUTHORIZING_HUMAN_INPUT
+      &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppRead(need,toolName,code))
+    return 'This authorization covers only read-only Computer Use inspection of the exact thnkr.ing web app. Use its recorded bundle and page IDs; do not select another app or the whole screen.';
   if(platform==='darwin'&&(CHROME_CONTROL.test(tool)||namedToolCall(CHROME_CONTROL,code)))
     return 'Claude in Chrome controls Tejas’s personal Chrome. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
-  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&need!=='provider-renewal'&&/\b(?:Google Chrome|Chrome|Safari)\b/i.test(code))
-    return 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
+  if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)&&kind!=='provider-renewal'
+      &&/\b(?:Google Chrome|Chrome|Safari|Thinkering)\b/i.test(code)
+      &&!authorizedWebAppInspection(need,toolName,code))
+    return code.includes('com.apple.Safari.WebApp.')
+      ? 'This Safari web app needs an active Mac-app request naming its exact bundle and page IDs, followed by a direct Computer Use getApp call for that bundle. Reissue the request with Tejas’s authorization; do not ask him to copy the app’s contents.'
+      : 'Computer Use cannot target Tejas’s personal browser. Run the website on the server, or use the isolated Mac browser after a recorded server failure.';
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
-      &&!['ios-native','mac-app','mac-screen','human-mac','provider-renewal'].includes(need))
+      &&!['ios-native','mac-app','mac-screen','human-mac','provider-renewal'].includes(kind))
     return 'Mac Computer Use needs an accepted Mac app, screen, native iOS, or explicit Mac need on this request.';
   if(/^(?:read|grep|glob|notebookread)$/i.test(toolName))return null;
   if(/^(?:rg|grep|sed|cat|ls|head|tail|find|ps|stat|git\s+diff)\b/i.test(raw.trim())
@@ -58,9 +87,9 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
     return 'Direct browser and foreground Chrome or Simulator use on Tejas’s Mac is refused. Run ordinary checks on the server; a recorded server failure can use the isolated Mac browser without desktop focus.';
   if(focus.test(source)||appControl.test(source)&&/\bactivate\b|\b(?:Chrome|Safari|Simulator)\b/i.test(source))
     return 'A Mac agent cannot take the foreground app or control Tejas’s browser. Use a background Mac action for the exact Mac-only task.';
-  if(new RegExp(action+'(?:/usr/bin/)?open\\s+-g\\b','i').test(source)&&!need)
+  if(new RegExp(action+'(?:/usr/bin/)?open\\s+-g\\b','i').test(source)&&!kind)
     return 'A background Mac app launch needs an accepted Mac-only reason on this exact request.';
-  if(simulator.test(source)&&need!=='ios-native')
+  if(simulator.test(source)&&kind!=='ios-native')
     return 'Simulator and iOS Safari automation require an accepted Mac-only iOS need on this exact request. Ordinary phone-size checks run on the server.';
   return null;
 }

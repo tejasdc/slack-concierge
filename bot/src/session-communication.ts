@@ -558,8 +558,13 @@ export class SessionCommunicationCoordinator {
         let newest=true;
         for(const row of db.query(`SELECT id,payload_json FROM session_inputs WHERE turn_id=? ORDER BY rowid DESC LIMIT 50`).all(running.turn_id) as {id:string;payload_json:string}[]){
             const payload=JSON.parse(row.payload_json);
-            const kind=payload?.machineNeed?.kind??payload?.firstInput?.machineNeed?.kind;
-            if(typeof kind==='string'&&kind&&(kind!=='provider-renewal'||newest))return {kind};
+            const need=payload?.machineNeed??payload?.firstInput?.machineNeed;
+            const kind=need?.kind;
+            if(typeof kind==='string'&&kind&&(kind!=='provider-renewal'||newest)){
+                const accepted=getAcceptedSessionInput(row.id);
+                const humanInputId=accepted?sessionInputProvenance(accepted)?.originatingHuman?.inputId:undefined;
+                return {kind,why:typeof need.why==='string'?need.why:'',humanInputId};
+            }
             // A return to the worker carries the original renewal input as its request source.
             // Other turns in the same session never inherit this browser exception.
             if(newest){
