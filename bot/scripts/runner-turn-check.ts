@@ -15,6 +15,7 @@
  * because units started under systemd do not see a sandbox's private /tmp).
  */
 import {strict as assert} from 'node:assert';
+import {Database} from 'bun:sqlite';
 import {chmodSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
@@ -29,7 +30,6 @@ process.env.CONCIERGE_RUNNER_CLAIM_MS='20000';
 // A value only the owner's process holds: it must never reach a runner's provider.
 process.env.OWNER_ONLY_SENTINEL='owner-environment-leaked';
 
-const {Database}=await import('bun:sqlite');
 const db=new Database(':memory:');
 const {initializeRunnerSchema,RunnerLeases}=await import('../src/runner-leases');
 initializeRunnerSchema(db);
