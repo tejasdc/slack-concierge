@@ -1134,6 +1134,26 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     resetInactivityTimeout();
     return result;
   };
+  let stopBeforeSubmission!: (error: Error) => void;
+  const stoppedBeforeSubmission = new Promise<never>((_resolve, reject) => { stopBeforeSubmission = reject; });
+  void stoppedBeforeSubmission.catch(() => {});
+  const resumeUntilAnswered = async (threadId: string, params: unknown) => {
+    await ledgerDurable();
+    const started = Date.now();
+    const slow = setInterval(() => log("warn", "codex_resume_waiting", {
+      provider_thread_uuid: threadId, waited_ms: Date.now() - started,
+    }), requestTimeoutMs);
+    try {
+      const result = await Promise.race([
+        client.request("thread/resume", params, { untilDisconnect: true }),
+        stoppedBeforeSubmission,
+      ]);
+      resetInactivityTimeout();
+      return result;
+    } finally {
+      clearInterval(slow);
+    }
+  };
   const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
   const reportProviderTerminal = () => {
@@ -1496,7 +1516,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       if (turnSettled) return;
       interruptionReason = new ProviderTurnCancelledError();
       recoveryMustInterrupt = true;
-      if (!turnSubmissionAttempted) return;
+      if (!turnSubmissionAttempted) { stopBeforeSubmission(interruptionReason); return; }
       if (!activeThreadId || !activeTurnId) {
         throw parkUnconfirmedTurn(new Error("Stop requested before Codex confirmed an exact provider turn; cancellation is not confirmed."));
       }
@@ -1525,12 +1545,13 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (interruptionReason) throw interruptionReason;
     let threadResponse: any;
     try {
-      // A turn reads only the thread's id, model and policy from this answer. Without
-      // excludeTurns the App Server returns the whole history: for a 218 MB conversation
-      // (session 6967, 2026-11-04) each resume outlived the 30 s limit and held the shared
-      // connection, so every other Codex session's resume timed out with it.
+      // A turn reads only the thread's id, model and policy from this answer, so it never asks
+      // for history. A cold resume still loads the whole rollout before answering, which on
+      // 2026-11-04 took minutes for a 218 MB conversation on a swapping host. Giving up at a
+      // deadline and asking again only stacked more loads and ended in a refused turn, so the
+      // turn waits for this answer while the connection lives; Stop and a disconnect end it.
       threadResponse = sessionUUID
-        ? await request("thread/resume", { threadId: sessionUUID, ...threadParams, excludeTurns: true })
+        ? await resumeUntilAnswered(sessionUUID, { threadId: sessionUUID, ...threadParams, excludeTurns: true })
         : await request("thread/start", threadParams);
     } catch (error) {
       // Neither operation sends the user's input. Even if the App Server created or

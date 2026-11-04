@@ -736,6 +736,39 @@ describe("codex app-server", () => {
     expect(client.interruptCalls).toBe(0);
   });
 
+  test("a resume waits for its answer with no deadline, and Stop ends the wait", async () => {
+    // 2026-11-04: cold resumes of a 218 MB conversation outlived a 30 s deadline; each retry
+    // stacked another load and the turn was refused. The resume now waits while connected.
+    const options: any[] = [];
+    let entered!: () => void;
+    const resumeSent = new Promise<void>(resolve => { entered = resolve; });
+    class SilentResumeClient extends ScriptedSharedClient {
+      override async request(method: string, params: any, requestOptions?: any) {
+        if (method === "thread/resume") {
+          options.push(requestOptions);
+          this.requests.push(method);
+          entered();
+          return new Promise(() => {});
+        }
+        return super.request(method, params);
+      }
+    }
+    const client = new SilentResumeClient();
+    let cancel: (() => Promise<void>) | undefined;
+    const running = runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: "shared-thread",
+      interactionPolicy: "consultation-only", appServerClient: client, requestTimeoutMs: 20,
+      onCancellationReady: value => { cancel = value; },
+    }).then(result => ({ result, error: null }), error => ({ result: null, error }));
+    await resumeSent;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(options).toEqual([expect.objectContaining({ untilDisconnect: true })]);
+    await cancel!();
+    const outcome = await running;
+    expect(outcome.error).toBeInstanceOf(ProviderTurnCancelledError);
+    expect(client.requests.filter(method => method === "thread/resume")).toHaveLength(1);
+    expect(client.requests).not.toContain("turn/start");
+  });
+
   test("Stop remains responsive before turn/start acknowledges an exact provider turn", async () => {
     let submitted!: () => void, release!: () => void;
     const entered = new Promise<void>(resolve => { submitted = resolve; });
