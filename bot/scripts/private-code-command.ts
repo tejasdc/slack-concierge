@@ -13,7 +13,7 @@ const state=mkdtempSync(join(tmpdir(),'concierge-private-code-'));
 try{
   const command=privateDatabaseCommand(args,true);
   const env={...process.env,CONCIERGE_STATE_DIR:state,CONCIERGE_STATE_DB:join(state,'state.db'),
-    CONCIERGE_CAPTURE_STATE_DIR:join(state,'capture'),CONCIERGE_TEST_MODE:'1'};
+    CONCIERGE_CAPTURE_STATE_DIR:join(state,'capture'),CONCIERGE_TEST_MODE:'1',CONCIERGE_PRIVATE_CODE_STATE:state};
   const result=spawnSync(command[0],command.slice(1),{env,stdio:'inherit',cwd:process.cwd()});
   if(result.error)throw result.error;
   process.exitCode=result.status??1;
