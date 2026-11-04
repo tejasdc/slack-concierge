@@ -27,7 +27,9 @@ try {
   // Configuration crosses the inherited private environment, never a command line.
   const peer=process.env.CONCIERGE_GATEWAY_PEER?JSON.parse(process.env.CONCIERGE_GATEWAY_PEER):null;
   delete process.env.CONCIERGE_GATEWAY_PEER;
-  gateway=await startForegroundGateway({stateDir,ownerSocket,readWorkerEntry,peer,onContact:()=>process.send?.({kind:'peer-contact'})});
+  const agent=process.env.CONCIERGE_GATEWAY_AGENT?JSON.parse(process.env.CONCIERGE_GATEWAY_AGENT):null;
+  delete process.env.CONCIERGE_GATEWAY_AGENT;
+  gateway=await startForegroundGateway({stateDir,ownerSocket,readWorkerEntry,peer,agent,onContact:()=>process.send?.({kind:'peer-contact'})});
   if(stopping){await gateway.stop(true);process.exit(0);}
   process.send?.({kind:'ready',pid:process.pid});
 } catch(error) {

@@ -19,6 +19,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Architecture
 
 - [Unified session ownership](architecture/SESSION-OWNER.md) — the sole session/input/request ledger, authenticated Thinkering surface, removable Slack adapter, native controls, source custody and consultation policy.
+- [Runners and the owner on its own app server](architecture/RUNNERS.md) — what ties the owner to the agents' machine, the agents' network entrance with signed tokens, the runner lease protocol and the cut that moves turns onto runners.
 - [Turn lifecycle and durable projections](architecture/TURN-LIFECYCLE.md) — runtime ownership, Slack-visible terminal projections, recovery, and provider-process liveness.
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.

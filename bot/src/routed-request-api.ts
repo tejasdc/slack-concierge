@@ -25,6 +25,7 @@ import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
 import {releaseFilesInUse} from './executions';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
+import {runnerRoutes} from './runner-routes';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -165,6 +166,7 @@ function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>
   return async function fetch(request:Request):Promise<Response> {
     try {
       const url=new URL(request.url);
+      if(url.pathname.startsWith('/runner/v1/')&&owner)return await runnerRoutes(request,url);
       if(request.method==='GET'&&url.pathname==='/internal/auth-ephemera'&&owner)
         return Response.json(owner.authEphemera());
       if(request.method==='POST'&&url.pathname==='/internal/auth-refresh'&&owner)

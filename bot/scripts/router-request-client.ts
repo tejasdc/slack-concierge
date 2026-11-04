@@ -28,6 +28,19 @@ function socketPath() {
   return join(realpathSync(stateDirectory()), 'requests.sock');
 }
 
+/**
+ * Where the owner is. A run started by an owner on another machine names its network entrance
+ * (`CONCIERGE_OWNER_URL`) and carries its own signed token (`CONCIERGE_AGENT_TOKEN`); every
+ * other caller reaches the owner's socket on this machine, as before (docs/architecture/RUNNERS.md).
+ */
+function networkOwner() {
+  const url = process.env.CONCIERGE_OWNER_URL?.trim(), token = process.env.CONCIERGE_AGENT_TOKEN?.trim();
+  return url && token ? { url: url.replace(/\/+$/, ''), token } : null;
+}
+function ownerUrl(path: string) { const remote = networkOwner(); return remote ? `${remote.url}${path}` : `http://localhost${path}`; }
+function ownerTransport(): { unix?: string } { return networkOwner() ? {} : { unix: socketPath() }; }
+function ownerHeaders(): Record<string, string> { const remote = networkOwner(); return remote ? { Authorization: `Bearer ${remote.token}` } : {}; }
+
 /** The private code entrance hides Concierge on purpose, so its scratch state has no owner to wait
  * for. Retrying there looked like a 75-second restart and hid the cause (2026-11-04). A check that
  * starts its own owner under another state directory still waits for it normally. */
@@ -61,9 +74,10 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
     let failure: unknown;
     try {
       // The socket path is resolved per attempt: a restart may have replaced the directory link.
-      const response = await fetch(`http://localhost${path}`, {
-        unix: socketPath(), signal: AbortSignal.timeout(OWNER_COMMAND_RESPONSE_MS),
-        ...(serialized === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: serialized }),
+      const response = await fetch(ownerUrl(path), {
+        ...ownerTransport(), signal: AbortSignal.timeout(OWNER_COMMAND_RESPONSE_MS),
+        headers: { ...ownerHeaders(), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(serialized === undefined ? {} : { method: 'POST', body: serialized }),
       });
       const result: any = await response.json();
       return { ok: response.ok, status: response.status, result };

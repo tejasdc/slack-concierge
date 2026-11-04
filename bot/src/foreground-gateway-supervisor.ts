@@ -1,12 +1,23 @@
 import {releaseWorkerPath} from './release-worker';
 import {log} from './log';
 import {OWNER_COMMAND_RESPONSE_MS} from './owner-transport-policy';
+import {agentTokenKey} from './agent-run-tokens';
+
+/** `CONCIERGE_AGENT_API_LISTEN=<host>:<port>` opens the agents' network entrance; unset keeps only the socket. */
+export function agentEntranceConfig(stateDir:string,listen=process.env.CONCIERGE_AGENT_API_LISTEN?.trim()) {
+  if(!listen)return null;
+  const match=/^(\[[0-9a-fA-F:]+\]|[^:\s]+):([0-9]{1,5})$/.exec(listen);
+  const port=match?Number(match[2]):NaN;
+  if(!match||!(port>0&&port<65536))throw new Error('CONCIERGE_AGENT_API_LISTEN must be <host>:<port>.');
+  return {hostname:match[1]!.replace(/^\[|\]$/g,''),port,keyHex:agentTokenKey(stateDir).toString('hex')};
+}
 
 export type ForegroundPeer={hostname:string;port:number;token:string;onContact?:()=>void};
 
 export async function startForegroundGatewayProcess(stateDir:string,ownerSocket:string,peer?:ForegroundPeer|null) {
   const gatewayEntry=releaseWorkerPath('foreground-gateway-worker');
   const readWorkerEntry=releaseWorkerPath('native-read-worker');
+  const agent=agentEntranceConfig(stateDir);
   let stopped=false,child:ReturnType<typeof Bun.spawn>|null=null;
   let restarting:ReturnType<typeof setTimeout>|null=null;
   const launch=()=>new Promise<void>((resolve,reject)=>{
@@ -19,7 +30,8 @@ export async function startForegroundGatewayProcess(stateDir:string,ownerSocket:
     try {running=Bun.spawn(process.platform==='linux'?['setpriv','--pdeathsig','KILL',...command]:command,{
       env:{...process.env,CONCIERGE_STATE_DIR:stateDir,CONCIERGE_OWNER_INTERNAL_SOCKET:ownerSocket,
         CONCIERGE_READ_WORKER_ENTRY:readWorkerEntry,
-        ...(peer?{CONCIERGE_GATEWAY_PEER:JSON.stringify({hostname:peer.hostname,port:peer.port,token:peer.token})}:{})},
+        ...(peer?{CONCIERGE_GATEWAY_PEER:JSON.stringify({hostname:peer.hostname,port:peer.port,token:peer.token})}:{}),
+        ...(agent?{CONCIERGE_GATEWAY_AGENT:JSON.stringify(agent)}:{})},
       stdin:'ignore',stdout:'inherit',stderr:'inherit',ipc(message:any){
         if(message?.kind==='ready'&&message.pid===running?.pid){ready=true;settle();}
         else if(message?.kind==='failed')settle(new Error(String(message.message)));
