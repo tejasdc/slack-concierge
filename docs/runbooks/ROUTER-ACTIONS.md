@@ -158,8 +158,9 @@ router-actions.sh projects cancel life-logistics --to mac  # only while still re
 
 The workspace organizer is a bound standing session on the server. Ask it for a placement
 before creating a project. Its completed work reply is one JSON object with the exact
-`project`, `purpose`, optional `template`, and `group` (a one-level folder name or `null`
-for the workspace root). For the example above, a grouped answer is
+`project`, `purpose`, optional `template`, and `group` (a one-level plain folder name,
+`null` for the workspace root, or the established `agent-ecology/expertise` lab group).
+For the example above, a grouped answer is
 `{"project":"canvas-essay-notes","purpose":"An essay exploring how Canvas changes drafting.","template":"writing","group":"canvases"}`.
 Pass that request ID with `--consultation` and the creator's current source input and run. The creation API checks that the bound organizer
 answered the asking session, completed the request, and accepted these exact fields before
@@ -172,6 +173,19 @@ The child name is the registered project name on both machines. Existing project
 their current paths because sessions and transcripts retain that identity.
 If the organizer has not answered or is not bound, creation refuses before making a folder;
 the caller can retry after the consultation is complete.
+
+For a new Agent Ecology expertise, ask the bound organizer for the exact project name,
+purpose and `agent-ecology/expertise` group. After its completed JSON reply, create it with
+`projects new <name> --purpose "<one sentence>" --here-only --consultation <request-id> --source-input <current-input> --source-run <current-run>`.
+This places the separate registered project at `agent-ecology/expertise/<name>` on the
+server and creates the private `tejasdc/expertise-<name>` repository used by the lab.
+The lab's own repository must already exist and ignore `/expertise/`; the command refuses
+otherwise. The lab currently lives on the server; sharing an expertise to the Mac later
+requires the lab parent there first. Peer setup waits for a Concierge version that understands
+this nested group, so an older Mac cannot clone it into the wrong place. After creation, apply the expertise
+standard using Agent Ecology's `scripts/apply-expertise-standard.sh` and commit that
+expertise's own changes. The standard's authority remains Agent Ecology's
+`docs/expertise/STANDARD.md`; the project command only supplies custody and placement.
 
 Thinkering's Canvas does not impersonate an agent turn or ask the person to choose a project.
 The bound workspace organizer answers one consultation with the exact JSON object

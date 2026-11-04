@@ -99,7 +99,8 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   if (!within(root, real)) throw new WorkspaceFileError(`Only files under ${root} can be opened here.`, 403, 'FILE_OUTSIDE_WORKSPACE');
   if (!stats.isFile()) throw new WorkspaceFileError('That path is not a file.', 404, 'FILE_UNAVAILABLE');
   if (stats.size > MAX_BYTES) throw new WorkspaceFileError(`That file is ${Math.round(stats.size / 1024)} KB; this viewer opens files up to ${MAX_BYTES / 1024 / 1024} MB.`, 413, 'FILE_TOO_LARGE');
-  const project = sessionProjects(root).find(candidate => within(candidate.cwd, path)) ?? null;
+  const project = sessionProjects(root).filter(candidate => within(candidate.cwd, path))
+    .sort((left,right)=>right.cwd.length-left.cwd.length)[0] ?? null;
   return {
     machine: input.machine,
     path,

@@ -1531,7 +1531,9 @@ export class SessionCommunicationCoordinator {
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
-                    input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
+                    // A scheduled request is handed to its agent at its fire time, so its
+                    // 15-minute reminder clock starts there, not at the fire time itself.
+                    input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!+STILL_WAITING_AFTER_MS:now+savedWorkSettings().wait_days*24*60*60_000):now+STILL_WAITING_AFTER_MS,
                     now,sourceInput,`request:${id}`,threadRoot,topicRoot??'');
             if (sourceInput) {
                 if(!input.provider&&!consultation&&!(input.saved&&requestedRole))retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
@@ -2565,7 +2567,16 @@ export class SessionCommunicationCoordinator {
                 return;
             }
             const binding = this.binding(request);
-            const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at,provider_input_acknowledged_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
+            const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at,provider_input_acknowledged_at,saved_kind,saved_fire_at_ms FROM turns WHERE id=?').get(binding.turn_id) as any : null;
+            // Scheduled work is not handed over until its saved fire time, which can move when the
+            // schedule is edited. Its agent gets the same 15 minutes from that point; a request
+            // scheduled for 18:42:30 was reported as 15 minutes overdue at 18:42:31 (2026-11-04).
+            if (turn?.status === 'queued' && turn.saved_kind === 'scheduled' && turn.saved_fire_at_ms !== null
+                && turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS > now) {
+                db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
+                    .run(turn.saved_fire_at_ms + STILL_WAITING_AFTER_MS, request.request_id);
+                return;
+            }
             // Work in progress under a live owner is not a stall. Wait another interval rather
             // than report a healthy run as one; its answer settles this request when it ends.
             const healthy = turn?.status === 'running' ? !turn.stop_requested_at && !!turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id)
