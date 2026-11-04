@@ -34,12 +34,17 @@ export function providerOwnerEnvironment(
   }
   const runtime = resolveRuntimeProfile(environment);
   const stateDirectory = realpathSync(runtime.stateDir);
+  const botDirectory=routerBotDirectory(environment, moduleDirectory,runtime.profile === "production");
+  const commandDirectory=join(botDirectory,"scripts");
   return {
     ...turnEnvironment,
+    // A fresh Claude CLI started by this agent must ask the same owner that routes its turns.
+    // This is scoped to the agent's shell, never the service or an unrelated terminal.
+    PATH: `${commandDirectory}:${turnEnvironment.PATH ?? environment.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
     CONCIERGE_STATE_DIR: stateDirectory,
     CONCIERGE_STATE_DB: join(stateDirectory, "state.db"),
-    CONCIERGE_ROUTER_BOT_DIR: routerBotDirectory(environment, moduleDirectory,
-      runtime.profile === "production"),
+    CONCIERGE_ROUTER_BOT_DIR: botDirectory,
+    CONCIERGE_BUN_BIN: environment.CONCIERGE_BUN_BIN ?? process.execPath,
     CONCIERGE_RUNTIME_PROFILE: runtime.profile,
     CONCIERGE_SLACK_ENABLED: runtime.slackConfigPath === null ? "0" : "1",
     CONCIERGE_SLACK_CONFIG: runtime.slackConfigPath ?? "/dev/null",

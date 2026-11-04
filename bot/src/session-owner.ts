@@ -429,6 +429,7 @@ export type SessionOwnerRuntime = {
     switchProfile(provider:string,profileId:string):Promise<unknown>;
     useResetCredit(provider:string,account:string):Promise<unknown>;
     retryHeldUsage():Promise<unknown>;
+    chooseClaudeLaunch?(model:string|null):{account:string;home:string|null;because:string;expected:string|null}|null;
   };
 };
 export function parseSessionId(value:string):number {
@@ -3932,6 +3933,12 @@ export class SessionOwner {
         result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
+      else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-launch-choice'&&parts.length===2){
+        if(!this.runtime.auth?.chooseClaudeLaunch)throw new SessionOwnerError('Claude account selection is unavailable.',503);
+        const model=url.searchParams.get('model');
+        if(model&&(!/^[A-Za-z0-9._-]{1,100}$/.test(model)))throw new SessionOwnerError('Invalid Claude model.',400);
+        result={choice:this.runtime.auth.chooseClaudeLaunch(model)};
+      }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
         const state=url.searchParams.get('state')??'open';
         if(!['open','closed','background','all'].includes(state))throw new SessionOwnerError('Unknown thread list.');
