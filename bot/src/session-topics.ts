@@ -766,19 +766,23 @@ function unfiledNeeds(session:SessionRow):OpenNeed[] {
  */
 type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
 type ReadIndex={humanReplies:Map<string,HumanReply[]>};
-function readIndex(sessionId:number):ReadIndex {
+function readIndex(sessionId:number,completeReplies=false):ReadIndex {
   refreshRootMemo();
-  // The newest human message per thread root, newest first so the first hit wins.
   // Every human message per thread root, newest first, with the questions it reviewed and the
   // message it replied to: a reply counts against a question only when it names it (design:
   // "Answering an unrelated later message changes nothing here").
+  // Upkeep reads every explicit reply so an answered old question cannot fall past the list
+  // view's 2,000-input bound and strand its request as waiting on him.
   const humanReplies=new Map<string,HumanReply[]>();
+  const replyFilter=completeReplies?`AND (json_extract(payload_json,'$.review.questions') IS NOT NULL
+        OR json_extract(payload_json,'$.replyToMessage.messageId') IS NOT NULL)`:'';
+  const limit=completeReplies?'':'LIMIT 2000';
   for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
       json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
       FROM session_inputs WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
-        AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
+        AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ${replyFilter} ORDER BY rowid DESC ${limit}`).all(sessionId) as any[]) {
     // Only message kinds: his reading marks and topic actions are human inputs too, two thirds
-    // of the newest 2,000 rows, and none of them is in any thread.
+    // of the newest 2,000 rows in the normal list view, and none of them is in any thread.
     const root=rootOf(sessionId,row.id);
     if(!root)continue;
     let reviews:string[]=[];
@@ -1325,13 +1329,22 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
  * completed with the reason "paid bodies not read", over a worker reply that said the same, and
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
+function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
+  return request.sources.some(source=>getAcceptedSessionInput(source.inputId)?.origin==='human')
+    ||topicRoots(topic.topicId).some(id=>{
+      const input=getAcceptedSessionInput(id);
+      return input?.origin==='human'&&new Date(input.created_at).getTime()<=new Date(request.createdAt).getTime();
+    });
+}
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const local=db.query('SELECT outcome,result_json FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
-    return local??db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
+    const local=db.query('SELECT outcome,result_json,stalled_at_ms,requested_effect FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string}|null;
+    return local??db.query("SELECT outcome,result_json,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as {outcome:string|null;result_json:string|null;stalled_at_ms:number|null;requested_effect:string|null}|null;
   };
-  const done=(row:{outcome:string|null;result_json:string|null})=>{
-    if(row.outcome!=='answered'||!row.result_json)return false;
+  const done=(row:{outcome:string|null;result_json:string|null;requested_effect:string|null})=>{
+    if(row.outcome!=='answered')return false;
+    if(row.requested_effect==='informational')return true;
+    if(!row.result_json)return false;
     try{return JSON.parse(row.result_json).workDisposition==='completed'&&!notSeenWorkingOf(row.result_json);}
     catch{return false;}
   };
@@ -1341,19 +1354,14 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}));
   const latest=dispatches.at(-1);
   if(!latest){
-    const humanSource=request.sources.some(source=>getAcceptedSessionInput(source.inputId)?.origin==='human')
-      ||topicRoots(topic.topicId).some(id=>{
-        const input=getAcceptedSessionInput(id);
-        return input?.origin==='human'&&new Date(input.created_at).getTime()<=new Date(request.createdAt).getTime();
-      });
-    if(humanSource&&!evidence.some(id=>{
+    if(humanRequest(topic,request)&&!evidence.some(id=>{
       const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
       const root=inboxThreadRoot(topic.sessionId,id);
       return !!(message?.role==='assistant'&&message.createdAt&&new Date(message.createdAt).getTime()>=new Date(request.createdAt).getTime()
         &&root&&topicOfRoot(root)===topic.topicId);
     }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
-  const unfinished=dispatches.filter(dispatch=>!dispatch.row?.outcome
+  const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
       ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(questionsOfRequest(topic.topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
@@ -1900,7 +1908,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
           const root=inboxThreadRoot(input.session_id,input.id);
           return !!root&&topicOfRoot(root)===request.topicId;
         });
-        if(['declined','withdrawn'].includes(disposition)&&!laterHumanEvidence)
+        if(['declined','withdrawn'].includes(disposition)&&humanRequest(topic,request)&&!laterHumanEvidence)
           throw new TopicError('A withdrawal needs Tejas’s later message in this thread as evidence. An agent failure cannot withdraw his request.',409,'REQUEST_HUMAN_WITHDRAWAL_REQUIRED');
         if(disposition==='superseded'&&!evidence.some(id=>{
           const replacementRow=db.query('SELECT * FROM inbox_requests WHERE request_id=? AND request_id<>?')
@@ -2726,7 +2734,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  * - A closed thread reopens when he writes in it or new work is placed there.
  */
 const OWNER_BY:TopicBy={kind:'owner'};
-type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number;stalled:boolean;
+type Work={id:string;outcome:string|null;disposition:string|null;requestedEffect:string|null;target:string|null;createdAtMs:number;stalled:boolean;
   stoppedByTejas?:boolean;
   /** Completed without a live check: what its worker said has not been seen working yet. */
   notSeenWorking?:string|null};
@@ -2743,22 +2751,23 @@ const stoppedByTejasOf=(resultJson:string|null)=>{
   try{return JSON.parse(resultJson)?.output?.stoppedBy==='tejas';}catch{return false;}
 };
 function workRow(id:string):Work|null {
-  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as any;
-  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(local.result_json),stoppedByTejas:stoppedByTejasOf(local.result_json)};
-  const peer=db.query('SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms FROM session_peer_requests WHERE request_id=?').get(id) as any;
-  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(peer.result_json),stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
+  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,requested_effect FROM session_communication_requests WHERE request_id=?').get(id) as any;
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),requestedEffect:local.requested_effect,target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(local.result_json),stoppedByTejas:stoppedByTejasOf(local.result_json)};
+  const peer=db.query("SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as any;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),requestedEffect:peer.requested_effect,target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(peer.result_json),stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
 function forwardedReplies():Forward[] {
-  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
+  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,requested_effect,thread_root_input_id,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_communication_requests
     WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),requestedEffect:row.requested_effect,target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
   const peer=(db.query(`SELECT request_id,peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
+      json_extract(payload_json,'$.requestedEffect') AS requested_effect,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_peer_requests
     WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),requestedEffect:row.requested_effect,target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
   return [...local,...peer].sort((first,second)=>first.createdAtMs-second.createdAtMs);
 }
 /** The work whose posted answer his forwarded reply replied to, when he replied to one. */
@@ -2862,7 +2871,24 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     const requests=topicRequests(topicId);
     const answered=workHisReplyAnswered(forward);
     const byAnswer=answered?requests.filter(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===answered)):[];
-    const targets=byAnswer.length===1?byAnswer:[];
+    const bySource=forward.inboxInputId?requests.filter(request=>request.sources.some(source=>source.inputId===forward.inboxInputId)):[];
+    const targets=byAnswer.length===1?byAnswer:bySource.length===1?bySource:[];
+    if(!targets.length&&forward.inboxInputId&&!requests.some(request=>request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))) {
+      const source=getAcceptedSessionInput(forward.inboxInputId);
+      if(source?.origin==='human') {
+        const topic=topicRow(topicId);
+        const words=JSON.parse(source.payload_json)?.text;
+        const request:StoredRequest={requestId:`req:forward:${forward.id}`,topicId,title:`Follow-up in ${topic.title}`.slice(0,200),
+          brief:typeof words==='string'&&words.trim()?words.slice(0,8000):`His reply and attachments are retained at ${source.id}.`,
+          state:'open',disposition:null,revision:1,sources:[{inputId:source.id}],
+          dispatches:[{requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true}],
+          closure:null,createdAt:iso(source.created_at)!,updatedAt:nowIso()};
+        const next=bumped(topic);
+        const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId,topic:next,request,by:OWNER_BY,
+          reason:'His reply to an agent is its own request when no earlier request is identified.',revision:next.revision}});
+        if(recordOwnerTopicChange(topic.sessionId,`topic-request:forward:${forward.id}`,'topic_request',change.payload))linked++;
+      }
+    }
     for(const request of targets) {
       if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
       const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
@@ -2951,20 +2977,21 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
     let disposition:string|null=null,why='';
     let completionChecked=false;
-    if(latest?.outcome==='answered'&&latest.disposition==='completed') {
+    if(latest?.outcome==='answered'&&(latest.disposition==='completed'||latest.requestedEffect==='informational')) {
       try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
       catch(error){if(!(error instanceof TopicError))throw error;}
       // Work done but never seen working is not done: on 2026-10-31 a phone repair closed as done,
       // and its thread with it, 45 seconds after its answer said his phone had not run the fix yet
       // (aaaad41d). It stays open, with that answer in the thread, until someone who has seen it
       // working (or he) closes it.
-      if(completionChecked){disposition='completed';why='The work sent for it answered as done.';}
+      if(completionChecked){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
     } else if(latest?.outcome==='canceled'&&latest.stoppedByTejas&&!waitingOnHim) {
       disposition='withdrawn';why='Tejas stopped the work.';
     }
     if(!disposition&&waitingOnHim) {
       continue;
     }
+    if(!disposition&&topic.setAside)continue;
     if(!disposition) {
       let how=!latest?'has had no agent assigned'
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
@@ -3033,7 +3060,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
   const forwards=forwardedReplies();
-  const read=readIndex(session.id);
+  const read=readIndex(session.id,true);
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
   const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
@@ -3058,10 +3085,19 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
       const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:item.sourceInputId??inputId,sourceRunId:item.sourceRunId??inputId,requestId:item.requestId,
+        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:!item.sourceUncertain&&item.sourceInputId?item.sourceInputId:inputId,
+          sourceRunId:!item.sourceUncertain&&item.sourceRunId?item.sourceRunId:inputId,requestId:item.requestId,
           text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link). Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
       recordSessionEvent({eventId:`topic-flag:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
+      if(item.attempt>=2&&humanRequest(topicRow(item.topicId),requestRow(item.requestId))) {
+        const eventId=`recovery-still-open:${item.requestId}`;
+        const root=topicRoots(item.topicId)[0];
+        if(root&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:forward:${eventId}`))
+          postAgentAnswer({inboxSessionId:session.id,eventId,requestId:item.work,root,inboxInputId:root,
+            respondingSessionId:`concierge:${session.id}`,text:'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
+            attachments:[],stalled:false,final:false,notify:true,workDisposition:null});
+      }
       flagged++;
     } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
   }

@@ -397,7 +397,9 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   work's posted answer (`topic-link:forward:<request>:<topicRequest>`). Its answer can then
   settle that request, and a reply after closure reopens it while that work runs. Sharing a
   thread or agent does not establish that a new question continues earlier work: the October 16
-  Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread.
+  Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread. If the
+  forwarded reply has no one proven earlier request, it becomes its own request, sourced to
+  his exact reply and linked to the forwarded agent attempt.
 - Once nothing sent for an open request is running, an answer explicitly marked completed
   with a real check closes it `completed`
   under `refuseUnfinishedCompletion`; his own Stop withdraws the stopped attempt. A failed,
@@ -406,12 +408,15 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
-  eligible on the next pass. The input and flag have stable identities across restart. A request with no linked
-  human source still reaches the router for provenance investigation; that notice carries no
-  claim of human authorization. The router inspects prior effects before sending remaining work;
+  eligible on the next pass. The input and flag have stable identities across restart. After
+  two recovery turns without a linked next attempt, the thread gets one notice that the task
+  is still open and Concierge is continuing to try. A request with no certain linked human
+  source still reaches the router for provenance investigation without inheriting authority
+  from a nearby thread message. The router inspects prior effects before sending remaining work;
   it cannot close the request
-  as failed merely because an agent could not finish. Declined or withdrawn closure requires
-  a later human message in that thread as evidence. A superseded
+  as failed merely because an agent could not finish. Declined or withdrawn closure of a human
+  request requires a later human message in that thread as evidence; an agent issue report may
+  be declined with its reason when it needs no work. A superseded
   close names a real replacement Inbox request that is still open or completed and carries
   the same source, unless a later human message in the thread authorizes the change. It cannot
   expire a live decision question. That question must be carried to the replacement or
@@ -419,7 +424,9 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   remains open in its thread. A question still being prepared by an agent is recovery work,
   not a reason to leave the task waiting on Tejas. When Tejas has replied to a question but
   the router has not reconciled that answer, the question no longer counts as waiting on him;
-  the task returns to the router with his pending reply as the next thing to process.
+  the task returns to the router with his pending reply as the next thing to process. Recovery
+  reads all explicit replies to open questions, including older replies beyond the bounded
+  thread-list read. A thread he set aside holds recovery until he resumes it.
 - When the router itself completes a human request without dispatching another agent, it
   names the later answer in that same thread as evidence. A bare completion claim with no
   linked work or answer is refused. Verification-only agent test reports remain distinct
