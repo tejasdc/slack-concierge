@@ -202,7 +202,7 @@ export class DeploymentRepairSupervisor {
         );
         const result = await this.runRepair(
           incident,
-          "[GOALS-ONLY] origin/main moved. Rebase the existing repair onto the new origin/main, preserve the deployment fix, and commit the reconciled repair. Do not run tests, reviews or other agents, or bypass disabled entrypoints. Do not deploy or push. If origin/main already contains the repair, report its exact clean HEAD as repair_committed. If blocked, report blocked with the concrete reason and next executable action; do not manufacture a commit to appear successful.",
+          "[GOALS-ONLY] origin/main moved. Merge the new origin/main into the existing repair branch, preserving its published commits and the deployment fix, and commit the reconciliation if needed. Do not run tests, reviews or other agents, or bypass disabled entrypoints. Do not deploy or push. If origin/main already contains the repair, report its exact clean HEAD as repair_committed. If blocked, report blocked with the concrete reason and next executable action; do not manufacture a commit to appear successful.",
         );
         incident = getDeploymentRepairIncident(this.incidentId)!;
         recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident, result.commit!, true));
@@ -500,7 +500,11 @@ export class DeploymentRepairSupervisor {
     const originMain = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
     const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
     if (head !== incident.repair_commit) throw new RepairAttemptStoppedError("Committed repair tree changed before integration.");
-    if (originMain === head) return "pushed";
+    const alreadyIntegrated = this.services.command(
+      ["git", "merge-base", "--is-ancestor", head, originMain],
+      { cwd: this.repositoryRoot },
+    );
+    if (alreadyIntegrated.exitCode === 0) return "pushed";
     if (originMain !== incident.base_commit) return "origin_moved";
     const branch = `repair-deployment-${incident.id}-${head.slice(0, 12)}`;
     const proposed = this.services.command(
