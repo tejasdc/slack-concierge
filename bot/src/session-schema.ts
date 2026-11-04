@@ -634,6 +634,67 @@ export function initializeSessionOwnerSchema(db: Database) {
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
       add('session_peer_requests','delivery_json','delivery_json TEXT');
+      // A question owed by one exact task survives the ChatGPT turn, its return, and the
+      // asking agent's run. The current row is an indexed projection; transitions are retained
+      // separately so repair never has to infer task membership from conversation chronology.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session_chatgpt_obligations (
+          obligation_id TEXT PRIMARY KEY,
+          task_kind TEXT NOT NULL CHECK(task_kind IN ('local_request','peer_delivery','external_request','direct_input')),
+          task_id TEXT NOT NULL,
+          asker_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          question_text TEXT NOT NULL,
+          target_session_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('awaiting_answer','reconcile_receipt','return_pending','resolution_pending','external_hold','resolved','withdrawn_by_tejas')),
+          active_request_id TEXT NOT NULL,
+          answer_event_id TEXT,
+          answer_return_input_id TEXT,
+          resolution_json TEXT,
+          next_action TEXT NOT NULL,
+          generation INTEGER NOT NULL DEFAULT 0,
+          due_at_ms INTEGER,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chatgpt_obligations_task_open ON session_chatgpt_obligations(task_kind,task_id,obligation_id)
+          WHERE state NOT IN ('resolved','withdrawn_by_tejas');
+        CREATE INDEX IF NOT EXISTS chatgpt_obligations_due ON session_chatgpt_obligations(due_at_ms,obligation_id)
+          WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS session_chatgpt_obligation_events (
+          event_id TEXT PRIMARY KEY,
+          obligation_id TEXT NOT NULL REFERENCES session_chatgpt_obligations(obligation_id),
+          action_id TEXT NOT NULL,
+          state TEXT NOT NULL,
+          evidence_json TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          UNIQUE(obligation_id,action_id)
+        );
+        CREATE TABLE IF NOT EXISTS session_chatgpt_obligation_attempts (
+          request_id TEXT PRIMARY KEY,
+          obligation_id TEXT NOT NULL REFERENCES session_chatgpt_obligations(obligation_id),
+          kind TEXT NOT NULL CHECK(kind IN ('original','context_followup','receipt_recovery','attachment_correction')),
+          created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chatgpt_attempts_obligation ON session_chatgpt_obligation_attempts(obligation_id,request_id);
+        CREATE TABLE IF NOT EXISTS session_chatgpt_direct_task_inputs (
+          task_input_id TEXT NOT NULL REFERENCES session_inputs(id),
+          source_input_id TEXT NOT NULL REFERENCES session_inputs(id),
+          PRIMARY KEY(task_input_id,source_input_id)
+        );
+        CREATE INDEX IF NOT EXISTS chatgpt_direct_task_source ON session_chatgpt_direct_task_inputs(source_input_id,task_input_id);
+        CREATE TABLE IF NOT EXISTS session_chatgpt_legacy_reconciliation (
+          source_kind TEXT NOT NULL CHECK(source_kind IN ('local','peer')),
+          request_id TEXT NOT NULL,
+          source_input_id TEXT NOT NULL,
+          candidate_tasks_json TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('pending','linked')),
+          reason TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          PRIMARY KEY(source_kind,request_id)
+        );
+        CREATE INDEX IF NOT EXISTS chatgpt_legacy_pending ON session_chatgpt_legacy_reconciliation(state,request_id)
+          WHERE state='pending';
+      `);
       add('session_peer_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
       add('session_peer_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       // Same supersession as session_communication_events: a peer recipient's late explicit final

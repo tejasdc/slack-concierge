@@ -4116,6 +4116,43 @@ export function retryRunningTurnAfterProviderFailure(input: {
   })();
 }
 
+/** A completed native error can resume only after its provider receipt proves the exact
+ * original run failed before Send. The caller verifies that receipt; this writer also
+ * refuses a changed run, acknowledged input, Stop, artifact activity, or a later sent
+ * turn in the same conversation. No new input or provider run identity is created. */
+export function requeueProvenUnsentNativeChatGptTurn(input: {
+  turnId:number; sessionId:number; inputId:string; runId:string; nextAttemptMs:number;
+}):boolean {
+  return db.transaction(()=>{
+    const turn=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      JOIN session_inputs source ON source.turn_id=turn.id
+      WHERE turn.id=? AND turn.session_id=? AND source.id=? AND turn.native_run_id=?
+        AND turn.turn_kind='native' AND session.provider_id='chatgpt'
+        AND turn.status='error' AND session.status<>'archived'
+        AND turn.owner_instance_id IS NULL AND turn.stop_requested_at IS NULL
+        AND turn.provider_input_acknowledged_at IS NULL AND turn.provider_turn_id IS NULL
+        AND turn.outbound_text IS NULL
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches WHERE turn_id=turn.id AND status<>'collecting')
+        AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=turn.session_id
+          AND later.id>turn.id AND (later.provider_admission_intended_at IS NOT NULL
+            OR later.provider_input_acknowledged_at IS NOT NULL))
+      LIMIT 1`).get(input.turnId,input.sessionId,input.inputId,input.runId);
+    if(!turn)return false;
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,agent_text=NULL,
+      ended_at=NULL,dispatch_failure_class='backoff',dispatch_next_attempt_ms=?,
+      status_desired_text=?,status_desired_revision=status_desired_revision+1,
+      status_projection_status='not_needed',status_projection_attempts=0,
+      status_projection_error=NULL,status_projection_next_attempt_ms=0,status_projection_parked_at=NULL
+      WHERE id=? AND status='error' AND owner_instance_id IS NULL`).run(
+        input.nextAttemptMs,RETRYING_PROVIDER_TURN_STATUS_TEXT,input.turnId);
+    if(changed.changes!==1)return false;
+    db.query(`UPDATE sessions SET status='idle' WHERE id=? AND status='error'`).run(input.sessionId);
+    turnFactChanged(input.turnId,'queued');
+    return true;
+  })();
+}
+
 export function requeueOrphanedPreAdmissionTurn(
   turnId: number,
   ownerInstanceId: string | null,

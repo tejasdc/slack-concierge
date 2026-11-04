@@ -374,6 +374,17 @@ describe("ChatGPT adapter under the existing run executor", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("normalizes a prepared new-chat attachment rejection with no native binding", async () => {
+    const run=runContext(() => {}).run;
+    const wire={runId:run.runId,state:'failed',acknowledgedAt:null,nativeBinding:null,
+      result:{sessionId:'',turnId:null,text:'',state:'failed',error:'CHATGPT_ATTACHMENT_REJECTED: file refused before Send'},error:null};
+    const {client,calls}=await socketFixture((_input,_request,response)=>respond(response,wire));
+    const receipt=await client.reconcile(run);
+    expect(receipt.result).toMatchObject({sessionId:null,nativeBinding:null,turnId:null,
+      error:'CHATGPT_ATTACHMENT_REJECTED: file refused before Send'});
+    expect(calls).toHaveLength(1);
+  });
+
   test("explicit provider refusals stay failures without provider substitution or retry", async () => {
     for (const name of ["reject-unavailable-owner-before-send", "reject-new-send-after-stop", "reject-binding-generation-change"]) {
       const wire = byName(name), evidence: CapabilityEvidence[] = [];

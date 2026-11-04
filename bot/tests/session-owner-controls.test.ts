@@ -247,6 +247,29 @@ test('uncertain native receipt is inspectable and never creates a replacement pr
   expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual({n:1});expect(host.owner.events().filter(event=>event.kind==='result')).toHaveLength(0);
 });
 
+test('attachment correction requires exact terminal pre-Send rejection evidence',async()=>{
+  const client=capability(),fixture=uncertainChat(client);
+  const admission={...fixture.admission,attachments:[{id:'original-file',name:'rejected.pdf',contentType:'application/pdf',sha256:'a'.repeat(64)}]};
+  db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admission}),fixture.operation.id);
+  db.query("UPDATE turns SET status='error',owner_instance_id=NULL WHERE id=?").run(fixture.claim.turn_id);
+  let sends=0;
+  client.createChatGptProvider=()=>{sends++;throw new Error('Correction proof cannot send.');};
+  const receipt=(error:string|null,acknowledgedAt:string|null=null,turnId:string|null=null)=>({
+    runId:admission.runId,state:'failed' as const,acknowledgedAt,nativeBinding:null,
+    result:{sessionId:null,turnId,text:'',state:'failed' as const,error,nativeBinding:null},error:null,
+  });
+  client.reconcile=async()=>receipt('CHATGPT_ATTACHMENT_REJECTED: ChatGPT refused rejected.pdf. Nothing was sent.');
+  expect(await host.owner.proveRejectedChatGptAttachment(Number(fixture.created.session.id.slice(10)),fixture.operation.id))
+    .toMatchObject({runId:admission.runId,reason:expect.stringContaining('CHATGPT_ATTACHMENT_REJECTED:')});
+  client.reconcile=async()=>receipt('CHATGPT_SEND_FAILED');
+  await expect(host.owner.proveRejectedChatGptAttachment(Number(fixture.created.session.id.slice(10)),fixture.operation.id)).rejects.toThrow('does not prove');
+  client.reconcile=async()=>receipt('CHATGPT_ATTACHMENT_REJECTED: refused','2026-11-04T00:00:00.000Z');
+  await expect(host.owner.proveRejectedChatGptAttachment(Number(fixture.created.session.id.slice(10)),fixture.operation.id)).rejects.toThrow('does not prove');
+  client.reconcile=async()=>receipt('CHATGPT_ATTACHMENT_REJECTED: refused',null,'native-user-turn');
+  await expect(host.owner.proveRejectedChatGptAttachment(Number(fixture.created.session.id.slice(10)),fixture.operation.id)).rejects.toThrow('does not prove');
+  expect(sends).toBe(0);
+});
+
 test.each(['failed','canceled'] as const)('reconcile settles explicit native %s without output or inventing a provider binding',async state=>{
   const client=capability(),fixture=uncertainChat(client);
   client.reconcile=async run=>({runId:run.runId,state,acknowledgedAt:null,nativeBinding:null,result:null,error:{code:'NATIVE_TERMINAL',message:'Exact native terminal proof.'}});

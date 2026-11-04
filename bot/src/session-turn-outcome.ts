@@ -6,6 +6,7 @@ import {log} from './log';
 import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
+import {hasOpenDirectChatGptOutcomeDuty,requireDirectChatGptOutcomeReady} from './chatgpt-obligations';
 
 /**
  * Every turn says whether it needs Tejas through an outcome action. Older turns may
@@ -109,6 +110,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // that showed him a heading and a link to his own message (Tejas, 2026-09-24: "I literally
   // cannot read this"), so it is refused when declared, and a finished turn's is recorded done.
   let outcome=input.outcome;
+  if(outcome==='done'||outcome==='response'||outcome==='failed')
+    requireDirectChatGptOutcomeReady(input.sessionId,input.inputId);
   if(outcome==='response'&&meta.inbox&&!readsForTurn(input.sessionId,input.turnId,new Set([inputId])).length) {
     if(input.refuseUnreadable)throw new Error('response needs something to read: post the answer into this thread first (sessions post), then declare it.');
     log('warn','turn_response_without_reads',{session_id:input.sessionId,turn_id:input.turnId,input_id:inputId,event_id:input.eventId});
@@ -199,6 +202,14 @@ export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;i
   // a turn that has already ended cannot be refused, so it is told to him instead.
   const outcome=declared.outcome==='done'&&answersHisOwnMessage(session.id,inputId)?'response':declared.outcome;
   if(outcome!==declared.outcome)log('warn','turn_done_on_his_message_raised',{session_id:session.id,turn_id:result.turnId,input_id:inputId});
+  if(['done','response','failed'].includes(outcome)&&hasOpenDirectChatGptOutcomeDuty(session.id,inputId)){
+    // A result is already retained at this point. Its legacy marker cannot close the direct
+    // task, but refusing the marker must not roll back the provider's answer delivery.
+    log('warn','turn_outcome_held_for_chatgpt_answer',{session_id:session.id,turn_id:result.turnId,input_id:inputId});
+    recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,
+      inputId,outcome:'finished_without_saying',text:null});
+    return;
+  }
   const text=(declared.question??declared.message).trim().slice(0,2000)||(['needs_you','response'].includes(outcome)?'See the latest answer.':'');
   recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,
     inputId,outcome,text:text||null});

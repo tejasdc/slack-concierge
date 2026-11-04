@@ -61,6 +61,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- ChatGPT questions carry an exact task and remain open through failed attempts,
+  return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
 - Preserve exact accepted input, run, action, source-message and target identity.
   Do not replay ambiguous or acknowledged effects. Keep human authorship distinct
   from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
