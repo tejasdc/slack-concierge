@@ -7,7 +7,7 @@ import {OWNER_COMMAND_RESPONSE_MS,OWNER_READ_RESPONSE_MS} from './owner-transpor
 import {forwardPrivateRequest,unavailable} from './foreground-forward';
 import {classifyNativeReadRoute} from './native-read-routes';
 import {log,errorFields,logSinkCounters} from './log';
-import {agentPrincipalHeader,verifyAgentToken} from './agent-run-tokens';
+import {agentPrincipalHeader,verifyAgentToken} from './agent-token-verify';
 
 /** No application owner, synchronous filesystem API, or database imports belong here. */
 export async function startForegroundGateway(config:{stateDir:string;ownerSocket:string;readWorkerEntry:string;
