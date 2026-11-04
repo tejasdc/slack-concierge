@@ -1,4 +1,4 @@
-import { retryDelayMs } from './retry';
+import { retryDelayMs } from './retry-core';
 import { RETRY_POLICIES } from './retry-policies';
 
 export type ProviderDispatchFailureClass = "retryable" | "parked_access" | "parked_terminal";
