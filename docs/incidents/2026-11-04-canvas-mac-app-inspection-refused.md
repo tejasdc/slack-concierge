@@ -23,5 +23,5 @@ The guard recognizes that one Canvas capture for the exact app and page. It perm
 
 - **Seed:** A Mac Codex turn with a recorded `mac-app` need naming the exact bundle and page, and retained human provenance from the November 4 Canvas capture.
 - **Action:** Direct Computer Use selects the exact bundle and reads its accessibility state or screenshot.
-- **Expected:** The hook permits those calls. It refuses generic Safari, another app, standalone reads through old handles, clicks, reload and Web Inspector for this capture. The Mac agent verifies the actual page after selection without changing it.
+- **Expected:** The hook permits those calls. It refuses generic Safari, another app, standalone reads through old handles, clicks, reload and Web Inspector for this capture. The hook binds the app bundle, not a page or window; the Mac agent reports which page the returned UI shows without changing it.
 - **Replayable offline:** yes (focused Mac surface-policy check); installed Mac and page behavior requires a fresh live call.
