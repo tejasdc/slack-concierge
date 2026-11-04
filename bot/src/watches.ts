@@ -226,7 +226,7 @@ function recoveryLineage(sessionId: number): number[] {
 }
 
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
-export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean; heldBy?: string } {
+export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string } {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
   if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
@@ -241,16 +241,21 @@ export function registerWatch(input: WatchRegistration, now = Date.now()): { wat
   const deadline = parseUntil(input.until, now);
   const renewMs = input.renew ? deadline - now : null;
   if (renewMs !== null) {
-    // A Codex session that continues a Claude session's work after its allowance ran out shares
-    // that session's renewing watches: the owner re-arms the original's watch when it fires and
-    // moves only the wake. A second series on the same path woke both for one change (the
-    // email-reader batch reviewed twice into one checkout, 2026-11-03).
+    // A Claude session and the Codex sessions that continue its work after its allowance ran out
+    // keep one renewing series per file between them: the one registering takes the series over,
+    // so its wakes reach the session now doing the work, and cancel, listing and request waits
+    // still see one owning session. A second series on the same path woke both for one change
+    // (the email-reader batch reviewed twice into one checkout, 2026-11-03).
     const lineage = recoveryLineage(input.sessionId);
     const active = db.query(`SELECT * FROM watches WHERE session_id IN (${lineage.map(() => "?").join(",")}) AND kind='file'
       AND condition_json=? AND renew_ms IS NOT NULL AND state IN ('accepted','observing')
       ORDER BY session_id=? DESC, created_at_ms LIMIT 1`).get(...lineage, JSON.stringify(condition), input.sessionId) as WatchRow | null;
-    if (active) return { watch: watchView(active), duplicate: true,
-      ...(active.session_id !== input.sessionId ? { heldBy: `concierge:${active.session_id}` } : {}) };
+    if (active && active.session_id !== input.sessionId) {
+      db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND state IN ('accepted','observing')").run(input.sessionId, active.watch_id);
+      log("info", "watch_series_taken_over", { watch_id: active.watch_id, from_session_id: active.session_id, to_session_id: input.sessionId });
+      return { watch: watchView({ ...active, session_id: input.sessionId }), duplicate: true, takenOverFrom: `concierge:${active.session_id}` };
+    }
+    if (active) return { watch: watchView(active), duplicate: true };
   }
   let baseline: unknown, mode: string;
   if (input.kind === "file") {
