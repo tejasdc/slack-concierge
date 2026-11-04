@@ -3159,7 +3159,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
         &&unlinkedQuestionImplies(question,request,openRequests))].filter(question=>question.kind==='decision'&&preparingForHim(question)))
         how+=`; its question ${question.questionId} is still being prepared and is not shown to Tejas (missing ${missingFor(question).join(', ')||'context ready'}): complete it with topics questions (its questionId, the missing fields, context ready) instead of restarting work`;
       const unplaced=topicQuestions(topicId).filter(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
-        &&!(question.owner&&('requestId' in question.owner||question.owner.dispatchRequestId))).map(question=>question.questionId);
+        &&!(question.owner&&('requestId' in question.owner||question.owner.dispatchRequestId))&&!impliedRequest(openRequests,question.sources)).map(question=>question.questionId);
       if(unplaced.length)how+=`; open question ${unplaced.join(', ')} in this thread names no request: if it is what this request waits on, revise it with its questionId and owner.requestId ${request.requestId} instead of restarting work`;
       const source=recoverySource(request);
       stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
