@@ -75,6 +75,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_communication_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
       add('session_communication_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      // A reopened Inbox obligation must not be settled by attempts already linked before reopening.
+      if(db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbox_requests'").get()) {
+        add('inbox_requests','completion_floor','completion_floor INTEGER NOT NULL DEFAULT 0');
+        add('inbox_requests','reopened_at','reopened_at TEXT');
+      }
       // 'hook' when the end-of-turn hook sent the worker back inside its run; 'input' for a reminder turn.
       add('session_communication_requests','reminded_via','reminded_via TEXT');
       // The run whose Stop hook listed this request, so only a request that hook actually showed counts as reminded.
@@ -563,6 +568,8 @@ export function initializeSessionOwnerSchema(db: Database) {
           sources_json TEXT NOT NULL DEFAULT '[]',
           dispatches_json TEXT NOT NULL DEFAULT '[]',
           closure_json TEXT,
+          completion_floor INTEGER NOT NULL DEFAULT 0,
+          reopened_at TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
