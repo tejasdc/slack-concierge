@@ -464,9 +464,10 @@ export function briefRunningSessions(admit: (input: {
   requestId: string; text: string; delivery: "steer";
 }) => unknown): void {
   for (const provider of ["claude-code", "codex"] as const) {
+    // The IN term selects the partial running-turn index instead of walking every turn.
     const running = db.query(`SELECT turn.id AS turn_id, turn.session_id FROM turns turn
       JOIN sessions session ON session.id = turn.session_id
-      WHERE turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
+      WHERE turn.status IN ('running','delivering') AND turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
         AND session.provider_id = ?`).all(provider) as { turn_id: number; session_id: number }[];
     for (const run of running) {
       // Claude turns can outlive an account selection change. Use the account retained
