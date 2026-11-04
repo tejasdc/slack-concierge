@@ -679,7 +679,7 @@ export class SessionPeers {
     updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
     // Commit the thread post beside the reply, before any requester can run.
     const event=db.query('SELECT * FROM session_peer_events WHERE event_id=?').get(eventId) as PeerEventRow;
-    if(this.postThreadEvent(row,event,JSON.parse(event.payload_json))&&!returnsToRequester(row))
+    if(this.postThreadEvent(row,event,JSON.parse(event.payload_json))&&!returnsToRequester(row,event))
       db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=?").run(eventId);
     return eventId;
   }
@@ -975,7 +975,7 @@ export class SessionPeers {
         .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
       return;
     }
-    const returnToRequester=returnsToRequester(row);
+    const returnToRequester=returnsToRequester(row,event);
     const directPost=this.postThreadEvent(row,event,declared);
     // A progress note wakes nobody, from a peer as from this machine (see the coordinator's deliver).
     if(event.kind==='progress'){db.query("UPDATE session_peer_events SET status='received',error=NULL WHERE event_id=? AND status IS NOT 'received'").run(event.event_id);return;}
@@ -1100,8 +1100,8 @@ export class SessionPeers {
       WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
         AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
       .all(requesterSessionId,event.event_id,group) as PeerEventRow[];
-    const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id))).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id)))};
+    const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id),candidate)).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id),candidate))};
   }
   private followReturn(eventId:string,inputId:string) {
     const input=getAcceptedSessionInput(inputId);

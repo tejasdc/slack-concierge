@@ -1950,7 +1950,7 @@ export class SessionCommunicationCoordinator {
         }
         // The thread uses the owner's event order, never the router's later execution order.
         const event=db.query('SELECT * FROM session_communication_events WHERE event_id=?').get(id) as EventRow;
-        if(this.postThreadEvent(request,event,JSON.parse(event.payload_json))&&!returnsToRequester(request))
+        if(this.postThreadEvent(request,event,JSON.parse(event.payload_json))&&!returnsToRequester(request,event))
             db.query("UPDATE session_communication_events SET status='received',error=NULL WHERE event_id=?").run(id);
         return id;
     }
@@ -2246,7 +2246,7 @@ export class SessionCommunicationCoordinator {
                 .run(inputId,received?'received':accepted.turn_id?'admitted':'held',event.event_id);
             return;
         }
-        const returnToRequester=returnsToRequester(request);
+        const returnToRequester=returnsToRequester(request,event);
         // A named thread is the result destination. A requester turn is a separately chosen effect.
         const alreadyPostedInThread=this.postThreadEvent(request,event,declared);
         // A progress note wakes nobody: it stays on the request, in the asker's record and in any
@@ -2349,8 +2349,8 @@ export class SessionCommunicationCoordinator {
             WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>?
               AND json_extract(event.payload_json,'$.answerGroup')=? ORDER BY event.rowid`)
             .all(requesterSessionId,event.event_id,group) as EventRow[];
-        const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id))).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
-        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id)))};
+        const carrier=candidates.filter(candidate=>returnsToRequester(this.row(candidate.request_id),candidate)).find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+        return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id&&returnsToRequester(this.row(candidate.request_id),candidate))};
     }
     /** An event carried by another event's return takes that return's delivery state. */
     private followReturn(eventId: string, inputId: string) {
