@@ -982,7 +982,13 @@ export class SessionExecutionHost {
           WHERE settled.event_id='codex-process-sighting-settled:'||sighting.turn_id)
       ORDER BY sighting.turn_id LIMIT 100`).all() as {turn_id:number;session_id:number;input_id:string;payload_json:string;
         native_run_id:string|null;reported_json:string|null}[];
-    for(const row of open){
+    for(const row of open)await this.followCodexProcessSighting(row).catch(error=>
+      log('warn','codex_process_sighting_failed',{turn_id:row.turn_id,...errorFields(error)}));
+    this.settleExitedProcessReports();
+  }
+  private async followCodexProcessSighting(row:{turn_id:number;session_id:number;input_id:string;payload_json:string;
+    native_run_id:string|null;reported_json:string|null}) {
+    {
       const sighting=JSON.parse(row.payload_json) as {threadId:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
       const reportRequestId=row.reported_json?JSON.parse(row.reported_json).requestId as string|null:null;
       const alive=sighting.processes.filter(codexProcessStillRunning);
@@ -990,9 +996,9 @@ export class SessionExecutionHost {
         recordSessionEvent({eventId:`codex-process-sighting-settled:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
           turnId:row.turn_id,kind:'process_audit',payload:{outcome:'exited',requestId:reportRequestId}});
         log('info','codex_leftover_process_exited',{turn_id:row.turn_id,reported:!!reportRequestId});
-        continue;
+        return;
       }
-      if(row.reported_json||Date.now()-sighting.sightedAtMs<CODEX_PROCESS_REPORT_GRACE_MS)continue;
+      if(row.reported_json||Date.now()-sighting.sightedAtMs<CODEX_PROCESS_REPORT_GRACE_MS)return;
       const title='A finished Codex turn left background processes running';
       const detail=`Codex turn ${row.turn_id} (session concierge:${row.session_id}, thread ${sighting.threadId}) finished, and ${alive.length} non-browser process(es) bearing its exact thread ID were still running ${Math.round((Date.now()-sighting.sightedAtMs)/60_000)} minutes later outside Concierge-owned execution units: ${JSON.stringify(alive)}. `+
         'Inspect current PID and start time before stopping unneeded work. Intentional work needs a registered command watch or another durable supervisor. Concierge closes this report itself once every recorded process has exited.';
@@ -1004,6 +1010,8 @@ export class SessionExecutionHost {
       log('warn','codex_leftover_process_reported',{turn_id:row.turn_id,session_id:row.session_id,processes:alive,
         request_id:requestId,deduplicated:(receipt as any)?.deduplicated===true});
     }
+  }
+  private settleExitedProcessReports() {
     // Recomputed every sweep, so a restart between a sighting settling and its report closing loses nothing.
     const reports=db.query(`SELECT DISTINCT request.request_id FROM session_owner_events reported
       JOIN inbox_requests request ON request.request_id=json_extract(reported.payload_json,'$.requestId') AND request.state='open'
@@ -1016,8 +1024,10 @@ export class SessionExecutionHost {
           AND NOT EXISTS (SELECT 1 FROM session_owner_events settled
             WHERE settled.event_id='codex-process-sighting-settled:'||reported.turn_id) LIMIT 1`).get(requestId);
       if(waiting)continue;
-      if(settleExitedProcessReport(requestId,'Concierge rechecked each PID and its start time.'))
-        log('info','codex_leftover_process_report_settled',{request_id:requestId});
+      try {
+        if(settleExitedProcessReport(requestId,'Concierge rechecked each PID and its start time.'))
+          log('info','codex_leftover_process_report_settled',{request_id:requestId});
+      } catch(error){log('warn','codex_leftover_process_report_settle_failed',{request_id:requestId,...errorFields(error)});}
     }
   }
   private codexProcessAuditReady(turnId:number,sessionId:number) {
@@ -1051,7 +1061,9 @@ export class SessionExecutionHost {
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
       // A sighting is held, not reported: most detached jobs (a build, a short wait) finish on
       // their own within minutes, and only one that keeps running needs anyone's attention.
-      if(remaining.length)recordSessionEvent({eventId:`codex-process-sighting:${turnId}`,sessionId:row.session_id,
+      // A restart between this write and the checked event rescans with a new payload; keep the first.
+      if(remaining.length&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-sighting:${turnId}`))
+        recordSessionEvent({eventId:`codex-process-sighting:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',
         payload:{threadId:row.agent_session_uuid,processes:remaining,sightedAtMs:Date.now()}});
       recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,

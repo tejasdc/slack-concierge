@@ -1474,7 +1474,7 @@ export function settleExitedProcessReport(requestId:string,evidence:string) {
     revision:request.revision+1,updatedAt:at};
   const questions=expireOpen(questionsOfRequest(topic.topicId,request),`The request it was for closed (completed): ${why}`,at);
   const topicNext=bumped(topic);
-  return recordOwnerTopicChange(topic.sessionId,`topic-process-report-settled:${requestId}`,'topic_request',
+  return recordOwnerTopicChange(topic.sessionId,`topic-process-report-settled:${requestId}:${request.revision}`,'topic_request',
     {change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by:OWNER_BY,reason:why,revision:topicNext.revision,questions});
 }
 
