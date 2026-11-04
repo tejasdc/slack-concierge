@@ -563,8 +563,9 @@ export class SessionCommunicationCoordinator {
             const kind=need?.kind;
             if(typeof kind==='string'&&kind&&(kind!=='provider-renewal'||newest)){
                 const accepted=getAcceptedSessionInput(row.id);
-                const humanInputId=accepted?sessionInputProvenance(accepted)?.originatingHuman?.inputId:undefined;
-                return {kind,why:typeof need.why==='string'?need.why:'',humanInputId};
+                const provenance=accepted?sessionInputProvenance(accepted):null;
+                return {kind,why:typeof need.why==='string'?need.why:'',
+                    humanInputId:provenance?.originatingHuman?.inputId,effectScope:provenance?.effectScope};
             }
             // A return to the worker carries the original renewal input as its request source.
             // Other turns in the same session never inherit this browser exception.
