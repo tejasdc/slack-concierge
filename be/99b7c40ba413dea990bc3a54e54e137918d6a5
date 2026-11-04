@@ -1,0 +1,1 @@
+A long recording's words are no longer handed to the slow backup engine just because the server is busy, so they arrive in minutes instead of a quarter of an hour.
