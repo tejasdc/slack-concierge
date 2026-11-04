@@ -1,4 +1,4 @@
-/** The device category is for physical prerequisites; app actions stay with the agent. */
+/** The device category is for actions on a physical device, including starting an app there. */
 export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean {
   const consequence=/\bso\s+(?:(?:the|an)\s+)?(?:agent|I)\s+can\b/i.exec(question);
   const tail=consequence?question.slice(consequence.index+consequence[0].length):'';
@@ -8,5 +8,9 @@ export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean
   if(!request)return false;
   const action=request[1]!.replace(/[?.!]$/,'').trim();
   if(/[,;]|\b(?:and|then|after that)\b/i.test(action))return false;
-  return /^(?:unlock\s+(?:(?:the|your|my)\s+)?(?:physical\s+)?(?:Mac|phone|screen|laptop|device)|take\s+(?:a\s+)?photo(?:\s+of\s+[^?.!]+)?|photograph\s+[^?.!]+|plug\s+in\s+(?:(?:the|a)\s+)?(?:cable|device|phone)|connect\s+(?:(?:the|a)\s+)?(?:cable|device|phone)|press\s+(?:(?:the|a)\s+)?(?:physical|hardware)\s+button|(?:bring|move|hold|hand\s+over)\s+(?:(?:the|your|my)\s+)?(?:device|phone|Mac|laptop))$/i.test(action);
+  const physicalAction=/^(?:unlock\s+(?:(?:the|your|my)\s+)?(?:physical\s+)?(?:Mac|phone|screen|laptop|device)|take\s+(?:a\s+)?photo(?:\s+of\s+[^?.!]+)?|photograph\s+[^?.!]+|plug\s+in\s+(?:(?:the|a)\s+)?(?:cable|device|phone)|connect\s+(?:(?:the|a)\s+)?(?:cable|device|phone)|press\s+(?:(?:the|a)\s+)?(?:physical|hardware)\s+button|(?:bring|move|hold|hand\s+over)\s+(?:(?:the|your|my)\s+)?(?:device|phone|Mac|laptop))$/i;
+  if(physicalAction.test(action))return true;
+  // Starting an app on an e-reader, watch or TV can be the physical prerequisite
+  // that exposes its agent connection. Ordinary computers and phones have agent routes.
+  return /^(?:open|start|launch)\s+[^?.!,;]+?\s+(?:once\s+)?on\s+(?:(?:your|the|my)\s+)?(?:Kindle|Kobo|e-?reader|smartwatch|watch|TV|television)(?:\s+[\p{L}\p{N}.'-]+)*$/iu.test(action);
 }
