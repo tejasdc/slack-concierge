@@ -34,7 +34,10 @@ reads a fresh full tree, verifies the one expected window and unique File child,
 only that extracted item, and reads the resulting tree. It refuses another app,
 whole-screen read, a stale REPL handle, arbitrary menu input, Inspector, reload, and page
 mutation. No same-app second-window or same-storage path has been verified, so those
-remain refused. The Thinkering exact53 consumer is owned separately.
+remained refused at that point. A later need naming `New Window` now admits one exact
+program that reads the open File menu, checks its unique `New Window` child, selects it,
+and reads the resulting app state. Physical second-window acceptance and shared storage
+are still unverified. The Thinkering exact53 consumer is owned separately.
 
 ## Acceptance scenario
 
@@ -42,10 +45,13 @@ remain refused. The Thinkering exact53 consumer is owned separately.
   thnkr.ing web-app bundle and `exact53 retirement`, without the old page ID.
 - **Action:** Call direct exact-bundle `cua.getApp`, then select that bundle afresh for a
   same-program passive accessibility read. With the File-menu need, run the exact guarded
-  menu program against a full current AX tree.
+  menu program against a full current AX tree. With a separate `New Window` need, run
+  only the exact guarded second-window program against the open File menu.
 - **Expected:** The two passive calls and guarded File-menu program are admitted. A
-  missing File item or second window aborts before the click. Informational scope,
+  missing File item or second window aborts the File-menu program before its click;
+  a missing `New Window` item aborts the second-window program before its click.
+  Informational scope,
   another human input, wrong bundle, whole-screen, arbitrary click, reload, Inspector,
-  second-window creation, and other app calls remain refused.
+  second-window calls outside the exact guarded program, and other app calls remain refused.
 - **Replayable offline:** yes, using `bot/scripts/mac-surface-policy-check.ts`. Physical Mac
   acceptance also requires an installed-hook retry after the ordinary release.
