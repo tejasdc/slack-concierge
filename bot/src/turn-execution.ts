@@ -361,6 +361,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     ? 'profile' : currentAccount(input.providerId)?.label ?? 'unavailable'}`;
   const chatGptNeverSentBreakerKey = `${providerBreakerKey}:turn:${input.turnId}`;
   const capacityBreakerKey = `${providerBreakerKey}:capacity:turn:${input.turnId}`;
+  const localPrerequisiteBreakerKey = `provider:local-prerequisite:turn:${input.turnId}`;
   const threadBreakerKey = `${providerBreakerKey}:thread:session:${input.session.id}`;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let attachmentRoot: string | null = null;
@@ -757,6 +758,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordProviderSession(input, result.sessionUUID);
     clearRetryBreaker(providerBreakerKey);
     clearRetryBreaker(capacityBreakerKey);
+    clearRetryBreaker(localPrerequisiteBreakerKey);
     clearRetryBreaker(threadBreakerKey);
     const completedModel=input.model??sessionMetadata(input.session).model;
     if(completedModel)clearModelCapacityRefusal(input.providerId,completedModel);
@@ -1232,8 +1234,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // the turn again while its failed run still held it ("claimed twice locally", eleven ChatGPT turns
       // on 2026-10-13). It can recur only once per Thinkering restart.
       const chatgptPlaceLost = replaySafe && input.providerId === 'chatgpt' && message.includes('CHATGPT_NOT_SENT');
+      const localPrerequisiteWait = replaySafe && structuredFailure?.localPrerequisiteUnavailable === true;
       let retryable = replaySafe
-        && (authWait || googleUsageWait || chatgptPlaceLost || structuredFailure?.failureClass === "retryable" ||
+        && (authWait || googleUsageWait || chatgptPlaceLost || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
@@ -1257,12 +1260,14 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // "ended with code 1" shared the provider key, which exhausted after two attempts in
         // forty seconds and refused every Codex turn that followed.
         const capacityWait = retryable && structuredFailure?.modelAtCapacity === true;
-        const retryKey = capacityWait ? capacityBreakerKey
+        const retryKey = localPrerequisiteWait ? localPrerequisiteBreakerKey
+          : capacityWait ? capacityBreakerKey
           : structuredFailure?.threadScoped === true ? threadBreakerKey
           : input.providerId === 'chatgpt' && structuredFailure?.failureClass === 'retryable'
           ? chatGptNeverSentBreakerKey : providerBreakerKey;
         const decision = recordRetryFailure({ key: retryKey, site: capacityWait ? 'provider-capacity' : 'provider',
-          what: capacityWait ? `The ${input.providerId} model's capacity`
+          what: localPrerequisiteWait ? `The ${input.providerId} command on this machine`
+            : capacityWait ? `The ${input.providerId} model's capacity`
             : retryKey === threadBreakerKey ? `One ${input.providerId} conversation (session ${input.session.id})`
             : `The ${input.providerId} account's work`, failure });
         if (decision.action === 'stop') retryable = false;

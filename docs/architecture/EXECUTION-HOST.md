@@ -81,6 +81,17 @@ treated as proof of a provider side effect.
 changes `turns.owner_instance_id` and `executions.coordinator_instance_id` in one transaction and
 counts `adoptions`; it never increments the dispatch attempt or clears an acknowledgement.
 
+## Starting a new Claude run
+
+A new Claude run checks that its command exists before recording provider admission. If the
+command is temporarily absent during an install, no provider process was started: the turn
+returns to its queue under its own bounded local-command retry budget, without spending the
+Claude account's request retry budget. The path found at that boundary is passed into the
+execution host, so the coordinator does not perform a second command lookup after recording
+admission. If the command disappears before the host can spawn it, the host's recorded spawn
+error and absent provider process make the same retry safe. A turn already admitted to a
+provider remains subject to host custody and is never replayed without that proof.
+
 ## Taking a run back (adoption)
 
 At startup, before steering recovery and turn recovery run, each open execution of a still-running

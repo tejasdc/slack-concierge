@@ -115,7 +115,7 @@ import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {pinCodexThreadHooks} from './hook-pins';
-import {HostedClaudeCodeTransport,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
+import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -1047,6 +1047,7 @@ export class SessionExecutionHost {
         }
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
+      let launchClaudeExecutable:string|undefined;
       const underlying=this.options.providers[session.provider_id];
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
@@ -1075,7 +1076,7 @@ export class SessionExecutionHost {
             actual=adoption?this.adoptedRun(prepared,adoption)
               :this.hostedRun(prepared,claim,session,kept,antigravityExecutable());
           } else if(session.provider_id==='claude-code'&&(adoption||executionHostsEnabled())) {
-            actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept);
+            actual=adoption?this.adoptedRun(prepared,adoption):this.hostedRun(prepared,claim,session,kept,launchClaudeExecutable);
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
@@ -1134,7 +1135,18 @@ export class SessionExecutionHost {
         CONCIERGE_MAC_NEED:process.platform==='darwin'&&typeof payload.machineNeed?.kind==='string'?payload.machineNeed.kind:''},
       ...(boundAccount?{boundAccount}:{}),
       // Admission was recorded when this run first started; taking it back is not a new admission.
-      ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}:{}),
+      ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}
+        :session.provider_id==='claude-code'&&executionHostsEnabled()
+          ?{beforeProviderAdmission:()=>{
+            try{launchClaudeExecutable=claudeExecutable();}
+            catch(error){
+              if(!(error instanceof HostUnavailableError))throw error;
+              throw new ProviderDispatchError({message:error.message,failureClass:'retryable',terminalConfirmed:true,
+                toolsUsed:[],localPrerequisiteUnavailable:true});
+            }
+            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+          }}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.

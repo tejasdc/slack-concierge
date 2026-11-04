@@ -1,7 +1,7 @@
 ---
 failure: A Concierge restart during a Claude Code reinstall marked 25 running agents as parked, so their sessions went idle while the agents kept working with no one listening and their replies were refused.
 date: 2026-11-04
-fix_commits: [6c9b01f2]
+fix_commits: [6c9b01f2, c8efc5ff, fccc0db5]
 cause_status: confirmed
 ---
 
@@ -51,6 +51,15 @@ are excluded from adoption; their hosts are stopped and their old turns marked i
 provider exit, keeping the later turn in place. Concierge rechecks parked custody each minute
 while online, so another parked live host does not wait for a restart.
 
+A fresh Claude launch checks for the installed command before recording provider admission.
+When a command replacement makes it unavailable, the turn is safely requeued under its own bounded
+local-command retry budget without consuming the Claude account's provider retry budget. A host's
+recorded spawn error also proves that a command lost after preflight never started. This prevents
+the fresh-launch failure while keeping possibly active turns under execution-host custody.
+The separate agent-shell launcher also waits for a command replacement; see
+`docs/incidents/2026-11-04-claude-command-install-gap.md`. The retained journal did not identify
+the process that started the 17:06 installation, so its initiator remains unknown.
+
 ## Acceptance scenario
 
 - **Seed:** a running Claude turn with a live execution host; `claude` absent from PATH.
@@ -58,3 +67,10 @@ while online, so another parked live host does not wait for a restart.
 - **Expected:** the run is adopted live (`execution_host_attached`, provider running) and is not
   parked; the agent's router-actions calls keep working.
 - **Replayable offline:** no (needs an execution host under systemd and a coordinator restart).
+
+For a fresh launch, start a native Claude turn while the command is absent before provider
+admission, or remove it after preflight but before the host spawn. The expected outcome in both
+cases is a queued retry under that turn's local-command budget, with no provider process or
+acknowledgement. If the command stays absent through the bounded budget, the request fails
+visibly and remains recoverable. Agent-run tests are disabled; source review and installed
+observation are recorded separately.
