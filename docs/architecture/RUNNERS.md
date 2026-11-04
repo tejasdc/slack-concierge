@@ -166,6 +166,12 @@ What happens for a turn on a runner:
    lease from now, so its own downtime never counts against a runner. A later owner withdraws a job
    no runner claimed yet, holds a claimed job until its runner reports the host, and records a
    takeover as live (survival proof) only once the runner reaches it after the takeover.
+   A runner process restarted after four minutes without contact stops those agents before taking
+   its turns back. An owner outage longer than four minutes therefore still ends runner agents (now
+   by the runner's own stop). Known gaps: a runner process that stays down while its hosts run has no
+   host-side deadline; and rolling back to a release without runner support settles runner turns as
+   lost at once, so for up to four minutes a runner on another machine may still run the old agent
+   while a new turn starts in the same conversation.
 
 Survival through owner updates uses the existing rule: `claude-code/runner` counts as surviving only
 after one such run was taken over live by a later owner. Until then updates wait for runner turns.

@@ -39,7 +39,7 @@ const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
 const botDir=resolve(import.meta.dir,'..');
 
-type HeldAttempt={jobId:string;epoch:number;kind?:string;executionId?:string;manifest?:unknown;watches?:Record<string,string>};
+type HeldAttempt={jobId:string;epoch:number;kind?:string;executionId?:string;manifest?:unknown;watches?:Record<string,string>;lastContactAtMs?:number};
 type Held=Record<string,HeldAttempt>;
 const readHeld=():Held=>{try{return JSON.parse(readFileSync(held,'utf8'));}catch{return {};}};
 const writeHeld=(value:Held)=>{writeFileSync(held+'.tmp',JSON.stringify(value),{mode:0o600});renameSync(held+'.tmp',held);};
@@ -137,6 +137,8 @@ class Turn {
       if(answer.error==='STALE_EPOCH'||answer.error==='UNKNOWN_ATTEMPT')this.lose(new Error(answer.detail??answer.error));
       return;
     }
+    // Saved at most every half minute, so a runner restarted after a long silence knows to stop it.
+    if(Date.now()-this.lastContact>30_000)updateHeld(state=>{const held=state[this.job.attemptId];if(held)held.lastContactAtMs=Date.now();});
     this.lastContact=Date.now();
     this.queue=this.queue.filter(event=>event.seq>answer.ackedSeq!);
     for(const command of answer.commands??[])this.offer(command);
@@ -194,7 +196,7 @@ class Turn {
   async start() {
     const payload=this.job.payload??{};
     // The manifest is kept here (0600) so a restarted runner can rebuild the provider's environment.
-    updateHeld(state=>{state[this.job.attemptId]={jobId:this.job.jobId,epoch:this.epoch,kind:'turn',executionId:this.executionId,manifest:payload.manifest};});
+    updateHeld(state=>{state[this.job.attemptId]={jobId:this.job.jobId,epoch:this.epoch,kind:'turn',executionId:this.executionId,manifest:payload.manifest,lastContactAtMs:Date.now()};});
     if(!/^[0-9a-f]{16}$/.test(this.executionId))return this.finish({notStarted:'the turn names no valid execution id'});
     if(!Array.isArray(payload.protocols)||!payload.protocols.includes(HOST_PROTOCOL_VERSION))
       return this.finish({notStarted:`this runner's host speaks protocol ${HOST_PROTOCOL_VERSION}, which the owner does not adopt`});
@@ -321,9 +323,25 @@ class Turn {
 const turns=new Map<string,Turn>();
 
 // Take back what this runner held before a restart; a stale attempt is no longer this runner's.
+// First, a turn this runner has not been able to report for the fencing time is stopped: the owner
+// may already have settled it as lost, and the restart must not let its agent keep acting.
+const fenceStale=()=>{
+  for(const [attemptId,held] of Object.entries(readHeld())) {
+    if(held.kind!=='turn'||!held.executionId||Date.now()-(held.lastContactAtMs??0)<RUNNER_FENCE_MS)continue;
+    say('runner_turn_fenced',{job:held.jobId,attemptId,silentMs:Date.now()-(held.lastContactAtMs??0)});
+    spawnSync('systemctl',['stop',`${executionUnit(held.executionId)}.service`],{timeout:15_000});
+  }
+};
 const before=readHeld();
 if(Object.keys(before).length){
-  const {attempts}=await call('reacquire',{attemptIds:Object.keys(before)});
+  let answer:any=null;
+  for(;;){
+    fenceStale();
+    answer=await call('reacquire',{attemptIds:Object.keys(before)}).catch(error=>{say('runner_reacquire_retry',{error:String(error)});return null;});
+    if(answer)break;
+    await Bun.sleep(5_000);
+  }
+  const {attempts}=answer;
   for(const attempt of attempts) {
     const prior=before[attempt.attemptId]!;
     if(attempt.stale) {
@@ -332,7 +350,7 @@ if(Object.keys(before).length){
       if(prior.kind==='turn'&&prior.executionId)spawnSync('systemctl',['stop',`${executionUnit(prior.executionId)}.service`],{timeout:15_000});
       continue;
     }
-    updateHeld(state=>{state[attempt.attemptId]!.epoch=attempt.epoch;});
+    updateHeld(state=>{state[attempt.attemptId]!.epoch=attempt.epoch;state[attempt.attemptId]!.lastContactAtMs=Date.now();});
     if(prior.kind!=='turn')continue; // a reacquired probe is left to expire
     // The last stored event names the host sequence it covered; the host's journal resumes after it.
     const {job}=await read(`jobs/${encodeURIComponent(prior.jobId)}?attempt=${encodeURIComponent(attempt.attemptId)}&after=${Math.max(0,attempt.ackedSeq-1)}`);

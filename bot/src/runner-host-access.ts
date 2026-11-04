@@ -104,7 +104,13 @@ export class RunnerHostAccess implements HostAccess {
   async contactAfter(sinceMs: number, timeoutMs = 30_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      if ((engine().lastContact(this.jobId) ?? 0) > sinceMs) return true;
+      if ((engine().lastContact(this.jobId) ?? 0) > sinceMs) {
+        // The runner is alive; the host survived only if the job still runs and no exit is recorded.
+        const job = engine().job(this.jobId, Number.MAX_SAFE_INTEGER);
+        if (!job || ended(job.state)) return false;
+        for await (const frame of this.journal()) if (frame.k === "x") return false;
+        return true;
+      }
       if (Date.now() >= deadline) return false;
       await nextActivity(this.jobId);
     }
