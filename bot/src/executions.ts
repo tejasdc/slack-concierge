@@ -12,50 +12,6 @@ import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
 import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, stopSupersededHost, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
-if (process.env.CONCIERGE_READ_WORKER !== "1") {
-db.exec(`
-CREATE TABLE IF NOT EXISTS executions (
-  execution_id            TEXT PRIMARY KEY,
-  turn_id                 INTEGER NOT NULL REFERENCES turns(id),
-  dispatch_attempt        INTEGER NOT NULL,
-  session_id              INTEGER NOT NULL,
-  provider                TEXT NOT NULL,
-  host_protocol           INTEGER NOT NULL,
-  supervisor              TEXT NOT NULL,
-  directory               TEXT NOT NULL,
-  unit                    TEXT,
-  host_script             TEXT,
-  runtime                 TEXT,
-  manifest_digest         TEXT,
-  processor_json          TEXT NOT NULL,
-  state                   TEXT NOT NULL CHECK (state IN ('intended', 'live', 'exited', 'released', 'lost')),
-  coordinator_instance_id TEXT,
-  adoptions               INTEGER NOT NULL DEFAULT 0,
-  exit_code               INTEGER,
-  exit_signal             TEXT,
-  detail                  TEXT,
-  created_at_ms           INTEGER NOT NULL,
-  updated_at_ms           INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended', 'live', 'exited');
-`);
-// Set only when a later coordinator took the run over while its provider was still running: the
-// evidence that this kind of run survives a restart (execution-survival.ts). A run settled from
-// a finished record, or one merely claimed, proves nothing about survival.
-if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()))
-  db.exec("ALTER TABLE executions ADD COLUMN adopted_live INTEGER NOT NULL DEFAULT 0");
-// The host program's content digest at launch; "on the previous version" compares this, never the
-// release folder, so an update that did not change the host leaves no run on a previous version.
-if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='host_digest'").get()))
-  db.exec("ALTER TABLE executions ADD COLUMN host_digest TEXT");
-// The survival proof (execution-survival.ts) asks which kinds have been taken over live and released.
-// Without this index that question scanned the whole table (9,700 rows across 245 MB of pages on
-// 2026-11-03), and the queue asks it on every claim while an update holds the drain gate, so the
-// owner thread spent up to 14 s of each minute of a drain inside it. Partial on exactly the proof's
-// predicate, so no other reader can pick it up (docs/incidents/2026-11-03-update-drain-queue-claim-scanned-executions.md).
-db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider, supervisor) WHERE adopted_live=1 AND state='released'");
-}
-
 /** This coordinator took the run over while its provider was still running. */
 export function recordLiveAdoption(executionId: string) {
   db.query("UPDATE executions SET adopted_live=1, updated_at_ms=? WHERE execution_id=?").run(Date.now(), executionId);

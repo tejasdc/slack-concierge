@@ -17,12 +17,14 @@ the run back under the same turn, run and input identities.
 | --- | --- | --- |
 | Host program `bot/scripts/execution-host.ts` (release bundle `control/bot/scripts/execution-host.js`) | one transient systemd service per execution, `concierge-exec-<id>.service`, outside `concierge-bot.service` | the provider process, its stdin/stdout/stderr, the journal, exit evidence |
 | Coordinator side `bot/src/execution-host-client.ts` | inside Concierge | starting a host, the connection protocol, `HostedClaudeCodeTransport` |
-| Ledger table `executions` (`bot/src/executions.ts`) | Concierge's SQLite | which host holds which run, custody state, what adoption needs |
+| Ledger table `executions` (`bot/src/state.ts`, custody in `bot/src/executions.ts`) | Concierge's SQLite | which host holds which run, custody state, what adoption needs |
 | Adoption at startup (`claimAdoptableExecutions`) | both runtime compositions, before steering and turn recovery | taking a run back |
 
 The host holds no policy. Inactivity limits, background-job waits, steering, Stop semantics, what a
 frame means and every settlement stay in the coordinator, which a restart replaces. A running host is
 never patched.
+The ledger schema for executions is initialized with the turn queue's schema, because the queue
+checks for a parked host even in code paths that do not import the execution-host runtime.
 
 ## Lifetimes
 

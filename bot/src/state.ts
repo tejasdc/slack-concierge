@@ -739,6 +739,35 @@ function migrateLegacyCodexRemoteMirrorEvents() {
 }
 
 if (initializeLedgerSchema) {
+// The turn queue queries open hosted executions even when a fixture imports only state.ts.
+// Create this ledger table with its owning schema, before any claim can prepare its query.
+db.exec(`CREATE TABLE IF NOT EXISTS executions (
+  execution_id TEXT PRIMARY KEY,
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  dispatch_attempt INTEGER NOT NULL,
+  session_id INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  host_protocol INTEGER NOT NULL,
+  supervisor TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  unit TEXT,
+  host_script TEXT,
+  runtime TEXT,
+  manifest_digest TEXT,
+  processor_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('intended','live','exited','released','lost')),
+  coordinator_instance_id TEXT,
+  adoptions INTEGER NOT NULL DEFAULT 0,
+  exit_code INTEGER,
+  exit_signal TEXT,
+  detail TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended','live','exited');`);
+addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
+addColumn('executions','host_digest','host_digest TEXT');
+db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider,supervisor) WHERE adopted_live=1 AND state='released'");
 db.transaction(() => {
 migrateLegacyCodexRemoteMirrorEvents();
 
