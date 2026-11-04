@@ -28,6 +28,33 @@ const NAME: Readonly<Record<RenewableProvider, string>> = { "claude-code": "Clau
 const SITE: Readonly<Record<RenewableProvider, string>> = { "claude-code": "claude.ai", codex: "chatgpt.com (OpenAI)" };
 /** A renewal not yet handed over, or handed over this recently, is the same episode. */
 const SAME_EPISODE_MS = 30 * 60_000;
+/**
+ * After the Mac's agent could not finish a renewal, the next one waits this long. On 2026-11-03 Claude
+ * refused the approval with "Couldn't verify your browser" and a new request went out 30 minutes
+ * later; each attempt switches the claude.ai account in his own Chrome, and repeated automated
+ * approvals can only make that check stricter. A browser check or an expired saved login does not
+ * clear in minutes, so a few hours is the shortest retry that can find it changed.
+ */
+const AFTER_UNFINISHED_MS = 6 * 60 * 60_000;
+/** A spent account is signed in this close to its weekly reset, so it is ready when room returns. */
+const BEFORE_RESET_MS = 60 * 60_000;
+
+/**
+ * When the last stored reading says this account's weekly allowance is used up and resets later than
+ * `BEFORE_RESET_MS` from now. A sign-in gives such an account no room, so renewing it early only spends
+ * a browser approval (tejastej.dc@gmail.com on 2026-11-03, at 100% until Claude's weekly reset). Usage
+ * cannot fall before its reset, so an old reading still proves this; the reset time ends it.
+ */
+function spentUntil(provider: RenewableProvider, account: string): number | null {
+  const row = db.query(`SELECT usage_json FROM provider_account_usage WHERE provider=?`).get(provider) as { usage_json: string } | null;
+  if (!row) return null;
+  try {
+    const usage = JSON.parse(row.usage_json) as { accounts?: { label?: string; windows?: { name?: string; usedPercent?: number; resetsAt?: string | null }[] }[] };
+    const weekly = usage.accounts?.find(each => each.label === account)?.windows?.find(window => window.name === "Weekly");
+    const resets = weekly?.resetsAt ? Date.parse(weekly.resetsAt) : NaN;
+    return (weekly?.usedPercent ?? 0) >= 100 && resets - Date.now() > BEFORE_RESET_MS ? resets : null;
+  } catch { return null; }
+}
 
 export function signInRenewalOf(notice: { key: string; kind: string }): { provider: RenewableProvider; account: string } | null {
   const provider = (Object.keys(SIGNIN_RENEWAL_KINDS) as RenewableProvider[]).find(each => SIGNIN_RENEWAL_KINDS[each] === notice.kind);
@@ -42,7 +69,9 @@ export function signInWorkerActionId(key: string): string {
 /**
  * Records that `account`'s sign-in here was refused, once per episode: while an earlier renewal for
  * it is waiting to be handed over, was handed over in the last half hour, or is still unanswered by
- * the Mac (asleep, or working), nothing new is started, so two sign-ins never race.
+ * the Mac (asleep, or working), nothing new is started, so two sign-ins never race. Nothing is started
+ * either within `AFTER_UNFINISHED_MS` of a renewal the Mac answered without finishing, or while the
+ * account's week is spent until well after now; the background check asks again on its next pass.
  */
 export function needSignInRenewal(provider: RenewableProvider, account: string | null, why: string): boolean {
   if (!account) return false;
@@ -57,6 +86,11 @@ export function needSignInRenewal(provider: RenewableProvider, account: string |
     const open = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NULL
       UNION ALL SELECT 1 FROM session_external_requests WHERE action_id LIKE ? AND outcome IS NULL LIMIT 1`).get(sent, sent);
     if (open) return false;
+    const unfinished = db.query(`SELECT 1 FROM session_peer_requests WHERE action_id LIKE ? AND outcome IS NOT NULL AND outcome<>'completed' AND created_at_ms>?
+      UNION ALL SELECT 1 FROM session_external_requests WHERE action_id LIKE ? AND outcome IS NOT NULL AND outcome<>'completed' AND created_at_ms>? LIMIT 1`)
+      .get(sent, Date.now() - AFTER_UNFINISHED_MS, sent, Date.now() - AFTER_UNFINISHED_MS);
+    if (unfinished) return false;
+    if (spentUntil(provider, account) !== null) return false;
     const onWorkerMachine = process.platform === "darwin";
     const recorded = recordRepairNotice(db, { key: `${PREFIX[provider]}${account}:${Date.now()}`, kind: SIGNIN_RENEWAL_KINDS[provider],
       text: `The ${name} account ${account} is not ready on ${onWorkerMachine ? 'the Mac' : 'the server'} (${why}). Concierge sent the Mac's browser agent `
@@ -92,7 +126,10 @@ export function signInWorkerText(provider: RenewableProvider, account: string, l
     : `approve it on claude.ai as ${account} (switch claude.ai's account first if another one is showing), and enter the one-time code into the waiting Accounts form`;
   return `Make ${machine}'s ${name} account ${account} ready for agent work. In Chrome on this Mac, open thnkr.ing `
     + `Accounts, start ${account}'s ${name} sign-in for ${machine}${local ? " (the Mac's row in Accounts, not the server's)" : ""}, ${approve}. Keep the link and the code out of every message, `
-    + `file and reply. Reply completed once Accounts shows ${account} signed in on ${machine}. Reply needs_decision --only-he-can sign-in only `
+    + `file and reply. Before you switch ${site}'s account, note which account Chrome was signed in to there; when you finish or give up, `
+    + `switch ${site} back to that account, because it is his own browser. If ${site} says it couldn't verify your browser, do not approve again: `
+    + `switch back and reply failed with its exact words, and Concierge waits hours before asking again. `
+    + `Reply completed once Accounts shows ${account} signed in on ${machine}. Reply needs_decision --only-he-can sign-in only `
     + `if Chrome's own ${site} sign-in for ${account} has expired and needs him`
     + (local ? `, and because this request comes from this Mac's own Concierge with nobody reading its answer, then also declare `
       + `sessions outcome needs_you --only-he-can sign-in telling him to sign in to ${site} as ${account} in Chrome on his Mac` : ``)

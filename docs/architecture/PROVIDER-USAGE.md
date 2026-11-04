@@ -164,6 +164,17 @@ also restarts its App Server when no turns are running, because that server keep
 credential in memory. A failed activation leaves the queue untouched. Claude's macOS
 Keychain login uses the existing sign-in activation path and Keychain change event.
 
+A signed-out account gets one renewal request to the Mac's browser agent per episode
+(`bot/src/signin-renewal.ts`). After the agent answers without finishing (failed or
+needs_decision), no new request goes out for that account for six hours: on 2026-11-03
+Claude refused the approval with "Couldn't verify your browser" and the old half-hour
+episode sent a second request 30 minutes later, switching his Chrome's claude.ai account
+again. While the last stored reading shows the account's weekly allowance used up with its
+reset more than an hour away, no renewal starts at all, because signing in gives it no room;
+the background check asks again within the hour before the reset. The agent is told to switch
+the provider site in his Chrome back to the account it found there when it finishes or gives
+up, and not to approve again after a browser-verification refusal.
+
 A usage reading with room is not an account this machine can run: the usage reader holds its own
 copy of each login, so a home whose login is signed out still reads as having room. One answer,
 `claudeAccountLaunchableHere`, says whether this machine can launch an account now (a proven home,
