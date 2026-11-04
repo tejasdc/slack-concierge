@@ -56,6 +56,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
+- A device question can name an app startup when the physical device has no agent route;
+  the agent explains the failed route. Returned `needs_you` questions can be withdrawn
+  by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
+  and the [session owner contract](docs/contracts/session-owner-v1.md).
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
   Failed, cancelled or stalled agent attempts leave his Inbox request open for

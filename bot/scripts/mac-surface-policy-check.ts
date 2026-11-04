@@ -106,10 +106,18 @@ for(const question of ['Can you click the button in the app?','Can you open Safa
   'Can you unlock your Mac, then click Save?','Can you unlock your physical Mac and click Save?',
   'Can you unlock the Mac and scroll the app?',
   'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
-  'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?'])
+  'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?',
+  'Can you open Safari on your Mac?', 'Can you open Gmail on your phone?',
+  'Can you launch Chrome on my laptop?', 'Can you start the deploy on the server?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock the Mac so the agent can read the app?',
-  'Can you unlock your physical Mac?','Can you take a photo of the paper?'])
+  'Can you unlock your physical Mac?','Can you take a photo of the paper?',
+  'Can you open KOReader once on your Kindle Oasis?',
+  'Can you open KOReader on Kindle?',
+  'Could you start the companion app on the watch?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Can you open KOReader and copy a book on your Kindle Oasis?',
+  'Can you open KOReader on your Kindle Oasis? Then send me a screenshot?'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 console.log('Mac surface policy refused the unsafe actions and kept server and read-only work available.');

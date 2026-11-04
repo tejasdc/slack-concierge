@@ -1517,7 +1517,7 @@ function questionBrief(item:any) {
 function withHisWords(brief:any,by:TopicBy):any {
   const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(brief.decision))
-    throw new TopicError('An onlyHeCan device question must name a physical prerequisite, such as unlocking a Mac. Try the agent computer-use route for app actions, then ask only for the physical prerequisite it exposed.');
+    throw new TopicError('An onlyHeCan device question must name one action on a physical device, such as unlocking a Mac or starting an app on an unreachable device. Try the available agent route first, then explain in whyNotSettled why only Tejas can take this step.');
   if(kind!=='approval'&&(brief.decisionId!==undefined||brief.approvalAction!==undefined))
     throw new TopicError('decisionId and approvalAction belong to onlyHeCan approval.');
   const decision=kind==='approval'?approvalDecision(brief.decisionId,brief.approvalAction):undefined;
