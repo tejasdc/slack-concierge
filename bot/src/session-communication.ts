@@ -2507,8 +2507,10 @@ export class SessionCommunicationCoordinator {
             this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already
             // queued turn. Reconcile historical cancellations too, before any account wake.
-            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM session_communication_requests r
-                JOIN session_inputs i ON i.id=r.target_input_id JOIN turns t ON t.id=i.turn_id
+            // Driven from the few queued turns: starting from the requests walked every request's
+            // stored text on each wake (2026-11-03).
+            await this.scanRows<RequestRow>('session_communication_requests', `SELECT r.rowid AS reconciliation_rowid,r.* FROM turns t INDEXED BY turns_queued_order
+                CROSS JOIN session_inputs i ON i.turn_id=t.id CROSS JOIN session_communication_requests r ON r.target_input_id=i.id
                 WHERE r.outcome='canceled' AND t.status='queued' AND t.saved_kind IS NULL AND r.rowid<=? AND r.rowid>?
                 ORDER BY r.rowid LIMIT 1`, request => db.transaction(()=>{
                     if(request.target_input_id&&cancelQueuedWithdrawnRequest(request.target_input_id))
@@ -2526,7 +2528,7 @@ export class SessionCommunicationCoordinator {
             await this.scanExternalRequests();
             await this.scanRows<RequestRow>('session_communication_requests','SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests WHERE outcome IS NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1',
                 request => this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id))));
-            await this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events WHERE status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
+            await this.scanRows<EventRow>('session_communication_events',"SELECT rowid AS reconciliation_rowid,* FROM session_communication_events INDEXED BY session_communication_outbox WHERE status<>'received' AND status NOT IN ('received','retained') AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
                 event => this.schedule(`event:${event.event_id}`, () => this.deliver(event)));
             if (!this.stopped) this.arm();
         }

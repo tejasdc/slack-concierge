@@ -667,6 +667,10 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_peer_deliveries_target_input ON session_peer_deliveries(target_input_id);
         CREATE INDEX IF NOT EXISTS session_communication_requests_routed ON session_communication_requests(routed_request_id) WHERE routed_request_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_peer_requests_open ON session_peer_requests(request_id) WHERE outcome IS NULL;
+        -- The coordinator's open and canceled scans page by rowid; keyed on outcome, each page seeks
+        -- its rowid range instead of re-sorting every open row.
+        CREATE INDEX IF NOT EXISTS session_peer_open_reconcile ON session_peer_requests(outcome) WHERE outcome IS NULL;
+        CREATE INDEX IF NOT EXISTS session_peer_requests_canceled ON session_peer_requests(outcome) WHERE outcome='canceled';
         CREATE INDEX IF NOT EXISTS sessions_inbox ON sessions(id) WHERE json_extract(native_metadata_json,'$.inbox')=1;`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
