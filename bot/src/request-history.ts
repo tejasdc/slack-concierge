@@ -25,7 +25,12 @@ import {meaningIndex} from './meaning-index';
 export type Answerability=(sessionId:number)=>string;
 export type EarlierWork={text:string;requests:number;sessions:number;cases:number;omissions:string[]};
 
-const MEANING_WAIT_MS=1_500;
+/**
+ * One question embedding serves both comparisons. Measured on the server 2026-11-04: the meaning
+ * search's embedding takes 1.3 s at the median and up to 6 s under load, so two separate 1.5 s
+ * bounds missed nearly every lookup in the first live test.
+ */
+const MEANING_WAIT_MS=4_000;
 const MIN_MEANING=0.55;
 const MAX_REQUESTS=8,MAX_SESSIONS=6,MAX_CASES=3;
 const CLAIM_CHARS=360;
@@ -71,10 +76,8 @@ function threadRequests(topicRoot:string,beforeMs:number,recipient:number|null,s
 }
 
 /** Earlier sessions close in meaning, from the index alone: imported transcripts count only when Concierge already holds them. */
-async function closestSessions(query:string):Promise<{found:{id:number;score:number}[];omission:string|null}> {
-  const index=meaningIndex();
-  if(!index?.installed)return {found:[],omission:'Earlier sessions were not compared: the meaning index is not installed on this machine.'};
-  const answer=await index.search(query,30);
+function closestSessions(vector:Float32Array):{found:{id:number;score:number}[];omission:string|null} {
+  const answer=meaningIndex()!.searchVector(vector,30);
   if(!answer.available)return {found:[],omission:`Earlier sessions were not compared: ${answer.reason??'the meaning index is unavailable'}.`};
   const best=new Map<number,number>();
   const keep=(id:number,score:number)=>{if((best.get(id)??0)<score)best.set(id,score);};
@@ -109,12 +112,10 @@ async function failureCases():Promise<FailureCase[]> {
   return cases;
 }
 
-async function closestCases(query:string):Promise<{found:FailureCase[];omission:string|null}> {
-  const index=meaningIndex();
-  if(!index?.installed)return {found:[],omission:'The failure ledger was not compared: the meaning index is not installed on this machine.'};
+async function closestCases(vector:Float32Array):Promise<{found:FailureCase[];omission:string|null}> {
+  const index=meaningIndex()!;
   const cases=await failureCases();
   if(!cases.length)return {found:[],omission:`The failure ledger was not found at ${FAILURE_LEDGER}.`};
-  const [vector]=await index.queryVectors([query]);
   const vectors=await index.documentVectors(cases.map(item=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`})));
   const dot=(a:Float32Array,b:Float32Array)=>{let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]!*b[i]!;return sum;};
   const scored=cases.map(item=>{const other=vectors.get(`failure-case:${item.id}`);return {item,score:other?dot(vector!,other):0};});
@@ -153,20 +154,25 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const thread=input.topicRoot?threadRequests(input.topicRoot,input.nowMs,input.recipient,input.sendingTurn):[];
   const inThread=new Set(thread.map(row=>row.target_session_id));
   const query=oneLine(`${input.summary??''} ${input.text}`,600);
-  const failed=(what:string)=>(error:unknown)=>{omissions.push(`${what}: ${error instanceof Error?error.message:String(error)}.`);return null;};
-  const [sessions,cases]=await Promise.all([
-    within(closestSessions(query),MEANING_WAIT_MS).catch(failed('Earlier sessions could not be compared')),
-    within(closestCases(query),MEANING_WAIT_MS).catch(failed('The failure ledger could not be compared'))]);
-  if(sessions==='late')omissions.push(`Earlier sessions were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search.`);
-  else if(sessions?.omission)omissions.push(sessions.omission);
-  if(cases==='late')omissions.push(`The failure ledger was not compared within ${MEANING_WAIT_MS/1000} s; read ${FAILURE_LEDGER} yourself.`);
-  else if(cases?.omission)omissions.push(cases.omission);
+  type Compared={sessions:ReturnType<typeof closestSessions>;cases:Awaited<ReturnType<typeof closestCases>>};
+  const compare=async():Promise<Compared|null>=>{
+    const index=meaningIndex();
+    if(!index?.installed){omissions.push('Earlier sessions and the failure ledger were not compared: the meaning index is not installed on this machine.');return null;}
+    const [vector]=await index.queryVectors([query]);
+    return {sessions:closestSessions(vector!),cases:await closestCases(vector!)};
+  };
+  const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions and the failure ledger could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
+  if(compared==='late')omissions.push(`Earlier sessions and the failure ledger were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search and read ${FAILURE_LEDGER}.`);
+  const sessions=compared&&compared!=='late'?compared.sessions:null;
+  const cases=compared&&compared!=='late'?compared.cases:null;
+  if(sessions?.omission)omissions.push(sessions.omission);
+  if(cases?.omission)omissions.push(cases.omission);
   const created=db.query("SELECT CAST(strftime('%s',created_at) AS INTEGER)*1000 AS ms FROM sessions WHERE id=?");
   // Through the recipient index, newest by time; only the chosen row's words are read.
   const times=db.query('SELECT request_id,created_at_ms FROM session_communication_requests WHERE target_session_id=? AND created_at_ms<?');
   const row=db.query(`SELECT ${COLUMNS} FROM session_communication_requests WHERE request_id=?`);
   const related:{id:number;at:number|null;last:RequestRow|null}[]=[];
-  for(const {id} of sessions&&sessions!=='late'?sessions.found:[]){
+  for(const {id} of sessions?.found??[]){
     if(excluded.has(id)||inThread.has(id))continue;
     const at=(created.get(id) as {ms:number|null}|null)?.ms??null;
     if(at!==null&&at>=input.nowMs)continue;
@@ -175,7 +181,7 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
     related.push({id,at,last});
     if(related.length>=MAX_SESSIONS)break;
   }
-  const failures=cases&&cases!=='late'?cases.found:[];
+  const failures=cases?.found??[];
   log('info','request_history_looked_up',{elapsed_ms:Math.round(performance.now()-started),thread_requests:thread.length,sessions:related.length,cases:failures.length,omissions:omissions.length});
   if(!thread.length&&!related.length&&!failures.length)
     return {text:omissions.length?`What came before: Concierge found no earlier work on this problem. Not consulted: ${omissions.join(' ')}`:'',requests:0,sessions:0,cases:0,omissions};
