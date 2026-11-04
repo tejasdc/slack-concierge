@@ -28,20 +28,24 @@ current-window request.
 The repair retains the earlier old-page grant and adds a distinct
 grant bound to this human capture, work effect, exact bundle, and recorded retirement purpose.
 It admits direct app selection and a passive read that selects the exact bundle again in the
-same Computer Use program. It refuses another app, whole-screen read, a stale REPL handle,
-menu input, Inspector, reload, and page mutation. The Mac agent first needs the admitted
-selection to read the returned Computer Use API and current accessibility tree. Neither a
-named File-menu action nor a same-app second-window path has been verified; those require
-separate target-bound evidence before admission. The Thinkering exact53 consumer is being
-prepared by the saving owner and is not part of this policy repair.
+same Computer Use program. The physical Mac admitted both, and its API documentation and
+full accessibility tree exposed a numeric AX File-menu item. A second exact program now
+reads a fresh full tree, verifies the one expected window and unique File child, clicks
+only that extracted item, and reads the resulting tree. It refuses another app,
+whole-screen read, a stale REPL handle, arbitrary menu input, Inspector, reload, and page
+mutation. No same-app second-window or same-storage path has been verified, so those
+remain refused. The Thinkering exact53 consumer is owned separately.
 
 ## Acceptance scenario
 
 - **Seed:** Record a `mac-app` work need from Tejas's retirement capture naming the exact
   thnkr.ing web-app bundle and `exact53 retirement`, without the old page ID.
 - **Action:** Call direct exact-bundle `cua.getApp`, then select that bundle afresh for a
-  same-program passive accessibility read.
-- **Expected:** Both calls are admitted. Informational scope, another human input, wrong
-  bundle, whole-screen, menu, reload, Inspector, and other app calls remain refused.
+  same-program passive accessibility read. With the File-menu need, run the exact guarded
+  menu program against a full current AX tree.
+- **Expected:** The two passive calls and guarded File-menu program are admitted. A
+  missing File item or second window aborts before the click. Informational scope,
+  another human input, wrong bundle, whole-screen, arbitrary click, reload, Inspector,
+  second-window creation, and other app calls remain refused.
 - **Replayable offline:** yes, using `bot/scripts/mac-surface-policy-check.ts`. Physical Mac
   acceptance also requires an installed-hook retry after the ordinary release.

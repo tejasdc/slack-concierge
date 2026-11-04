@@ -1,5 +1,5 @@
 import {db,getSessionById} from './state';
-import {getAcceptedSessionInput,humanAuthored} from './session-inputs';
+import {getAcceptedSessionInput,humanAuthored,withdrawUnstartedServiceInput} from './session-inputs';
 import {sessionAddress} from './session-address';
 
 export type ChatGptTaskKind='local_request'|'peer_delivery'|'external_request'|'direct_input';
@@ -399,6 +399,52 @@ export function chatGptObligationForAttempt(requestId:string):ObligationRow|null
     WHERE attempt.request_id=?`).get(requestId) as ObligationRow|null;
 }
 
+function withdrawQueuedRepairInputs(obligationId:string):void {
+  const repairs=db.query(`SELECT id FROM session_inputs WHERE id GLOB ? AND origin='service' ORDER BY rowid DESC`)
+    .all(`chatgpt-repair:${obligationId}:*`) as {id:string}[];
+  for(const repair of repairs)withdrawUnstartedServiceInput(repair.id,'The asking session resolved this ChatGPT question before repair began.');
+}
+
+/** An asking agent's completed cancel action withdraws that exact question. A failed
+ * provider attempt, timeout, or third-party stop is not withdrawal evidence. */
+export function withdrawCanceledChatGptAttempt(requestId:string,now:number):boolean {
+  const obligation=chatGptObligationForAttempt(requestId);
+  if(!obligation||obligation.active_request_id!==requestId
+    ||obligation.state==='resolved'||obligation.state==='withdrawn_by_tejas')return false;
+  const request=db.query(`SELECT source_session_id,outcome FROM session_communication_requests WHERE request_id=?`)
+    .get(requestId) as {source_session_id:number;outcome:string|null}|null
+    ??db.query(`SELECT source_session_id,outcome FROM session_peer_requests WHERE request_id=?`)
+      .get(requestId) as {source_session_id:number;outcome:string|null}|null;
+  if(!request||request.outcome!=='canceled'||request.source_session_id!==obligation.asker_session_id)return false;
+  const cancel=db.query(`SELECT id,action_id,source_input_id,source_run_id,json_extract(payload_json,'$.reason') AS reason FROM session_inputs INDEXED BY session_inputs_session_kind
+    WHERE session_id=? AND kind='cancel' AND request_id=? AND origin='agent'
+      AND json_extract(payload_json,'$.requestId')=?
+      AND json_extract(receipt_json,'$.state')='completed'
+    ORDER BY rowid LIMIT 1`).get(obligation.asker_session_id,requestId,requestId) as
+      {id:string;action_id:string;source_input_id:string|null;source_run_id:string|null;reason:string|null}|null;
+  if(!cancel||!cancel.source_input_id||!cancel.source_run_id)return false;
+  const resolution={handling:'withdrawn_by_asker',requestId,cancelInputId:cancel.id,
+    actionId:cancel.action_id,sourceInputId:cancel.source_input_id,sourceRunId:cancel.source_run_id,
+    reason:cancel.reason};
+  withdrawQueuedRepairInputs(obligation.obligation_id);
+  transition({obligationId:obligation.obligation_id,actionId:`asker-withdraw:${cancel.id}`,
+    state:'resolved',nextAction:'none',now,evidence:resolution,resolution});
+  return true;
+}
+
+/** Reconcile cancellations accepted before this guard was installed. This reads only
+ * existing actions and never sends or changes a provider request. */
+export function reconcileCanceledChatGptObligations(now:number):number {
+  const rows=db.query(`SELECT obligation.active_request_id FROM session_chatgpt_obligations obligation
+    JOIN session_communication_requests request ON request.request_id=obligation.active_request_id
+    WHERE obligation.state NOT IN ('resolved','withdrawn_by_tejas') AND request.outcome='canceled'
+    UNION ALL SELECT obligation.active_request_id FROM session_chatgpt_obligations obligation
+    JOIN session_peer_requests request ON request.request_id=obligation.active_request_id
+    WHERE obligation.state NOT IN ('resolved','withdrawn_by_tejas') AND request.outcome='canceled'`)
+    .all() as {active_request_id:string}[];
+  return rows.reduce((count,row)=>count+(withdrawCanceledChatGptAttempt(row.active_request_id,now)?1:0),0);
+}
+
 /** A new peer ChatGPT session has no address until its owner acknowledges creation. Keep the
  * obligation before network contact, then pin the immutable remote session identity once. */
 export function bindChatGptPeerTarget(requestId:string,targetSessionId:string,now:number) {
@@ -559,16 +605,44 @@ export function recordChatGptReturnReceipt(input:{eventId:string;returnInputId:s
 /** The asker explicitly accounts for the answer it received. This records a process
  * disposition, not an assertion by the owner that ChatGPT's substantive answer is correct. */
 export function resolveChatGptAnswer(input:{obligationId:string;askerSessionId:number;answerEventId:string;
-  actionId:string;handling:'used'|'context_supplied'|'scoped';reason?:string;followUpRequestId?:string;sourceInputId:string;now:number}) {
+  actionId:string;handling:'used'|'context_supplied'|'scoped'|'superseded';reason?:string;followUpRequestId?:string;
+  successorRequestId?:string;sourceInputId:string;now:number}) {
   db.transaction(()=>{
     const obligation=db.query('SELECT * FROM session_chatgpt_obligations WHERE obligation_id=?').get(input.obligationId) as ObligationRow|null;
-    if(!obligation||obligation.asker_session_id!==input.askerSessionId)throw new Error('Only the exact asking session can handle this ChatGPT answer.');
+    if(!obligation)throw new Error('This ChatGPT request has no recorded answer obligation. If it serves an open task, link that exact historical task first; sessions answer cannot handle an unlinked request.');
+    if(obligation.asker_session_id!==input.askerSessionId)throw new Error('Only the exact asking session can handle this ChatGPT answer.');
     const prior=db.query('SELECT evidence_json FROM session_chatgpt_obligation_events WHERE obligation_id=? AND action_id=?')
       .get(input.obligationId,`handled:${input.actionId}`) as {evidence_json:string}|null;
     const disposition={answerEventId:input.answerEventId,handling:input.handling,reason:input.reason??null,
-      followUpRequestId:input.followUpRequestId??null,sourceInputId:input.sourceInputId};
+      followUpRequestId:input.followUpRequestId??null,successorRequestId:input.successorRequestId??null,
+      sourceInputId:input.sourceInputId};
     if(prior){if(JSON.stringify(JSON.parse(prior.evidence_json))!==JSON.stringify(disposition))throw new Error('Idempotency conflict: handled answer changed.');return;}
-    if(obligation.state!=='resolution_pending'||obligation.answer_event_id!==input.answerEventId||!obligation.answer_return_input_id)
+    if(obligation.state==='resolved'||obligation.state==='withdrawn_by_tejas')
+      throw new Error('This ChatGPT answer obligation has already closed.');
+    if(input.handling==='superseded'){
+      if(!input.successorRequestId||input.successorRequestId===input.obligationId||!input.reason?.trim())
+        throw new Error('A superseded question needs a different answered request and a concrete coverage reason.');
+      if(obligation.state!=='reconcile_receipt')
+        throw new Error('Only a failed ChatGPT question awaiting receipt repair can be covered by a successor answer.');
+      const original=db.query(`SELECT outcome,created_at_ms FROM session_communication_requests WHERE request_id=?`)
+        .get(obligation.active_request_id) as {outcome:string|null;created_at_ms:number}|null;
+      if(original?.outcome!=='failed')throw new Error('The original ChatGPT attempt has not settled failed.');
+      const successor=db.query(`SELECT request.source_session_id,request.outcome,request.created_at_ms,event.kind,event.status,event.accepted_input_id,
+          target.provider_id FROM session_communication_requests request
+          JOIN sessions target ON target.id=request.target_session_id
+          JOIN session_communication_events event ON event.request_id=request.request_id
+          WHERE request.request_id=? AND event.event_id=?`)
+        .get(input.successorRequestId,input.answerEventId) as {source_session_id:number;outcome:string|null;created_at_ms:number;
+          kind:string;status:string;accepted_input_id:string|null;provider_id:string}|null;
+      const returned=successor?.accepted_input_id?getAcceptedSessionInput(successor.accepted_input_id):null;
+      if(!successor||successor.source_session_id!==input.askerSessionId||successor.provider_id!=='chatgpt'
+        ||!['answered','undetermined'].includes(successor.outcome??'')||successor.kind!=='final'||successor.status!=='received'
+        ||returned?.session_id!==input.askerSessionId||successor.created_at_ms<=original.created_at_ms)
+        throw new Error('The successor must be a received ChatGPT answer to this exact asking session.');
+      const successorDuty=chatGptObligationForAttempt(input.successorRequestId);
+      if(successorDuty&&(successorDuty.task_kind!==obligation.task_kind||successorDuty.task_id!==obligation.task_id))
+        throw new Error('A successor answer belonging to a different task cannot close this question.');
+    }else if(obligation.state!=='resolution_pending'||obligation.answer_event_id!==input.answerEventId||!obligation.answer_return_input_id)
       throw new Error('The exact ChatGPT answer has not been acknowledged by the asking session.');
     if(input.handling==='scoped'&&!input.reason?.trim())throw new Error('A narrowed conclusion needs the concrete scope and reason.');
     if(input.handling==='context_supplied'&&(!input.followUpRequestId||input.followUpRequestId!==obligation.active_request_id||!db.query(`SELECT 1 FROM session_chatgpt_obligation_attempts
@@ -576,6 +650,7 @@ export function resolveChatGptAnswer(input:{obligationId:string;askerSessionId:n
       throw new Error('Context supplied needs an exact follow-up request attached to this obligation.');
     if(!getAcceptedSessionInput(input.sourceInputId)||getAcceptedSessionInput(input.sourceInputId)?.session_id!==input.askerSessionId)
       throw new Error('Handling needs the asking session\'s exact accepted source input.');
+    withdrawQueuedRepairInputs(obligation.obligation_id);
     transition({obligationId:input.obligationId,actionId:`handled:${input.actionId}`,state:'resolved',nextAction:'none',now:input.now,
       evidence:disposition,resolution:disposition});
   })();

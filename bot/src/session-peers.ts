@@ -24,7 +24,7 @@ import {noticeTime} from './provider-free-notice';
 import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
 import {recordRequesterDecisionReturn} from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,withdrawCanceledChatGptAttempt,
   recordChatGptReturnReceipt,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptTask,parseChatGptTask,type ChatGptTask} from './chatgpt-obligations';
 import {RETRY_POLICIES,PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS,PEER_REQUEST_ORPHAN_GRACE_MS} from './retry-policies';
 import {ledgerDurable} from './ledger-durability-barrier';
@@ -687,15 +687,16 @@ export class SessionPeers {
     if(delivery.target_session_id!==actor.session)throw new Error('Request is outside this session.');
     return this.deliveryReceipt(delivery);
   }
-  cancel(actor:PeerActor,requestId:string,actionId:string) {
+  cancel(actor:PeerActor,requestId:string,actionId:string,reason?:string) {
     const row=this.row(requestId);
     if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
     db.transaction(()=>{
       const retained=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId,kind:'cancel',origin:'agent',
-        payload:{requestId,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId});
+        payload:{requestId,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),...(reason?{reason}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId});
       if(retained.duplicate)return;
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
       if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker on the peer is told to stop.');
+      withdrawCanceledChatGptAttempt(requestId,this.now());
     })();
     // The peer may still be accepting a queued-offline delivery. Keep revocation owed
     // until that acceptance is recorded and the peer acknowledges cancellation.
