@@ -107,7 +107,10 @@ Taking back:
    no outcome, or a record that cannot be read, stays uncertain (never resent).
 3. The run re-enters the same native execution path (`SessionExecutionHost.run(claim, adoption)`),
    with the exact prompt, folders, model, account and session id stored at launch in
-   `executions.processor_json`.
+   `executions.processor_json`. Taking a run back never looks up the provider's program again:
+   only a launch resolves the Claude or Google CLI. On 2026-11-04 Claude Code was reinstalled
+   while Concierge restarted, the lookup found no `claude`, and 25 running agents were parked
+   while they kept working unattended.
 4. The transport attaches; the host returns its sequence at that moment (`until`) in the same
    synchronous step that starts the replay. Frames that arrive before the boundary is known wait
    unsorted; the history (up to `until`) is collected whole, so each recorded write is replayed with
