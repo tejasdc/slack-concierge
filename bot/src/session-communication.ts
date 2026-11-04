@@ -1561,6 +1561,7 @@ export class SessionCommunicationCoordinator {
             answerGroup:declared.answerGroup??null,
             answerSource:declared.source?.input_id&&declared.source?.run_id
                 ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
+            noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
             hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
             informational:JSON.parse(request.payload_json).requestedEffect==='informational',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
@@ -1596,6 +1597,7 @@ export class SessionCommunicationCoordinator {
         quiet_because?:string;
         notify?:boolean;
         also_main_thread?:boolean;
+        waiting_on_watch?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -1636,6 +1638,20 @@ export class SessionCommunicationCoordinator {
             answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
         }
         const noted=<T extends object>(receipt:T):T=>answerNotice?{...receipt,notice:answerNotice}:receipt;
+        if(input.waiting_on_watch!==undefined){
+            if(input.final)throw new Error('--waiting-on-watch belongs to a partial reply; the request stays open until the watched condition wakes you.');
+            const source=getAcceptedSessionInput(input.source.input_id??'');
+            const actionKey=JSON.stringify(['input',input.source.input_id,input.action_id]);
+            const alreadyRecorded=!!db.query('SELECT 1 FROM session_communication_events WHERE action_key=?').get(actionKey)
+                ||!!db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(actionKey);
+            const watch=source?db.query("SELECT session_id,state,delivery_state FROM watches WHERE watch_id=?").get(input.waiting_on_watch) as
+                {session_id:number;state:string;delivery_state:string|null}|null:null;
+            const request=db.query('SELECT created_at_ms FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {created_at_ms:number}|null;
+            const peerRequest=db.query('SELECT created_at_ms FROM session_peer_deliveries WHERE request_id=?').get(input.request_id) as {created_at_ms:number}|null;
+            if(!alreadyRecorded&&(!source||!watch||watch.session_id!==source.session_id||(!request&&!peerRequest)
+                ||(!['accepted','observing'].includes(watch.state)&&watch.delivery_state!=='pending')))
+                throw new Error('--waiting-on-watch needs an active watch owned by this agent.');
+        }
         // A send that went exactly as he asked is not news (Tejas, 2026-10-09: "why do I need a
         // confirmation if it was sent? Just let me know if it was not sent")
         // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
@@ -1675,7 +1691,7 @@ export class SessionCommunicationCoordinator {
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
                 closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,input.checked,input.not_checked):undefined,
-                final:input.final,answersQuestion:input.answers_question,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
+                final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
         // there: a forwarded reply of his, and equally work the router sent for a question it
@@ -1766,6 +1782,7 @@ export class SessionCommunicationCoordinator {
             ...(input.notify?{notify:true}:{}),
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
+            ...(input.waiting_on_watch?{waitingOnWatch:input.waiting_on_watch}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
             ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}) };
@@ -1855,7 +1872,8 @@ export class SessionCommunicationCoordinator {
                 return;
             const partial = db.query("SELECT payload_json FROM session_communication_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(request.request_id) as { payload_json: string } | null;
             const text = stalledNotice(next.reason, partial ? JSON.parse(partial.payload_json).text : null);
-            this.event(request, 'overdue', { text, stalled: true, reason: next.reason });
+            this.event(request, 'overdue', { text, stalled: true, reason: next.reason,
+                noticeGroup:`stalled:concierge:${request.target_session_id}:${turnId}` });
             db.query('UPDATE session_communication_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(), request.request_id);
         })();
         log('warn', 'session_request_stalled', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}`, reason: next.reason });
@@ -2371,7 +2389,8 @@ export class SessionCommunicationCoordinator {
                         db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
                             .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
                     } else {
-                        this.event(current,'overdue',{text:`No answer to this ${asker==='Tejas'?'question':'marked test question'} arrived within three minutes. The agent has been reminded. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true});
+                        this.event(current,'overdue',{text:`No answer to this ${asker==='Tejas'?'question':'marked test question'} arrived within three minutes. The agent has been reminded. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true,
+                            noticeGroup:`prompt-overdue:concierge:${current.target_session_id}:${this.binding(current)?.turn_id??current.target_input_id}`});
                         db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
                     }
                 })();

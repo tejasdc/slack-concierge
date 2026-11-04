@@ -148,8 +148,10 @@ export function inboxMessage(row:any) {
   // A post carries its own: an agent's completed answer it said he need not read.
   const quiet=result&&typeof row.turn_id==='number'?turnQuietReason(row.session_id,row.turn_id)
     :post&&typeof eventPayload.quiet==='string'&&eventPayload.quiet.trim()?eventPayload.quiet.trim():null;
-  const closing=post?db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(`post:closure:${row.event_id}`) as {payload_json:string}|null:null;
-  const closingLine=closing?JSON.parse(closing.payload_json).closingLine:null;
+  const closings=post?db.query("SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='answer_closure' AND json_extract(payload_json,'$.postId')=? ORDER BY sequence")
+    .all(row.session_id,row.event_id) as {payload_json:string}[]:[];
+  const closingLines=[...new Set(closings.map(item=>JSON.parse(item.payload_json).closingLine).filter((line):line is string=>typeof line==='string'&&!!line))];
+  const closingLine=closingLines.length?closingLines.join('\n'):null;
   const routes=row.input_id&&!agent?messageRouteReceipts(db,row.input_id):[];
   const requestContent=request?threadRequestDisplay(db,eventPayload):'';
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),...(quiet?{quiet}:{}),
@@ -417,7 +419,7 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * nothing here wakes the router. A bodyless final refers to this request's earlier prompt-answer
  * post by request identity. Its closing facts are an append-only event projected beneath that post.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;answerSource?:{inputId:string;runId:string}|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;answerSource?:{inputId:string;runId:string}|null;noticeGroup?:string|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
@@ -425,10 +427,16 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
   db.transaction(()=>{
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(postId)){carriedBy=postId;}
     else if(answer.final&&!text&&!answer.attachments.length&&!answer.stalled) {
-      const earlier=db.query(`SELECT event_id FROM session_owner_events WHERE session_id=? AND kind='post'
-        AND json_extract(payload_json,'$.requestId')=? AND json_extract(payload_json,'$.answersQuestion')=1
-        AND json_extract(payload_json,'$.replyKind')='partial' ORDER BY sequence DESC LIMIT 1`)
-        .get(answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
+      const earlier=db.query(`SELECT event_id FROM (
+          SELECT event_id,sequence FROM session_owner_events WHERE session_id=? AND kind='post'
+            AND json_extract(payload_json,'$.requestId')=? AND json_extract(payload_json,'$.replyKind')='partial'
+            AND json_extract(payload_json,'$.answersQuestion')=1
+          UNION ALL
+          SELECT json_extract(payload_json,'$.postId') AS event_id,sequence FROM session_owner_events
+            WHERE session_id=? AND kind='answer_carry' AND json_extract(payload_json,'$.requestId')=?
+            AND json_extract(payload_json,'$.answersQuestion')=1
+        ) ORDER BY sequence DESC LIMIT 1`)
+        .get(answer.inboxSessionId,answer.requestId,answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
       if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
       carriedBy=earlier.event_id;
     } else if(answer.final&&!answer.stalled&&(answer.answerGroup||answer.answerSource)&&(text||answer.attachments.length)) {
@@ -465,19 +473,45 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         carriedBy=postId;
       }
     } else if(text||answer.attachments.length) {
+        const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
+        const shared=answer.stalled?!!answer.noticeGroup:!!answer.answerSource?.runId;
+        const grouped=shared?db.query(`SELECT post.event_id FROM session_owner_events post
+          LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
+          WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
+            AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
+            AND json_extract(post.payload_json,'$.replyKind')='partial'
+            AND json_extract(post.payload_json,'$.postedBySession')=?
+            AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
+            AND ( (?=1 AND json_extract(post.payload_json,'$.noticeGroup')=?)
+              OR (?=0 AND json_extract(post.payload_json,'$.answerSource.runId')=?
+                AND json_extract(post.payload_json,'$.text')=?
+                AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
+                AND coalesce(json_extract(post.payload_json,'$.answersQuestion'),0)=?) )
+          ORDER BY post.sequence LIMIT 1`)
+          .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
+            answer.messageThreadRootId??'',answer.stalled?1:0,answer.noticeGroup??'',answer.stalled?1:0,
+            answer.answerSource?.runId??'',text,JSON.stringify(answer.attachments),answersQuestion?1:0) as {event_id:string}|null:null;
+        if(grouped)carriedBy=grouped.event_id;
+        else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
+            ...(answer.answerSource?{answerSource:answer.answerSource}:{}),
+            ...(answer.noticeGroup?{noticeGroup:answer.noticeGroup}:{}),
             replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
-            ...(answer.stalled?{postedBy:'service'}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
+            ...(answer.stalled?{postedBy:'service',postedBySession:answer.respondingSessionId}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
+        }
+        if(!answer.final&&carriedBy&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:carry:${answer.eventId}`))
+          recordSessionEvent({eventId:`post:carry:${answer.eventId}`,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'answer_carry',
+            payload:{postId:carriedBy,requestId:answer.requestId,answersQuestion}});
     }
-    if(answer.final&&carriedBy&&answer.closingLine&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:closure:${carriedBy}`))
-      recordSessionEvent({eventId:`post:closure:${carriedBy}`,sessionId:answer.inboxSessionId,inputId:answer.root,
-        kind:'answer_closure',payload:{postId:carriedBy,closingLine:answer.closingLine}});
-    if(answer.messageThreadRootId&&answer.alsoMainThread&&(text||answer.attachments.length)){
-      const mainPostId=`${postId}:main`;
+    if(answer.final&&carriedBy&&answer.closingLine&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:closure:${answer.eventId}`))
+      recordSessionEvent({eventId:`post:closure:${answer.eventId}`,sessionId:answer.inboxSessionId,inputId:answer.root,
+        kind:'answer_closure',payload:{postId:carriedBy,requestId:answer.requestId,closingLine:answer.closingLine}});
+    if(answer.messageThreadRootId&&answer.alsoMainThread&&carriedBy&&(text||answer.attachments.length)){
+      const mainPostId=`${carriedBy}:main`;
       if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(mainPostId))
         recordSessionEvent({eventId:mainPostId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',payload:{text,
           replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.root},requestId:answer.requestId,
