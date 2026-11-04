@@ -76,9 +76,60 @@ async function checkMissingTargetParents():Promise<void> {
   assert.equal(output,'nested-version');
 }
 
+async function checkEarlierReleaseWrapper():Promise<void> {
+  const root=mkdtempSync(join(tmpdir(),'concierge-claude-older-release-'));
+  temporaryDirectories.push(root);
+  const olderWrapperDirectory=join(root,'old','bot','scripts');
+  const installedDirectory=join(root,'installed');
+  mkdirSync(olderWrapperDirectory,{recursive:true});
+  mkdirSync(installedDirectory);
+  const olderWrapper=join(olderWrapperDirectory,'claude');
+  writeFileSync(olderWrapper,'#!/bin/sh\nprintf "wrong-wrapper\\n"\n');
+  chmodSync(olderWrapper,0o755);
+  const installed=join(installedDirectory,'claude');
+  writeFileSync(installed,'#!/bin/sh\nprintf "installed-version\\n"\n');
+  chmodSync(installed,0o755);
+  const environment={...process.env,PATH:`${olderWrapperDirectory}:${installedDirectory}`};
+  delete environment.CONCIERGE_CLAUDE_CODE_EXECUTABLE;
+  delete environment.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID;
+  const child=spawn(process.execPath,['run',launcher,'--version'],{env:environment,stdio:['ignore','pipe','pipe']});
+  let output='';
+  let error='';
+  child.stdout.on('data',chunk=>{output+=chunk.toString();});
+  child.stderr.on('data',chunk=>{error+=chunk.toString();});
+  const timeout=setTimeout(()=>child.kill('SIGKILL'),5_000);
+  try {
+    const code=await new Promise<number|null>(resolve=>child.on('exit',resolve));
+    assert.equal(code,0,error);
+    assert.equal(output.trim(),'installed-version');
+  } finally {clearTimeout(timeout);}
+}
+
+async function checkUnexpectedWrapperRecursion():Promise<void> {
+  const directory=mkdtempSync(join(tmpdir(),'concierge-claude-unknown-wrapper-'));
+  temporaryDirectories.push(directory);
+  const command=join(directory,'claude');
+  writeFileSync(command,'#!/bin/sh\nexec "$CONCIERGE_BUN_BIN" run "$CONCIERGE_LAUNCHER_UNDER_TEST" "$@"\n');
+  chmodSync(command,0o755);
+  const environment={...process.env,PATH:directory,CONCIERGE_BUN_BIN:process.execPath,CONCIERGE_LAUNCHER_UNDER_TEST:launcher};
+  delete environment.CONCIERGE_CLAUDE_CODE_EXECUTABLE;
+  delete environment.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID;
+  const child=spawn(process.execPath,['run',launcher,'--version'],{env:environment,stdio:['ignore','pipe','pipe']});
+  let error='';
+  child.stderr.on('data',chunk=>{error+=chunk.toString();});
+  const timeout=setTimeout(()=>child.kill('SIGKILL'),5_000);
+  try {
+    const code=await new Promise<number|null>(resolve=>child.on('exit',resolve));
+    assert.notEqual(code,0);
+    assert.match(error,/tried to start another Concierge Claude launcher/);
+  } finally {clearTimeout(timeout);}
+}
+
 try {
   await checkCreatedCommand();
   await checkBrokenLink();
   await checkMissingTargetParents();
-  console.log('Claude Code launcher recovered after command creation, broken-link repair, and missing target parent creation.');
+  await checkEarlierReleaseWrapper();
+  await checkUnexpectedWrapperRecursion();
+  console.log('Claude Code launcher recovered during installation, skipped an earlier release wrapper, and refused unfamiliar recursion.');
 } finally {cleanup();}
