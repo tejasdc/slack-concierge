@@ -124,6 +124,20 @@ try {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
       assert.equal(isolated.stdout.toString().trim(), 'refused');
+      const overlay = join(root, 'mount-capable-check');
+      for (const name of ['lower', 'upper', 'work', 'merged']) mkdirSync(join(overlay, name), { recursive: true });
+      writeFileSync(join(overlay, 'lower', 'visible'), 'overlay works');
+      const mountCheck = privateDatabaseCommand(['/usr/bin/sh', '-c',
+        'if umount "$PROTECTED_STATE" 2>/dev/null; then exit 10; fi; ' +
+        'if test -e "$PROTECTED_STATE/state.db"; then exit 11; fi; ' +
+        'unshare --mount --propagation private sh -c \'' +
+        'mount -t overlay overlay -o "lowerdir=$OVERLAY/lower,upperdir=$OVERLAY/upper,workdir=$OVERLAY/work" "$OVERLAY/merged" && ' +
+        'test "$(cat "$OVERLAY/merged/visible")" = "overlay works"\''], true);
+      const mounted = Bun.spawnSync(mountCheck, {
+        env: { ...process.env, PROTECTED_STATE: join(homedir(), '.local/state/concierge'), OVERLAY: overlay },
+        stdout: 'pipe', stderr: 'pipe', timeout: 5_000,
+      });
+      assert.equal(mounted.exitCode, 0, mounted.stderr.toString());
     }
   }
   console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,rawScriptRefusal:true}));

@@ -31,6 +31,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [failure record guide](docs/incidents/README.md) own the formats. A pushed
   commit is not an installed release. Pushed history is never rewritten; the
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) records the enforced path.
+- Protected agent code launches hide the live ledger while allowing Thinkering's
+  phone-width release check to mount its read-only data view. The
+  [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
