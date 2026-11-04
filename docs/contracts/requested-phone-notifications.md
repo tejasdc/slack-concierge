@@ -108,11 +108,17 @@ exists; the Inbox router's own topic questions carry the same `"todo"` field. Co
 to-do from thnkr.ing's to-dos over its local capability socket (over SSH from the Mac); a to-do he
 already marked done or dropped refuses the question, so it never rings him, and the refusal tells
 the agent he has done it. When thnkr.ing cannot be read, the question is accepted, never lost. The
-question records the to-do; on the owner's reading cadence a to-do he ticks off (or drops) settles
-its open question as answered and tells the asking agent to carry on. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself; a needs_you from a session he started directly lives in Needs attention, not a thread question, and also does not close by itself. Matching is by exact to-do
+question records the to-do. Before an Inbox attention, question, or thread view is returned, Concierge
+rechecks linked questions against the current to-dos and settles a Done or Dropped question as
+answered, telling its asking agent to carry on. The owner's reading cadence remains a recovery
+pass. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself; a needs_you from a session he started directly lives in Needs attention, not a thread question, and also does not close by itself. Matching is by exact to-do
 id, never by wording. Source: 2026-11-04, the Diwali agent asked him at 2:58 PM for a Spotify
 invite he had marked done at 10:20 PM the night before
 ([record](../incidents/2026-11-04-asked-for-a-step-already-done.md)).
+The question's attention event carries that exact to-do ID to thnkr.ing. Its notification
+courier reads the current to-do again just before sending, so an event queued before Done
+cannot ring afterward. A later explicit reopen permits a new question; unrelated questions
+retain their own identity and delivery.
 
 ### No automatic reminders
 
