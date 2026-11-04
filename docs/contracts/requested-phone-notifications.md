@@ -99,6 +99,21 @@ thread without a notification; the second is recorded as something to read (`res
 it stays in Needs attention without ringing. Only a question only he can answer or a finished,
 checked answer rings.
 
+### A question tied to the to-do it asks for
+
+A question that asks him to sign in, give a secret or do something on his device names the to-do
+that step is on his list as: `--todo <id>` on `sessions outcome needs_you` and on a
+`needs_decision` (or question-carrying failed) reply, or `--todo none` when no to-do for that step
+exists; the Inbox router's own topic questions carry the same `"todo"` field. Concierge refuses the ask without it. Before accepting, the routed request API reads that
+to-do from thnkr.ing's to-dos over its local capability socket (over SSH from the Mac); a to-do he
+already marked done or dropped refuses the question, so it never rings him, and the refusal tells
+the agent he has done it. When thnkr.ing cannot be read, the question is accepted, never lost. The
+question records the to-do; on the owner's reading cadence a to-do he ticks off (or drops) settles
+its open question as answered and tells the asking agent to carry on. A Mac agent's question is refused the same way (its Concierge reads the to-do over SSH), but its to-do does not yet travel with the question to the server, so it does not close by itself; a needs_you from a session he started directly lives in Needs attention, not a thread question, and also does not close by itself. Matching is by exact to-do
+id, never by wording. Source: 2026-11-04, the Diwali agent asked him at 2:58 PM for a Spotify
+invite he had marked done at 10:20 PM the night before
+([record](../incidents/2026-11-04-asked-for-a-step-already-done.md)).
+
 ### No automatic reminders
 
 On 2026-10-30 Concierge briefly reminded him of every question waiting on him

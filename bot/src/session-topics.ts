@@ -14,6 +14,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
+import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -1511,6 +1512,7 @@ function questionBrief(item:any) {
     ...(typeof item.hisWords==='string'&&item.hisWords.trim()?{hisWords:item.hisWords.trim()}:{}),
     ...(typeof item.whyNotSettled==='string'&&item.whyNotSettled.trim()?{whyNotSettled:item.whyNotSettled.trim()}:{}),
     ...(typeof item.onlyHeCan==='string'&&item.onlyHeCan.trim()?{onlyHeCan:item.onlyHeCan.trim()}:{}),
+    ...(typeof item.todo==='string'&&item.todo.trim()?{todo:item.todo.trim()}:{}),
     ...(typeof item.decisionId==='string'&&item.decisionId.trim()?{decisionId:item.decisionId.trim()}:{}),
     ...(typeof item.approvalAction==='string'&&item.approvalAction.trim()?{approvalAction:item.approvalAction.trim()}:{}),
     // A reading item may name the exact messages he is to read; otherwise they are resolved
@@ -1525,6 +1527,10 @@ function questionBrief(item:any) {
  */
 function withHisWords(brief:any,by:TopicBy):any {
   const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
+  // A step he must take names the to-do it is about, as worker questions do; its state was read
+  // from thnkr.ing before this command ran (the routed request API refuses a finished one).
+  if(STEP_ASKS.has(kind)&&!brief.todo)
+    throw new TopicError('This question asks him to do a step himself, so it names the to-do it is about: "todo": "<his to-do id>", or "todo": "none" when no to-do for this step exists. If he already ticked it off, he has done it: do not ask.',400,'QUESTION_NEEDS_TODO');
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(brief.decision))
     throw new TopicError('An onlyHeCan device question asks for one action on a physical device in its first sentence, such as "Please unlock your iPhone." or "Can you unlock your Mac so I can continue?"; later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in whyNotSettled why only Tejas can take this step.');
   if(kind!=='approval'&&(brief.decisionId!==undefined||brief.approvalAction!==undefined))
@@ -2385,6 +2391,49 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
  * notice is admitted as a service input: no new authority, no reply owed. Runs on the owner's
  * reading cadence (every three minutes), so a reminder lands within that of its time.
  */
+/**
+ * A question that names the to-do it asks him to do ends when he ticks that to-do off (or drops it):
+ * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
+ * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
+ */
+export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
+  const session=inboxSession();
+  if(!session)return 0;
+  const linked=(db.query(`SELECT question_id FROM inbox_questions WHERE state IN ('open','partial') AND kind='decision'
+    AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')`).all() as {question_id:string}[]);
+  if(!linked.length)return 0;
+  let todos:Map<string,TodoState>;
+  try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
+  catch(error){log('warn','question_todo_check_unavailable',{questions:linked.length,reason:error instanceof Error?error.message.slice(0,80):'failed'});return 0;}
+  let closed=0;
+  for(const {question_id} of linked) {
+    try {
+      // Re-read after the wait: the question may have been answered or withdrawn meanwhile.
+      const row=db.query('SELECT * FROM inbox_questions WHERE question_id=?').get(question_id) as any;
+      if(!row)continue;
+      const question=toStoredQuestion(row);
+      const todo=todos.get(String(question.owner?.todoId??question.brief?.todo??''));
+      if(!OPEN_QUESTION_STATES.some(state=>state===question.state)||!todo||(todo.status!=='done'&&todo.status!=='dropped'))continue;
+      const at=nowIso(),reason=todo.status==='done'?`He marked his to-do "${todo.text}" done.`:`He dropped his to-do "${todo.text}".`;
+      db.transaction(()=>{
+        const topic=topicRow(question.topicId),topicNext=bumped(topic);
+        const next:StoredQuestion={...question,state:'answered',updatedAt:at,brief:{...question.brief,endedBecause:reason}};
+        const payload={change:'settled',topicId:topic.topicId,topic:topicNext,questions:[next],by:{kind:'owner' as const},reason,revision:topicNext.revision};
+        recordSessionEvent({eventId:`topic-todo-done:${question.questionId}`,sessionId:session.id,kind:'topic_question',payload});
+        applyTopicChange('topic_question',payload);
+      })();
+      closed++;
+      const owner=conciergeSessionNumber(question.owner?.sessionId);
+      const noticeId=`question-todo-done:${question.questionId}`;
+      if(admit&&owner!==null&&owner!==session.id&&!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(noticeId))
+        admit({sessionId:owner,inputId:noticeId,origin:'service',sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
+          text:`${reason} Your question to him, "${String(question.brief?.decision??'').slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
+    } catch(error) {log('error','question_todo_close_failed',{question:question_id,message:error instanceof Error?error.message:String(error)});}
+  }
+  if(closed)log('info','questions_closed_by_todos',{closed});
+  return closed;
+}
+
 export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):number {
   const session=inboxSession();
   if(!session)return 0;
@@ -2441,7 +2490,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * notification. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null;todoId?:string|null}):string|null {
   if(!answer.final&&!answer.stalled&&!answer.answersQuestion&&!answer.notify)return null;
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
@@ -2461,7 +2510,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
       respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,summary:answer.summary??null,quiet,notify:answer.notify,
-      askedInRun:answer.answerSource?.runId??null});
+      askedInRun:answer.answerSource?.runId??null,todoId:answer.todoId??null});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
@@ -2487,7 +2536,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
  * as a needs_decision reply is; a reply and an outcome from the same agent run are one ask and ring
  * once, while a different ask keeps its own question (ChatGPT Pro's review, 2026-11-02).
  */
-export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
+export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string;todoId?:string|null}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
   const human=provenance?.originatingHuman;
@@ -2512,11 +2561,11 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInp
     inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
   if(!post)return null;
   fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:request.request_id,
-    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
+    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId,todoId:input.todoId??null});
   return post;
 }
 /** Keep an Inbox-origin question reachable when its exact dispatch has no usable thread. */
-export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string}):string|null {
+export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string;todoId?:string|null}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
   let inboxOrigin=provenance?.originatingHuman?.sessionId??null;
@@ -2561,7 +2610,7 @@ export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;tu
     }
     fileAgentAnswer({inboxSessionId:inbox.id,root,postId,eventId:`need:${input.eventId}`,
       dispatchRequestId:`need:${input.eventId}`,respondingSessionId,
-      respondingTitle:title,disposition:'needs_decision',text:input.text,askedInRun:input.runId});
+      respondingTitle:title,disposition:'needs_decision',text:input.text,askedInRun:input.runId,todoId:input.todoId??null});
   })();
   return postId;
 }
@@ -2764,7 +2813,7 @@ export function repairNovember4RepeatedThreadNotices():number {
   return collapsed;
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;todoId?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -2827,7 +2876,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
       // a reading item is the Inbox's and ends only with his Read.
-      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId,...(answer.askedInRun?{askedInRun:answer.askedInRun}:{})}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
+      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId,...(answer.askedInRun?{askedInRun:answer.askedInRun}:{}),...(answer.todoId?{todoId:answer.todoId}:{})}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
       sources:[answer.root,answer.postId],replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
       kind:decision?'decision':'reading',origin:'declared',generation,createdAt:at,updatedAt:at};
     const topic=topicRow(topicId),topicNext=bumped(topic);

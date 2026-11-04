@@ -17,6 +17,7 @@ import {sessionAuthor} from './session-message-author';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
+import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
 import {saveQueuedTurn,savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
@@ -175,6 +176,23 @@ export function answerView(request:{request_id:string;payload_json:string},answe
     if(summary&&JSON.parse(request.payload_json).answerView==='summary')
         return `${summary}\nFull answer: router-actions.sh sessions get ${request.request_id} <source-flags>`;
     return summary?`${summary}\n\n${answer.text??''}`:answer.text??'';
+}
+
+/**
+ * The to-do a question to Tejas is about. An ask for a sign-in, a secret or a step on his device
+ * names it (or says there is none), and a to-do he already finished refuses the question before it
+ * can ring him (2026-11-04: he was asked at 2:58 PM for a Spotify invite he had ticked off at
+ * 10:20 PM the night before). The routed request API reads the to-do from thnkr.ing before this
+ * runs; when thnkr.ing cannot be read the question is accepted, never lost.
+ */
+const TODO_REQUIRED='This asks him to do a step himself (sign-in, secret or device), so name the to-do it is about: --todo <id> from his to-dos (on the server: curl -s --unix-socket /run/thinkering/session-capabilities.sock \'http://x/todos/tasks?limit=200\'; from the Mac, the same through ssh remote-box), or --todo none when no to-do for this step exists. If he already ticked it off, he has done it: do not ask.';
+function questionTodo(input:{only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable'}):string|null {
+    const id=typeof input.todo==='string'?input.todo.trim():'';
+    if(!id){if(typeof input.only_he_can==='string'&&STEP_ASKS.has(input.only_he_can.trim()))throw new Error(TODO_REQUIRED);return null;}
+    if(id==='none')return null;
+    if(input.todo_checked===null)throw new Error(`He has no to-do "${id}". Name one of his to-dos by its exact id, or --todo none.`);
+    if(input.todo_checked&&input.todo_checked!=='unavailable'){const refusal=finishedTodoRefusal(input.todo_checked);if(refusal)throw new Error(refusal);}
+    return id;
 }
 
 export class SessionCommunicationCoordinator {
@@ -848,7 +866,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
-    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;decision_id?:string;approval_action?:string}) {
+    outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable';decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
@@ -856,7 +874,7 @@ export class SessionCommunicationCoordinator {
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
-        if(input.outcome!=='needs_you'&&(input.summary!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined))
+        if(input.outcome!=='needs_you'&&(input.summary!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.todo!==undefined||input.decision_id!==undefined||input.approval_action!==undefined))
             throw new Error('Question fields belong to needs_you: they say why only he can answer.');
         // His notice shows the start of the question, so a needs_you opens with the agent's one line.
         let lead='';
@@ -864,6 +882,7 @@ export class SessionCommunicationCoordinator {
             if(typeof input.summary!=='string'||!input.summary.trim())throw new Error(NEEDS_YOU_SUMMARY_REQUIRED);
             lead=oneLineSummary(input.summary);
         }
+        const todoId=input.outcome==='needs_you'?questionTodo(input):null;
         const content=input.outcome==='needs_you'
             ?questionForTejas({actorInputId:actor.inputId,question:stated,lead,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
@@ -899,7 +918,7 @@ export class SessionCommunicationCoordinator {
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
-                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:leadFirst(lead,stated)};
+                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:leadFirst(lead,stated),todoId};
                 let filed:string|null=null;
                 try{filed=db.transaction(()=>fileWorkerNeedInThread(need))();}
                 catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
@@ -1698,7 +1717,7 @@ export class SessionCommunicationCoordinator {
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
         postAgentAnswer({inboxSessionId:request.source_session_id,eventId:event.event_id,requestId:request.request_id,root:thread.root,
             inboxInputId:thread.forwarded?.inboxInputId??thread.root,respondingSessionId:`concierge:${request.target_session_id}`,
-            respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),
+            respondingTitle:responder?sessionMetadata(responder).title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
             attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
             stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
             answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
@@ -1725,6 +1744,9 @@ export class SessionCommunicationCoordinator {
         his_words?:string;
         why_not_answered?:string;
         only_he_can?:string;
+        /** The to-do of his this question is about, or "none"; its state is read from thnkr.ing before this runs. */
+        todo?:string;
+        todo_checked?:TodoState|null|'unavailable';
         decision_id?:string;
         approval_action?:string;
         checked?:string;
@@ -1751,7 +1773,7 @@ export class SessionCommunicationCoordinator {
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
-        const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
+        const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.todo!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
         // "Could not finish" that names what only he can do is waiting on him, not finished: it is
         // recorded as the question it is, so it reaches his device. A failed reply files only a quiet
         // reading item, and that is how the Uber Eats agent's photo request reached nobody (2026-11-02).
@@ -1762,6 +1784,7 @@ export class SessionCommunicationCoordinator {
         }
         if(asksHim&&input.workDisposition!=='needs_decision')
             throw new Error('Question fields belong to --work-disposition needs_decision.');
+        const todoId=input.workDisposition==='needs_decision'?questionTodo(input):null;
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
         // A request that came with earlier work on the same problem is answered first by saying what
@@ -1854,7 +1877,7 @@ export class SessionCommunicationCoordinator {
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
                 closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,input.checked,input.not_checked):undefined,
-                final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
+                final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
         // there: a forwarded reply of his, and equally work the router sent for a question it
@@ -1947,6 +1970,7 @@ export class SessionCommunicationCoordinator {
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
             ...(input.waiting_on_watch?{waitingOnWatch:input.waiting_on_watch}:{}),
+            ...(todoId?{todoId}:{}),
             ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}),
             ...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}) };

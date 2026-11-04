@@ -1,4 +1,5 @@
 import {readFileSync} from "node:fs";
+import { finishedTodoRefusal, namedTodo } from './question-todos';
 import {chmod} from "node:fs/promises";
 import {removeUnboundSocket} from "./private-api-socket";
 import {startForegroundGatewayProcess,type ForegroundPeer} from "./foreground-gateway-supervisor";
@@ -58,6 +59,25 @@ function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):T|
     warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
 }
 
+/** The router's own questions name to-dos too; one he already finished refuses the declaration before it can ring him. */
+async function refuseFinishedTodoQuestions(input:any):Promise<void>{
+  if(input?.verb!=='questions'||!Array.isArray(input.questions))return;
+  for(const item of input.questions){
+    const id=typeof item?.todo==='string'?item.todo.trim():'';
+    if(!id||id==='none')continue;
+    const todo=await namedTodo(id);
+    if(todo===null)throw new Error(`He has no to-do "${id}". Name one of his to-dos by its exact id, or "todo": "none".`);
+    if(todo!=='unavailable'){const refusal=finishedTodoRefusal(todo);if(refusal)throw new Error(refusal);}
+  }
+}
+/** The named to-do's current state, read from thnkr.ing; a caller can never supply it. */
+async function withTodoState(input:any):Promise<any>{
+  const {todo_checked:_ignored,...rest}=input??{};
+  const id=typeof rest.todo==='string'?rest.todo.trim():'';
+  if(!id||id==='none')return rest;
+  return {...rest,todo_checked:await namedTodo(id)};
+}
+
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   return async function fetch(request: Request): Promise<Response> {
     try {
@@ -108,13 +128,13 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(sessions.move(input));
         if (operation === 'post') return Response.json(withLinkCheck(sessions.post(input),input,owner));
-        if (operation === 'outcome') return Response.json(sessions.outcome(input));
+        if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
-        if (operation === 'topics') return Response.json(sessions.topics(input));
+        if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(withLinkCheck(await sessions.reply(input),input,owner));
+        if (operation === 'reply') return Response.json(withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
         if (operation === 'get') return Response.json(sessions.get(input));
         if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
