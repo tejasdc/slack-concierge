@@ -1,7 +1,7 @@
 ---
 failure: Agent-started Claude reviews reached an exhausted default login while another account had room.
 date: 2026-11-04
-fix_commits: []
+fix_commits: [e54399ae, 99bed314]
 cause_status: best-explanation
 ---
 
@@ -25,3 +25,11 @@ The correction routes fresh agent-shell commands through the local owner’s exi
 - **Action:** Each agent starts a fresh, harmless `claude -p` marker request through its normal shell command.
 - **Expected:** Each command resolves the versioned Concierge launcher, selects the account with room, confirms that exact Claude Code login, completes the marker, and leaves the caller's account binding intact. A resumed Claude conversation keeps its original account.
 - **Replayable offline:** no (the last boundary depends on Claude Code's actual authenticated subscription and current allowance; the owner and launcher paths can be checked with local fixtures).
+
+## Installed acceptance, November 4
+
+The first server installation reached the new owner route but returned `chooseClaudeDispatch is not defined` before any Claude child ran. The follow-up import in `99bed314` corrected that wiring. After the `hey@tejas.nyc` five-hour window reset at 09:00 UTC, the installed server route selected that account for Opus. A fresh Codex agent shell resolved its ordinary `claude` command to the installed launcher; the launcher verified the first-party Claude Code login for `hey@tejas.nyc`, and a read-only marker completed on `claude-opus-5-5` with the expected response. A separate fresh Claude Code review on the same route returned **SHIP** (session `9749e0c6-200a-45e4-96ad-532ccdcb1d74`). Its duplicate-import observation concerned an abandoned, closed branch; the installed source has one import.
+
+The Mac's installed agent-shell command resolved to its pinned helper at the installed revision. A fresh Codex agent there ran a read-only Opus marker through that command. The child used the `hey-tejas-nyc` home, Claude Code reported a first-party `hey@tejas.nyc` login, and the marker completed on `claude-opus-4-7`. The Codex parent remained on GPT-6 Luna with the same binding generation. The two hosts' `opus` aliases resolved to different model versions in these checks; account routing was the acceptance target. Neither probe changed project files, account settings, or the protected release review.
+
+These checks establish the ordinary agent-shell launch path on both machines. The failed historical reviewers did not retain effective account identity, so their exact rejected account remains unknown. Direct absolute-path invocation of Claude Code remains outside the shell command entrance; the production Concierge source has no such launch call.
