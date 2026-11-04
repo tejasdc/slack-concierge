@@ -71,11 +71,13 @@ assert.match(macSurfaceRefusal({command:null,need:'',platform:'darwin',toolName:
 for(const question of ['Can you click the button in the app?','Can you open Safari?','Can you enter the code in the web app?',
   'Can you sign in to the website?','Can you recover the eight notes in thnkr.ing?',
   'Can you unlock the Mac and copy the notes from the app?','Can you unlock the Mac and copy the eight notes?',
-  'Can you unlock your Mac, then click Save?','Can you unlock the Mac and scroll the app?',
+  'Can you unlock your Mac, then click Save?','Can you unlock your physical Mac and click Save?',
+  'Can you unlock the Mac and scroll the app?',
   'Can you unlock your Mac so I can inspect the app? Then can you click Save?',
   'Can you unlock the Mac so the agent can continue? Can you copy the eight notes?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you unlock your Mac so the agent can continue?',
-  'Can you unlock the Mac so the agent can read the app?','Can you take a photo of the paper?'])
+  'Can you unlock the Mac so the agent can read the app?',
+  'Can you unlock your physical Mac?','Can you take a photo of the paper?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
 console.log('Mac surface policy refused the unsafe actions and kept server and read-only work available.');
