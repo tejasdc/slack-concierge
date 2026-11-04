@@ -74,6 +74,8 @@ turn outcome; a filing error is rolled back before this fallback runs. A worker 
 origin keeps its own session attention and does not create an Inbox copy. Agent-authored Inbox
 requests retain their agent provenance; they are never presented as Tejas's words. This fallback avoids
 guessing from the last thread that happened to send work to the same agent.
+If the request record itself is missing, the accepted worker input's direct source and exact source run
+can establish the Inbox origin; the server still creates a new thread rather than borrowing an older one.
 
 ### No automatic reminders
 
