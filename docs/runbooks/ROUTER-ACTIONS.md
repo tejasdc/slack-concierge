@@ -359,7 +359,11 @@ run's source pair (and a stable `--action-id` for changes) reads and writes the 
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,
 `lab:<handle>/<entry>`, `.<paragraph>`). `--mention <address>` wakes that session once with a notice that owes no
 reply; replacing a record (`product --supersedes`) notifies its author. `read --address` returns the exact words at
-an address. Writing needs the server's agent key, so run board writes from a server session. Route contract:
+an address. Mac sessions use the authenticated Concierge peer channel to make Lab calls on the server;
+the server holds the agent key, while thnkr.ing verifies the Mac's own input and run through the
+federated session owners. The Mac session remains the author and delivers mentions from its own run.
+If the peer is unavailable, the command fails before reporting a Lab result and the same action ID
+can be retried. Route contract:
 thinkering docs/plans/2026-10-08-lab-record.md; design: [the lab space](../plans/2026-10-08-lab-space.md).
 
 `board thread [<board>] --kind proposal --title T --blind <key> --member <address> ... -- <words>`

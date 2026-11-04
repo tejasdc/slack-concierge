@@ -10,6 +10,7 @@
 import {readFileSync} from 'node:fs';
 import {resolveSessionAddress} from './session-owner';
 import {peerSessionView} from './session-topics';
+import {selfPeerName} from './peer-identity';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {log} from './log';
 
@@ -36,7 +37,7 @@ export type BoardInput={
   /** link: a typed relation from one lab address to another, with its reason. */
   to?:string; relation?:string; reason?:string;
 };
-export type BoardActor={session:number;inputId?:string;runId?:string};
+export type BoardActor={session:number;inputId?:string;runId?:string;labProxy?:(method:'GET'|'POST',path:string,body?:unknown)=>Promise<any>};
 export type BoardDelivery={
   /** Admit a service input to a session on this machine (idempotent on inputId). */
   admit:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown;
@@ -59,14 +60,22 @@ function identityOf(value:string) {
     if(Array.isArray(tuple)&&Number.isSafeInteger(tuple[1]))return `${name.slice(0,slash)}:${tuple[1]}`;
     throw new BoardError(`Not a session address: ${name}`);
   }
-  return `concierge:${resolveSessionAddress(name).id}`;
+  const machine=selfPeerName();
+  return `${machine&&machine!=='cloud'?machine:'concierge'}:${resolveSessionAddress(name).id}`;
 }
+const actorIdentity=(actor:BoardActor)=>`${selfPeerName()&&selfPeerName()!=='cloud'?selfPeerName():'concierge'}:${actor.session}`;
+const localLabSession=(identity:string):number|null=>{
+  const machine=selfPeerName();
+  const [prefix,number,...extra]=identity.split(':');
+  return extra.length===0&&prefix===(machine&&machine!=='cloud'?machine:'concierge')&&/^[1-9][0-9]*$/.test(number??'')?Number(number):null;
+};
 const pair=(value:string)=>{const at=value.indexOf('::');if(at<0)throw new BoardError(`Write "<address> :: <reason>": ${value}`);return {address:value.slice(0,at).trim(),reason:value.slice(at+2).trim()};};
 
 async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknown):Promise<any> {
+  if(actor.labProxy)return actor.labProxy(method,path,body);
   let key:string;
   try {key=readFileSync(KEY_FILE(),'utf8').trim();}
-  catch {throw new BoardError('The lab record lives in thnkr.ing on the server, and this machine has no key for it. Run the board command from a session on the server.');}
+  catch {throw new BoardError('The server cannot read its Lab access key.');}
   const response=await fetch(`${ORIGIN()}/api/lab${path}`,{method,signal:AbortSignal.timeout(20_000),
     headers:{authorization:`Bearer ${key}`,'x-concierge-agent-source':`${actor.inputId} ${actor.runId}`,...(body?{'content-type':'application/json'}:{})},
     ...(body?{body:JSON.stringify(body)}:{})});
@@ -80,6 +89,20 @@ async function lab(method:'GET'|'POST',path:string,actor:BoardActor,body?:unknow
     throw new BoardError(`${answer.error??answer.code??response.status}: ${answer.reason??answer.message??`the lab record refused this (HTTP ${response.status} from ${method} /api/lab${path})`}${sections}`,response.status);
   }
   return answer;
+}
+
+/** The server's peer entrance supplies its Lab key; the Lab resolves the Mac source itself. */
+export async function peerLabRequest(input:unknown):Promise<any> {
+  if(!input||typeof input!=='object'||Array.isArray(input))throw new BoardError('A Lab request is required.');
+  const request=input as Record<string,unknown>;
+  if(Object.keys(request).some(key=>!['method','path','inputId','runId','body'].includes(key))
+    ||!['GET','POST'].includes(String(request.method))
+    ||typeof request.path!=='string'||(request.path!==''&&!/^\/[A-Za-z0-9/?.%_=&-]*$/.test(request.path))
+    ||request.path.includes('//')||request.path.length>1000
+    ||typeof request.inputId!=='string'||!request.inputId.trim()
+    ||typeof request.runId!=='string'||!request.runId.trim()
+    ||(request.method==='GET'&&request.body!==undefined))throw new BoardError('Invalid peer Lab request.');
+  return lab(request.method as 'GET'|'POST',request.path,{session:0,inputId:request.inputId,runId:request.runId},request.body);
 }
 
 /** A design section's address: the design's handle and the passage number of its `## ` heading. */
@@ -119,12 +142,12 @@ function noticeText(notice:Notice,writer:string,summary:string) {
 async function deliver(notify:Notice[],actor:BoardActor,writer:string,summary:string,delivery:BoardDelivery) {
   const results:{to:string;delivered:boolean;detail?:string}[]=[];
   for(const [index,notice] of notify.entries()) {
-    if(notice.to==='tejas'||notice.to===`concierge:${actor.session}`)continue;
+    if(notice.to==='tejas'||localLabSession(notice.to)===actor.session)continue;
     const inputId=`lab:${notice.address}:${notice.why}:${notice.to}`;
     try {
       if(!actor.inputId||!actor.runId)throw new BoardError('The write has no live run to deliver from.');
-      const local=/^concierge:(\d+)$/.exec(notice.to);
-      if(local)delivery.admit({sessionId:Number(local[1]),inputId,origin:'service',sourceInputId:actor.inputId,sourceRunId:actor.runId,requestId:inputId,text:noticeText(notice,writer,summary)});
+      const local=localLabSession(notice.to);
+      if(local)delivery.admit({sessionId:local,inputId,origin:'service',sourceInputId:actor.inputId,sourceRunId:actor.runId,requestId:inputId,text:noticeText(notice,writer,summary)});
       else {
         const address=peerSessionView(notice.to)?.address;
         if(!address)throw new BoardError(`No session ${notice.to} in the peer catalogue.`);
@@ -188,7 +211,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     const answer=await lab('POST',`/records/${encodeURIComponent(designHandle)}/cards`,actor,{actionId,...inbox,cards:input.cards});
     const cards:{id:string;address:string;duplicate:boolean;notify?:Notice[];inbox?:unknown}[]=answer.cards??[];
     const notified=[];
-    for(const card of cards)notified.push(...await deliver(card.notify??[],actor,`concierge:${actor.session}`,`card at ${card.address}`,delivery));
+    for(const card of cards)notified.push(...await deliver(card.notify??[],actor,actorIdentity(actor),`card at ${card.address}`,delivery));
     return {cards:cards.map(card=>({id:card.id,address:card.address,duplicate:card.duplicate,inbox:card.inbox??null})),notified};
   } else if(input.verb==='cite') {
     written=await lab('POST','/citations',actor,{actionId,medium:input.medium,address:input.address,title:input.title,text});
@@ -209,6 +232,6 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
       ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
   }
   const summary=(input.title??(input.verb==='verdict'?`verdict ${input.verdict} on lab:${designHandle}`:text)).trim().split('\n')[0]!.slice(0,200);
-  const notified=await deliver(written.notify??[],actor,`concierge:${actor.session}`,summary,delivery);
+  const notified=await deliver(written.notify??[],actor,actorIdentity(actor),summary,delivery);
   return {id:written.id,address:written.address,duplicate:written.duplicate,notified,...('inbox' in written?{inbox:(written as {inbox?:unknown}).inbox}:{})};
 }
