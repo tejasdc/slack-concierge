@@ -356,8 +356,10 @@ export class ProjectSetup {
     let row=this.canvasRow(board);
     if(row){
       const explicit=row.state==='ready'&&row.policy_revision_id===null&&!row.created_project;
-      if(row.client_action_id!==actionId||!explicit&&!!requestedExisting||requestedExisting&&(row.project!==requestedExisting.name||row.inside!==requestedExisting.inside))
-        throw new Error('Canvas project action identity already has different immutable inputs.');
+      // The stored action identifies folder creation. A newer title is its own command,
+      // while the board ID and any explicit binding still freeze the project choice.
+      if(!explicit&&!!requestedExisting||requestedExisting&&(row.project!==requestedExisting.name||row.inside!==requestedExisting.inside))
+        throw new Error('Canvas project choice already has different immutable inputs.');
       if(titleClock>row.title_clock){
         db.query('UPDATE canvas_project_ensures SET title=?,title_clock=?,updated_at_ms=? WHERE board_id=? AND title_clock<?')
           .run(title,titleClock,Date.now(),board,titleClock);

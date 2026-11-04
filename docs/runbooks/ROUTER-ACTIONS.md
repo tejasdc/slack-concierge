@@ -198,7 +198,7 @@ derives the policy only from that retained answer; the caller cannot substitute 
 revision keeps that organizer reply and its input and run. `POST /sessions/v1/canvas-projects/ensure` accepts a stable board
 identity and current title, freezes the first project choice, and creates from the policy revision
 available at that moment. A default title uses a stable board-derived folder name; later renaming
-does not move the project, as the workspace organizer policy says a title change must not silently move a folder that sessions or links may use. A later title is recorded only with a newer board revision clock, and the project catalogue shows that current Canvas title beside the stable folder name. `GET /sessions/v1/canvas-projects/:board` returns `pending`, `ready`, or
+does not move the project, as the workspace organizer policy says a title change must not silently move a folder that sessions or links may use. The browser sends each later title revision under a distinct action identity, while the owner records it only with a newer board revision clock; the project catalogue shows that current Canvas title beside the stable folder name. `GET /sessions/v1/canvas-projects/:board` returns `pending`, `ready`, or
 `failed`. `ready` means the server scaffold exists and the Canvas can use it; private GitHub setup
 and the durable Mac order continue after that local boundary. A Mac path appears only after that Concierge confirms
 the registered peer project. A later remote failure stays visible without making the local Canvas unusable. Reusing an existing project requires its explicit registered name and
