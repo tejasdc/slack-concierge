@@ -1395,10 +1395,11 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
     ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))&&!evidence.some(id=>{
-    const post=db.query("SELECT payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'").get(id) as {payload_json:string;created_at:string}|null;
+    const post=db.query("SELECT input_id,payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'").get(id) as {input_id:string;payload_json:string;created_at:string}|null;
     if(!post||new Date(iso(post.created_at)!).getTime()<new Date(request.reopenedAt!).getTime())return false;
     const payload=JSON.parse(post.payload_json);
-    return topicOfRoot(String(payload.threadRoot??''))===topic.topicId&&(!latest||payload.requestId===latest.id);
+    return topicOfRoot(String(payload.threadRoot??post.input_id))===topic.topicId
+      &&(!latest||payload.requestId==null||payload.requestId===latest.id);
   }))throw new TopicError('This request was reopened after its last linked answer. Name a new checked answer in this thread, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
@@ -3315,7 +3316,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     let disposition:string|null=null,why='';
     let completionChecked=false;
     if(works.length>(request.completionFloor??0)&&latest
-      &&latest.createdAtMs>=new Date(iso(request.reopenedAt)??request.createdAt).getTime()
+      &&(!request.reopenedAt||latest.createdAtMs>=new Date(request.reopenedAt).getTime())
       &&latest.outcome==='answered'
       &&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
       try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}

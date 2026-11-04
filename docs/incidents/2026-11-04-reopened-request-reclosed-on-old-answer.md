@@ -37,6 +37,10 @@ original thread after reopening. Later human replies reopen with their new forwa
 attempt already beyond the recorded boundary.
 Evaluate linked attempts by their recorded admission time. A failed predecessor
 cannot block a completed successor; a genuinely new unfinished attempt still does.
+For a checked thread post cited after reopening, resolve its thread from the event's
+recorded input when the post payload has no explicit thread root. Ordinary router
+posts use that input. Apply the admission-time boundary only to requests that were
+reopened; an audit may record a request after its completed dispatch was admitted.
 
 ## Acceptance scenario
 
