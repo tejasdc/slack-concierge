@@ -22,7 +22,10 @@ import {saveQueuedTurn,savedWorkSettings} from './saved-work';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
 import {notifyAgentPost} from './thread-notifications';
-import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
+import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
+import {askAsideOnce} from './session-asides';
+import {awaitingOutside} from './storage-observation';
+import {earlierWorkFor,type EarlierWork} from './request-history';
 import { isHisChatGpt } from './aliases';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -210,7 +213,7 @@ export class SessionCommunicationCoordinator {
         if (!session) return true;
         const metadata = sessionMetadata(session);
         return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only' && !metadata.canvasObservation
-            && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session));
+            && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session)) && !this.frozenSession(session.id);
     }
     /**
      * A session whose work was handed to a successor keeps its reads and its closing outcome, but
@@ -293,6 +296,77 @@ export class SessionCommunicationCoordinator {
     private messageable(address: Address) {
         const session = getSessionById(address.session);
         return !!session && this.dependencies.owner.canSend(session);
+    }
+    /**
+     * A Claude or Codex session Concierge started that is archived or paused (and not handed off):
+     * it takes no messages, so its work stays as it was left, but its conversation can still answer
+     * a question through a side copy. Before 2026-11-04 asking one failed with "not currently
+     * messageable", so its findings were lost to every later agent.
+     */
+    private frozenSession(sessionId: number) {
+        const session = getSessionById(sessionId);
+        if (!session || this.dependencies.owner.canSend(session) || supersededBy(sessionId)) return null;
+        const meta = sessionMetadata(session);
+        if ((meta.origin ?? 'native') !== 'native' || meta.canvasObservation || !['claude-code', 'codex'].includes(session.provider_id) || !session.agent_session_uuid) return null;
+        if (session.status !== 'archived' && !meta.suspended) return null;
+        return {session, state: session.status === 'archived' ? 'archived' : 'paused'};
+    }
+    /**
+     * What came before, for a work request: Concierge looks it up and the request carries it, so
+     * the receiving agent starts from the earlier requests, sessions and diagnosed failures on the
+     * same problem (request-history.ts). Questions and ChatGPT get none: they are not repairs.
+     */
+    private async earlierWork(actor: Actor, input: {summary?: string; text: string; requestedEffect?: string; provider?: string; saved?: unknown},
+        topicRoot: string | null, targetSessionId: number | null): Promise<EarlierWork | null> {
+        const target = targetSessionId ? getSessionById(targetSessionId) : null;
+        if (input.requestedEffect !== 'work' || input.saved || input.provider === 'chatgpt' || target?.provider_id === 'chatgpt'
+            || (target && (sessionMetadata(target).interactionPolicy === 'consultation-only' || takesManySubjects(target) || isWritingSession(target)))) return null;
+        // A recipient already working this thread holds its history; a follow-up is not a fresh start.
+        if (target && topicRoot && db.query(`SELECT 1 FROM session_communication_requests WHERE target_session_id=?
+            AND (thread_root_input_id=? OR (topic_root_input_id=? AND thread_root_input_id IS NULL)) LIMIT 1`).get(target.id, topicRoot, topicRoot)) return null;
+        const inbox = inboxSession();
+        const owner = this.dependencies.owner;
+        return earlierWorkFor({summary: input.summary, text: input.text, topicRoot, recipient: targetSessionId, sendingTurn: actor.turn, nowMs: this.now(),
+            exclude: [actor.session, ...(targetSessionId ? [targetSessionId] : []), ...(inbox ? [inbox.id] : [])],
+            titleOf: id => { const session = getSessionById(id); return session ? (owner?.catalogueLabels(session).title ?? `Session ${id}`) : `Session ${id}`; },
+            answerability: id => { try { return this.answerability(id); } catch { return 'how it can be asked is unknown'; } }});
+    }
+    /** How an earlier session can be asked now, in the words a receiving agent acts on. */
+    private answerability(sessionId: number): string {
+        const session = getSessionById(sessionId);
+        if (!session) return 'no longer exists';
+        const address = sessionAddress(session);
+        const successor = supersededAddress(sessionId);
+        if (successor) return `handed off; asking ${address} reaches the session that continues it, ${successor}`;
+        if (this.dependencies.owner.canSend(session))
+            return session.provider_id === 'chatgpt' ? `ChatGPT, answers questions but has no tools: ${address}` : `can answer: ask ${address}`;
+        const frozen = this.frozenSession(sessionId);
+        if (frozen) return `${frozen.state}; a side copy of its conversation answers questions: ask ${address} --requested-effect informational`;
+        const view = this.dependencies.owner.view(session);
+        if (view.capabilities.consult) return `conversation from outside Concierge; a consultation copy answers questions: ask ${address} --requested-effect informational`;
+        return `cannot be asked (${view.capabilities.reason ?? 'no provider can reopen it'}); read it with sessions context ${address}`;
+    }
+    /**
+     * A question to an archived or paused session, answered from a throwaway copy of its
+     * conversation (the same copy a side question in thnkr.ing uses): no tools, never saved, and
+     * the session itself is not woken or changed. The answer is this command's result; one that
+     * takes longer than the command may wait is collected by repeating the same command.
+     */
+    private async sideCopyAnswer(actor: Actor, input: {action_id: string; text: string; files?: unknown[]; attachments?: unknown[]; captureId?: string}, frozen: {session: SessionRow; state: string}) {
+        if (input.files?.length || input.attachments?.length || input.captureId) throw new Error('A side copy answers from the conversation alone; it cannot inspect attached files.');
+        const {session} = frozen, meta = sessionMetadata(session);
+        const question = input.text.trim().slice(0, 8000);
+        const id = `${session.id}:request-side:${hash(`${actor.inputId ?? ''}:${input.action_id}:${question}`)}`;
+        const asked = await awaitingOutside(() => askAsideOnce(id, () => ({provider: session.provider_id, sessionUuid: session.agent_session_uuid!,
+            cwd: meta.cwd ?? this.dependencies.owner.defaultCwd, model: meta.model ?? null, running: false, passage: '', question, earlier: [],
+            agentAsker: `concierge:${actor.session}`}), 90_000));
+        const address = sessionAddress(session);
+        if (asked.state === 'asking')
+            return {state: 'asking', address, answeredBy: 'side copy',
+                notice: `This session is ${frozen.state}, so a side copy of its conversation is answering. It has not finished yet: repeat the same command with the same --action-id to collect the answer.`};
+        log('info', 'request_side_copy_answered', {session_id: session.id, duration_ms: asked.durationMs});
+        return {state: 'answered', address, answeredBy: 'side copy', answer: asked.answer, model: asked.model,
+            notice: `This session is ${frozen.state}, so a side copy of its conversation answered (no tools, nothing saved; the session itself was not woken). No request was opened.`};
     }
     private peerActor(actor: Actor): PeerActor {
         return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
@@ -1190,6 +1264,19 @@ export class SessionCommunicationCoordinator {
             input={...input,text:originalText.trim()?originalText:'Attachment message from the Inbox.',attachments};
         }
         text(input.text);
+        // A session that handed its work to a successor is reached through that successor; the
+        // handed-off session itself is frozen. Asking it used to fail with "not currently
+        // messageable", which agents read as "this agent cannot answer" (2026-11-04).
+        let forwardedFrom:string|null=null;
+        if(input.address&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)) {
+            for(let hop=0;hop<8;hop++) {
+                const resolved=this.address(input.address!);
+                const next=this.messageable(resolved)?null:supersededAddress(resolved.session);
+                if(!next)break;
+                forwardedFrom??=input.address!;
+                input={...input,address:next};
+            }
+        }
         const writing=isWritingSession(getSessionById(actor.session)!);
         if(input.requestedEffect==='work'&&writing)throw new Error(WRITING_SESSION_REFUSAL);
         if(input.smallTask!==undefined&&(input.smallTask!==true||input.provider!=='auto'||input.peer))
@@ -1198,6 +1285,15 @@ export class SessionCommunicationCoordinator {
         // unmarked requests from the lab coordinator arrived information-only and three agents
         // declined to build what Tejas had asked for (2026-10-08).
         if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
+        const frozen=input.address&&!input.provider&&!input.routeMessageId&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)
+            ?this.frozenSession(this.address(input.address).session):null;
+        if(frozen) {
+            if(input.requestedEffect==='work')
+                throw new Error(`This session is ${frozen.state}, so its work stays as it was left. Ask it a question with --requested-effect informational and a side copy of its conversation answers, or start a new session that consults it with --consult ${sessionAddress(frozen.session)}.`);
+            if(input.thread||input.return_to_requester||input.after?.length||input.pace?.length||input.consult||input.saved)
+                throw new Error(`This session is ${frozen.state}; a side copy of its conversation answers a question only as this command's result, so ask without --thread, --return-to-requester, --after-request or saved-work options and carry the answer on yourself.`);
+            return this.sideCopyAnswer(actor,input,frozen);
+        }
         if(input.outside!==undefined&&(input.outside!==true||!input.provider||['auto','chatgpt'].includes(input.provider)||input.address||input.peer||input.saved||input.resurrect))
             throw new Error('An outside request starts a new local Codex session: --outside with --project and an optional Codex alias.');
         if(input.consult!==undefined) {
@@ -1283,6 +1379,13 @@ export class SessionCommunicationCoordinator {
             if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
+            // The peer keeps the asked words; a retry reuses them, so a fresh lookup cannot conflict with the first.
+            const askedPeer=db.query('SELECT payload_json FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId??'',input.action_id) as {payload_json:string}|null;
+            if(askedPeer)input={...input,text:JSON.parse(askedPeer.payload_json).text??input.text};
+            else {
+                const history=await this.earlierWork(actor,input,routedFrom?.root??topicRootFor(threadRoot,actor.inputId),null);
+                if(history?.text)input={...input,text:`${history.text}\n\n${input.text}`};
+            }
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,text:input.text,
                 requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot,threadSourceMessageId,returnToRequester:input.return_to_requester,
                 ...(machineNeed?{machineNeed}:{}),
@@ -1363,8 +1466,11 @@ export class SessionCommunicationCoordinator {
         for (const earlier of pace)
             if (this.row(earlier).source_session_id !== actor.session)
                 throw new Error('A request may be paced only behind this session’s own requests.');
+        // Looked up once, after every refusal above, when the request is first accepted; a retry
+        // returned the receipt earlier.
+        const history=await this.earlierWork(actor,input,topicRoot??null,target?.session??null);
         const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
-        if(consultation) {
+        if(consultation||history) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
@@ -1392,7 +1498,7 @@ export class SessionCommunicationCoordinator {
                 hisChat: input.hisChat,
             });
             const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
-            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Answer here; the original thread displays only its routing receipt.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,summary:input.summary,smallTask:input.smallTask,outside:input.outside,standingRole,firstInput,saved:input.saved});
@@ -1414,7 +1520,7 @@ export class SessionCommunicationCoordinator {
             const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encoded);
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
@@ -1620,6 +1726,8 @@ export class SessionCommunicationCoordinator {
         notify?:boolean;
         also_main_thread?:boolean;
         waiting_on_watch?:string;
+        /** What earlier agents did on this problem and how this approach differs; required on the first reply to a request that came with earlier work. */
+        before?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -1640,6 +1748,20 @@ export class SessionCommunicationCoordinator {
             throw new Error('Question fields belong to --work-disposition needs_decision.');
         if((input.checked!==undefined||input.not_checked!==undefined||input.all_done!==undefined)&&input.workDisposition!=='completed')
             throw new Error('--checked, --not-checked and --all-done belong to --work-disposition completed.');
+        // A request that came with earlier work on the same problem is answered first by saying what
+        // that work was and how this approach differs (request-history.ts). Without it the earlier
+        // findings sat in the request unread; with it the requester, and Tejas in his thread, see that
+        // the agent started from them. A hand-back is exempt: it declines the work.
+        const before=typeof input.before==='string'?input.before.trim().slice(0,4000):'';
+        if(input.before!==undefined&&!before)throw new Error('--before needs words: what earlier agents did on this problem and how your approach differs.');
+        if(!before&&input.hand_back===undefined) {
+            const asked=db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {payload_json:string}|null;
+            const history=asked?JSON.parse(asked.payload_json).history:null;
+            if(history&&(history.requests||history.sessions||history.cases)
+              &&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final')").get(input.request_id))
+                throw new Error('This request came with WHAT CAME BEFORE: earlier work on the same problem. Your first reply must say what that work did and how your approach differs: add --before "<what came before and how this differs>" to this reply.');
+        }
+        if(before)input={...input,text:`What came before: ${before}${input.text.trim()?`\n\n${input.text}`:''}`};
         if(input.final)input={...input,reply_body:input.text};
         // An answer is never refused for how it was marked: a flag that does not fit is dropped,
         // the reply is recorded as written, and the worker is told why in its receipt. Refusing
