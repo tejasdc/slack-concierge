@@ -1,5 +1,5 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import {codexLeftoverProcesses} from './codex-leftover-processes';
+import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {createHash} from 'node:crypto';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {thesaurusTurnContext} from './thesaurus-context';
@@ -89,7 +89,7 @@ import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
-import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
+import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
@@ -965,6 +965,60 @@ export class SessionExecutionHost {
       ORDER BY intent.turn_id LIMIT 50`).all() as {turn_id:number}[];
     for(const row of pending)await this.auditCodexTurn(row.turn_id).catch(error=>
       log('warn','codex_process_audit_recovery_failed',{turn_id:row.turn_id,...errorFields(error)}));
+    await this.followCodexProcessSightings().catch(error=>log('warn','codex_process_sighting_failed',errorFields(error)));
+  }
+  /**
+   * Each held sighting ends one of two ways, with no agent needed for the first: every process
+   * exits (the sighting settles, and a report it joined closes once all its sightings have), or
+   * one is still running after the grace period (it is reported once, grouped on the open issue).
+   */
+  private async followCodexProcessSightings() {
+    const open=db.query(`SELECT sighting.turn_id,sighting.session_id,sighting.input_id,sighting.payload_json,turn.native_run_id,
+        (SELECT reported.payload_json FROM session_owner_events reported
+          WHERE reported.event_id='codex-process-sighting-reported:'||sighting.turn_id) AS reported_json
+      FROM session_owner_events sighting JOIN turns turn ON turn.id=sighting.turn_id
+      WHERE sighting.event_id>='codex-process-sighting:' AND sighting.event_id<'codex-process-sighting;'
+        AND NOT EXISTS (SELECT 1 FROM session_owner_events settled
+          WHERE settled.event_id='codex-process-sighting-settled:'||sighting.turn_id)
+      ORDER BY sighting.turn_id LIMIT 100`).all() as {turn_id:number;session_id:number;input_id:string;payload_json:string;
+        native_run_id:string|null;reported_json:string|null}[];
+    for(const row of open){
+      const sighting=JSON.parse(row.payload_json) as {threadId:string;processes:CodexLeftoverProcess[];sightedAtMs:number};
+      const reportRequestId=row.reported_json?JSON.parse(row.reported_json).requestId as string|null:null;
+      const alive=sighting.processes.filter(codexProcessStillRunning);
+      if(!alive.length){
+        recordSessionEvent({eventId:`codex-process-sighting-settled:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
+          turnId:row.turn_id,kind:'process_audit',payload:{outcome:'exited',requestId:reportRequestId}});
+        log('info','codex_leftover_process_exited',{turn_id:row.turn_id,reported:!!reportRequestId});
+        continue;
+      }
+      if(row.reported_json||Date.now()-sighting.sightedAtMs<CODEX_PROCESS_REPORT_GRACE_MS)continue;
+      const title='A finished Codex turn left background processes running';
+      const detail=`Codex turn ${row.turn_id} (session concierge:${row.session_id}, thread ${sighting.threadId}) finished, and ${alive.length} non-browser process(es) bearing its exact thread ID were still running ${Math.round((Date.now()-sighting.sightedAtMs)/60_000)} minutes later outside Concierge-owned execution units: ${JSON.stringify(alive)}. `+
+        'Inspect current PID and start time before stopping unneeded work. Intentional work needs a registered command watch or another durable supervisor. Concierge closes this report itself once every recorded process has exited.';
+      const receipt=await this.owner.reportAgentIssue({source:{inputId:row.input_id,runId:row.native_run_id??nativeRunId(row.turn_id)},
+        actionId:`codex-leftover-process-${row.turn_id}`,issueKey:'codex-leftover-process',title,text:detail});
+      const requestId=(receipt as any)?.report?.requestId??null;
+      recordSessionEvent({eventId:`codex-process-sighting-reported:${row.turn_id}`,sessionId:row.session_id,inputId:row.input_id,
+        turnId:row.turn_id,kind:'process_audit',payload:{requestId}});
+      log('warn','codex_leftover_process_reported',{turn_id:row.turn_id,session_id:row.session_id,processes:alive,
+        request_id:requestId,deduplicated:(receipt as any)?.deduplicated===true});
+    }
+    // Recomputed every sweep, so a restart between a sighting settling and its report closing loses nothing.
+    const reports=db.query(`SELECT DISTINCT request.request_id FROM session_owner_events reported
+      JOIN inbox_requests request ON request.request_id=json_extract(reported.payload_json,'$.requestId') AND request.state='open'
+      WHERE reported.event_id>='codex-process-sighting-reported:' AND reported.event_id<'codex-process-sighting-reported;'`).all() as {request_id:string}[];
+    for(const {request_id:requestId} of reports){
+      // A grouped report stays open while any sighting it absorbed still has a running process.
+      const waiting=db.query(`SELECT 1 FROM session_owner_events reported
+        WHERE reported.event_id>='codex-process-sighting-reported:' AND reported.event_id<'codex-process-sighting-reported;'
+          AND json_extract(reported.payload_json,'$.requestId')=?
+          AND NOT EXISTS (SELECT 1 FROM session_owner_events settled
+            WHERE settled.event_id='codex-process-sighting-settled:'||reported.turn_id) LIMIT 1`).get(requestId);
+      if(waiting)continue;
+      if(settleExitedProcessReport(requestId,'Concierge rechecked each PID and its start time.'))
+        log('info','codex_leftover_process_report_settled',{request_id:requestId});
+    }
   }
   private codexProcessAuditReady(turnId:number,sessionId:number) {
     const turn=db.query('SELECT status FROM turns WHERE id=?').get(turnId) as {status:string}|null;
@@ -995,16 +1049,11 @@ export class SessionExecutionHost {
       }
       const remaining=await codexLeftoverProcesses(row.agent_session_uuid);
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
-      if(remaining.length){
-        const title='A finished Codex turn left background processes running';
-        const detail=`After Codex turn ${turnId} completed, Concierge found ${remaining.length} non-browser process(es) bearing its exact thread ID outside Concierge-owned execution units. `+
-          `Session concierge:${row.session_id}; thread ${row.agent_session_uuid}; processes: ${JSON.stringify(remaining)}. `+
-          'Inspect current PID and start time before stopping unneeded work. Intentional work needs a registered command watch or another durable supervisor.';
-        const receipt=await this.owner.reportAgentIssue({source:{inputId:row.accepted_input_id,runId:row.native_run_id??nativeRunId(turnId)},
-          actionId:`codex-leftover-process-${turnId}`,issueKey:'codex-leftover-process',title,text:detail});
-        log('warn','codex_leftover_process_reported',{turn_id:turnId,session_id:row.session_id,
-          processes:remaining,request_id:(receipt as any)?.report?.requestId,deduplicated:(receipt as any)?.deduplicated===true});
-      }
+      // A sighting is held, not reported: most detached jobs (a build, a short wait) finish on
+      // their own within minutes, and only one that keeps running needs anyone's attention.
+      if(remaining.length)recordSessionEvent({eventId:`codex-process-sighting:${turnId}`,sessionId:row.session_id,
+        inputId:row.accepted_input_id,turnId,kind:'process_audit',
+        payload:{threadId:row.agent_session_uuid,processes:remaining,sightedAtMs:Date.now()}});
       recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
         inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{threadId:row.agent_session_uuid,remaining:remaining.length}});
     } finally {this.codexProcessAudits.delete(turnId);}

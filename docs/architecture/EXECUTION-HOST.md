@@ -352,10 +352,17 @@ releases with control-group killing. Registered command watches are in those uni
 their own deadlines. A parked turn is not scanned while the provider may still be running;
 the retained intent waits for its terminal settlement. The audit also waits while another
 Concierge turn or an external Codex client is using that session's thread, then rechecks
-after reading processes before filing anything. A process in the shared App Server scope has no turn-end custody. If
-one remains, the owner files an agent issue report with its PID, process start time and
-cgroup. It does not kill an unknown program: an agent may have started an intentional
-service. Later sightings append their evidence to the existing grouped request, so one
+after reading processes before filing anything. Only processes in the shared
+`codex-app-server-*.scope` count: that scope has no turn-end custody, while execution units,
+command watches and other systemd services (a Thinkering ship job) stop their own children.
+A survivor is recorded as a sighting with its PID, process start time and cgroup, not
+reported. The owner's minute sweep rechecks each recorded PID against its start time. If
+every process has exited, the sighting settles with no Inbox report; most detached builds
+and short waits end this way. If one is still running ten minutes after the turn, the owner
+files one agent issue report naming the survivors, and the sweep closes that report itself
+(completed, with the recheck as its reason) once every process recorded on it has exited,
+so no agent is needed to settle a report whose process went away. It does not kill an unknown
+program: an agent may have started an intentional service. Later sightings append their evidence to the existing grouped request, so one
 unresolved problem does not create a new Inbox thread on every turn. Old ungrouped reports
 cannot absorb a new sighting. A fresh report may be
 filed after that request closes. The retained audit intent is retried on startup and every
