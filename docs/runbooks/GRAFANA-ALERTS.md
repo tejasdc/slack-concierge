@@ -30,6 +30,9 @@ alert. The old Slack design is historical reference only.
   enter that same Repair agent queue. The first reports severe measured Journal key
   delay; the second reports missing or stale exported typing measurements. Both
   retain their Grafana episode and recovery receipts without opening a human thread.
+- `ThinkeringWorkspaceSyncStuck` enters that same Repair agent queue when a thnkr.ing
+  page has reported for over two minutes that its sync stopped and its changes are
+  held on that device.
 - Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
   thread, repair notice, or investigator starts.
 
