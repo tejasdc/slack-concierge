@@ -332,6 +332,18 @@ export class MeaningIndex {
     try{[vector]=(await this.engine.embed([QUERY_PREFIX+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
     finally{this.searching--;}
+    return this.ranked(vector,limit,indexed);
+  }
+  /**
+   * The same search for a question already embedded with queryVectors, so a caller comparing one
+   * question against sessions and other documents pays for one embedding (request-history.ts).
+   */
+  searchVector(vector:Float32Array,limit:number):MeaningSearch {
+    const indexed=this.count;
+    if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
+    return this.ranked(vector,limit,indexed);
+  }
+  private ranked(vector:Float32Array,limit:number,indexed:number):MeaningSearch {
     // Best passage per session (or per archived prompt): one strong match is the signal, many weak ones are not.
     const best=new Map<string,{index:number;score:number}>();
     for(let row=0;row<this.count;row++){
