@@ -38,6 +38,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
   [agent security](docs/security/2026-10-07-agent-security-review.md).
+- Fresh agent-started Claude Code commands tolerate the package install's brief
+  missing-command window before account selection; see the
+  [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
 
 ## Session and Inbox obligations
 

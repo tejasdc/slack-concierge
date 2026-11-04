@@ -1,22 +1,84 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
-import {realpathSync} from 'node:fs';
-import {delimiter,isAbsolute,join} from 'node:path';
+import {accessSync,constants,existsSync,realpathSync,readlinkSync,watch} from 'node:fs';
+import {dirname,delimiter,isAbsolute,join,resolve} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
 
 const args=process.argv.slice(2);
 const wrapper=realpathSync(join(import.meta.dir,'claude'));
-function actualClaude():string {
+function candidates():string[] {
   const specified=process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE;
-  if(specified&&isAbsolute(specified)&&realpathSync(specified)!==wrapper)return specified;
-  for(const directory of (process.env.PATH??'').split(delimiter)){
-    if(!directory)continue;
-    const candidate=join(directory,'claude');
-    try {if(realpathSync(candidate)!==wrapper)return candidate;}catch{}
+  if(specified){
+    if(!isAbsolute(specified))throw new Error('The configured Claude Code executable path must be absolute.');
+    return [specified];
   }
-  throw new Error('The installed Claude Code executable was not found.');
+  return (process.env.PATH??'').split(delimiter).filter(Boolean).map(directory=>join(directory,'claude'));
 }
-const executable=actualClaude();
+function discoverClaude(paths:string[]):string|null {
+  for(const candidate of paths){
+    try {
+      if(realpathSync(candidate)===wrapper)continue;
+      accessSync(candidate,constants.X_OK);
+      return candidate;
+    }catch{}
+  }
+  return null;
+}
+function nearestExistingDirectory(path:string):string {
+  let directory=dirname(path);
+  while(!existsSync(directory))directory=dirname(directory);
+  return directory;
+}
+async function actualClaude():Promise<string> {
+  const paths=candidates();
+  const found=discoverClaude(paths);
+  if(found)return found;
+  console.error('Claude Code executable is unavailable; waiting for installation to finish.');
+  // npm can remove the global command while replacing its package. Watch the
+  // command and any broken symlink target so a launch during that window resumes.
+  const started=Date.now();
+  const deadline=started+120_000;
+  while(Date.now()<deadline){
+    const directories=new Set(paths.map(nearestExistingDirectory));
+    for(const candidate of paths){
+      try {
+        const target=readlinkSync(candidate);
+        directories.add(nearestExistingDirectory(resolve(dirname(candidate),target)));
+      }catch{}
+    }
+    const changed=await new Promise<boolean>(resolveChange=>{
+      const watchers:ReturnType<typeof watch>[]=[];
+      let timer:ReturnType<typeof setTimeout>;
+      let settled=false;
+      const finish=(value:boolean)=>{
+        if(settled)return;
+        settled=true;
+        clearTimeout(timer);
+        for(const watcher of watchers)watcher.close();
+        resolveChange(value);
+      };
+      timer=setTimeout(()=>finish(false),Math.max(0,deadline-Date.now()));
+      for(const directory of directories){
+        try {
+          const watcher=watch(directory,()=>finish(true));
+          watcher.on('error',()=>finish(true));
+          watchers.push(watcher);
+        }catch{}
+      }
+      // Close the scan-to-watch race: installation may have completed while
+      // the watchers were being registered.
+      if(discoverClaude(paths))finish(true);
+    });
+    const installed=discoverClaude(paths);
+    if(installed){
+      console.error(`Claude Code executable became available after ${Date.now()-started} ms: ${installed}`);
+      return installed;
+    }
+    if(!changed)break;
+  }
+  throw new Error(`The installed Claude Code executable was not found after waiting for installation. Checked: ${paths.join(', ')||'(empty PATH)'}`);
+}
+const executable=await actualClaude();
 const firstCommandArg=args.find(arg=>arg!=='--dangerously-skip-permissions');
 const passthrough=['auth','config','doctor','update','mcp','plugin','agents'].includes(firstCommandArg??'')
   || args.some(arg=>['--version','-v','--help','-h'].includes(arg))
