@@ -1,7 +1,35 @@
 # Diagnostic SQLite snapshots
 
-Use `scripts/diagnostic-sqlite-snapshot.py` to copy **one** SQLite database for an offline
-investigation. Pass absolute paths to an existing source database and a destination that does
+## Read the live ledger without a copy first
+
+To analyse the live ledger, query it where it is:
+
+```sh
+python3 scripts/ledger-read.py "SELECT state, count(*) FROM inbox_topics GROUP BY state"
+python3 scripts/ledger-read.py --database meaning-index "SELECT ..."
+```
+
+It opens the database read-only (`mode=ro` plus `query_only`), so it cannot write. Each statement
+holds its read snapshot only while it runs, and a deadline (default 30 s, `--max-seconds`)
+interrupts a runaway scan so it cannot pin the write-ahead log or keep the shared disk busy.
+Rows print as JSON lines, at most `--max-rows` (default 1000). A bare `--database` name means
+that database in Concierge's state directory, followed to its real home; an absolute path reads
+any SQLite file. It costs no disk. On 2026-11-04 two investigations each copied the 8 GB ledger
+into `/tmp` with the snapshot below to run a few dozen queries, and each copy took the root disk
+under its floor ([failure record](../incidents/2026-11-04-ledger-snapshots-filled-root-disk.md));
+every one of those queries runs here in milliseconds.
+
+## Copying one database
+
+Use `scripts/diagnostic-sqlite-snapshot.py` only when an investigation truly needs an offline
+copy of **one** SQLite database.
+
+**It refuses a copy that would leave the destination filesystem under the host's disk floor**,
+before writing anything. The server's floor is read from remote-box's `AX41DiskFillingEarly`
+alert, the rule its disk cleanup also reads (50 GiB on 2026-11-04); where that rule is absent
+(the Mac) a tenth of the filesystem stands in. The ledger's own filesystem is a sparse image on
+the root disk, so copying there costs the root disk too; it is small enough to stay under the
+floor and is refused as well. The refusal names the read path above. Pass absolute paths to an existing source database and a destination that does
 not exist:
 
 ```sh

@@ -49,6 +49,11 @@ try {
   assert.equal(liveStoreCopyRefusal(`sed -n '1,95p' ${script}`), null);
   assert.equal(liveStoreCopyRefusal('python3 /root/workspace/slack-concierge/scripts/diagnostic-sqlite-snapshot.py /root/.local/state/concierge/state.db /tmp/new.db'), null);
   assert.equal(liveStoreCopyRefusal('sqlite3 -readonly /root/.local/state/concierge/state.db "select 1"'), null);
+  // The sanctioned live read is never mistaken for a copy, by its name or by its source text.
+  const ledgerRead = join(import.meta.dir, '../../scripts/ledger-read.py');
+  assert(existsSync(ledgerRead));
+  assert.equal(liveStoreCopyRefusal(`python3 ${ledgerRead} --database /root/.local/state/concierge/state.db "SELECT count(*) FROM inbox_topics"`), null);
+  assert(liveStoreCopyRefusal(`python3 ${ledgerRead} --database /root/.local/state/concierge/state.db "VACUUM INTO '/tmp/x.db'"`));
   // A ledger moved to its own filesystem is found through the state directory's link, at any
   // path that reaches the same file (2026-10-15: a `.backup` of the new home was not refused).
   const stateDir = join(root, 'relocated-state'), ledgerHome = join(root, 'ledger-home');

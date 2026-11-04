@@ -837,7 +837,8 @@ needed for a release's read-only
 Thinkering page view. The page check can create its overlay and its own mount
 namespace, but cannot remove the outer ledger mounts. Ordinary candidate checks
 still run with all capabilities dropped.
-Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries
+Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries (the
+sanctioned live read is `scripts/ledger-read.py`, see the diagnostic snapshot runbook)
 remain available. For request status and results, use `router-actions.sh sessions get`
 with the exact request ID and source pair; it reads through the owner API.
 The raw-copy check recognizes copy tools in command position, so words such as

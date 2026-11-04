@@ -9,7 +9,9 @@ agents' disk write cap held the Concierge owner for 31 seconds.
 """
 
 import argparse
+import json
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -54,6 +56,38 @@ def caller_write_cap():
             break
         path = path.parent
     return min(caps) if caps else None
+
+
+# The server's disk floor has one home, remote-box's AX41DiskFillingEarly alert; its cleanup
+# reads the same rule. Where that rule is absent (the Mac), a tenth of the filesystem stands in.
+DISK_FLOOR_RULE = Path.home() / "workspace" / "remote-box" / "observability" / "alerts.json"
+
+
+def disk_floor(filesystem_size):
+    try:
+        rules = [rule for group in json.loads(DISK_FLOOR_RULE.read_text())["groups"] for rule in group["rules"]]
+        expr = next(rule["expr"] for rule in rules if rule.get("alert") == "AX41DiskFillingEarly")
+        return int(re.fullmatch(r"node_filesystem_avail_bytes\{[^}]*\} < (\d+)", expr).group(1))
+    except (OSError, ValueError, KeyError, StopIteration, AttributeError):
+        return filesystem_size // 10
+
+
+def refuse_below_floor(destination_parent, total_bytes):
+    """A copy that would leave its filesystem under the host's disk floor is refused before it
+    writes. On 2026-11-04 two investigations each copied the 8 GB ledger into /tmp through this
+    script; each took the root disk under its 50 GB floor and fired the disk alert, to run queries
+    that scripts/ledger-read.py answers against the live ledger without a copy. The ledger's own
+    filesystem is a sparse image on the root disk, so a copy there costs the root disk too; its
+    small size keeps it under the floor as well."""
+    fs = os.statvfs(destination_parent)
+    free = fs.f_bavail * fs.f_frsize
+    floor = disk_floor(fs.f_blocks * fs.f_frsize)
+    if free - total_bytes < floor:
+        raise SnapshotError(
+            f"copying {total_bytes / 2**30:.1f} GiB would leave {max(free - total_bytes, 0) / 2**30:.1f} GiB free on "
+            f"{destination_parent}, under its {floor / 2**30:.0f} GiB floor. Query the live database instead, "
+            "with no copy: python3 /root/workspace/slack-concierge/scripts/ledger-read.py \"SELECT ...\" "
+            "(docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md)")
 
 
 def positive_int(value):
@@ -125,6 +159,7 @@ def snapshot(source_path, destination_path, max_seconds, max_bytes):
         total_bytes = page_size * page_count
         if total_bytes > max_bytes:
             raise SnapshotError("source snapshot exceeds byte limit")
+        refuse_below_floor(destination_parent, total_bytes)
         # A copy killed by its deadline keeps every byte it already wrote, so a deadline the
         # caller's write cap cannot meet is refused before writing. On 2026-11-01 an agent ran
         # the 6.26 GB ledger copy twice under 120 s and 110 s at 30 MB/s; both died after
