@@ -29,6 +29,7 @@ import {
   type SlackMessageFile,
 } from "./attachments";
 import { errorFields, log } from "./log";
+import { noticeCodexResumeWait } from "./codex-resume-health";
 import {
   isRefreshableAuthFailure,
   providerRefusalContinuationReason,
@@ -670,6 +671,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
+      onResumeUnanswered: (wait) => noticeCodexResumeWait(db, { sessionId: input.session.id, turnId: input.turnId }, wait),
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
       ),
