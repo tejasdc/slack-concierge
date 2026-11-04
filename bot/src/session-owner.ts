@@ -98,6 +98,7 @@ import {chooseProviderForNewWork,type AutomaticProvider} from './provider-start-
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
+import {PeerAccountAnswers} from './peer-account-answers';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -567,11 +568,11 @@ export class SessionOwner {
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string,
     private readonly readPeerNames:readonly string[]=[]){}
   /** In-memory login state only; account files and usage belong to isolated readers. */
-  authEphemera():ProviderAuthEphemera|null {return this.runtime.auth?.ephemera?.()??null;}
+  authEphemera():ProviderAuthEphemera|null {const ephemera=this.runtime.auth?.ephemera?.();return ephemera?this.withPeerActions(ephemera):null;}
   async refreshAuthEphemera():Promise<ProviderAuthEphemera> {
     const refresh=this.runtime.auth?.refreshEphemera;
     if(!refresh)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return refresh();
+    return this.withPeerActions(await refresh());
   }
   /**
    * Provider accounts exist per machine: each instance holds its own credentials and is the
@@ -989,52 +990,31 @@ export class SessionOwner {
     const peers=await Promise.all((this.peers?.names()??[]).map(name=>this.peerAccountView(name,fresh)));
     return {providers:here.providers,machines:[here,...peers]};
   }
-  /**
-   * Another machine's accounts without making Accounts wait for it. Opening the page used to await
-   * every peer (up to 8 seconds, longer for a sleeping Mac) before showing this machine's rows; GPT-6
-   * Astra's review of the 2026-10-07 complaint named it. An ordinary read shows the last answer that
-   * machine gave, marked `checking`, and reads it again behind; a machine never heard from gets a
-   * short wait and is then shown as checking. A `fresh` read asks that machine for a new check
-   * the same way and does not wait for it either; the page reads again while a row says
-   * `checking` (2026-11-03, when a fresh read took 11 to 20 seconds around a sign-in).
-   */
-  private peerAccountCache=new Map<string,{view:Record<string,unknown>;at:number}>();
-  private peerAccountReads=new Map<string,Promise<Record<string,unknown>>>();
-  private peerAccountLatest=new Map<string,{view:Record<string,unknown>;at:number}>();
-  private async peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
-    // `checking` only while a read of that machine is outstanding; the last answer stands for 30 s.
-    const latest=this.peerAccountLatest.get(name);
-    // A peer that answered while its own check ran is asked again rather than trusted for 30 s.
-    const stillChecking=Array.isArray(latest?.view.providers)&&(latest!.view.providers as any[]).some(row=>row?.checking===true);
-    if(!fresh&&latest&&!this.peerAccountReads.has(name)&&Date.now()-latest.at<30_000&&!stillChecking)return latest.view;
-    let read=this.peerAccountReads.get(name);
-    if(!read){
-      read=(async()=>{
-        let view:Record<string,unknown>;
-        try {
-          view={name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]};
-          this.peerAccountCache.set(name,{view,at:Date.now()});
-        } catch(error) {
-          const note=error instanceof PeerError&&error.kind==='unreachable'
-            ?`${name} is not answering right now, so its accounts cannot be read.`
-            :error instanceof PeerError?error.message:`${name} could not be read right now.`;
-          view={name,self:false,reachable:false,note,providers:[]};
-        }
-        this.peerAccountLatest.set(name,{view,at:Date.now()});
-        return view;
-      })().finally(()=>this.peerAccountReads.delete(name));
-      this.peerAccountReads.set(name,read);
-    }
-    const cached=this.peerAccountCache.get(name);
-    if(cached)return {...cached.view,checking:true};
-    return Promise.race([read,new Promise<Record<string,unknown>>(resolve=>setTimeout(()=>
-      resolve({name,self:false,reachable:true,note:null,providers:[],checking:true}),1_500))]);
+  // Other machines' account answers; see PeerAccountAnswers. `peerAuthActedAt` is when a sign-in
+  // action on each machine last finished, published to the read worker in the sign-in state.
+  private peerAccountAnswers=new PeerAccountAnswers();
+  private peerAuthActedAt=new Map<string,number>();
+  private withPeerActions(ephemera:ProviderAuthEphemera):ProviderAuthEphemera {
+    return {...ephemera,peerAuthActedAtMs:Object.fromEntries(this.peerAuthActedAt)};
+  }
+  private peerAccountView(name:string,fresh:boolean):Promise<Record<string,unknown>>{
+    return this.peerAccountAnswers.view(name,fresh,this.peerAuthActedAt.get(name)??0,async()=>{
+      try {
+        return {answered:true,view:{name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name,fresh) as {providers?:unknown})?.providers??[]}};
+      } catch(error) {
+        const note=error instanceof PeerError&&error.kind==='unreachable'
+          ?`${name} is not answering right now, so its accounts cannot be read.`
+          :error instanceof PeerError?error.message:`${name} could not be read right now.`;
+        return {answered:false,view:{name,self:false,reachable:false,note,providers:[]}};
+      }
+    });
   }
   private async authAction(machine:unknown,path:string,body:Record<string,unknown>,timeoutMs:number,local:()=>unknown){
     const remote=this.remoteMachine(machine);
     if(!remote)return local();
     try {return await this.peers!.authAction(remote,path,body,timeoutMs);}
     catch(error) {return this.peerFailure(remote,error);}
+    finally {this.peerAuthActedAt.set(remote,Date.now());}
   }
   // Timeouts follow what the same call can take locally: the login manager waits up to 20s
   // for a URL and 60s for a pasted code to settle, and activating Codex restarts its App

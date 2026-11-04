@@ -12,6 +12,9 @@ export type ProviderAuthEphemera=Readonly<{
   claudePendingFor:string|null;
   claudePendingUrl:string|null;
   accountFallback:Readonly<{codex:ProviderAccount|null;'claude-code':ProviderAccount|null}>;
+  /** When a sign-in action on each other machine last finished, from the owner that carried it
+   * (absent from an owner older than 2026-11-04); peer-account-answers.ts uses it. */
+  peerAuthActedAtMs?:Readonly<Record<string,number>>;
   lastSignIn:Readonly<{
     codex:{ok:boolean;detail:string|null}|null;
     'claude-code':{ok:boolean;detail:string|null}|null;
