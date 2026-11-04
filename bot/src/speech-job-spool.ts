@@ -6,7 +6,11 @@ import {join,dirname} from 'node:path';
 // This is transport custody, not a second transcript store. Only the owner writes the
 // canonical attachment row; the independent worker writes a result for the owner to commit.
 export type SpeechJob={version:1;attachmentId:string;sha256:string;name:string;contentType:string;createdAt:number};
-export type SpeechJobResult={version:1;attachmentId:string;sha256:string;kind:'words';text:string;source:'parakeet'|'apple'|'whisper.cpp';audioMs:number|null}
+/** The engines a server transcript may name; the worker, the result reader and the engine chooser all read this one list. */
+export const SERVER_SPEECH_SOURCES=['workers-ai-whisper','parakeet','apple','whisper.cpp'] as const;
+export type ServerSpeechSource=typeof SERVER_SPEECH_SOURCES[number];
+export const isServerSpeechSource=(value:unknown):value is ServerSpeechSource=>(SERVER_SPEECH_SOURCES as readonly unknown[]).includes(value);
+export type SpeechJobResult={version:1;attachmentId:string;sha256:string;kind:'words';text:string;source:ServerSpeechSource;audioMs:number|null}
   |{version:1;attachmentId:string;sha256:string;kind:'no-speech'|'failed';reason?:'transcriber_missing'|'transcriber_failed'|'retained_audio_invalid'};
 const idPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function syncDirectory(path:string){const file=await open(path,'r');try{await file.sync();}finally{await file.close();}}
@@ -52,7 +56,7 @@ export function readSpeechJobResult(root:string,id:string):SpeechJobResult|null{
  if(!existsSync(file))return null;
  const value=readSmallJson(file,1_300_000) as SpeechJobResult;
  if(value.version!==1||value.attachmentId!==id||!['words','no-speech','failed'].includes(value.kind))throw new Error('Speech job result is invalid.');
- if(!/^[a-f0-9]{64}$/.test(value.sha256)||value.kind==='words'&&(typeof value.text!=='string'||value.text.length>200_000||!['parakeet','apple','whisper.cpp'].includes(value.source)))
+ if(!/^[a-f0-9]{64}$/.test(value.sha256)||value.kind==='words'&&(typeof value.text!=='string'||value.text.length>200_000||!isServerSpeechSource(value.source)))
   throw new Error('Speech job result is invalid.');
  return value;
 }

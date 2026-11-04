@@ -5,7 +5,7 @@ import {statSync} from 'node:fs';
 import {join} from 'node:path';
 import {NoSpeech,transcribeAudioPath,type AudioTranscript} from './transcription';
 import {log} from './log';
-import {finishSpeechJob,markSpeechJobStarted,pendingSpeechJobsAsync,removeAbandonedSpeechStaging,speechJobAudio,speechRoot,speechWorkerHeartbeat,type SpeechJob,type SpeechJobResult} from './speech-job-spool';
+import {finishSpeechJob,isServerSpeechSource,markSpeechJobStarted,pendingSpeechJobsAsync,removeAbandonedSpeechStaging,speechJobAudio,speechRoot,speechWorkerHeartbeat,type SpeechJob,type SpeechJobResult} from './speech-job-spool';
 
 // No state or session-owner import: the coordinator alone commits transcripts to SQLite.
 const stateDir=process.env.CONCIERGE_STATE_DIR;
@@ -23,8 +23,9 @@ export async function processSpeechJob(job:SpeechJob,transcribe:(input:{slackFil
   verified=true;
   await markSpeechJobStarted(root,job.attachmentId);
   const transcript=await transcribe({slackFileId:job.attachmentId,title:job.name,path:speechJobAudio(root,job.attachmentId)});
-  if(typeof transcript.text!=='string'||transcript.text.length>200_000||!['parakeet','apple','whisper.cpp'].includes(transcript.source))throw new Error('Invalid transcription result.');
-  result={version:1,attachmentId:job.attachmentId,sha256:job.sha256,kind:'words',text:transcript.text,source:transcript.source as 'parakeet'|'apple'|'whisper.cpp',audioMs:transcript.audioMs??null};
+  const source=transcript.source;
+  if(typeof transcript.text!=='string'||transcript.text.length>200_000||!isServerSpeechSource(source))throw new Error('Invalid transcription result.');
+  result={version:1,attachmentId:job.attachmentId,sha256:job.sha256,kind:'words',text:transcript.text,source,audioMs:transcript.audioMs??null};
  }catch(error){
   result={version:1,attachmentId:job.attachmentId,sha256:job.sha256,kind:error instanceof NoSpeech?'no-speech':'failed',
    ...(error instanceof NoSpeech?{}:{reason:!verified?'retained_audio_invalid':error instanceof Error&&/exited 127|ENOENT/.test(error.message)?'transcriber_missing':'transcriber_failed'})};
