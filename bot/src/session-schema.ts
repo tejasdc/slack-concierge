@@ -701,6 +701,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('inbox_questions','generation','generation INTEGER');
       // When a question he set aside comes back in front of him (ISO instant); null for one set aside with no time.
       add('inbox_questions','defer_until','defer_until TEXT');
+      // When he pinned a thread: pinned threads lead the Open list (Tejas, 2026-11-04: "I want to be able to pin some of the threads").
+      add('inbox_topics','pinned_at','pinned_at TEXT');
       add('session_peer_requests','thread_root_input_id','thread_root_input_id TEXT');
       db.exec(`UPDATE sessions
         SET agent_session_uuid = json_extract(native_metadata_json, '$.source.nativeId')

@@ -211,7 +211,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  const roots=(source.query('SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=? ORDER BY placed_at,root_input_id').all(topicId) as {root_input_id:string}[]).map(item=>item.root_input_id);
  const topic={topicId:row.topic_id,sessionId:row.session_id,title:row.title,summary:row.summary,state:row.state,setAside:parse(row.set_aside_json),
   aliases:parse(row.aliases_json,[]),revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,
-  closure:parse(row.closure_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!};
+  closure:parse(row.closure_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null};
  const replies=roots.flatMap(root=>context.humanReplies.get(root)??[]).sort((a,b)=>b.at.localeCompare(a.at));
  const questions:any[]=[],requests:any[]=[],questionCounts={asked:0,open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0};
  const needItems:any[]=[],readItems:any[]=[];
@@ -252,7 +252,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  const work=topicWorkValue(context,topic,roots);
  const summary={id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
   revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
-  lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
+  lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt,
   closedAt:topic.state==='closed'&&topic.closure?.kind!=='merged'?topic.closure?.at??topic.updatedAt:null,
   needsYou:{count:questionCounts.open,oldestAt:needItems[0]?.at??null,items:needItems},
   toRead:{count:questionCounts.reading,oldestAt:readItems[0]?.at??null,items:readItems},
@@ -266,7 +266,9 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  // else pushed threads he had just spoken into past the first page, because nearly every thread
  // carries something to read (Tejas, 2026-10-08: "A lot of items … are missing … The order seems
  // to be not correct"). What needs him keeps its own filter, count and mark on the row.
- const band=0;
+ // A pinned open thread leads the list, most recently pinned first (Tejas, 2026-11-04: "I want to
+ // be able to pin some of the threads"). Its band sorts before every unpinned row's.
+ const band=topic.pinnedAt&&topic.state==='open'?-1:0;
  return {sessionId,topicId,summary,detail,questionCounts,requestCount:requestCounts.open+requestCounts.closed,band,search:[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase(),
   recency:topic.state==='closed'?String(summary.closedAt??lastAt):String(lastAt)};
 }
