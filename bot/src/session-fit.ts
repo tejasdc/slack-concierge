@@ -42,6 +42,10 @@ if (!(db.query("SELECT 1 FROM pragma_table_info('session_peer_requests') WHERE n
 db.run(`CREATE INDEX IF NOT EXISTS session_communication_topic_work
   ON session_communication_requests(topic_root_input_id,created_at_ms DESC,request_id)
   WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL`);
+// Earlier requests in one Inbox thread, read when a work request is sent (request-history.ts).
+db.run(`CREATE INDEX IF NOT EXISTS session_communication_thread_work
+  ON session_communication_requests(thread_root_input_id,created_at_ms DESC)
+  WHERE thread_root_input_id IS NOT NULL`);
 db.run(`CREATE INDEX IF NOT EXISTS session_peer_topic_work
   ON session_peer_requests(topic_root_input_id,created_at_ms DESC,request_id)
   WHERE topic_root_input_id IS NOT NULL AND thread_root_input_id IS NULL`);

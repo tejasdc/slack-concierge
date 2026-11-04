@@ -105,6 +105,8 @@ second naming store, backfill or transcript-title rewrite is involved.
 
 ## Requests and returns
 
+Every work request carries the earlier work on its problem, and its first reply says what came before; handed-off, archived and paused sessions still answer questions. See [What came before](EARLIER-WORK-IN-REQUESTS.md).
+
 ### Provider-change handoff
 
 A provider change creates a successor on the same Concierge instance; it never changes the
