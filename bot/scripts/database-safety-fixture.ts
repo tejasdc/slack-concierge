@@ -1,8 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
-import { accessSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { ledgerWriteResults } from '../src/ledger-write-results';
 import { isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups } from '../src/verified-sqlite-backup';
 import { liveStoreCopyRefusal, liveStores } from '../src/live-store-copy-policy';
@@ -124,6 +124,35 @@ try {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
       assert.equal(isolated.stdout.toString().trim(), 'refused');
+      const overlay = join(root, 'mount-capable-check');
+      for (const name of ['lower', 'upper', 'work', 'merged']) mkdirSync(join(overlay, name), { recursive: true });
+      writeFileSync(join(overlay, 'lower', 'visible'), 'overlay works');
+      const mountCheck = privateDatabaseCommand(['/usr/bin/sh', '-c',
+        'if umount "$PROTECTED_STATE" 2>/dev/null; then exit 10; fi; ' +
+        'if test -e "$PROTECTED_STATE/state.db"; then exit 11; fi; ' +
+        'unshare --mount --propagation private sh -c \'' +
+        'mknod /dev/shm/whiteout c 0 0 && ' +
+        'mount -t overlay overlay -o "nosymfollow,lowerdir=$OVERLAY/lower,upperdir=$OVERLAY/upper,workdir=$OVERLAY/work" "$OVERLAY/merged" && ' +
+        'test "$(cat "$OVERLAY/merged/visible")" = "overlay works"\''], true);
+      const mounted = Bun.spawnSync(mountCheck, {
+        env: { ...process.env, PROTECTED_STATE: join(homedir(), '.local/state/concierge'), OVERLAY: overlay },
+        stdout: 'pipe', stderr: 'pipe', timeout: 5_000,
+      });
+      assert.equal(mounted.exitCode, 0, mounted.stderr.toString());
+      const ledgerSource = Bun.spawnSync(['/usr/bin/findmnt', '-no', 'SOURCE', '-T', join(homedir(), '.local/state/concierge/state.db')],
+        { stdout: 'pipe', stderr: 'pipe' });
+      assert.equal(ledgerSource.exitCode, 0, ledgerSource.stderr.toString());
+      const device = basename(ledgerSource.stdout.toString().trim());
+      if (/^loop\d+$/.test(device)) {
+        const image = readFileSync(`/sys/block/${device}/loop/backing_file`, 'utf8').trim();
+        assert(statSync(image).size > 0);
+        for (const mountCapable of [false, true]) {
+          const imageCheck = Bun.spawnSync(privateDatabaseCommand(['/usr/bin/stat', '-c', '%s', image], mountCapable),
+            { stdout: 'pipe', stderr: 'pipe', timeout: 5_000 });
+          assert.equal(imageCheck.exitCode, 0, imageCheck.stderr.toString());
+          assert.equal(imageCheck.stdout.toString().trim(), '0', `loop backing image exposed with mountCapable=${mountCapable}`);
+        }
+      }
     }
   }
   console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,rawScriptRefusal:true}));

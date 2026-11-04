@@ -796,6 +796,13 @@ scratch state, and names the sealed `private-code-command` entrance in its refus
 That entrance accepts quoted release notes containing shell punctuation. Real shell
 chaining, command substitution and a second unwrapped package launch remain refused;
 the guard checks the command shape without executing the release.
+The protected code entrance uses two nested mount namespaces on Linux. The outer one
+hides the live Concierge directories and any loop-mounted ledger backing image. The
+inner, less privileged one locks those mounts while granting only the capabilities
+needed for a release's read-only
+Thinkering page view. The page check can create its overlay and its own mount
+namespace, but cannot remove the outer ledger mounts. Ordinary candidate checks
+still run with all capabilities dropped.
 Ordinary Python and Node parsing, router output pipelines and read-only SQLite queries
 remain available. For request status and results, use `router-actions.sh sessions get`
 with the exact request ID and source pair; it reads through the owner API.
