@@ -330,7 +330,10 @@ enough that every Codex session's resume timed out for six minutes
 A turn's resume, at dispatch and in restart recovery, also has no deadline. A cold resume loads the whole rollout before answering, and
 the App Server queues resumes per thread, so asking again only adds another load. The turn waits
 while the connection lives and logs `codex_resume_waiting` every 30 s. Stop and a disconnect still
-end the wait.
+end the wait. A resume still unanswered after ten minutes (about four times the slowest cold load
+seen) logs `codex_resume_unanswered` and records one `stuck_work` repair notice for the standing
+Repair agent; the turn keeps waiting, and the wait's end resolves the notice or adds a recovery fact.
+`bot/scripts/codex-resume-notice-fixture.ts` injects a never-answering resume in the release build.
 To find the conversation behind a burst of resume timeouts, look for the thread whose
 `otel.name="thread/resume"` span in `~/.codex/logs_2.sqlite` began just before the burst, and
 compare its rollout size under `~/.codex/sessions`.
