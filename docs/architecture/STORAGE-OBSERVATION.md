@@ -228,6 +228,13 @@ it writes live object counts by type and the allocator's statistics to
 in five minutes. Validated on a stand-in with the production Bun before use: 0.3 s of paused loop
 at 1.2 GB and 0.7 s at 2.6 GB, no added memory. `~/workspace/agent-scripts/owner-ramp-sampler.sh`
 sends it when the owner's memory crosses a chosen size.
+
+`kill -URG <owner pid>` starts the owner's CPU flight recorder: up to ten minutes of back-to-back
+15 s windows sampled every 10 ms, keeping at most two windows in which the loop was held for at
+least 500 ms or the process grew by 300 MB, as `diagnostics/cpu-profile-<time>.txt`. It refuses
+above 3 GB and runs one session at a time. Validated on a stand-in with the production Bun on
+2026-11-04: no added loop blocking with a 1 GB heap (worst other block 21 ms), 50-220 MB extra
+memory while sampling, and a synthetic 2 s block was kept and attributed to its function.
 # Interactive read refusal
 
 ## Execution isolation

@@ -5,16 +5,11 @@ import {log} from './log';
 import {storageObservationFailures} from './storage-observation';
 
 /**
- * A CPU profile of the running owner, on demand: `kill -URG <pid>` samples the JavaScript
- * thread for twenty seconds and writes what it was doing to
- * `$CONCIERGE_STATE_DIR/diagnostics/cpu-profile-<time>.txt`. The owner answers every read from
- * one event loop, and `owner_event_loop_lag` only says that something held it; nothing could
- * attach a profiler to the live process, so on 2026-10-07 the cause of thirty-second Inbox reads
- * had to be guessed from which database pages were being read. SIGURG is ignored by default, so
- * a stray one does nothing else.
+ * Summaries of the owner's CPU profiles, written to `$CONCIERGE_STATE_DIR/diagnostics/`. The owner
+ * answers every read from one event loop, and `owner_event_loop_lag` only says that something held
+ * it; on 2026-10-07 the cause of thirty-second Inbox reads had to be guessed from which database
+ * pages were being read. The recorder that takes the profiles is below.
  */
-const PROFILE_SECONDS=20;
-let running=false;
 
 type Frame={name:string;sourceURL?:string;line:number};
 const frameLabel=(frame:Frame)=>`${frame.name||'(anonymous)'} ${(frame.sourceURL??'').split('/').slice(-2).join('/')}:${frame.line>1e9?'?':frame.line}`;
@@ -32,7 +27,7 @@ export function summarizeProfile(traces:{frames:Frame[]}[],seconds:number):strin
   const total=traces.length;
   const top=(map:Map<string,number>,count:number)=>[...map].sort((a,b)=>b[1]-a[1]).slice(0,count)
     .map(([key,n])=>`${String(n).padStart(6)} ${(100*n/Math.max(1,total)).toFixed(1).padStart(5)}%  ${key}`).join('\n');
-  return [`Owner CPU profile: ${total} samples of JavaScript over ${seconds} s (1 ms interval; idle time has no samples).`,
+  return [`Owner CPU profile: ${total} samples of JavaScript over ${seconds} s (10 ms interval; idle time has no samples).`,
     '','Self (where the thread was):',top(self,40),'','Inclusive (anywhere on the stack):',top(inclusive,60),
     '','Hottest stacks (innermost first):',top(stacks,25)].join('\n')+'\n';
 }
@@ -59,11 +54,46 @@ export function startOwnerMemoryReadings() {
 }
 
 /**
- * Off: on 2026-10-07 starting this profiler froze the owner for 20–40 s every time, and twice it
- * was followed within minutes by the owner growing to 40 GB. The signal is acknowledged and
- * refused until that is understood; CONCIERGE_OWNER_CPU_PROFILE=1 turns it back on deliberately.
+ * A flight recorder for the owner's own JavaScript, started on demand: `kill -URG <pid>` records
+ * up to ten minutes as back-to-back 15 s windows sampled every 10 ms, and keeps only a window in
+ * which the loop was held for at least half a second or the process grew by 300 MB, at most two.
+ * On 2026-11-04 the owner jumped to 1.9 GB within seconds after a 2 s block of pure JavaScript;
+ * a profile started when memory crosses a line begins after the block, so the recorder runs
+ * ahead of it and keeps what it caught. The first version (one 20 s window at 1 ms) was turned
+ * off after it preceded 20-40 s freezes and 40 GB runaways on 2026-10-07, when the owner was
+ * already exhausted. Validated on a stand-in with the production Bun on 2026-11-04: no added loop
+ * blocking at 10 ms sampling with a 1 GB heap, 50-220 MB extra memory while sampling. It refuses
+ * to start above 3 GB and runs one session at a time; SIGURG is otherwise ignored.
  */
-const PROFILE_ENABLED=process.env.CONCIERGE_OWNER_CPU_PROFILE==='1';
+const WINDOW_MS=15_000,SESSION_MS=10*60_000,SAMPLE_US=10_000,KEEP_BLOCK_MS=500,KEEP_GROWTH_MB=300,KEEP_MAX=2,REFUSE_ABOVE_MB=3072;
+let recording=false;
+async function recordOwnerProfile() {
+  const mb=()=>Math.round(process.memoryUsage().rss/2**20);
+  if(recording){log('warn','owner_cpu_profile_refused',{reason:'already recording'});return;}
+  if(mb()>REFUSE_ABOVE_MB){log('warn','owner_cpu_profile_refused',{reason:'memory above 3 GB',rss_mb:mb()});return;}
+  recording=true;
+  const sessionStarted=Date.now(),directory=join(process.env.CONCIERGE_STATE_DIR??'/tmp','diagnostics');
+  let kept=0,windows=0;
+  log('info','owner_cpu_profile_started',{rss_mb:mb()});
+  try {
+    while(Date.now()-sessionStarted<SESSION_MS&&kept<KEEP_MAX&&mb()<=REFUSE_ABOVE_MB) {
+      let worstBlockMs=0,last=performance.now(),peakMb=mb();
+      const startMb=peakMb,windowStarted=new Date();
+      const watch=setInterval(()=>{const now=performance.now();worstBlockMs=Math.max(worstBlockMs,now-last-100);last=now;peakMb=Math.max(peakMb,mb());},100);
+      const result:any=await Promise.resolve(profile(async()=>{await Bun.sleep(WINDOW_MS);},SAMPLE_US) as any).finally(()=>clearInterval(watch));
+      windows++;
+      const growthMb=peakMb-startMb;
+      if(worstBlockMs<KEEP_BLOCK_MS&&growthMb<KEEP_GROWTH_MB)continue;
+      kept++;
+      mkdirSync(directory,{recursive:true});
+      const path=join(directory,`cpu-profile-${windowStarted.toISOString().replace(/[:.]/g,'-')}.txt`);
+      writeFileSync(path,`Window ${windowStarted.toISOString()}: worst loop block ${Math.round(worstBlockMs)} ms, memory ${startMb} -> peak ${peakMb} MB.\n`
+        +summarizeProfile(result?.stackTraces?.traces??[],WINDOW_MS/1000)+'\n'+String(result?.functions??''));
+      log('info','owner_cpu_profile_written',{path,samples:result?.stackTraces?.traces?.length??0,worst_block_ms:Math.round(worstBlockMs),growth_mb:growthMb});
+    }
+  } catch(error){log('warn','owner_cpu_profile_failed',{error:String(error)});}
+  finally {recording=false;log('info','owner_cpu_profile_finished',{windows,kept,rss_mb:mb()});}
+}
 
 /**
  * What the owner holds, on demand: `kill -WINCH <pid>` writes the live JavaScript object counts by
@@ -101,18 +131,5 @@ function writeHeapCensus() {
 export function installOwnerCpuProfileSignal() {
   startOwnerMemoryReadings();
   process.on('SIGWINCH',writeHeapCensus);
-  process.on('SIGURG',()=>{
-    if(!PROFILE_ENABLED){log('warn','owner_cpu_profile_refused',{reason:'disabled after it preceded 40 GB runaways on 2026-10-07'});return;}
-    if(running)return;
-    running=true;
-    const started=new Date();
-    Promise.resolve(profile(async()=>{await Bun.sleep(PROFILE_SECONDS*1000);},1000) as any).then((result:any)=>{
-      const directory=join(process.env.CONCIERGE_STATE_DIR??'/tmp','diagnostics');
-      mkdirSync(directory,{recursive:true});
-      const path=join(directory,`cpu-profile-${started.toISOString().replace(/[:.]/g,'-')}.txt`);
-      writeFileSync(path,summarizeProfile(result?.stackTraces?.traces??[],PROFILE_SECONDS)+'\n'+String(result?.functions??''));
-      log('info','owner_cpu_profile_written',{path,samples:result?.stackTraces?.traces?.length??0});
-    }).catch((error:unknown)=>log('warn','owner_cpu_profile_failed',{error:String(error)}))
-      .finally(()=>{running=false;});
-  });
+  process.on('SIGURG',()=>{void recordOwnerProfile();});
 }
