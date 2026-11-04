@@ -261,8 +261,11 @@ no code push could help because the check runs inside the control. Recovery used
    for GitHub Actions' required `Release check` on that SHA, then refetches and
    performs a non-force push to `main` only if the recorded base is still current.
    A failed check parks with its exact result for the standing repair agent; it
-   cannot enter the update branch. If origin moved, the same repair session may
-   rebase within the existing incident budget. Retry records the explicit human
+   cannot enter the update branch. If origin moved, the same repair session merges
+   the new main into its repair branch within the existing incident budget, retaining
+   any repair commit already pushed for release check. If main already contains the
+   repair commit, the supervisor proceeds to retry without rewriting history.
+   Retry records the explicit human
    no-test/no-review policy and `review_performed: false`, never a fabricated
    `SHIP`. An active historical reviewed incident requires operator resolution.
 8. The same durable deployment run retries and its mapped turns return to 📦.
