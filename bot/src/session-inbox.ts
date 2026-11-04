@@ -10,7 +10,7 @@ import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
-import {routedHumanResultSql} from './inbox-routing-result';
+import {routedTurnResultSql} from './inbox-routing-result';
 import type {InboxProducerKind} from './inbox-producer-sources';
 
 export type InboxCapture = {
@@ -90,7 +90,7 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     AND NOT (event.kind IN ('accepted','result') AND COALESCE(input.origin='agent' AND input.request_id IS NOT NULL,0))
     -- Routing belongs to his source message's handoff. The router's closing narration is
     -- retained in its turn, never projected as a second conversation reply.
-    AND NOT (${routedHumanResultSql})
+    AND NOT (${routedTurnResultSql})
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
@@ -342,12 +342,19 @@ export function turnPostedInto(sessionId:number,turnId:number,root:string):boole
 /**
  * A finished turn that owed a thread its answer and never posted has its closing text
  * relayed there by the owner, as the router's reply, so the answer reaches the thread rather
- * than vanishing. An explicit `sessions outcome` is refused before this point; the relay is
- * for turns that ended without one. Returns the thread relayed into, or null.
+ * than vanishing. An explicit routing-only `done` is already visible on the source
+ * message and must not be relayed. Returns the thread relayed into, or null.
  */
 export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;inputId:string;text:string;attachments?:string[]}):string|null {
   const session=db.query('SELECT * FROM sessions WHERE id=?').get(result.sessionId) as SessionRow|null;
   if(!session)return null;
+  // A deliberate routing-only `done` has already put its answer on the source
+  // message's handoff. The relay runs before result outcome recording, so check
+  // the action declaration and retained result rather than the derived outcome.
+  if(db.query(`SELECT 1 FROM session_owner_events event
+      JOIN session_inputs input ON input.id=event.input_id
+      WHERE event.session_id=? AND event.turn_id=? AND (${routedTurnResultSql}) LIMIT 1`)
+    .get(result.sessionId,result.turnId))return null;
   const root=threadOwedByTurn(session,result.inputId);
   if(!root||!result.text.trim()||turnPostedInto(result.sessionId,result.turnId,root))return null;
   const eventId=`post:relay:${result.turnId}`;

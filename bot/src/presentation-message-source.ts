@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 import {inboxRequestRoot} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import {retainedReplyTarget} from './inbox-reply-lineage';
-import {routedHumanResultSql} from './inbox-routing-result';
+import {routedTurnResultSql} from './inbox-routing-result';
 
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
@@ -15,7 +15,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   CASE WHEN event.kind IN ('accepted','result') THEN input.origin='agent' AND input.request_id IS NOT NULL ELSE 0 END AS agent_request,
   CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
   CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
-  CASE WHEN ${routedHumanResultSql} THEN 1 ELSE 0 END AS routed_result,
+  CASE WHEN ${routedTurnResultSql} THEN 1 ELSE 0 END AS routed_result,
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
     THEN json_extract(event.payload_json,'$.topicId') END AS topic_id,
   CASE WHEN event.kind='message' THEN json_extract(event.payload_json,'$.message.id') END AS owner_message_id

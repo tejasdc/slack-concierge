@@ -428,10 +428,14 @@ topic its thread is in. A turn's result is marked `mixedThreads` when its asks o
 a thread other than its own input's, and `answeredByPost` when it posted into its own thread.
 Thinkering keeps either closing text out of that thread's conversation. **A turn another agent opened owes its thread a post** (`threadOwedByTurn`): a worker's return or an agent's request filed in a thread is answered only by a post, because the closing text of such a turn is never shown there. `sessions outcome` is refused for that turn until it has posted into the thread (`failed` excepted); a turn that ends without posting has its closing text relayed into the thread by the owner as the router's reply (`post:relay:<turnId>`, payload `relayed:true`, projected `relayed:true` on the message), releasing the router's focus like any post, so an answer can reach the thread or be refused, never vanish. On 2026-09-24 a worker's result was answered only in closing text and Tejas found nothing in the thread for two hours. **A turn that answers his own message cannot end in unexplained silence** (`answersHisOwnMessage`): `sessions outcome done` on it is refused unless `--quiet-because "<why he need not read this>"` is given, and a turn that ends by marker or without declaring is raised to `response` so he is notified; the stated reason is recorded on the turn outcome (`quiet`) and projected on the reply message as `quiet`, which thnkr.ing shows under it. Nothing is inferred from the text (Tejas, 2026-09-25: "if you make a field mandatory … then you are forced to answer it. That's a system … we are not relying on good intention"). Both facts come
 from that turn's recorded requests and posts, rather than comparing the post's root input
-with a later reply's distinct input ID. A human input with a retained handoff is the
-narrow exception to the `done` silence rule: its receipt tells him where it went, and
-its `done` closing result adds no second message. A routed turn with an answer posts
-that answer explicitly. Tejas asked for `mixedThreads` after a turn handling several topics filed another topic's
+with a later reply's distinct input ID. A source input with a retained handoff is the
+narrow exception to the `done` silence and owed-post rules: its receipt tells him where
+it went, including when an agent authored a marked test capture. Its `done` closing
+result adds no second message. A routed turn with an answer or question posts that
+answer or question explicitly. A turn may route an input accepted after its opening
+input; an explicit `done` result is hidden when any input in the turn has a durable
+handoff, while each handoff stays attached to its exact source message. Tejas asked
+for `mixedThreads` after a turn handling several topics filed another topic's
 results and its closing note under the Questions-redesign thread (2026-09-23): "if you're
 going to send this request, you have to tell me which thread it's for … Stop relying on good
 intentions".
@@ -549,7 +553,8 @@ points to that carrier request for details; routing the same source into several
 produces several entries under that source, not a guessed destination from the latest turn.
 
 A router turn that routes Tejas's input and explicitly declares `done` has no second conversation reply
-from its closing text. The closing text stays in the session history. A requested answer or
+from its closing text, including the owner relay for an agent-authored routed input. The closing
+text stays in the session history. A requested answer or
 necessary question is posted into the thread deliberately; declaring `response` or `needs_you`
 after routing is refused until the turn posts there. A routed turn that fails, or an older
 unclassified closing answer, remains visible rather than silently losing substance. The
