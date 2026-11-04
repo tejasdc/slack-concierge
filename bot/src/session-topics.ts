@@ -1325,7 +1325,7 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
  * completed with the reason "paid bodies not read", over a worker reply that said the same, and
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
-function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
+function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
     const local=db.query('SELECT outcome,result_json FROM session_communication_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
     return local??db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
@@ -1340,6 +1340,19 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
   // needs_decision, then built by a second dispatch). Anything still running is unfinished.
   const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}));
   const latest=dispatches.at(-1);
+  if(!latest){
+    const humanSource=request.sources.some(source=>getAcceptedSessionInput(source.inputId)?.origin==='human')
+      ||topicRoots(topic.topicId).some(id=>{
+        const input=getAcceptedSessionInput(id);
+        return input?.origin==='human'&&new Date(input.created_at).getTime()<=new Date(request.createdAt).getTime();
+      });
+    if(humanSource&&!evidence.some(id=>{
+      const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
+      const root=inboxThreadRoot(topic.sessionId,id);
+      return !!(message?.role==='assistant'&&message.createdAt&&new Date(message.createdAt).getTime()>=new Date(request.createdAt).getTime()
+        &&root&&topicOfRoot(root)===topic.topicId);
+    }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
+  }
   const unfinished=dispatches.filter(dispatch=>!dispatch.row?.outcome
       ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
@@ -1901,7 +1914,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
         if(disposition==='superseded'&&questionsOfRequest(topic.topicId,request)
           .some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
           throw new TopicError('This request still has a live question for Tejas. Explicitly carry that question into the replacement or settle it with a proven replacement question before closing.',409,'REQUEST_QUESTION_OPEN');
-        if(disposition==='completed')refuseUnfinishedCompletion(topic,request);
+        if(disposition==='completed')refuseUnfinishedCompletion(topic,request,evidence);
         const at=nowIso();
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
         // Only the questions linked to this exact request end with it.
@@ -2882,7 +2895,9 @@ function recoverySource(request:StoredRequest):{inputId:string;runId:string;unce
   const candidates=[...linked,...topicRoots(request.topicId)];
   for(const [index,id] of candidates.entries()){
     const input=getAcceptedSessionInput(id);
-    if(!input?.turn_id||!(input.origin==='human'||sessionInputProvenance(input)?.originatingHuman))continue;
+    if(!input?.turn_id)continue;
+    const provenance=input.origin==='human'?null:sessionInputProvenance(input);
+    if(input.origin!=='human'&&(!provenance?.originatingHuman||provenance.effectScope!=='work'))continue;
     if(input.origin==='human'&&new Date(input.created_at).getTime()>new Date(request.createdAt).getTime())continue;
     return {inputId:input.id,runId:nativeRunId(input.turn_id),uncertain:index>=linked.length};
   }
@@ -2897,19 +2912,22 @@ function nextRecoveryAttempt(item:Stuck):number|null {
     // Old one-shot flags have no tracked continuation. Give them a fresh durable attempt.
     return db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`topic-flag:${item.key}`)?1:0;
   }
+  const attempt=Number(latest.event_id.slice(prefix.length))+1;
+  // A recovered input can be cancelled before it acquires a turn. That is a terminal
+  // delivery, not a reason to leave the human request silent forever.
+  const interval=Math.min(24*60*60*1000,15*60*1000*2**Math.min(attempt-1,7));
+  const due=Date.now()-new Date(latest.created_at).getTime()>=interval;
   const payload=JSON.parse(latest.payload_json);
   const inputId=typeof payload.recoveryInputId==='string'?payload.recoveryInputId:null;
-  if(!inputId)return Number(latest.event_id.slice(prefix.length))+1;
-  const input=db.query('SELECT turn_id,steering_id FROM session_inputs WHERE id=?').get(inputId) as {turn_id:number|null;steering_id:number|null}|null;
-  if(!input)return Number(latest.event_id.slice(prefix.length))+1;
+  if(!inputId)return due?attempt:null;
+  const input=db.query('SELECT turn_id,steering_id,receipt_json FROM session_inputs WHERE id=?').get(inputId) as {turn_id:number|null;steering_id:number|null;receipt_json:string|null}|null;
+  if(!input)return due?attempt:null;
   const turnId=input.turn_id??(input.steering_id===null?null:(db.query('SELECT turn_id FROM turn_steering_messages WHERE id=?').get(input.steering_id) as {turn_id:number}|null)?.turn_id??null);
-  if(turnId===null)return null;
+  if(turnId===null)return ['canceled','failed','uncertain'].includes(JSON.parse(input.receipt_json??'{}').state)?(due?attempt:null):null;
   const turn=carryingTurn(turnId);
-  if(!turn||!['done','error','cancelled'].includes(turn.status))return null;
-  const attempt=Number(latest.event_id.slice(prefix.length))+1;
+  if(!turn||!['done','error','cancelled','interrupted'].includes(turn.status))return null;
   // Repeated router refusals remain due, but do not turn one stuck task into a hot loop.
-  const interval=Math.min(24*60*60*1000,15*60*1000*2**Math.min(attempt-1,7));
-  return Date.now()-new Date(latest.created_at).getTime()>=interval?attempt:null;
+  return due?attempt:null;
 }
 /**
  * Settles open requests with checked completion or an explicit human Stop. Returns all other
@@ -3001,9 +3019,9 @@ export function reopenThreadForHisMessage(sessionId:number,inputId:string,replyT
 }
 
 /**
- * The owner's pass over every open thread (and every thread with his reply still being worked on),
- * on the reading cadence and at startup. Requests whose work ended without an answer it can act on
- * are flagged to the router once each, in one notice per pass, so it decides what happens to them.
+ * The owner's pass over every open thread, every thread with his reply still being worked on,
+ * and every closed thread that still has an open request. A person closing a thread does not
+ * make an unfinished request disappear from recovery. Runs on the reading cadence and startup.
  */
 export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown) {
   const session=inboxSession();
@@ -3012,10 +3030,15 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   const forwards=forwardedReplies();
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
   const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
+  const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
+    JOIN inbox_topics topic ON topic.topic_id=request.topic_id
+    WHERE request.state='open' AND topic.session_id=? AND topic.state='closed'
+      AND COALESCE(json_extract(topic.closure_json,'$.kind'),'')!='merged'`)
+    .all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedBefore=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count;
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
-  for(const topicId of new Set([...open,...running])) {
+  for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
     try{stuck.push(...keepThreadCurrent(topicId,forwards));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
   }

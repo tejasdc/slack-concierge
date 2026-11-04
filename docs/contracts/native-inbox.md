@@ -418,6 +418,13 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   explicitly settled with a proven replacement question. A question only he can answer
   remains open in its thread. A question still being prepared by an agent is recovery work,
   not a reason to leave the task waiting on Tejas.
+- When the router itself completes a human request without dispatching another agent, it
+  names the later answer in that same thread as evidence. A bare completion claim with no
+  linked work or answer is refused. Verification-only agent test reports remain distinct
+  from human requests.
+- Upkeep also reads open requests in threads Tejas closed. Closing a thread changes its
+  presentation; it does not by itself settle an agent attempt or erase the task's recovery
+  obligation. Explicit human withdrawal is recorded separately.
 - A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
   owner) at the moment its last request or question ends or an agent's final answer arrives,
   when no request is open, nothing waits on him (an unread answer counts, as does a question set

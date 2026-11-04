@@ -32,11 +32,22 @@ upkeep flag had no guarantee that a router turn produced another linked attempt.
 The native audit helper later closed its parent's task because its inherited source
 pair was accepted for a final reply.
 
+The earlier paths each served a different purpose. A failed final reply preserved
+the worker's answer in Tejas's thread; cancellation recorded that the particular
+send would not continue; a hand-back returned a task to its asking agent when the
+recipient was the wrong subject or too loaded. Thread upkeep was added to clear
+stale open threads after work ended. None of those attempt-level outcomes proved
+the human task was complete or transferred, and an ordinary threaded failure did
+not wake the router to make that decision. The new boundary preserves their
+receipts and delivery while keeping the human request alive.
+
 ## Fix
 
 The owner retains the human task after failed, cancelled, stalled, handed-back or
 unchecked attempts, and repeats a recovery input if a router turn ends without
-progress. The command wrapper refuses parent-task closure from native helpers.
+progress. It also reads unfinished requests in closed threads and requires a
+later answer as evidence when the router closes a human task without dispatching
+another agent. The command wrapper refuses parent-task closure from native helpers.
 
 ## Acceptance scenario
 
