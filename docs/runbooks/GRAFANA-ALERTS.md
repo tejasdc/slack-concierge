@@ -21,6 +21,9 @@ alert. The old Slack design is historical reference only.
   aged browser count identifies candidates, not confirmed orphans; the investigator
   matches each process to its agent run before stopping it. This separate alert has a
   two-minute hold so queued work is noticed before the fifteen-minute reserve warning.
+- `AX41AppProcessorConfined` enters that same queue when the app and Concierge are held
+  to fewer processor threads while work waits for CPU. The investigator reports the
+  setting and its owner; changing processor allocation needs Tejas's approval.
 - `ThinkeringMacWebContentFootprintHigh` and
   `ThinkeringMacWebContentFootprintUnavailable` enter that same Repair agent queue.
   The first reports high measured Mac WebContent physical footprint; the second reports
@@ -30,6 +33,9 @@ alert. The old Slack design is historical reference only.
   enter that same Repair agent queue. The first reports severe measured Journal key
   delay; the second reports missing or stale exported typing measurements. Both
   retain their Grafana episode and recovery receipts without opening a human thread.
+- `ThinkeringWorkspaceSyncStuck` enters that same Repair agent queue when a thnkr.ing
+  page has reported for over two minutes that its sync stopped and its changes are
+  held on that device.
 - Reserved `TestAlert` and `ConciergeWebhookAcceptance` are receipt-only: no human
   thread, repair notice, or investigator starts.
 
