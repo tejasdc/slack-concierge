@@ -20,7 +20,13 @@ its exact live run"), so they could not reply, report or declare an outcome. Two
 ## Cause
 
 Claude Code was being reinstalled on the server at the same time: `/usr/bin/claude` was replaced
-at 17:07 UTC (what ran the reinstall was not found in the journal). Adoption built its hosted
+at 17:07 UTC. The initiator was Codex session `concierge:8435` (`gpt-6-sol`, server,
+`/root/workspace/slack-concierge`), handling an Inbox report that the installed Claude Code was
+22 versions behind. Its retained transcript records the agent's `npm install -g
+@anthropic-ai/claude-code@latest` command at 17:05:47 UTC and completion at 17:07:09 UTC
+(`~/.codex/sessions/2026/11/04/rollout-2026-11-04T11-58-29-01a1a77f-6ad7-7961-8306-db06fd4b25dc.jsonl`,
+entries 124 and 142–143). This command interval overlaps the 17:06 restart and the missing
+command. Adoption built its hosted
 transport through `claudeExecutable()`, which needs `claude` on PATH, although only a launch uses
 the executable. The throw became a setup failure, and `settleSetupFailure` parks a run whose
 provider admission was intended. Startup adoption only considers turns in `running`, so nothing
@@ -57,8 +63,8 @@ local-command retry budget without consuming the Claude account's provider retry
 recorded spawn error also proves that a command lost after preflight never started. This prevents
 the fresh-launch failure while keeping possibly active turns under execution-host custody.
 The separate agent-shell launcher also waits for a command replacement; see
-`docs/incidents/2026-11-04-claude-command-install-gap.md`. The retained journal did not identify
-the process that started the 17:06 installation, so its initiator remains unknown.
+`docs/incidents/2026-11-04-claude-command-install-gap.md`. The journal did not identify the
+installer, but the retained Codex transcript does, as recorded above.
 
 ## Acceptance scenario
 
