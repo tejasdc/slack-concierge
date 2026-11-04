@@ -9,8 +9,8 @@ turn. Codex Computer Use also requires a recorded desktop-capable need, and Clau
 Chrome remains refused because it controls his personal browser. Concierge's own
 provider sign-in repair request is the only Computer Use exception for the saved
 Chrome account; the Mac owner checks the retained repair request before admitting it.
-For Tejas's directly authorized, already-open thnkr.ing Safari web app, a Mac-app
-request must name its exact bundle and page IDs. Its retained provenance must
+For Tejas's directly authorized, already-open thnkr.ing Safari web app and old-page
+work, a Mac-app request must name its exact bundle and page IDs. Its retained provenance must
 lead to a human input and a work effect; an informational request cannot grant
 Computer Use. The Mac owner returns that provenance and reason to the hook,
 rather than checking a list of past human input IDs. Computer Use admits a
@@ -18,7 +18,7 @@ direct `getApp` call selecting that bundle. Later passive reads must select the
 bundle again and read it in the same Computer Use
 program with a dedicated `var thnkrCanvasInspectionApp` handle, so a remembered
 REPL handle cannot point the read at another app. The retained originating-human
-input must be verified by the owner and the recorded need must name the same
+input must be verified by the owner and the old-page need must name the same
 bundle and page. This allows inspection of the existing Mac page for the
 lekondo Canvas incident and later unsaved-writing recovery; it does not
 authorize interaction, page reload, or draft disposal. Only the original
@@ -31,15 +31,26 @@ reused for a later attempt. The action binds a fresh handle instead of trusting 
 earlier REPL variable. This grants the first Inspector-opening probe, not Console
 input, clicking, heap capture, or export: those need a verified target-bound route.
 A generic Safari selector, another web app or browser, whole-screen call,
-nested tool call, or a Mac-app request without both IDs remains refused. The exception lives
+nested tool call, or an old-page Mac-app request without both IDs remains refused. The exception lives
 only while the accepted Mac request is active. Selecting the app does not establish
 that the requested page is still present; the Mac agent must inspect and report that
 separately before acting on its contents. The shortcut's effect on this installed
 Dock web app is not yet verified and must be observed after the Mac unlocks; do not
 claim a page-memory recovery path based on this grant alone. The original
 authorization, Canvas capture and recovery capture are recorded in the policy
-check. A new human work request follows the same owner provenance rule without
-adding its ID to source.
+check. A new human work request for that old page follows the same owner provenance rule
+without adding its ID to source. Tejas's later instruction to stop recovery and retire
+the 53-edit notice is a different scope: the page ID from recovery no longer describes
+the current window. Its exact originating capture, recorded `mac-app` work need, exact
+web-app bundle, and `exact53 retirement` purpose permit direct app selection and a fresh
+same-program passive accessibility or screenshot read. A dedicated retirement handle
+prevents a remembered Computer Use REPL variable from pointing at another app. The
+old-page grants remain available for their earlier work. File-menu interaction and a
+second window are not admitted by this read grant: the Mac agent must first read the
+returned Computer Use API and actual app accessibility tree, then prove a target-bound
+action and same-app window path before the guard can admit those separately. A shortcut
+or assumed menu coordinate is insufficient. This keeps the current window and its data
+untouched while the app-owned retirement consumer is prepared.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
 human reply, including when another agent request follows it. A later Mac request
