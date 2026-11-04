@@ -629,6 +629,7 @@ async function catchUp() {
       if(Date.now()-lastTopicCollection>60_000){topics.collectPage();areas.collectPage(meta().generation);lastTopicCollection=Date.now();}})();
     return;
   }
+  const prepareStarted=performance.now();
   const resolveRoot=inboxRootResolver(source);
   const linkedInputs=new Set<string>(),movedRoots=new Set<string>(),turnsToRefresh=new Set<number>();
   const correctedInputs=new Set<string>();
@@ -707,6 +708,7 @@ async function catchUp() {
   }
   eventAfter=eventHead;
   for(const row of newRows)changedRoots.add(row.root);
+  const prepareMs=performance.now()-prepareStarted,applyStarted=performance.now();
   prepared.transaction(()=>{
     keepLease();
     for(const row of newRows)writeInboxMessage(current.generation,row);
@@ -830,12 +832,18 @@ async function catchUp() {
       }
     }
   })();
+  const applyMs=performance.now()-applyStarted,topicsStarted=performance.now();
+  const topicContexts=new Map<number,ReturnType<PreparedTopics['context']>>();
+  let topicsProcessed=0,topicContextBuilds=0,topicContextBuildMs=0;
   while(true){
-    const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20);})();
+    const drained=prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20,topicContexts);})();
+    topicsProcessed+=drained.processed;topicContextBuilds+=drained.contextBuilds;topicContextBuildMs+=drained.contextBuildMs;
     if(!drained.hasMore)break;
     await yieldProgress();
   }
+  const topicsMs=performance.now()-topicsStarted,labStarted=performance.now();
   while(prepared.transaction(()=>{keepLease();return labRequests.drain(current.generation);})())await yieldProgress();
+  const labMs=performance.now()-labStarted;
   prepared.transaction(()=>{
     keepLease();
     cards.checkpoint(current.generation,changes.at(-1)!.sequence);
@@ -845,6 +853,10 @@ async function catchUp() {
     prepared.query('UPDATE presentation_message_meta SET event_watermark=?,source_head=? WHERE singleton=1')
       .run(eventAfter,changes.at(-1)!.sequence);
   })();
+  writeLogLine('info',JSON.stringify({event:'presentation_worker_batch',changes:changes.length,
+    prepare_ms:Math.round(prepareMs),apply_ms:Math.round(applyMs),topic_phase_ms:Math.round(topicsMs),lab_phase_ms:Math.round(labMs),
+    topics_processed:topicsProcessed,topic_context_builds:topicContextBuilds,
+    topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
 let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;
