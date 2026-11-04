@@ -30,6 +30,8 @@ Inbox origin continues to use its own session attention. An agent-authored Inbox
 eligible without pretending it was written by Tejas.
 When the request row is missing, the accepted worker input's source and exact source run
 still prove which session dispatched it.
+The same source/run check follows an intermediary server agent, whose onward request has no
+Inbox thread address under the normal protocol.
 
 ## Acceptance scenario
 
