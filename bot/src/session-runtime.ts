@@ -152,7 +152,8 @@ export async function startSessionRuntime() {
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
-    onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));keepThreadsCurrent(admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+    onReading:()=>{try{keepThreadsCurrent(admission=>host.owner.admit(admission));}catch(error){log('error','inbox_recovery_pass_failed',errorFields(error));}
+      reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
