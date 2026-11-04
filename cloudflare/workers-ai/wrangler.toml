@@ -1,0 +1,13 @@
+# Speech-to-text and embeddings for Concierge on Cloudflare Workers AI, so neither model runs on the
+# agent server. The one Cloudflare token can deploy Workers but cannot call Workers AI's REST API,
+# and a Worker's AI binding needs no token permission at all; see docs/architecture/WORKERS-AI.md.
+name = "concierge-workers-ai"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[ai]
+binding = "AI"
+
+# Secret, set once with `wrangler secret put CONCIERGE_KEY`; the same value lives root-only in
+# /etc/concierge/workers-ai.token on each Concierge machine that calls this Worker.

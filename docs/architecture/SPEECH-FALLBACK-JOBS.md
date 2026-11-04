@@ -17,6 +17,10 @@ transcribing, done with words, no-speech, failed, or unavailable. The browser re
 and polls the same ID; existing clients can still use the old waiting POST. The device
 transcript POST remains authoritative when it wins the canonical write. A failed worker
 or transcriber leaves the audio in custody and reports a typed failure; it does not retry
+
+The worker tries Cloudflare Workers AI (Whisper large-v3-turbo) first when the server holds the
+Workers AI key, and falls back to Parakeet and then whisper.cpp on any refusal or network failure;
+see [Workers AI](WORKERS-AI.md).
 forever or silently call the job finished.
 
 The worker is a release bundle started as `concierge-speech-worker.service` with

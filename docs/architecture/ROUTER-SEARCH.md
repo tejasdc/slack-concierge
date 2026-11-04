@@ -172,7 +172,9 @@ root and both identities without contacting production Slack.
   historical channel metadata omits that candidate with explicit coverage, preserving
   other candidates without recreating a channel or authorizing resume.
 - Session search matches meaning as well as words (`bot/src/meaning-index.ts`, Tejas 2026-10-07 [decision: session-search-by-meaning]:
-  "our search doesn't do semantic search"). EmbeddingGemma-300M runs on the box's CPU in a
+  "our search doesn't do semantic search"). With the Workers AI key and embeddings switch installed, the
+  same EmbeddingGemma model runs on Cloudflare instead, in its own index file ([Workers AI](WORKERS-AI.md)).
+  Otherwise EmbeddingGemma-300M runs on the box's CPU in a
   llama.cpp child process installed and pinned by `bot/scripts/install-meaning-engine.sh` on deploy;
   it is stopped when Concierge exits and killed by the kernel if Concierge is killed (`setpriv --pdeathsig`).
   Every passage is credited to the session that wrote it and keyed by author plus exact words: a
