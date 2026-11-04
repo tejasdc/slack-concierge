@@ -23,7 +23,11 @@ id with a different condition is refused.
 `--renew` is for a standing file condition. It requires a duration. When the file changes or the
 deadline expires, Concierge records the terminal observation and the next watch in one ledger
 transaction, before delivering the wake. The next watch starts from the observed file version and
-has a fresh deadline. A cancelled watch never renews; cancelling an earlier watch in the series
+has a fresh deadline. A series that requests waited on (a partial reply's `--waiting-on-watch`
+names one of its watches) lives only while one of those requests is open: when it next fires or
+expires after the last of them closed, it ends as cancelled, does not renew and wakes no one, so a
+finished request's release watch stops waking its worker at every release (2026-11-04). A series
+no request ever named is a standing condition and keeps renewing. A cancelled watch never renews; cancelling an earlier watch in the series
 cancels its current successor. One active renewing watch per session and file is enforced by the
 ledger. A Claude session and the Codex sessions that continue its work after Claude usage ran out
 keep one renewing series per file between them: a renewing registration from any of them takes the
