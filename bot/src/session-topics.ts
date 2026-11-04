@@ -2870,7 +2870,8 @@ export function linkInboxDispatchWork(input:{topicId:string;sourceMessageId:stri
     return existing.requestId;
   }
   const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title:input.summary.slice(0,200)||topic.title,
-    brief:input.brief.slice(0,8000),state:'open',disposition:null,revision:1,sources:[{inputId:input.sourceMessageId}],
+    brief:input.brief.trim()?input.brief.slice(0,8000):`The message and its attachments are retained at ${input.sourceMessageId}.`,
+    state:'open',disposition:null,revision:1,sources:[{inputId:input.sourceMessageId}],
     dispatches:[dispatch],closure:null,createdAt:at,updatedAt:at};
   const change=reopenedForNewWork({kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:bumped(topic),request,by:OWNER_BY,
     reason:'Work sent from this Inbox thread must have a durable request.',revision:topic.revision+1}});
