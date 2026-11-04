@@ -3782,6 +3782,19 @@ async function reconcilePriorInstanceTurns() {
   for (const adoption of executions.adopted) runAdopted(adoption);
   for (const held of executions.held) watchHeldExecution(held, { stopped: () => draining, adopt: runAdopted,
     interrupt: (turnId, reason) => { interruptOrphanedTurn(turnId, instanceId, reason); sessionTurnQueue?.wake(); } });
+  let parkedRecoveryActive = false;
+  const parkedRecovery = setInterval(() => {
+    if (draining || parkedRecoveryActive) return;
+    parkedRecoveryActive = true;
+    void claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive, onlyParked: true })
+      .then(found => {
+        for (const adoption of found.adopted) runAdopted(adoption);
+        for (const held of found.held) watchHeldExecution(held, { stopped: () => draining, adopt: runAdopted,
+          interrupt: (turnId, reason) => { interruptOrphanedTurn(turnId, instanceId, reason); sessionTurnQueue?.wake(); } });
+      }).catch(error => log("error", "parked_execution_recovery_failed", errorFields(error)))
+      .finally(() => { parkedRecoveryActive = false; });
+  }, 60_000);
+  parkedRecovery.unref?.();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);

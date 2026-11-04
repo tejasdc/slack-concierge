@@ -6,7 +6,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -894,7 +894,9 @@ export class SessionExecutionHost {
       const existed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
       if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');}
       else {
-        recordSessionInputAttention(result.inputId);
+        const attentionAdvanced=recordSessionInputAttention(result.inputId);
+        if(!attentionAdvanced&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${result.turnId}:${(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(result.turnId) as {dispatch_attempt:number}).dispatch_attempt}`))
+          recordRecoveredResultAttention(result.inputId,result.turnId);
         recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
       }
       markResultAnsweredByPost(result);
@@ -909,6 +911,10 @@ export class SessionExecutionHost {
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
     if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+    else if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${claim.turn_id}:${claim.dispatch_attempt}`)) {
+      const count=(db.query('SELECT adoptions FROM executions WHERE execution_id=?').get(adoption.execution.execution_id) as {adoptions:number}).adoptions;
+      recordSessionEvent({eventId:`recovered-run:${claim.turn_id}:${claim.dispatch_attempt}:${count}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+    }
     try {
       return await this.options.registry.run({turnId:claim.turn_id,sessionId:session.id},async(steeringController,closeSteering,cancellationController)=>{
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
@@ -920,7 +926,13 @@ export class SessionExecutionHost {
         return outcome;
       });
     } finally {
-      recordSessionEvent({eventId:`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
+      // The abandoned coordinator already recorded this identity with the parked result. A
+      // recovered run gets a distinct terminal fact after the host's actual outcome is known.
+      const priorTerminal=!!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${claim.turn_id}:${claim.dispatch_attempt}`);
+      const count=adoption?(db.query('SELECT adoptions FROM executions WHERE execution_id=?').get(adoption.execution.execution_id) as {adoptions:number}).adoptions:0;
+      recordSessionEvent({eventId:priorTerminal
+        ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
+        :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     }
   }
   settleSetupFailure(claim:Pick<QueuedTurnClaimRow,'turn_id'|'dispatch_attempt'>,error:unknown) {

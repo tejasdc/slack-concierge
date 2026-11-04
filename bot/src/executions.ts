@@ -6,55 +6,11 @@
  * `turns.owner_instance_id` stays the coordinator's claim on the turn and nothing else.
  */
 import { rmSync } from "node:fs";
-import { db, executionChanged, queuedTurnClaimRow, type QueuedTurnClaimRow } from "./state";
+import { db, executionChanged, queuedTurnClaimRow, settleSupersededParkedTurn, type QueuedTurnClaimRow } from "./state";
 import { log, errorFields } from "./log";
 import { unpinCodexThreadHooks } from "./hook-pins";
 import { watchHostsInUse } from "./watches";
-import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
-
-if (process.env.CONCIERGE_READ_WORKER !== "1") {
-db.exec(`
-CREATE TABLE IF NOT EXISTS executions (
-  execution_id            TEXT PRIMARY KEY,
-  turn_id                 INTEGER NOT NULL REFERENCES turns(id),
-  dispatch_attempt        INTEGER NOT NULL,
-  session_id              INTEGER NOT NULL,
-  provider                TEXT NOT NULL,
-  host_protocol           INTEGER NOT NULL,
-  supervisor              TEXT NOT NULL,
-  directory               TEXT NOT NULL,
-  unit                    TEXT,
-  host_script             TEXT,
-  runtime                 TEXT,
-  manifest_digest         TEXT,
-  processor_json          TEXT NOT NULL,
-  state                   TEXT NOT NULL CHECK (state IN ('intended', 'live', 'exited', 'released', 'lost')),
-  coordinator_instance_id TEXT,
-  adoptions               INTEGER NOT NULL DEFAULT 0,
-  exit_code               INTEGER,
-  exit_signal             TEXT,
-  detail                  TEXT,
-  created_at_ms           INTEGER NOT NULL,
-  updated_at_ms           INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN ('intended', 'live', 'exited');
-`);
-// Set only when a later coordinator took the run over while its provider was still running: the
-// evidence that this kind of run survives a restart (execution-survival.ts). A run settled from
-// a finished record, or one merely claimed, proves nothing about survival.
-if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='adopted_live'").get()))
-  db.exec("ALTER TABLE executions ADD COLUMN adopted_live INTEGER NOT NULL DEFAULT 0");
-// The host program's content digest at launch; "on the previous version" compares this, never the
-// release folder, so an update that did not change the host leaves no run on a previous version.
-if (!(db.query("SELECT 1 FROM pragma_table_info('executions') WHERE name='host_digest'").get()))
-  db.exec("ALTER TABLE executions ADD COLUMN host_digest TEXT");
-// The survival proof (execution-survival.ts) asks which kinds have been taken over live and released.
-// Without this index that question scanned the whole table (9,700 rows across 245 MB of pages on
-// 2026-11-03), and the queue asks it on every claim while an update holds the drain gate, so the
-// owner thread spent up to 14 s of each minute of a drain inside it. Partial on exactly the proof's
-// predicate, so no other reader can pick it up (docs/incidents/2026-11-03-update-drain-queue-claim-scanned-executions.md).
-db.exec("CREATE INDEX IF NOT EXISTS executions_survival ON executions(provider, supervisor) WHERE adopted_live=1 AND state='released'");
-}
+import { ADOPTABLE_HOST_PROTOCOLS, HOST_PROTOCOL_VERSION, executionUnit, hostCustody, hostScriptDigest, hostSupervisorView, releaseHost, retireHostJob, stopSupersededHost, HOST_SUPERVISOR, type HostLaunch } from "./execution-host-client";
 
 /** This coordinator took the run over while its provider was still running. */
 export function recordLiveAdoption(executionId: string) {
@@ -176,10 +132,22 @@ async function probeHost(execution: ExecutionRow): Promise<HostProbe> {
  * Taking a run back makes it this coordinator's in one transaction: same turn, run and dispatch
  * attempt (adoption is never another attempt and never clears an acknowledgement).
  */
-function claimExecutionTurn(execution: ExecutionRow, previousOwner: string | null, instanceId: string) {
+export function claimExecutionTurn(execution: ExecutionRow, previousOwner: string | null, instanceId: string, parked = false) {
   return db.transaction(() => {
-    const changed = db.query(`UPDATE turns SET owner_instance_id=? WHERE id=? AND status='running' AND dispatch_attempt=? AND owner_instance_id IS ?`)
-      .run(instanceId, execution.turn_id, execution.dispatch_attempt, previousOwner).changes === 1;
+    const changed = parked
+      ? db.query(`UPDATE turns SET status='running', owner_instance_id=?, ended_at=NULL,
+          agent_text=NULL, dispatch_failure_class=NULL
+          WHERE id=? AND status='parked' AND dispatch_failure_class='parked_ambiguous'
+            AND dispatch_attempt=? AND owner_instance_id IS NULL
+            AND EXISTS (SELECT 1 FROM sessions session WHERE session.id=? AND session.status<>'archived')
+            AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=? AND later.id>turns.id
+              AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+                OR later.provider_input_acknowledged_at IS NOT NULL))
+            AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id=? AND other.id<>? AND other.status IN ('running','delivering'))`)
+          .run(instanceId, execution.turn_id, execution.dispatch_attempt, execution.session_id, execution.session_id, execution.session_id, execution.turn_id).changes === 1
+      : db.query(`UPDATE turns SET owner_instance_id=? WHERE id=? AND status='running' AND dispatch_attempt=? AND owner_instance_id IS ?`)
+          .run(instanceId, execution.turn_id, execution.dispatch_attempt, previousOwner).changes === 1;
+    if (changed && parked) db.query(`UPDATE sessions SET status='running' WHERE id=? AND status='idle'`).run(execution.session_id);
     if (changed) db.query(`UPDATE executions SET coordinator_instance_id=?, adoptions=adoptions+1, updated_at_ms=? WHERE execution_id=?`)
       .run(instanceId, Date.now(), execution.execution_id);
     return changed;
@@ -198,26 +166,54 @@ export type HeldExecution = { execution: ExecutionRow; reason: "unresponsive" | 
  *   agent may still act; nothing else waits on it (`held`);
  * - its host is gone with no exit: left to ordinary recovery, interrupted and unconfirmed.
  */
-export async function claimAdoptableExecutions(input: { instanceId: string;
+export async function claimAdoptableExecutions(input: { instanceId: string; onlyParked?: boolean;
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean }): Promise<{ adopted: Adoption[]; held: HeldExecution[] }> {
   const ownerAlive = (owner: string) => {
     const process = db.query("SELECT pid, boot_id AS bootId, process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?").get(owner) as any;
     return !!process && input.isOwnerAlive(process);
   };
   const adopted: Adoption[] = [], held: HeldExecution[] = [];
+  // An old parked host must not keep writing a Claude conversation after a newer turn has
+  // entered it. Stop only the old provider; keep the newer turn and its request custody.
+  const superseded = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
+    WHERE t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
+      AND e.supervisor IN ('systemd','launchd') AND e.state IN ('intended','live','exited') AND e.dispatch_attempt=t.dispatch_attempt
+      AND EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
+        AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+          OR later.provider_input_acknowledged_at IS NOT NULL))`)
+    .all() as ExecutionRow[];
+  await Promise.all(superseded.map(async execution => {
+    try {
+      const probe = await probeHost(execution);
+      if ((probe === 'answering' || probe === 'unresponsive')
+        && !await stopSupersededHost(execution.directory,execution.execution_id)) return;
+      if (probe === 'gone') recordExecutionLost(execution.execution_id,'The superseded execution host stopped without a recorded exit.');
+      if (settleSupersededParkedTurn(execution.turn_id))
+        log('warn','superseded_parked_execution_stopped',{turn_id:execution.turn_id,execution_id:execution.execution_id});
+      if (probe !== 'gone') await releaseExecution({...execution,state:'exited'});
+    } catch (error) { log('error','superseded_parked_execution_stop_failed',{turn_id:execution.turn_id,execution_id:execution.execution_id,...errorFields(error)}); }
+  }));
   const open = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
-      WHERE e.state IN ('intended','live','exited') AND t.status='running' AND t.dispatch_attempt=e.dispatch_attempt
-      ORDER BY e.created_at_ms`).all() as ExecutionRow[];
+      JOIN sessions session ON session.id=t.session_id
+      WHERE e.state IN ('intended','live','exited') AND t.dispatch_attempt=e.dispatch_attempt
+        AND ((?=0 AND t.status='running') OR (t.status='parked' AND t.dispatch_failure_class='parked_ambiguous'
+          AND t.turn_kind='native' AND session.status<>'archived'
+          AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=t.session_id AND later.id>t.id
+            AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+              OR later.provider_input_acknowledged_at IS NOT NULL))))
+      ORDER BY e.created_at_ms`).all(input.onlyParked ? 1 : 0) as ExecutionRow[];
   for (const execution of open) {
-    const turn = db.query("SELECT owner_instance_id FROM turns WHERE id=?").get(execution.turn_id) as { owner_instance_id: string | null } | null;
+    const turn = db.query("SELECT owner_instance_id,status FROM turns WHERE id=?").get(execution.turn_id) as { owner_instance_id: string | null; status: string } | null;
     if (!turn) continue;
-    if (turn.owner_instance_id && turn.owner_instance_id !== input.instanceId && ownerAlive(turn.owner_instance_id)) continue;
+    const parked = turn.status === "parked";
+    if (!parked && turn.owner_instance_id === input.instanceId) continue;
+    if (!parked && turn.owner_instance_id && turn.owner_instance_id !== input.instanceId && ownerAlive(turn.owner_instance_id)) continue;
     const probe = await probeHost(execution);
     if (probe === "gone") {
       recordExecutionLost(execution.execution_id, "The execution host was gone, with no recorded exit, when Concierge started.");
       continue;
     }
-    if (!claimExecutionTurn(execution, turn.owner_instance_id, input.instanceId)) continue;
+    if (!claimExecutionTurn(execution, turn.owner_instance_id, input.instanceId, parked)) continue;
     const protocolKnown = ADOPTABLE_HOST_PROTOCOLS.includes(execution.host_protocol);
     if (probe === "unresponsive" || !protocolKnown) {
       // Containment, not success: the run stays this coordinator's, its agent keeps its process and
@@ -242,9 +238,11 @@ export async function claimAdoptableExecutions(input: { instanceId: string;
     adopted.push({ execution, claim, processor: JSON.parse(execution.processor_json), mode });
   }
   if (adopted.length || held.length) executionChanged();
-  await releaseSettledExecutions();
-  pruneExecutionRecords();
-  await retireFinishedHostJobs();
+  if (!input.onlyParked) {
+    await releaseSettledExecutions();
+    pruneExecutionRecords();
+    await retireFinishedHostJobs();
+  }
   return { adopted, held };
 }
 

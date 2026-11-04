@@ -275,6 +275,16 @@ export function recordSessionInputAttention(inputId:string) {
     return !resultNotified;
   })();
 }
+/** A recovered answer is a new arrival even if parking already raised attention for this attempt. */
+export function recordRecoveredResultAttention(inputId:string,turnId:number) {
+  const input=getAcceptedSessionInput(inputId);
+  if(!input||input.turn_id!==turnId)throw new Error('Recovered attention requires the exact accepted run.');
+  const eventId=`attention:recovered-result:${turnId}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
+  const session=getSessionById(input.session_id)!;
+  updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
+  recordSessionEvent({eventId,sessionId:input.session_id,inputId,turnId,kind:'attention',payload:{recoveredResult:true}});
+}
 export type RetainInputTiming={serializeMs:number;existingMs:number;cancellationMs:number;insertMs:number;readbackMs:number;transactionOtherMs:number};
 export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string;timing?:RetainInputTiming}) {
  const started=performance.now();
