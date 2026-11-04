@@ -85,7 +85,7 @@ function quoteVerdict(actorInputId: string, quote: string): Verdict {
 export function questionForTejas(input: { actorInputId: string; question: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
   const kind = requireOnlyHeCan(input.onlyHeCan);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
-    throw new Error('Only-he-can device questions name a physical prerequisite, such as unlocking a Mac. App and website actions stay with an agent: try the available computer-use route first, then ask only for the exact physical prerequisite it exposed.');
+    throw new Error('Only-he-can device questions name one action on a physical device, such as unlocking a Mac or starting an app on an unreachable device. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
   if (kind !== 'approval' && (input.decisionId !== undefined || input.approvalAction !== undefined))
     throw new Error('--decision-id and --approval-action belong to --only-he-can approval.');
   const decision = kind === 'approval' ? approvalDecision(input.decisionId, input.approvalAction) : undefined;
