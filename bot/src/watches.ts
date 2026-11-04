@@ -25,7 +25,7 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { forgetWatchObservation, loadWatchObservationCursors, observationForWatch, recordWatchObservation,
   startWatchObservationWorker, stopWatchObservationWorker, waitForWatchObservationWorker } from './watch-observation';
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
-  hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
+  hostProcessorSeconds, hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -210,6 +210,8 @@ export function watchView(row: WatchRow) {
     registeredAt: iso(row.created_at_ms), deadline: iso(row.deadline_ms),
     lastObservedAt: observation.lastObservedAt ? iso(observation.lastObservedAt) : null,
     renewEveryMs: row.renew_ms, seriesId: row.series_id,
+    ...(row.kind === "command" && row.host_execution_id && isOpen(row)
+      ? { processorSeconds: hostProcessorSeconds(row.host_execution_id) } : {}),
     gaps: (JSON.parse(observation.gapsJson) as Gap[]).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
     terminalEvent: row.terminal_event, endedAt: row.terminal_at_ms ? iso(row.terminal_at_ms) : null,
     delivery: row.delivery_state, deliveredAs: row.delivery_input_id,
@@ -292,6 +294,16 @@ function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
 }
 
 /**
+ * A waiter's processor use in words, so the session that wrote it sees what its waiting cost. It
+ * runs at the lowest priority, so this is time nothing else wanted, but a waiter that polls
+ * expensively (the 2026-11-03 journal re-read) shows up here instead of only in host alerts.
+ */
+function processorText(seconds: number, fromMs: number, toMs: number) {
+  const share = toMs > fromMs ? (seconds * 1000) / (toMs - fromMs) : 0;
+  return `The command used ${seconds < 120 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`} of processor time (${(share * 100).toFixed(share < 0.01 ? 2 : 1)}% of one core over its run).`;
+}
+
+/**
  * Ends a watch in one terminal event. The state change, the event, its observation and the words
  * for the session are one transaction, so a deadline and a change that race produce exactly one
  * event, and the event exists before anything is delivered.
@@ -314,7 +326,9 @@ function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancel
       : event === "expired" ? `Watch ${watchId} expired at ${iso(settlement.now)}: ${settlement.detail}.`
         : event === "failed" ? `Watch ${watchId} failed: ${settlement.detail}.`
           : `Watch ${watchId} was cancelled: ${settlement.detail}`;
+    const processor = row.kind === "command" && row.host_execution_id ? hostProcessorSeconds(row.host_execution_id) : null;
     const text = `${headline}${late} It watched ${what}, registered ${iso(row.created_at_ms)} with a deadline of ${iso(row.deadline_ms)}. ${gapsText(gaps, row, resumedAt)}${
+      processor !== null ? ` ${processorText(processor, row.created_at_ms, resumedAt)}` : ""}${
       settlement.observed && typeof (settlement.observed as any).outputTail === "string" && (settlement.observed as any).outputTail
         ? `\nLast output of the command (stdout and stderr):\n${(settlement.observed as any).outputTail}` : ""}
 You do not need to reply to this.`;
@@ -419,7 +433,7 @@ async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) 
   update(row.watch_id, "host_execution_id=?, host_directory=?, host_unit=?, host_protocol=?, host_state='intended'",
     executionId, executionDirectory(deps.stateDir, executionId), executionUnit(executionId), HOST_PROTOCOL_VERSION);
   try {
-    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), manifest: {
+    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), priority: "waiter", manifest: {
       executable: "/bin/sh", args: ["-c", 'exec "$@" </dev/null', "concierge-watch", ...condition.argv], cwd: condition.cwd,
       environment: commandEnvironment(), initialInput: "" } });
     update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);

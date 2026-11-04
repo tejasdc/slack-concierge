@@ -83,6 +83,13 @@ refusing it is the fact; a string in a bundle is a proxy for it.
   so it survives a Concierge restart. A command still running at the deadline is stopped (SIGTERM,
   then SIGKILL after 10 s) and the watch expires. A command watch never makes an update wait: the
   host is not a turn. Release cleanup keeps the host programs and protocols live watches use.
+- A command runs at the machine's lowest processor priority (server: nice 19 and `CPUWeight=idle`
+  on its unit; Mac: launchd `ProcessType=Background`), because it only waits and must never take
+  time from agents or Concierge. On the server, `sessions watch list` shows a running command's
+  processor seconds and the terminal message says how much processor time it used, read from its
+  unit's cgroup. On 2026-11-03 a sign-in watch re-read 17 hours of journal every minute, used
+  about two hours of processor at normal priority while the server was saturated, and only a host
+  alert found it.
 
 ## Gaps (a deliberate simplification)
 
