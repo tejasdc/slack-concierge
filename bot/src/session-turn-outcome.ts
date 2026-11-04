@@ -95,6 +95,7 @@ export const QUIET_REASON_REQUIRED='This turn answers a message Tejas sent himse
  * the caller retains an operation for it.
  */
 export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:number;inputId:string;outcome:TurnOutcome;text:string|null;
+  todoId?:string|null;
   /** An explicit declaration is refused when a `response` has nothing to read; a turn that has already ended is recorded `done` instead, with a log line. */
   refuseUnreadable?:boolean;
   /** Why he need not read this answer: required for `done` on a turn answering his own message, shown under the reply. */
@@ -138,7 +139,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const returnedDecision=needs.some(need=>need.requesterDecision&&need.inputId===inputId);
   if(question&&!declared&&!returnedDecision)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
   const quiet=outcome==='done'?input.quiet?.trim().slice(0,2000)||null:null;
-  const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,...(quiet?{quiet}:{})};
+  const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,
+    ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{}),...(quiet?{quiet}:{})};
   // The thread an outcome answers is in its payload. The event's input column references
   // accepted inputs, and an Inbox thread root can be a message that is not one: a routed
   // topic's destination or a request's own entry. Writing such a root there failed the
@@ -162,6 +164,7 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     if(!alreadyNotified)db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(`needs_you:${input.eventId}`,input.sessionId,inputColumn,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
         question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,
+        ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{}),
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
         ...(answer?{postId:answer.messageId}:{}),
         ...(notificationInputId?{notificationInputId,requestedNotification:true}:{})}));

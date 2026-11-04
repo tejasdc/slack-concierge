@@ -115,7 +115,7 @@ pass. A Mac agent's question is refused the same way (its Concierge reads the to
 id, never by wording. Source: 2026-11-04, the Diwali agent asked him at 2:58 PM for a Spotify
 invite he had marked done at 10:20 PM the night before
 ([record](../incidents/2026-11-04-asked-for-a-step-already-done.md)).
-The question's attention event carries that exact to-do ID to thnkr.ing. Its notification
+The question's attention event, including a direct session's declared question, carries that exact to-do ID to thnkr.ing. Its notification
 courier reads the current to-do again just before sending, so an event queued before Done
 cannot ring afterward. A later explicit reopen permits a new question; unrelated questions
 retain their own identity and delivery.
