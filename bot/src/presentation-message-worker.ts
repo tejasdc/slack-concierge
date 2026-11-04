@@ -9,6 +9,7 @@ import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {routedTurnResultSql} from './inbox-routing-result';
+import {answeredByPostResultSql} from './inbox-posted-result';
 import {unrequestedProgressPostSql} from './inbox-progress-post';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
@@ -532,7 +533,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
@@ -579,7 +580,7 @@ async function upgradeAgentRequestVisibility(generation:number){
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET agent_request_visibility_version=1 WHERE singleton=1').run();})();
 }
 
-/** Remove already prepared router narration after a durable handoff. Exact turn history stays. */
+/** Remove already prepared closing narration after a handoff or a post in the same thread. Exact turn history stays. */
 async function upgradeRoutingResultVisibility(generation:number){
   const changedRoots=new Set<string>();
   let after=0;
@@ -591,7 +592,7 @@ async function upgradeRoutingResultVisibility(generation:number){
     if(!rows.length)break;
     const hidden=rows.filter(row=>!!source.query(`SELECT 1 FROM session_owner_events event
       LEFT JOIN session_inputs input ON input.id=event.input_id
-      WHERE event.sequence=? AND ${routedTurnResultSql}`).get(row.sequence));
+      WHERE event.sequence=? AND (${routedTurnResultSql} OR ${answeredByPostResultSql})`).get(row.sequence));
     prepared.transaction(()=>{
       keepLease();
       for(const row of hidden){
@@ -606,7 +607,7 @@ async function upgradeRoutingResultVisibility(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET routing_result_visibility_version=1 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET routing_result_visibility_version=2 WHERE singleton=1').run();})();
 }
 
 /** Changes to lineage request a new generation. New messages append without rereading history. */
@@ -614,7 +615,7 @@ async function catchUp() {
   const current=meta();
   if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
-  if(!current.routing_result_visibility_version){await upgradeRoutingResultVisibility(current.generation);return;}
+  if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
   upgradeMarkedReplyRoots(current.generation);
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
@@ -687,7 +688,7 @@ async function catchUp() {
         const postId=JSON.parse(row.payload_json).postId;
         if(typeof postId==='string')collapsedPosts.add(postId);
       }
-      if(row?.turn_id&&['post','turn_outcome'].includes(row.kind))turnsToRefresh.add(row.turn_id);
+      if(row?.turn_id&&['post','turn_outcome','result_posted'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
   }
   for(const inputId of linkedInputs)for(const root of await reassignLinkedInput(current.generation,inputId,resolveRoot))changedRoots.add(root);
@@ -793,7 +794,7 @@ async function catchUp() {
         if(!prior)continue;
         const hidden=source.query(`SELECT 1 FROM session_owner_events event
           LEFT JOIN session_inputs input ON input.id=event.input_id
-          WHERE event.sequence=? AND ${routedTurnResultSql}`).get(row.sequence);
+          WHERE event.sequence=? AND (${routedTurnResultSql} OR ${answeredByPostResultSql})`).get(row.sequence);
         if(hidden){
           prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);
           prepared.query('DELETE FROM presentation_message_display WHERE generation=? AND event_sequence=?').run(current.generation,row.sequence);

@@ -82,7 +82,7 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputIdentityContext,sessionInputInstructions,sessionTurnContext} from './session-input-context';
 import {thinkAloudInstructions} from './think-aloud-instructions';
-import {INBOX_INSTRUCTIONS,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
+import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
@@ -865,7 +865,13 @@ export class SessionExecutionHost {
     // `response` finds something to read there and the answer never silently disappears.
     // Relaying must never fail delivery of the answer it carries.
     try {
-      const relayed=relayUnpostedAnswer(result);
+      const relayed=db.transaction(()=>{
+        const thread=relayUnpostedAnswer(result);
+        // A return may have had no post when the result was retained. Publishing its
+        // relay and display decision together prevents a second visible reply on a crash.
+        if(thread)markResultAnsweredByPost(result);
+        return thread;
+      }).immediate();
       if(relayed) {
         log('warn','inbox_answer_relayed',{session_id:result.sessionId,turn_id:result.turnId,input_id:result.inputId,thread:relayed});
         const session=getSessionById(result.sessionId);
@@ -886,9 +892,12 @@ export class SessionExecutionHost {
       const eventId=`result:${result.turnId}`;
       const payload={...result,runId:nativeRunId(result.turnId)};
       const existed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
-      if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');return;}
-      recordSessionInputAttention(result.inputId);
-      recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
+      if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');}
+      else {
+        recordSessionInputAttention(result.inputId);
+        recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
+      }
+      markResultAnsweredByPost(result);
     }).immediate();
   }
   /**
