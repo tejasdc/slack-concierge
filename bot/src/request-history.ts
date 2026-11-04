@@ -1,7 +1,7 @@
 import {readFile,stat} from 'node:fs/promises';
 import {db} from './state';
 import {log} from './log';
-import {meaningIndex} from './meaning-index';
+import {meaningIndex,type MeaningIndex} from './meaning-index';
 
 /**
  * What came before: the earlier work on the problem a work request is about, put into the request
@@ -77,8 +77,8 @@ function threadRequests(topicRoot:string,beforeMs:number,recipient:number|null,s
 }
 
 /** Earlier sessions close in meaning, from the index alone: imported transcripts count only when Concierge already holds them. */
-function closestSessions(vector:Float32Array):{found:{id:number;score:number}[];omission:string|null} {
-  const answer=meaningIndex()!.searchVector(vector,30);
+function closestSessions(index:MeaningIndex,vector:Float32Array):{found:{id:number;score:number}[];omission:string|null} {
+  const answer=index.searchVector(vector,30);
   if(!answer.available)return {found:[],omission:`Earlier sessions were not compared: ${answer.reason??'the meaning index is unavailable'}.`};
   const best=new Map<number,number>();
   const keep=(id:number,score:number)=>{if((best.get(id)??0)<score)best.set(id,score);};
@@ -113,8 +113,7 @@ async function failureCases():Promise<FailureCase[]> {
   return cases;
 }
 
-async function closestCases(vector:Float32Array):Promise<{found:FailureCase[];omission:string|null}> {
-  const index=meaningIndex()!;
+async function closestCases(index:MeaningIndex,vector:Float32Array):Promise<{found:FailureCase[];omission:string|null}> {
   const cases=await failureCases();
   if(!cases.length)return {found:[],omission:`The failure ledger was not found at ${FAILURE_LEDGER}.`};
   const vectors=await index.documentVectors(cases.map(item=>({key:`failure-case:${item.id}`,text:`${item.id}. ${item.text}`})));
@@ -163,7 +162,8 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
     const index=meaningIndex();
     if(!index?.installed){omissions.push('Earlier sessions and the failure ledger were not compared: the meaning index is not installed on this machine.');return null;}
     const vector=await index.questionVector(query);
-    return {sessions:closestSessions(vector!),cases:await closestCases(vector!)};
+    // One index for the question and both comparisons, so they always share an embedding model.
+    return {sessions:closestSessions(index,vector!),cases:await closestCases(index,vector!)};
   };
   const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions and the failure ledger could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
   if(compared==='late')omissions.push(`Earlier sessions and the failure ledger were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search and read ${FAILURE_LEDGER}.`);

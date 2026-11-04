@@ -233,6 +233,10 @@ type StoredQuestion={questionId:string;topicId:string;revision:number;state:Ques
   /** When a question he set aside comes back in front of him, as an instant; null for one set aside with no time. */
   /** When a set-aside question comes back; absent or null for one with no moment. */
   deferUntil?:string|null;createdAt:string;updatedAt:string};
+const linkedTodoId=(question:StoredQuestion):string|null=>{
+  const id=question.owner?.todoId??question.brief?.todo;
+  return typeof id==='string'&&id!=='none'&&id.trim()?id:null;
+};
 
 const nowIso=()=>new Date().toISOString();
 const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
@@ -544,6 +548,7 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
       recordSessionEvent({eventId:`needs_you:question:${question.questionId}`,sessionId:session.id,inputId:root,kind:'needs_you',
         payload:{outcome:notificationInputId?'response':'needs_you',question:String(question.brief.decision).slice(0,2000),inputId:root,
           generation,topicId:question.topicId,questionId:question.questionId,
+          ...(linkedTodoId(question)?{todoId:linkedTodoId(question)}:{}),
           runId:change.payload.by?.runId??null,blockingNotification:true,
           ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
           ...(notificationInputId?{notificationInputId,requestedNotification:true}:{}),
@@ -2449,8 +2454,16 @@ const conciergeSessionNumber=(address:unknown):number|null=>{
 export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
-  const linked=(db.query(`SELECT question_id FROM inbox_questions WHERE state IN ('open','partial') AND kind='decision'
-    AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')`).all() as {question_id:string}[]);
+  const linked:{question_id:string}[]=[];
+  let after='';
+  for(;;){
+    const page=db.query(`SELECT question_id FROM inbox_questions WHERE question_id>? AND state IN ('open','partial') AND kind='decision'
+      AND (json_extract(owner_json,'$.todoId') IS NOT NULL OR coalesce(json_extract(brief_json,'$.todo'),'none')<>'none')
+      ORDER BY question_id LIMIT 200`).all(after) as {question_id:string}[];
+    linked.push(...page);
+    if(page.length<200)break;
+    after=page.at(-1)!.question_id;
+  }
   if(!linked.length)return 0;
   let todos:Map<string,TodoState>;
   try{todos=new Map((await readTodos()).map(todo=>[todo.id,todo]));}
@@ -2462,7 +2475,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
       const row=db.query('SELECT * FROM inbox_questions WHERE question_id=?').get(question_id) as any;
       if(!row)continue;
       const question=toStoredQuestion(row);
-      const todo=todos.get(String(question.owner?.todoId??question.brief?.todo??''));
+      const todo=todos.get(linkedTodoId(question)??'');
       if(!OPEN_QUESTION_STATES.some(state=>state===question.state)||!todo||(todo.status!=='done'&&todo.status!=='dropped'))continue;
       const at=nowIso(),reason=todo.status==='done'?`He marked his to-do "${todo.text}" done.`:`He dropped his to-do "${todo.text}".`;
       db.transaction(()=>{
@@ -2509,6 +2522,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
     const author=typeof question.owner?.sessionId==='string'?sessionAuthor(question.owner.sessionId):null;
     recordSessionEvent({eventId:`question-reminder:${question.questionId}:${stamp}`,sessionId:session.id,inputId,kind:'needs_you',
       payload:{outcome:'needs_you',question:decision,inputId,generation,topicId:topic.topicId,questionId:question.questionId,setAsideUntil:question.deferUntil,
+        ...(linkedTodoId(question)?{todoId:linkedTodoId(question)}:{}),
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{})}});
     // The Inbox itself owns most questions (the router declared them); it is told like any other
     // owner, because it is the one that knows how to refresh what the question carries.
@@ -3014,6 +3028,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     recordSessionEvent({eventId:`needs_you:${filedId}`,sessionId:session.id,inputId:answer.root,kind:'needs_you',
       payload:{outcome:requestedResult?'response':decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
         inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId,
+        ...(decision&&answer.todoId&&answer.todoId!=='none'?{todoId:answer.todoId}:{}),
         ...(decision?{blockingNotification:true,agentName:sessionAuthor(answer.respondingSessionId)?.agentName??null,
           taskTitle:answer.respondingTitle??sessionAuthor(answer.respondingSessionId)?.title??null}:{}),
         ...(requestedResult?{requestedNotification:true}:{}),...(notificationInputId?{notificationInputId}:{})}});

@@ -366,7 +366,9 @@ program: an agent may have started an intentional service. Later sightings appen
 unresolved problem does not create a new Inbox thread on every turn. Old ungrouped reports
 cannot absorb a new sighting. A fresh report may be
 filed after that request closes. The retained audit intent is retried on startup and every
-minute until its checked event is recorded. The scan is server-only; a child that removes
+minute until its checked event is recorded; the execution host starts that sweep in both owner
+compositions (the server runs the main entry, not the session runtime), because the audit at
+turn end usually runs before the turn row is marked done and defers to it. The scan is server-only; a child that removes
 its thread identity, a native subagent with a separate thread, and Mac non-browser jobs
 need separate custody mechanisms. The prior Stop-hook process check ran before the provider
 had finished and produced repeated reports from still-owned processes; it no longer reports

@@ -89,6 +89,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   a shared thread, later message or shared source alone cannot withdraw or
   supersede it. See [native Inbox](docs/contracts/native-inbox.md) and the
   [closure failure record](docs/incidents/2026-11-04-unrelated-evidence-could-close-human-work.md).
+- A question linked to an exact to-do is rechecked before Inbox attention and
+  question reads; a Done or Dropped to-do settles that question. Its attention
+  event carries the to-do ID for thnkr.ing's final notification check. See
+  [requested phone notifications](docs/contracts/requested-phone-notifications.md).
 
 ## Find the authority
 
@@ -106,7 +110,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Project, session, Inbox and saved-work commands | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [saved work](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md) |
 | Canvas project binding and current board title beside stable project folders | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [wire contract](docs/contracts/session-owner-v1.md#peer-instances) |
 | Mac and server Lab reads and writes | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#discussing-in-the-lab); the server holds the Lab key and the peer channel carries Mac calls under their own source identity |
-| Captures, audio, speech and Canvas observations | [Capture ingress](docs/architecture/CAPTURE-INGRESS.md), [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md), [speech](docs/architecture/SPEECH-FALLBACK-JOBS.md), [Canvas think-aloud](docs/architecture/canvas-think-aloud.md) |
+| Captures, audio, speech and Canvas observations | [Capture ingress](docs/architecture/CAPTURE-INGRESS.md), [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md), [speech](docs/architecture/SPEECH-FALLBACK-JOBS.md), [Workers AI speech and search embeddings](docs/architecture/WORKERS-AI.md), [Canvas think-aloud](docs/architecture/canvas-think-aloud.md) |
 | Current-versus-historical documentation | [Documentation index](docs/README.md); plans and incidents are evidence, not authority for current behavior |
 
 Update the relevant current-state document in the same commit when behavior or
