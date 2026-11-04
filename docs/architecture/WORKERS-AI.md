@@ -43,13 +43,18 @@ passages), not at 96,000.
   question and its candidates always share a model. If Workers AI is unreachable after the
   hand-over, meaning search says so and word search still answers.
 - **Embeddings switch, two steps:** `/etc/concierge/workers-ai-embeddings.enabled` existing (empty)
-  starts building the Workers AI index. The first build embeds ~96,000 passages, several times the
+  starts building the Workers AI index at the owner's next restart. The first build embeds ~96,000 passages, several times the
   free plan's 10,000-neuron daily allowance that speech shares, so it is created only once the
   account is on Workers Paid. Writing `serve` into the same file lets the built index take over
   (`meaning_index_switched`, within a minute, no restart) once it has read everything including the
   archive; it is written only after the routing comparison below is rerun on the two full indexes
   (top-10 agreement and the score shift at the area-filing and earlier-work thresholds, which were
-  tuned on the local 8-bit model's scores). Then the llama.cpp process is stopped for good.
+  tuned on the local 8-bit model's scores), with the result recorded in the Routing comparison
+  section. Then the llama.cpp process is stopped for good.
+- **Rollback:** remove the switch file *and restart the owner*. Removing it while the Workers AI
+  index is serving turns meaning search off until the restart, when the local index resumes from its
+  own watermark. Speech rolls back by removing `/etc/concierge/workers-ai.token`; the speech worker
+  reads it per process, so restart `concierge-speech-worker.service` too.
 
 ## Measured before switching (2026-11-04)
 

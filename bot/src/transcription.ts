@@ -110,12 +110,14 @@ async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<Audi
  const explicitWhisper=Boolean(input.runCommand||input.whisperBinary||input.whisperModel);
  // Workers AI first, so a recording takes no processor time from the agents on this machine; the
  // local engines below are its fallback when Cloudflare cannot be reached or refuses.
+ let cloudHeardNothing:NoSpeech|null=null;
  if(!explicitWhisper&&workersAiConfigured()){
   try{return await transcribeWithCloud(input,queuedMs);}
   catch(error){
    // "No words" from the cloud is confirmed by the local engine before he is told a recording was
    // silent: Whisper's voice-activity filter can drop quiet speech, and silent clips are short.
    if(error instanceof NoSpeech&&!speechEngine.installed())throw error;
+   if(error instanceof NoSpeech)cloudHeardNothing=error;
    log(error instanceof NoSpeech?'info':'warn','transcriber_fallback',{engine:speechEngine.installed()?speechEngine.name:'whisper.cpp',from:'workers-ai-whisper',attachment_id:input.slackFileId,reason:error instanceof NoSpeech?'no_speech_confirming':error instanceof Error?error.message.slice(0,300):'unknown'});
   }
  }
@@ -124,6 +126,9 @@ async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<Audi
   catch(error){
    // Silence is an answer, not an engine failure; Whisper would only invent words from it.
    if(error instanceof NoSpeech)throw error;
+   // The cloud already heard silence and only the confirmation failed: silence stands, rather than
+   // letting whisper.cpp invent words from it.
+   if(cloudHeardNothing)throw cloudHeardNothing;
    // A Mac has no Whisper; the engine's own failure says more than "not installed" would.
    if(!existsSync(process.env.CONCIERGE_WHISPER_BINARY||DEFAULT_WHISPER_BINARY))throw error;
    // The recording is not lost and the person is not failed: the retained audio goes through
