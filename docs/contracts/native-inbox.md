@@ -469,6 +469,10 @@ literally cannot read this … I want the answer I have to actually read".
 An agent's prompt-answer partial is one post in the thread. Its later bodyless final closes
 that exact request and exposes `closingLine` on the existing answer message: the disposition
 and checked/not-checked facts. The closure is retained separately from the answer bytes. A
+progress-only partial stays on the request's Work receipt and Brief instead of adding another
+conversation reply; an agent's explicit notification request still posts it. Older unnotified
+progress posts are removed from prepared conversation reads on upgrade, while their receipts
+remain available by request identity. A
 final containing new body text is posted as a new message with its own closing line. The
 prepared topic view refreshes the existing answer on closure and catches up retained closures
 after an update; its bounded preview carries the line as well as the exact message detail. The
