@@ -541,7 +541,12 @@ own `failure=` line. Preparation and preactivation
 presentation checks allow 180 seconds: successful preparation took about 47 seconds, and
 the same candidate passed in 52 seconds under load after a 90-second timeout. This gives
 ordinary disk contention room while retaining a finite hang guard. The candidate's
-own child checks retain their specific deadlines and diagnostics. A desired commit whose
+own child checks retain their specific deadlines and diagnostics. The running-agent copy guard
+applies its ten-second hang bound to each child operation, not to the sum of bundle builds and
+all sequential wrapper invocations. It streams numbered start/completion markers to retained
+stderr and reports exit status, signal and elapsed time on child failure. The controller's
+180-second presentation deadline still bounds the complete sequence; no assertion is skipped.
+A desired commit whose
 run failed is not run again; the next push to `main` starts a fresh run.
 
 If the detached runner cannot launch, or if a durable rollout step, candidate
