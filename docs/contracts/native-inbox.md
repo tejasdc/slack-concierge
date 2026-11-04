@@ -385,6 +385,19 @@ Moving a root to another topic is refused once a human reply from that root has 
 forwarded to an agent for its current topic. The move would silently relocate that
 reply's later answers and requested notifications. Route the exact human message
 instead; its source remains visible in the original conversation.
+
+The request's source input and its named thread answer different questions. The source is
+the event that caused this send; the named thread message is the return address for its
+answer. An agent follow-up can start work today while naming a human message from weeks
+ago as that address. The owner retains a new, dated request event in the topic and keeps
+both identities on the dispatch. Readers use that dated event to show the new work,
+including its sender, purpose, recipient and exact request on opening; they do not move
+the event into the old message or present that message as new activity. A request caused
+by the human message itself can stay as a handoff attached to that message. One request
+identity yields one visible handoff in either placement, while its return still follows
+the named thread root. This lets an audit reopen an October request in November without
+making the October message appear to have been sent again.
+
 Both server and Mac startup reconcile requests placed after their answers arrived: they close
 the answered request and move its existing reading item without notifying twice.
 
