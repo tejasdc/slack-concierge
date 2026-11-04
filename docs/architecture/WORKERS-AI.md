@@ -13,7 +13,7 @@ neither competes with agents for the AX41's processors.
 | `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; `POST /v1/embed` (≤100 texts) → EmbeddingGemma-300m. Every answer names its model. |
 | Shared key | Worker secret `CONCIERGE_KEY`; root-only `/etc/concierge/workers-ai.token` on each Concierge machine that uses it | Bearer key for both calls. A machine without the file (the Mac) keeps its own engines. |
 | Speech worker (`concierge-speech-worker.service`) | server | Converts a recording to MP3 pieces with ffmpeg, sends them to the Worker, joins the words. Engine name `workers-ai-whisper`. |
-| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Embeds through the Worker into its own file, `meaning-index.workers-ai.db`, beside the local index on the ledger disk. The in-memory int8 scan stays local (49 MB for ~96,000 passages, ~20 ms a search). |
+| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Embeds through the Worker into a file named for the model, beside the local index on the ledger disk. The in-memory int8 scan stays local (49 MB for ~96,000 passages, ~20 ms a search). |
 
 **Why a Worker and not the REST API.** The one Cloudflare token (`remote-box-workers-deploy`) can
 deploy Workers but is refused by the Workers AI and Vectorize APIs. A Worker's AI binding needs no
@@ -33,16 +33,23 @@ passages), not at 96,000.
 
 - **Speech:** Workers AI first; any refusal, timeout or network failure is logged as
   `transcriber_fallback` with `from: workers-ai-whisper` and the recording goes to Parakeet, then
-  whisper.cpp, exactly as before. Silence (empty text) is an answer, not a failure.
-- **Embeddings:** an index file records its model (`watermarks.model`); a file written by another
-  model is cleared, never searched with this model's vectors. While the new Workers AI index is
-  being built the local index keeps answering. When the new one has read everything once it takes
-  over (`meaning_index_switched`) and the llama.cpp process is stopped. Every caller takes one index
-  per search, so a question and its candidates always share a model. If Workers AI is unreachable
-  afterwards, meaning search says so and word search still answers.
-- **Embeddings switch:** embeddings move only when `/etc/concierge/workers-ai-embeddings.enabled`
-  exists. The first rebuild embeds ~96,000 passages, several times the free plan's daily allowance
-  of 10,000 neurons that speech shares, so it waits until the account is on Workers Paid.
+  whisper.cpp, exactly as before. An empty answer from the cloud is confirmed by Parakeet before a
+  recording is recorded as silent, because Whisper's voice-activity filter can drop quiet speech.
+  Recordings longer than ten minutes go in ten-minute pieces; a word cut at a boundary can be garbled.
+- **Embeddings:** each model's index lives in its own file, named for the model
+  (`meaning-index.cf-google-embeddinggemma-300m.db`), and records its model (`watermarks.model`); a
+  file written by another model is cleared, never searched with this model's vectors. While the new
+  index is built the local index keeps answering. Every caller takes one index per search, so a
+  question and its candidates always share a model. If Workers AI is unreachable after the
+  hand-over, meaning search says so and word search still answers.
+- **Embeddings switch, two steps:** `/etc/concierge/workers-ai-embeddings.enabled` existing (empty)
+  starts building the Workers AI index. The first build embeds ~96,000 passages, several times the
+  free plan's 10,000-neuron daily allowance that speech shares, so it is created only once the
+  account is on Workers Paid. Writing `serve` into the same file lets the built index take over
+  (`meaning_index_switched`, within a minute, no restart) once it has read everything including the
+  archive; it is written only after the routing comparison below is rerun on the two full indexes
+  (top-10 agreement and the score shift at the area-filing and earlier-work thresholds, which were
+  tuned on the local 8-bit model's scores). Then the llama.cpp process is stopped for good.
 
 ## Measured before switching (2026-11-04)
 
@@ -67,7 +74,11 @@ Nova's price, and 30 s for nine minutes is far inside what a recording can wait.
 server speech in the last two weeks was 111 minutes, about half the free daily allowance.
 
 Embeddings: Workers AI hosts the same EmbeddingGemma-300m model the server runs (as an 8-bit
-llama.cpp build). Routing comparison: see [below](#routing-comparison).
+llama.cpp build). Routing comparison: pending, see [below](#routing-comparison).
+
+## Routing comparison
+
+Pending: the Workers AI half runs after the free allowance resets at 00:00 UTC on 2026-11-05.
 
 ## Operating
 

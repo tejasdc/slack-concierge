@@ -47,10 +47,12 @@ export default {
         const audio = await request.arrayBuffer();
         if (!audio.byteLength || audio.byteLength > MAX_AUDIO_BYTES) return answer(413, { error: "audio must be 1 byte to 25 MB" });
         const result = await env.AI.run(SPEECH_MODEL, { audio: base64(audio), language: "en", vad_filter: true });
-        return answer(200, { model: SPEECH_MODEL, text: typeof result?.text === "string" ? result.text.trim() : "" });
+        // A missing text field is a model failure, not silence; the caller falls back on 502.
+        if (typeof result?.text !== "string") return answer(502, { error: "speech model answered without text" });
+        return answer(200, { model: SPEECH_MODEL, text: result.text.trim() });
       }
       if (path === "/v1/embed") {
-        const body = (await request.json()) as { texts?: unknown };
+        const body = (await request.json().catch(() => null)) as { texts?: unknown } | null;
         const texts = body?.texts;
         if (!Array.isArray(texts) || !texts.length || texts.length > MAX_TEXTS || !texts.every((text) => typeof text === "string" && text.length <= MAX_TEXT_CHARS))
           return answer(400, { error: `texts must be 1-${MAX_TEXTS} strings of at most ${MAX_TEXT_CHARS} characters` });

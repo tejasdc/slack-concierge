@@ -7,7 +7,7 @@ import {db} from './state-database';
 import {log} from './log';
 import type {CapabilitySource} from './session-capability-client';
 import {indexedArchiveSource} from './archive-search-source';
-import {embedWithWorkersAi,workersAiEmbeddingsEnabled,WORKERS_AI_EMBEDDING_MODEL} from './workers-ai';
+import {embedWithWorkersAi,workersAiEmbeddingsEnabled,workersAiEmbeddingsServe,WORKERS_AI_EMBEDDING_MODEL} from './workers-ai';
 import {dirname,join} from 'node:path';
 
 /**
@@ -56,6 +56,8 @@ interface EmbeddingEngine {
   installed():boolean;
   embed(texts:string[],timeoutMs?:number):Promise<Float32Array[]>;
   stop():void;
+  /** May this engine's complete index answer searches in place of another one? */
+  servable():boolean;
 }
 
 /** The same EmbeddingGemma model on Cloudflare Workers AI, so no embedding runs on this machine. */
@@ -63,6 +65,7 @@ class WorkersAiEngine implements EmbeddingEngine {
   readonly model=WORKERS_AI_EMBEDDING_MODEL;
   readonly batch=50;
   installed(){return workersAiEmbeddingsEnabled();}
+  servable(){return workersAiEmbeddingsServe();}
   async embed(texts:string[],timeoutMs=60_000){return (await embedWithWorkersAi(texts,timeoutMs)).map(vector=>normalized(vector.slice(0,DIMENSIONS)));}
   stop(){}
 }
@@ -74,6 +77,7 @@ class LocalEngine implements EmbeddingEngine {
   private child:ChildProcess|null=null;
   private ready:Promise<void>|null=null;
   installed(){return existsSync(SERVER)&&existsSync(MODEL);}
+  servable(){return true;}
   private async healthy(){try{return (await fetch(`http://127.0.0.1:${PORT}/health`,{signal:AbortSignal.timeout(1_000)})).ok;}catch{return false;}}
   private start():Promise<void> {
     if(this.ready)return this.ready;
@@ -99,6 +103,8 @@ class LocalEngine implements EmbeddingEngine {
   }
   /** One deadline covers starting the engine and the request, so a caller never waits longer than it asked. */
   async embed(texts:string[],timeoutMs=60_000):Promise<Float32Array[]> {
+    // A released engine stays released: a late caller must not start a process nothing will stop.
+    if(this.released)throw new Error('the local meaning engine was released for Workers AI');
     const deadline=AbortSignal.timeout(timeoutMs);
     await Promise.race([this.start(),new Promise<never>((_,reject)=>deadline.addEventListener('abort',()=>reject(new Error('meaning engine did not start in time')),{once:true}))]);
     let response:Response;
@@ -112,7 +118,8 @@ class LocalEngine implements EmbeddingEngine {
     const body=await response.json() as {data:{index:number;embedding:number[]}[]};
     return body.data.sort((a,b)=>a.index-b.index).map(item=>normalized(item.embedding.slice(0,DIMENSIONS)));
   }
-  stop(){this.child?.kill();this.child=null;this.ready=null;}
+  private released=false;
+  stop(){this.released=true;this.child?.kill();this.child=null;this.ready=null;}
 }
 
 function normalized(values:number[]){const vector=Float32Array.from(values);let sum=0;for(const value of vector)sum+=value*value;const norm=Math.sqrt(sum)||1;for(let i=0;i<vector.length;i++)vector[i]!/=norm;return vector;}
@@ -134,7 +141,7 @@ export class MeaningIndex {
   private store!:Database;
   private keys:string[]=[];private rowOf=new Map<string,number>();private scales:number[]=[];private matrix=new Int8Array(DIMENSIONS*4096);private count=0;
   private targets:MeaningHit['target'][]=[];private texts:string[]=[];private times:(string|null)[]=[];
-  private searching=0;
+  private searching=0;private archiveAbsent=false;
   private timer:ReturnType<typeof setTimeout>|null=null;private caughtUp=false;private stopped=false;private failure:string|null=null;
   /** Called once, the first time indexing finds nothing left to read: every passage then has this model's vector. */
   onComplete:(()=>void)|null=null;
@@ -183,6 +190,7 @@ export class MeaningIndex {
   /** Every passage has been read at least once under this index's model. */
   get complete(){return this.watermark('complete')==='1';}
   get size(){return this.count;}
+  servable(){return this.engine.servable();}
   /**
    * Vectors for short texts other features compare by meaning (Inbox threads against areas),
    * cached here by key and exact words so an unchanged text is never embedded twice, even across
@@ -314,7 +322,9 @@ export class MeaningIndex {
     return archive;
   }
   private async archivePage():Promise<boolean> {
-    const archive=this.archive();if(!archive)return false;
+    const archive=this.archive();
+    // Thinkering rebuilds its archive index; while it is missing this index is not complete.
+    this.archiveAbsent=!archive;if(!archive)return false;
     try{
       let after=Number(this.watermark('archive')??0);
       // Thinkering's index is disposable; a rebuilt one numbers its rows from 1 again, so start over (known prompts are skipped by hash).
@@ -340,11 +350,10 @@ export class MeaningIndex {
         if(!worked)worked=await this.archivePage();
         this.failure=null;
       }catch(error){this.failure=error instanceof Error?error.message:String(error);log('warn','meaning_index_failed',{error:this.failure});}
-      if(!worked&&!this.caughtUp&&!this.failure){
-        this.caughtUp=true;log('info','meaning_index_caught_up',{passages:this.count,model:this.engine.model});
-        if(this.watermark('complete')!=='1')this.setWatermark('complete','1');
-        const done=this.onComplete;this.onComplete=null;done?.();
-      }
+      if(!worked&&!this.caughtUp&&!this.failure){this.caughtUp=true;log('info','meaning_index_caught_up',{passages:this.count,model:this.engine.model});}
+      // Complete (and so eligible to take over from another index) only with the archive read too.
+      if(!worked&&!this.failure&&!this.archiveAbsent&&this.watermark('complete')!=='1')this.setWatermark('complete','1');
+      if(this.onComplete&&this.complete&&this.servable()){const done=this.onComplete;this.onComplete=null;done();}
       if(worked)this.caughtUp=false;
       this.timer=setTimeout(tick,worked?50:this.failure?IDLE_POLL_MS*5:IDLE_POLL_MS);
     };
@@ -429,36 +438,40 @@ export class MeaningIndex {
 
 let shared:MeaningIndex|null=null;
 /**
- * The index searches use. With the Workers AI key installed, the index is built from Workers AI's
- * EmbeddingGemma in its own file. Until that file has read everything once (about 96,000 passages,
- * the first time), the local index keeps answering searches; the moment the new one is complete it
- * takes over and the local engine process is stopped for good. Callers take this once per search
- * and use that one index throughout, so a question and its candidates always share a model.
+ * The index searches use. With the Workers AI embeddings switch on, an index is built from Workers
+ * AI's EmbeddingGemma in a file named for that model, beside the local one, while the local index
+ * keeps answering. The new index takes over only when it has read everything once (about 96,000
+ * passages, archive included) and the switch says `serve`, which is written after the routing
+ * comparison on the two full indexes passes (docs/architecture/WORKERS-AI.md). Then the local
+ * engine process is stopped for good. Callers take this once per search and use that one index
+ * throughout, so a question and its candidates always share a model.
  */
 export function startMeaningIndex(stateDir:string,titleOf:(sessionId:number)=>string|null){
   if(shared)return shared;
   const legacyPath=`${stateDir}/meaning-index.db`;
-  const stops:(()=>void)[]=[];
-  process.once('exit',()=>{for(const stop of stops)try{stop();}catch{}});
+  const running=new Set<MeaningIndex>();
+  process.once('exit',()=>{for(const index of running)try{index.stop();}catch{}});
   const cloud=new WorkersAiEngine();
   if(!cloud.installed()){
-    shared=new MeaningIndex(legacyPath,titleOf);shared.start();stops.push(()=>shared?.stop());
+    shared=new MeaningIndex(legacyPath,titleOf);shared.start();running.add(shared);
     return shared;
   }
-  // Beside the local index's real file, which lives on the ledger's own disk behind a link.
+  // Beside the local index's real file, which lives on the ledger's own disk behind a link. One
+  // file per model, so a later model change builds beside the serving index instead of clearing it.
   const directory=existsSync(legacyPath)?dirname(realpathSync(legacyPath)):stateDir;
-  const primary=new MeaningIndex(join(directory,'meaning-index.workers-ai.db'),titleOf,cloud);
-  stops.push(()=>primary.stop());
+  const primary=new MeaningIndex(join(directory,`meaning-index.${cloud.model.replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'')}.db`),titleOf,cloud);
+  running.add(primary);
   const local=new LocalEngine();
-  if(primary.complete||!local.installed()){shared=primary;primary.start();return shared;}
+  if((primary.complete&&primary.servable())||!local.installed()){shared=primary;primary.start();return shared;}
   const standby=new MeaningIndex(legacyPath,titleOf,local);
-  stops.push(()=>standby.stop());
+  running.add(standby);
   shared=standby;standby.start();
   primary.onComplete=()=>{
     shared=primary;
     log('info','meaning_index_switched',{model:cloud.model,passages:primary.size});
-    // Searches that already took the local index finish on it; then its engine is released.
-    setTimeout(()=>{try{standby.stop();}catch{}},30_000);
+    // Searches that already took the local index finish on it; then its engine is released and
+    // its memory (about 100 MB of vectors and snippets) let go.
+    setTimeout(()=>{try{standby.stop();}catch{}running.delete(standby);},30_000);
   };
   primary.start();
   return shared;

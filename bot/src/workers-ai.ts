@@ -34,6 +34,15 @@ const EMBEDDINGS_SWITCH = process.env.CONCIERGE_WORKERS_AI_EMBEDDINGS_FILE || "/
 export function workersAiEmbeddingsEnabled(): boolean {
   return workersAiConfigured() && existsSync(EMBEDDINGS_SWITCH);
 }
+/**
+ * Building and serving are separate steps. An empty switch file builds the Workers AI index beside the
+ * local one; writing `serve` into it, after the full-index routing comparison passes, lets the built
+ * index take over searches (read about once a minute, so no restart is needed).
+ */
+export function workersAiEmbeddingsServe(): boolean {
+  if (!workersAiEmbeddingsEnabled()) return false;
+  try { return readFileSync(EMBEDDINGS_SWITCH, "utf8").trim() === "serve"; } catch { return false; }
+}
 
 export class WorkersAiError extends Error {}
 

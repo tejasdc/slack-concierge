@@ -113,8 +113,10 @@ async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<Audi
  if(!explicitWhisper&&workersAiConfigured()){
   try{return await transcribeWithCloud(input,queuedMs);}
   catch(error){
-   if(error instanceof NoSpeech)throw error;
-   log('warn','transcriber_fallback',{engine:speechEngine.installed()?speechEngine.name:'whisper.cpp',from:'workers-ai-whisper',attachment_id:input.slackFileId,reason:error instanceof Error?error.message.slice(0,300):'unknown'});
+   // "No words" from the cloud is confirmed by the local engine before he is told a recording was
+   // silent: Whisper's voice-activity filter can drop quiet speech, and silent clips are short.
+   if(error instanceof NoSpeech&&!speechEngine.installed())throw error;
+   log(error instanceof NoSpeech?'info':'warn','transcriber_fallback',{engine:speechEngine.installed()?speechEngine.name:'whisper.cpp',from:'workers-ai-whisper',attachment_id:input.slackFileId,reason:error instanceof NoSpeech?'no_speech_confirming':error instanceof Error?error.message.slice(0,300):'unknown'});
   }
  }
  if(!explicitWhisper&&speechEngine.installed()){
@@ -138,7 +140,7 @@ async function transcribeWithCloud(input:TranscribeInput,queuedMs:number):Promis
  try{
   const converting=Date.now();
   // 16 kHz mono MP3 is what the model hears anyway and a quarter of the upload of WAV.
-  await runCommand('ffmpeg',['-y','-loglevel','error','-i',input.path,'-ar','16000','-ac','1','-b:a','48k','-f','segment','-segment_time',String(CLOUD_PIECE_SECONDS),'-reset_timestamps','1',join(pieceDir,'%04d.mp3')]);
+  await runCommand('ffmpeg',['-y','-loglevel','error','-i',input.path,'-map','0:a:0','-vn','-ar','16000','-ac','1','-b:a','48k','-f','segment','-segment_time',String(CLOUD_PIECE_SECONDS),'-reset_timestamps','1',join(pieceDir,'%04d.mp3')]);
   const pieces=(await readdir(pieceDir)).filter(name=>name.endsWith('.mp3')).sort();
   const transcribing=Date.now(),convertMs=transcribing-converting;
   const texts:string[]=[];let audioMs=0;
