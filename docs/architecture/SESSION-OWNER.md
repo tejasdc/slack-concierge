@@ -229,14 +229,16 @@ stays history. A peer origin answers each forwarded reply with `recorded`, `dupl
 start of this release rereads the peer's reply record for recent inferred peer closures.
 Stop ends only that run;
 new requests and later returns remain messageable through the same FIFO, while
-pause/archive still hold admission and return delivery. A sibling's reply can also settle a
-request: one recipient turn
-routinely carries several of a requester's questions, and when every input it received is
-such a request, an explicit final reply to any of them answers the rest. Requiring a reply
-to name each request ID made one turn that answered three questions confirm only the one
-the reply happened to name, which is a worse failure than no protocol at all, because
-every consumer above it then has to hedge finished work. The reply is what settles the
-siblings, never for a request that sent its own partial. The recipient session is one
+pause/archive still hold admission and return delivery. A final reply settles exactly the
+requests it names: its own and any it lists with `--also`. Sharing a recipient turn settles
+nothing. From September 17 to November 4, 2026 a sibling's explicit final also settled every
+other request the turn held, because replies could then name only one request and turns that
+answered three questions confirmed one. Once `--also` existed and the turn-end check sent a
+recipient back for each unanswered request, that rule only ever copied an answer onto a
+request it did not answer: the Inbox sends one request per thread, they steer into one turn,
+and on November 4 one thread's answer closed two other threads with the wrong text
+([failure record](../incidents/2026-11-04-one-reply-closed-sibling-requests.md)).
+The recipient session is one
 conversation: a run that follows an interruption may answer requests delivered to the
 earlier run. An ambiguous steering input cited by its own live run is a valid source. That is strong
 evidence of receipt rather than proof, because its ID derives from a request ID that another
@@ -373,15 +375,11 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   replacement message bytes, and no parallel task store or Slack route is introduced.
 
 - One recipient turn commonly holds several of a requester's questions: the first opens
-  it and later ones steer in, and the recipient answers them together. When every input
-  an acknowledged turn received is such a request, a sibling's explicit final reply
-  written at or after this request arrived settles this one too, with that reply's text
-  and disposition. A reply naming one request ID is not the only proof of an answer. A
-  turn that carried anything else, a reply from another requester, and a sibling's reply
-  to a request that sent its own partial never settle it. A sibling settled that way carries
-  the same words, so it shares the answer's return rather than starting another.
-  A steered request the provider never acknowledged follows its turn's confirmed terminal
-  state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
+  it and later ones steer in. Each is settled only by a reply that names it; a recipient
+  answering several together names them with `--also`, and each named request records its
+  own final with the same words. A sibling's reply never settles another request (see
+  "Requests and returns" and the November 4, 2026 failure record).
+  A steered request the provider never acknowledged can still act as a
   source input for its exact live run. That citation is strong evidence of receipt but not
   proof (the input ID derives from a request ID another message can quote), so it records
   no acknowledgement.
