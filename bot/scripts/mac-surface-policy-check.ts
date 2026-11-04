@@ -46,12 +46,12 @@ assert.equal(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',t
 for(const need of [canvasNeed,recoveryNeed])for(const code of [webAppCall,...['getAXState','getAXStateAndScreenshot','getScreenshot'].map(method=>
   `var thnkrCanvasInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrCanvasInspectionApp.${method}()` )])
   assert.equal(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
-for(const code of ["await cua.getApp('Safari')","await cua.getApp('Google Chrome')",'await cua.getState()',
+for(const need of [canvasNeed,recoveryNeed])for(const code of ["await cua.getApp('Safari')","await cua.getApp('Google Chrome')",'await cua.getState()',
   'await app.getAXState()','await app.getScreenshot()','await app.click(42)',"await app.pressKey('super+r')",
   `${webAppCall} await app.getScreenshot()`,
   "var thnkrCanvasInspectionApp = await cua.getApp('Safari'); await thnkrCanvasInspectionApp.getAXState()",
   "var thnkrCanvasInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrCanvasInspectionApp.click(42)"])
-  assert.ok(macSurfaceRefusal({command:null,need:canvasNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),code);
 for(const need of [{...canvasNeed,why:'Inspect the exact app without a page ID'},
   {...canvasNeed,why:canvasNeed.why.replace('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792','com.apple.Safari.WebApp.other')},
   {...recoveryNeed,effectScope:'informational'},
@@ -73,10 +73,10 @@ for(const code of [
 ]) assert.ok(macSurfaceRefusal({command:null,need:webInspectorNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}));
 assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getState()'}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/exact thnkr.ing web app/);
-assert.equal(macSurfaceRefusal({command:null,need:{...webAppNeed,why:'Inspect the Mac app'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}}),null);
+assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,why:'Inspect the Mac app'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:'await cua.getApp("Firefox")'}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
 assert.match(macSurfaceRefusal({command:null,need:{kind:'mac-app',why:'Inspect the already-open thnkr.ing app com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
-assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,effectScope:'informational'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact bundle and page IDs/);
+assert.match(macSurfaceRefusal({command:null,need:{...webAppNeed,effectScope:'informational'},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:webAppCall}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Safari')"}})??'',/exact thnkr.ing web app/);
 assert.match(macSurfaceRefusal({command:null,need:'mac-app',platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/personal browser/);
 assert.match(macSurfaceRefusal({command:null,need:webAppNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:"await cua.getApp('Thinkering')"}})??'',/exact thnkr.ing web app/);

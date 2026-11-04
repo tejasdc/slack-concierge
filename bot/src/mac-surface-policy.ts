@@ -14,6 +14,12 @@ function authorizedWebAppNeed(need:RecordedNeed,toolName:string):need is Exclude
     &&COMPUTER_CONTROL.test(toolName);
 }
 
+function restrictedWebAppTask(need:RecordedNeed,toolName:string):boolean {
+  return authorizedWebAppNeed(need,toolName)
+    ||(typeof need!=='string'&&COMPUTER_CONTROL.test(toolName)
+      &&(need.humanInputId===AUTHORIZING_HUMAN_INPUT||need.humanInputId===CANVAS_AUTHORIZING_HUMAN_INPUT));
+}
+
 function exactWebAppSelector():string {
   const quoted=AUTHORIZED_WEB_APP.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return `cua\\.getApp\\(\\s*(['"])${quoted}\\1\\s*\\)`;
@@ -60,11 +66,11 @@ export function macSurfaceRefusal(input:{command:string|null;toolName:string;too
   const code=typeof details.code==='string'?details.code:'';
   const kind=typeof need==='string'?need:need.kind;
   if(platform==='darwin'&&macComputerUseCall(toolName,toolInput)
-      &&authorizedWebAppNeed(need,toolName)
+      &&restrictedWebAppTask(need,toolName)
       &&!authorizedWebAppInspection(need,toolName,code)&&!authorizedWebAppRead(need,toolName,code)
       &&!authorizedScopedRead(need,toolName,code)
       &&!authorizedWebAppInspectorOpen(need,toolName,code))
-    return need.humanInputId!==AUTHORIZING_HUMAN_INPUT
+    return typeof need!=='string'&&need.humanInputId!==AUTHORIZING_HUMAN_INPUT
       ? 'This human work authorization covers only passive inspection of the exact thnkr.ing web app. Select its bundle again in the same Computer Use program as each read; Inspector, input, other apps and whole-screen calls remain refused.'
       : 'This authorization covers the exact thnkr.ing web app: passive inspection, or opening Web Inspector with the exact-bundle shortcut when that action is named in the recorded Mac-app need. Other app, browser, page input and whole-screen actions remain refused.';
   if(platform==='darwin'&&(CHROME_CONTROL.test(tool)||namedToolCall(CHROME_CONTROL,code)))
