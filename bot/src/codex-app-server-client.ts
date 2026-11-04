@@ -33,7 +33,7 @@ interface PendingRequest {
   method: string;
   resolve(value: any): void;
   reject(error: Error): void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout: ReturnType<typeof setTimeout> | undefined;
   onAccepted?(value: any): void;
 }
 
@@ -53,12 +53,23 @@ interface ActiveConnection {
 type NotificationListener = (event: any) => void;
 type DisconnectListener = (error: Error, generation: number) => void;
 
+export interface CodexRequestOptions {
+  requestTimeoutMs?: number;
+  /**
+   * Wait for the answer for as long as this connection lives. For a request the App Server
+   * keeps working on after any deadline (a cold thread/resume loads the whole rollout), giving
+   * up and asking again only stacks another load; a disconnect still rejects it.
+   */
+  untilDisconnect?: boolean;
+  onAccepted?: (value: any) => void;
+}
+
 export interface CodexAppServerClientLike {
   connect(): Promise<number>;
   request(
     method: string,
     params: unknown,
-    options?: { requestTimeoutMs?: number; onAccepted?: (value: any) => void },
+    options?: CodexRequestOptions,
   ): Promise<any>;
   notify(method: string, params?: unknown): Promise<void>;
   onNotification(listener: NotificationListener): () => boolean;
@@ -107,7 +118,7 @@ export class CodexAppServerClient {
   async request(
     method: string,
     params: unknown,
-    options: { requestTimeoutMs?: number; onAccepted?: (value: any) => void } = {},
+    options: CodexRequestOptions = {},
   ): Promise<any> {
     const generation = await this.connect();
     const connection = this.active;
@@ -117,7 +128,7 @@ export class CodexAppServerClient {
     const id = ++this.requestId;
     const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     return new Promise<any>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const timeout = options.untilDisconnect ? undefined : setTimeout(() => {
         this.pending.delete(id);
         reject(new CodexAppServerUnansweredError(
           `Codex app-server ${method} timed out after ${requestTimeoutMs}ms.`,
