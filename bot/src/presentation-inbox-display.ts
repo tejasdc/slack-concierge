@@ -1,7 +1,7 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRootResolver} from './presentation-message-source';
 import {inboxAttribution} from './inbox-attribution-read';
-import {routeTitle} from './inbox-request-root';
+import {requestPromptInputId,routeTitle} from './inbox-request-root';
 import {messageDeliveryReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
@@ -52,8 +52,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   }
   const result=row.kind==='result',post=row.kind==='post',request=row.kind==='request',agent=result||post||request;
   const promptInputId=request&&typeof event.requestId==='string'
-    ?((database.query('SELECT source_input_id AS id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(event.requestId,sessionId)
-      ??database.query('SELECT source_input_id AS id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(event.requestId,sessionId)) as {id:string|null}|null)?.id
+    ?requestPromptInputId(database,event.requestId,sessionId)
     :null;
   const displayedRoot=post||request?inboxRootResolver(database)(sessionId,row.event_id)??row.input_id:row.input_id;
   const content=post?event.text??'':request?threadRequestDisplay(database,event):result?event.text??row.agent_text??'':payload.text??'';
