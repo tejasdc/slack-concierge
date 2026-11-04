@@ -1,7 +1,7 @@
 ---
 failure: Every Codex session's turn failed with "thread/resume timed out" for six minutes because one session's resume asked the shared App Server for a 218 MB conversation's whole history.
 date: 2026-11-04
-fix_commits: []
+fix_commits: [69eb074c]
 cause_status: best-explanation
 ---
 
@@ -40,9 +40,26 @@ Turn-path resumes (fresh dispatch, legacy per-turn process and reconciliation) n
 `excludeTurns: true`. Reconciliation already reads history separately through `thread/read`.
 The observers already excluded turns.
 
+## Second fix (same day)
+
+The first fix was not enough. The 19:13 release restart closed Concierge's App Server connection,
+and the App Server unloaded threads with no listener (6967's at 19:14:08). The next resumes of
+6967 and of sessions 8434, 8483 and 8503 had to cold-load again on a host with load average 90 and
+30 GB of swap in use, and they timed out at 30 s. 6967 was refused on its first attempt because
+its five-attempt thread budget was already spent. Codex 0.162 still loads the whole rollout for a
+cold resume even with `excludeTurns`. It queues resumes per thread, across connections
+(confirmed from its source by a GPT-6 Sol review). Once loaded, 6967 resumed in 82 ms.
+
+What actually lost the work was Concierge's. At 30 s the client dropped its interest in the resume
+while the App Server kept loading. The retry sent another resume, and the fifth timeout refused
+the turn. Now the shared turn path waits for its resume answer for as long as the connection
+lives. Stop or a disconnect ends the wait, and a `codex_resume_waiting` warning is logged every
+30 s while it waits. An unanswered resume therefore never spends the retry budget or refuses a
+turn.
+
 ## Acceptance scenario
 
 - **Seed:** a Codex session whose thread has a very large history and is not loaded in the App Server.
 - **Action:** a new turn is dispatched to it while other Codex sessions start turns.
-- **Expected:** the turn's `thread/resume` asks for `excludeTurns: true`, and no other session's resume times out.
+- **Expected:** the turn's `thread/resume` asks for `excludeTurns: true` and waits for its answer with no deadline, Stop still ends the wait, and the turn is never refused for a slow resume.
 - **Replayable offline:** partly (the request parameters are checked in `bot/tests/codex.test.ts`; the load-time effect needs a live App Server).
