@@ -58,6 +58,12 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
 - The canonical owner, not agent memory, enforces Inbox placement, attention and
   delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
+  Failed, cancelled or stalled agent attempts leave his Inbox request open for
+  durable recovery; checked completion, a live only-he-can question, or
+  Tejas's own withdrawal determines what happens next. See
+  [native Inbox](docs/contracts/native-inbox.md).
+  Native Codex helpers cannot close or cancel their parent session's task through
+  the router command; see the [failure record](docs/incidents/2026-11-04-inbox-failed-attempts-closed-human-work.md).
   See [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
   [routing handoffs](docs/contracts/native-inbox.md#routing-handoffs-on-the-source-message),
   [human questions](docs/architecture/HUMAN-QUESTIONS.md), and

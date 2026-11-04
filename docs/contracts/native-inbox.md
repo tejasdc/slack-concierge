@@ -398,12 +398,26 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   settle that request, and a reply after closure reopens it while that work runs. Sharing a
   thread or agent does not establish that a new question continues earlier work: the October 16
   Fully Kiosk answer otherwise closed an unfinished lyrics build in the same thread.
-- Once nothing sent for an open request is running, its latest answer decides (owner event
-  `topic-settle:<request>:<work>`): done closes it `completed` under `refuseUnfinishedCompletion`,
-  an agent's `failed` closes it `failed`, a cancelled send closes it `withdrawn`, and a decision
-  he still owes keeps it open. Any other end (never answered, undetermined, a decision nobody
-  waits on, held behind failed work) is flagged once per request and work to the router as one
-  service notice per pass (`topic-flag:<request>:<work>`), which sends it again, closes it or asks.
+- Once nothing sent for an open request is running, an answer explicitly marked completed
+  with a real check closes it `completed`
+  under `refuseUnfinishedCompletion`; his own Stop withdraws the stopped attempt. A failed,
+  cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
+  gives the Inbox router a retained recovery input with the exact request and latest attempt.
+  If the router's input ends without a replacement dispatch or checked completion, upkeep
+  sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
+  day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
+  eligible on the next pass. The input and flag have stable identities across restart. A request with no linked
+  human source still reaches the router for provenance investigation; that notice carries no
+  claim of human authorization. The router inspects prior effects before sending remaining work;
+  it cannot close the request
+  as failed merely because an agent could not finish. Declined or withdrawn closure requires
+  a later human message in that thread as evidence. A superseded
+  close names a real replacement Inbox request that is still open or completed and carries
+  the same source, unless a later human message in the thread authorizes the change. It cannot
+  expire a live decision question. That question must be carried to the replacement or
+  explicitly settled with a proven replacement question. A question only he can answer
+  remains open in its thread. A question still being prepared by an agent is recovery work,
+  not a reason to leave the task waiting on Tejas.
 - A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
   owner) at the moment its last request or question ends or an agent's final answer arrives,
   when no request is open, nothing waits on him (an unread answer counts, as does a question set

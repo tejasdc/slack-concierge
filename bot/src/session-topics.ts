@@ -6,7 +6,7 @@ import {consumeThreadNotification,hasPendingThreadNotification,messageAlreadyNot
 import {createHash,randomUUID} from 'node:crypto';
 import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
-import {getAcceptedSessionInput,humanAuthored,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
+import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {inboxRequestRoot} from './inbox-request-root';
@@ -1320,8 +1320,8 @@ function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null
   return roots.map(rootInputId=>({rootInputId,topicId,placedAt:at,placedBy:by,reason}));
 }
 /**
- * A request he made closes as completed only when the work sent for it finished: every linked
- * dispatch answered as done and no question for it still open. On 2026-10-02 a request closed
+ * A request he made closes as completed only when the latest linked attempt explicitly finished
+ * and was checked, every earlier attempt ended, and no decision question remains open. On 2026-10-02 a request closed
  * completed with the reason "paid bodies not read", over a worker reply that said the same, and
  * the unmet half of what he asked never reached him [decision: act-then-tell].
  */
@@ -1331,25 +1331,19 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest) {
     return local??db.query('SELECT outcome,result_json FROM session_peer_requests WHERE request_id=?').get(id) as {outcome:string|null;result_json:string|null}|null;
   };
   const done=(row:{outcome:string|null;result_json:string|null})=>{
-    const disposition=row.result_json?JSON.parse(row.result_json).workDisposition:undefined;
-    return row.outcome==='answered'&&(disposition===undefined||disposition==='completed');
+    if(row.outcome!=='answered'||!row.result_json)return false;
+    try{return JSON.parse(row.result_json).workDisposition==='completed'&&!notSeenWorkingOf(row.result_json);}
+    catch{return false;}
   };
   // The latest dispatch is where the work stands: an earlier one that asked a question or
   // failed was answered by sending the work again (2026-10-04, a proposal answered
   // needs_decision, then built by a second dispatch). Anything still running is unfinished.
-  const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}))
-    .filter(dispatch=>dispatch.row);
+  const dispatches=(request.dispatches??[]).map((dispatch:any)=>({id:String(dispatch?.requestId??''),row:settled(String(dispatch?.requestId??''))}));
   const latest=dispatches.at(-1);
-  // One dispatch can serve several of his requests and cannot say which part fell short. Its
-  // shortfall only needs a home: while another request it served is still open or closed as not
-  // done, this one may close completed (2026-10-05: monitor and arm done, Amazon cart blocked).
-  const shortfallOwnedElsewhere=(dispatchId:string)=>(db.query(`SELECT request_id,state,disposition FROM inbox_requests
-      WHERE request_id<>? AND dispatches_json LIKE ?`).all(request.requestId,`%"requestId":"${dispatchId}"%`) as {request_id:string;state:string;disposition:string|null}[])
-    .some(sibling=>!(sibling.state==='closed'&&sibling.disposition==='completed'));
-  const unfinished=dispatches.filter(dispatch=>!dispatch.row!.outcome
-      ||(dispatch===latest&&!done(dispatch.row!)&&!shortfallOwnedElsewhere(dispatch.id))).map(dispatch=>({requestId:dispatch.id}));
+  const unfinished=dispatches.filter(dispatch=>!dispatch.row?.outcome
+      ||(dispatch===latest&&dispatch.row!==null&&!done(dispatch.row))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
-  if(questionsOfRequest(topic.topicId,request).some(question=>OPEN_QUESTION_STATES.includes(question.state)))
+  if(questionsOfRequest(topic.topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
     throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
 }
 function parseSources(values:unknown):{inputId:string;passage?:string}[] {
@@ -1793,6 +1787,8 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const scope=text(body?.scope,'--scope',2000),why=text(body?.reason,'reason');
       return agentMutation(actor,actionId(),{kind:'topic-close',topicId:body?.topic_id,scope,reason:why},()=>{
         const topic=topicFor(body?.topic_id);
+        const openRequests=topicRequests(topic.topicId).filter(request=>request.state==='open');
+        if(openRequests.length)throw new TopicError(`This thread still owns ${openRequests.length} open request(s); finish or replace their work before closing it.`,409,'TOPIC_REQUESTS_OPEN');
         const at=nowIso();
         // Closing the thread ends every question still open in it, each recorded with the
         // closure's reason: a closed thread is no place for something that waits on him (six
@@ -1884,6 +1880,27 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return agentMutation(actor,actionId(),{kind:'topic-request-close',requestId:body?.request_id,disposition,evidence,reason:why},()=>{
         const request=requestRow(text(body?.request_id,'request id',200));
         const topic=topicFor(request.topicId);
+        if(disposition==='failed')throw new TopicError('An agent failure cannot close the underlying request. Send the remaining work onward.',409,'REQUEST_RECOVERY_REQUIRED');
+        const laterHumanEvidence=evidence.some(id=>{
+          const input=getAcceptedSessionInput(id);
+          if(input?.origin!=='human'||new Date(input.created_at).getTime()<new Date(request.createdAt).getTime())return false;
+          const root=inboxThreadRoot(input.session_id,input.id);
+          return !!root&&topicOfRoot(root)===request.topicId;
+        });
+        if(['declined','withdrawn'].includes(disposition)&&!laterHumanEvidence)
+          throw new TopicError('A withdrawal needs Tejas’s later message in this thread as evidence. An agent failure cannot withdraw his request.',409,'REQUEST_HUMAN_WITHDRAWAL_REQUIRED');
+        if(disposition==='superseded'&&!evidence.some(id=>{
+          const replacementRow=db.query('SELECT * FROM inbox_requests WHERE request_id=? AND request_id<>?')
+            .get(id,request.requestId) as any|null;
+          if(!replacementRow)return false;
+          const replacement=toStoredRequest(replacementRow);
+          const sources=new Set(request.sources.map(source=>source.inputId));
+          const sameSource=replacement.sources.some(source=>sources.has(source.inputId));
+          return (replacement.state==='open'||replacement.disposition==='completed')&&(sameSource||laterHumanEvidence);
+        }))throw new TopicError('A superseded request needs a live or completed replacement carrying the same source, or Tejas’s later instruction in this thread.',409,'REQUEST_REPLACEMENT_REQUIRED');
+        if(disposition==='superseded'&&questionsOfRequest(topic.topicId,request)
+          .some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
+          throw new TopicError('This request still has a live question for Tejas. Explicitly carry that question into the replacement or settle it with a proven replacement question before closing.',409,'REQUEST_QUESTION_OPEN');
         if(disposition==='completed')refuseUnfinishedCompletion(topic,request);
         const at=nowIso();
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
@@ -2686,10 +2703,9 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  * finish" answer goes into the thread instead of to the router, so nobody ever closed its request;
  * and no thread ever closed itself. The rules, all decided here and by the owner:
  * - A request follows its work. Once nothing sent for it is running, its latest answer decides:
- *   done closes it completed (the same rule the router is held to), an agent's "could not finish"
- *   closes it failed (that answer is already in the thread and filed for him), and a send that was
- *   cancelled closes it withdrawn. Any other end (never answered, undetermined, a decision nobody is
- *   waiting on any more) is flagged once to the router, which sends it again, closes it or asks him.
+ *   done closes it completed (the same rule the router is held to). A failed or cancelled attempt
+ *   leaves his request open and sends it back for recovery. His own Stop withdraws that attempt.
+ *   Any other end is also sent to the router for recovery.
  * - A thread closes itself when the last thing in it ends: no open request, nothing waiting on him
  *   (an unread answer counts), no work running for it, not set aside. It is decided at that ending
  *   (a request closing, a question ending, an agent's final answer), never by a pass over quiet
@@ -2697,7 +2713,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
  * - A closed thread reopens when he writes in it or new work is placed there.
  */
 const OWNER_BY:TopicBy={kind:'owner'};
-type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number;
+type Work={id:string;outcome:string|null;disposition:string|null;target:string|null;createdAtMs:number;stalled:boolean;
+  stoppedByTejas?:boolean;
   /** Completed without a live check: what its worker said has not been seen working yet. */
   notSeenWorking?:string|null};
 const dispositionOf=(resultJson:string|null)=>{
@@ -2708,23 +2725,27 @@ const notSeenWorkingOf=(resultJson:string|null)=>{
   if(!resultJson)return null;
   try{return notSeenWorking(JSON.parse(resultJson).closingLine);}catch{return null;}
 };
+const stoppedByTejasOf=(resultJson:string|null)=>{
+  if(!resultJson)return false;
+  try{return JSON.parse(resultJson)?.output?.stoppedBy==='tejas';}catch{return false;}
+};
 function workRow(id:string):Work|null {
-  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as any;
-  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,notSeenWorking:notSeenWorkingOf(local.result_json)};
-  const peer=db.query('SELECT peer,remote_session_id,outcome,result_json,created_at_ms FROM session_peer_requests WHERE request_id=?').get(id) as any;
-  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,notSeenWorking:notSeenWorkingOf(peer.result_json)}:null;
+  const local=db.query('SELECT target_session_id,outcome,result_json,created_at_ms,stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as any;
+  if(local)return {id,outcome:local.outcome,disposition:dispositionOf(local.result_json),target:`concierge:${local.target_session_id}`,createdAtMs:local.created_at_ms,stalled:local.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(local.result_json),stoppedByTejas:stoppedByTejasOf(local.result_json)};
+  const peer=db.query('SELECT peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms FROM session_peer_requests WHERE request_id=?').get(id) as any;
+  return peer?{id,outcome:peer.outcome,disposition:dispositionOf(peer.result_json),target:receiveSessionFromPeer(peer.remote_session_id,peer.peer),createdAtMs:peer.created_at_ms,stalled:peer.stalled_at_ms!==null,notSeenWorking:notSeenWorkingOf(peer.result_json),stoppedByTejas:stoppedByTejasOf(peer.result_json)}:null;
 }
 /** His replies in a thread that went to an agent (`forwardReply`), each with the root it was sent for. */
 type Forward=Work&{root:string|null;inboxInputId:string|null};
 function forwardedReplies():Forward[] {
-  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,thread_root_input_id,
+  const local=(db.query(`SELECT request_id,target_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_communication_requests
     WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
-  const peer=(db.query(`SELECT request_id,peer,remote_session_id,outcome,result_json,created_at_ms,thread_root_input_id,
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:`concierge:${row.target_session_id}`,createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+  const peer=(db.query(`SELECT request_id,peer,remote_session_id,outcome,result_json,created_at_ms,stalled_at_ms,thread_root_input_id,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS inbox_input_id FROM session_peer_requests
     WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL`).all() as any[])
-    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
+    .map(row=>({id:row.request_id,outcome:row.outcome,disposition:dispositionOf(row.result_json),target:receiveSessionFromPeer(row.remote_session_id,row.peer),createdAtMs:row.created_at_ms,stalled:row.stalled_at_ms!==null,root:row.thread_root_input_id,inboxInputId:row.inbox_input_id}));
   return [...local,...peer].sort((first,second)=>first.createdAtMs-second.createdAtMs);
 }
 /** The work whose posted answer his forwarded reply replied to, when he replied to one. */
@@ -2832,7 +2853,7 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
     for(const request of targets) {
       if(request.dispatches.some((dispatch:any)=>dispatch.requestId===forward.id))continue;
       const earlier=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
-      const running=forward.outcome===null;
+      const running=forward.outcome===null&&!forward.stalled;
       if(request.state==='closed'&&!running)continue;
       const dispatch={requestId:forward.id,targetSessionId:forward.target,targetTitle:null,outcome:forward.outcome,state:null,forwardedReply:true};
       const created=new Map(earlier.map(work=>[work.id,work.createdAtMs]));
@@ -2849,42 +2870,92 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
   return linked;
 }
 
-type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string};
+type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string;sourceInputId:string|null;sourceRunId:string|null;sourceUncertain:boolean};
+function recoverySource(request:StoredRequest):{inputId:string;runId:string;uncertain:boolean}|null {
+  const dispatchSources=request.dispatches.flatMap((dispatch:any)=>{
+    const id=String(dispatch?.requestId??'');
+    const local=db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=?').get(id) as {source_input_id:string}|null;
+    const peer=local?null:db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=?').get(id) as {source_input_id:string}|null;
+    return [local?.source_input_id??peer?.source_input_id].filter((value):value is string=>!!value);
+  });
+  const linked=[...request.sources.map(source=>source.inputId),...dispatchSources];
+  const candidates=[...linked,...topicRoots(request.topicId)];
+  for(const [index,id] of candidates.entries()){
+    const input=getAcceptedSessionInput(id);
+    if(!input?.turn_id||!(input.origin==='human'||sessionInputProvenance(input)?.originatingHuman))continue;
+    if(input.origin==='human'&&new Date(input.created_at).getTime()>new Date(request.createdAt).getTime())continue;
+    return {inputId:input.id,runId:nativeRunId(input.turn_id),uncertain:index>=linked.length};
+  }
+  return null;
+}
+/** A recovery remains due until another dispatch is linked or a checked completion closes it. */
+function nextRecoveryAttempt(item:Stuck):number|null {
+  const prefix=`topic-flag:${item.key}:`;
+  const latest=db.query(`SELECT event_id,payload_json,created_at FROM session_owner_events WHERE event_id>=? AND event_id<? ORDER BY sequence DESC LIMIT 1`)
+    .get(prefix,`${prefix}\uffff`) as {event_id:string;payload_json:string;created_at:string}|null;
+  if(!latest){
+    // Old one-shot flags have no tracked continuation. Give them a fresh durable attempt.
+    return db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`topic-flag:${item.key}`)?1:0;
+  }
+  const payload=JSON.parse(latest.payload_json);
+  const inputId=typeof payload.recoveryInputId==='string'?payload.recoveryInputId:null;
+  if(!inputId)return Number(latest.event_id.slice(prefix.length))+1;
+  const input=db.query('SELECT turn_id,steering_id FROM session_inputs WHERE id=?').get(inputId) as {turn_id:number|null;steering_id:number|null}|null;
+  if(!input)return Number(latest.event_id.slice(prefix.length))+1;
+  const turnId=input.turn_id??(input.steering_id===null?null:(db.query('SELECT turn_id FROM turn_steering_messages WHERE id=?').get(input.steering_id) as {turn_id:number}|null)?.turn_id??null);
+  if(turnId===null)return null;
+  const turn=carryingTurn(turnId);
+  if(!turn||!['done','error','cancelled'].includes(turn.status))return null;
+  const attempt=Number(latest.event_id.slice(prefix.length))+1;
+  // Repeated router refusals remain due, but do not turn one stuck task into a hot loop.
+  const interval=Math.min(24*60*60*1000,15*60*1000*2**Math.min(attempt-1,7));
+  return Date.now()-new Date(latest.created_at).getTime()>=interval?attempt:null;
+}
 /**
- * Settles the open requests whose work has all ended, by the latest answer. Returns the requests
- * whose work ended without an answer this can act on, for the router.
+ * Settles open requests with checked completion or an explicit human Stop. Returns all other
+ * obligations with no live attempt or ready question to the router for recovery.
  */
 function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
   const stuck:Stuck[]=[];
   let settled=0;
   for(const request of topicRequests(topicId).filter(item=>item.state==='open')) {
     const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
-    if(!works.length||works.some(work=>work.outcome===null))continue;
-    const latest=works.at(-1)!;
+    if(works.some(work=>work.outcome===null&&!work.stalled))continue;
+    if(!works.length&&Date.now()-new Date(request.createdAt).getTime()<15*60*1000)continue;
+    const latest=works.at(-1);
     const topic=topicRow(topicId);
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
-    const waitingOnHim=questionsOfRequest(topicId,request).length>0||topicQuestions(topicId).some(question=>question.state==='deferred'
+    const waitingOnHim=questionsOfRequest(topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
+      &&questionReadiness(question)==='ready'&&(question.blocking||!question.optional))||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
     let disposition:string|null=null,why='';
-    if(latest.outcome==='answered'&&(latest.disposition===null||latest.disposition==='completed')) {
-      try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
+    let completionChecked=false;
+    if(latest?.outcome==='answered'&&latest.disposition==='completed') {
+      try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
+      catch(error){if(!(error instanceof TopicError))throw error;}
       // Work done but never seen working is not done: on 2026-10-31 a phone repair closed as done,
       // and its thread with it, 45 seconds after its answer said his phone had not run the fix yet
       // (aaaad41d). It stays open, with that answer in the thread, until someone who has seen it
       // working (or he) closes it.
-      if(latest.notSeenWorking)continue;
-      disposition='completed';why='The work sent for it answered as done.';
-    } else if(latest.disposition==='failed'&&!waitingOnHim) {
-      disposition='failed';why='The agent answered that it could not finish; that answer is in this thread.';
-    } else if(latest.outcome==='canceled'&&!waitingOnHim) {
-      disposition='withdrawn';why='The work sent for it was cancelled and nothing replaced it.';
-    } else if(waitingOnHim) {
+      if(completionChecked){disposition='completed';why='The work sent for it answered as done.';}
+    } else if(latest?.outcome==='canceled'&&latest.stoppedByTejas&&!waitingOnHim) {
+      disposition='withdrawn';why='Tejas stopped the work.';
+    }
+    if(!disposition&&waitingOnHim) {
       continue;
-    } else {
-      const how=latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
+    }
+    if(!disposition) {
+      const how=!latest?'has had no agent assigned'
+        :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
+        :latest.stalled?'stalled without a final reply'
+        :latest.disposition==='failed'?'failed without finishing the task'
+        :latest.outcome==='canceled'?'was cancelled without a replacement'
+        :latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
         :latest.outcome==='unanswered'?'never answered':latest.outcome==='undetermined'?'ended without saying whether it was done'
         :latest.outcome==='dependency_failed'?'was held behind work that did not succeed':`ended as ${latest.outcome}`;
-      stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest.id,how,key:`${request.requestId}:${request.revision}:${latest.id}`});
+      const source=recoverySource(request);
+      stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
+        key:`${request.requestId}:${request.revision}:${latest?.id??'unassigned'}`,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});
       continue;
     }
     const at=nowIso();
@@ -2948,25 +3019,27 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
     try{stuck.push(...keepThreadCurrent(topicId,forwards));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
   }
-  const fresh=stuck.filter(item=>!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`topic-flag:${item.key}`));
+  const fresh=stuck.flatMap(item=>{const attempt=nextRecoveryAttempt(item);return attempt===null?[]:[{...item,attempt}];});
+  let flagged=0;
   if(fresh.length&&admit) {
-    const lines=fresh.map(item=>`- "${item.title}" (${item.requestId}) in the thread "${item.topicTitle}" (${item.topicId}): the work sent for it (${item.work}) ${item.how}.`);
-    const inputId=`thread-upkeep:${createHash('sha256').update(fresh.map(item=>item.key).sort().join(',')).digest('hex')}`;
-    try {
+    for(const item of fresh)try {
+      // Keep historical recovery from flooding one router turn. A refused admission does not
+      // consume capacity, so an inaccessible first request cannot starve every later one.
+      if(flagged>=5)break;
+      const inputId=`thread-upkeep:${createHash('sha256').update(`${item.key}:${item.attempt}`).digest('hex')}`;
       // An input already retained under this id was admitted by an earlier pass; only its flags are missing.
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId))
-        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:inputId,sourceRunId:inputId,requestId:inputId,
-          text:`These thread requests are still open, but the work sent for them has ended and nothing else is running for them:\n${lines.join('\n')}\nFor each, decide: send the work again (sessions ask … --thread, then topics request link), close it with the disposition that is true (topics request close … --disposition failed|withdrawn|superseded|completed), or, only if no agent can settle it, ask him in that thread. Each thread closes itself once nothing in it is open or waiting on him. You do not need to reply to this.`});
-      for(const item of fresh)recordSessionEvent({eventId:`topic-flag:${item.key}`,sessionId:session.id,kind:'topic_request',
-        payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,reason:`Its work ${item.how}.`}});
-    } catch(error) {
-      log('error','inbox_thread_upkeep_flag_failed',{requests:fresh.length,message:error instanceof Error?error.message:String(error)});
-    }
+        admit({sessionId:session.id,inputId,origin:'service',sourceInputId:item.sourceInputId??inputId,sourceRunId:item.sourceRunId??inputId,requestId:item.requestId,
+          text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link). Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
+      recordSessionEvent({eventId:`topic-flag:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
+        payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
+      flagged++;
+    } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
   }
   const closed=(db.query("SELECT count(*) AS count FROM inbox_topics WHERE session_id=? AND state='closed'").get(session.id) as {count:number}).count-closedBefore;
   const settled=openRequestsBefore-(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
-  if(closed||settled||fresh.length)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged:admit?fresh.length:0,stuck:stuck.length});
-  return {threads:open.length,closed,settled,flagged:admit?fresh.length:0};
+  if(closed||settled||flagged)log('info','inbox_threads_kept_current',{threads:open.length,closed,settled,flagged,stuck:stuck.length});
+  return {threads:open.length,closed,settled,flagged};
 }
 
 /* ------------------------------------------------------------------ title drift */
