@@ -36,6 +36,13 @@ peer. A separate completed reply can honestly say `--not-checked`; that
 qualifier now leaves the human task open for verification without replaying its
 prior effect.
 
+A later read-only live query found 35 exact-message work sends since October 1,
+34 without any linked Inbox request. This is a third historical audit cohort,
+separate from the 85 candidate request rows and 77 forwarded replies; the
+cohorts may overlap and must not be added as distinct unfinished tasks. The
+Inbox router received the exact request and source IDs for effect-aware
+reconciliation before any historical action is repeated.
+
 ## Cause
 
 The owner treated a terminal agent attempt as a terminal human task. Its one-shot
