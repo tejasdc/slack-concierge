@@ -21,10 +21,13 @@ export function startProviderHistoryWarmer(defaultCwd:string):()=>void {
     return sessionMetadata(session).cwd??channel?.code_path??channel?.vault_path??defaultCwd;
   };
   const pass=async()=>{
+    // Busy conversations are found through the partial running and queued indexes. Reading each
+    // turn's status instead walked every Claude turn's stored text once a minute (2026-11-03).
     const due=(db.query(`SELECT s.*,MAX(t.id) AS latest_turn_id FROM sessions s JOIN turns t ON t.session_id=s.id
       WHERE s.provider_id='claude-code' AND s.agent_session_uuid IS NOT NULL
-      GROUP BY s.id HAVING SUM(t.status IN ('queued','running','delivering'))=0
-      ORDER BY latest_turn_id DESC`).all() as (SessionRow&{latest_turn_id:number})[])
+        AND NOT EXISTS (SELECT 1 FROM turns busy WHERE busy.session_id=s.id AND busy.status IN ('running','delivering'))
+        AND NOT EXISTS (SELECT 1 FROM turns waiting WHERE waiting.session_id=s.id AND waiting.status='queued')
+      GROUP BY s.id ORDER BY latest_turn_id DESC`).all() as (SessionRow&{latest_turn_id:number})[])
       .filter(session=>prepared.get(session.id)!==session.latest_turn_id);
     if(!due.length)return;
     const started=performance.now(),outcomes:Record<string,number>={};

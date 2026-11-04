@@ -67,9 +67,11 @@ export { MANAGED_CODEX };
  */
 export function runningCodexTurns(): number {
   try {
+    // The IN term lets SQLite use the partial running-turn index; without it this check, run on
+    // every execution change, walked every Codex turn's stored text (2026-11-03).
     const row = db.query(`SELECT COUNT(*) AS count FROM turns
       JOIN sessions ON sessions.id = turns.session_id
-      WHERE turns.status = 'running' AND sessions.provider_id = 'codex'`)
+      WHERE turns.status IN ('running','delivering') AND turns.status = 'running' AND sessions.provider_id = 'codex'`)
       .get() as { count: number } | null;
     return row?.count ?? 0;
   } catch {
