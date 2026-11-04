@@ -342,12 +342,19 @@ export function turnPostedInto(sessionId:number,turnId:number,root:string):boole
 /**
  * A finished turn that owed a thread its answer and never posted has its closing text
  * relayed there by the owner, as the router's reply, so the answer reaches the thread rather
- * than vanishing. An explicit `sessions outcome` is refused before this point; the relay is
- * for turns that ended without one. Returns the thread relayed into, or null.
+ * than vanishing. An explicit routing-only `done` is already visible on the source
+ * message and must not be relayed. Returns the thread relayed into, or null.
  */
 export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;inputId:string;text:string;attachments?:string[]}):string|null {
   const session=db.query('SELECT * FROM sessions WHERE id=?').get(result.sessionId) as SessionRow|null;
   if(!session)return null;
+  // A deliberate routing-only `done` has already put its answer on the source
+  // message's handoff. The relay runs before result outcome recording, so check
+  // the action declaration and retained result rather than the derived outcome.
+  if(db.query(`SELECT 1 FROM session_owner_events event
+      JOIN session_inputs input ON input.id=event.input_id
+      WHERE event.session_id=? AND event.turn_id=? AND (${routedTurnResultSql}) LIMIT 1`)
+    .get(result.sessionId,result.turnId))return null;
   const root=threadOwedByTurn(session,result.inputId);
   if(!root||!result.text.trim()||turnPostedInto(result.sessionId,result.turnId,root))return null;
   const eventId=`post:relay:${result.turnId}`;

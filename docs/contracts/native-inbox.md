@@ -553,7 +553,8 @@ points to that carrier request for details; routing the same source into several
 produces several entries under that source, not a guessed destination from the latest turn.
 
 A router turn that routes Tejas's input and explicitly declares `done` has no second conversation reply
-from its closing text. The closing text stays in the session history. A requested answer or
+from its closing text, including the owner relay for an agent-authored routed input. The closing
+text stays in the session history. A requested answer or
 necessary question is posted into the thread deliberately; declaring `response` or `needs_you`
 after routing is refused until the turn posts there. A routed turn that fails, or an older
 unclassified closing answer, remains visible rather than silently losing substance. The
