@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {macSurfaceRefusal} from '../src/mac-surface-policy';
+import {macSurfaceRefusal,RETIREMENT_FILE_MENU_PROGRAM} from '../src/mac-surface-policy';
 import {parseMachineNeed} from '../src/machine-need';
 import {deviceQuestionNamesPhysicalPrerequisite} from '../src/agent-reachable-app-question';
 
@@ -43,6 +43,26 @@ const retirementCall="var thnkrMenuApp = await cua.getApp('com.apple.Safari.WebA
 const retirementRead="var thnkrRetirementInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrRetirementInspectionApp.getAXStateAndScreenshot()";
 for(const code of [retirementCall,retirementRead])
   assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}),null);
+assert.equal(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_FILE_MENU_PROGRAM}}),null);
+for(const code of [RETIREMENT_FILE_MENU_PROGRAM.replace('File$/gm','Edit$/gm'),
+  RETIREMENT_FILE_MENU_PROGRAM.replace('getAXState({disableDiffing:true})','getAXState()'),
+  `${RETIREMENT_FILE_MENU_PROGRAM}\nawait thnkrRetirementMenuApp.click(1);`])
+  assert.ok(macSurfaceRefusal({command:null,need:retirementNeed,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code}}));
+assert.ok(macSurfaceRefusal({command:null,need:{...retirementNeed,why:retirementNeed.why.replace('File menu','window controls')},platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_FILE_MENU_PROGRAM}}));
+const menuState='Window: "thnkr.ing"\n0 standard window thnkr.ing, ID: WebAppWindow-Thinkering, Secondary Actions: Raise\n197 menu bar\n\t198 Thinkering\n\t199 File\n\t200 Edit\n';
+const runMenuProgram=async(state:string)=>{
+  const clicks:number[]=[];
+  const app={getAXState:async()=>state,click:async(target:number)=>{clicks.push(target);}};
+  await new Function('cua',`return (async()=>{${RETIREMENT_FILE_MENU_PROGRAM}})()` )({getApp:async()=>app});
+  return clicks;
+};
+assert.deepEqual(await runMenuProgram(menuState),[199]);
+await assert.rejects(runMenuProgram(menuState.replace('199 File','199 Edit')));
+await assert.rejects(runMenuProgram(menuState.replace('200 Edit','200 File')));
+await assert.rejects(runMenuProgram(menuState.replace('197 menu bar','197 group')));
+await assert.rejects(runMenuProgram(`${menuState}201 standard window thnkr.ing, ID: WebAppWindow-Thinkering\n`));
+for(const need of [webAppNeed,canvasNeed])
+  assert.ok(macSurfaceRefusal({command:null,need,platform:'darwin',toolName:'mcp__cua_repl__js',toolInput:{code:RETIREMENT_FILE_MENU_PROGRAM}}));
 for(const code of ["await cua.getApp('Safari')",'await cua.getState()',"await cua.getApp('com.apple.Safari.WebApp.other')",
   'await thnkrMenuApp.getAXState()',"await thnkrMenuApp.click(42)","await thnkrMenuApp.pressKey('super+r')",
   "var thnkrRetirementInspectionApp = await cua.getApp('com.apple.Safari.WebApp.B2D24369-268D-4CD1-9961-C6BFB0388792'); await thnkrRetirementInspectionApp.click(42)",
