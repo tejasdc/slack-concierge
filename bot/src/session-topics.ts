@@ -15,6 +15,7 @@ import {log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
+import {deviceQuestionNamesPhysicalPrerequisite} from './agent-reachable-app-question';
 import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message-reader';
 import {preparedTopicEventDisplays,preparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
@@ -1471,6 +1472,8 @@ function questionBrief(item:any) {
  */
 function withHisWords(brief:any,by:TopicBy):any {
   const kind=requireOnlyHeCan(brief.onlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED);
+  if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(brief.decision))
+    throw new TopicError('An onlyHeCan device question must name a physical prerequisite, such as unlocking a Mac. Try the agent computer-use route for app actions, then ask only for the physical prerequisite it exposed.');
   if(kind!=='approval'&&(brief.decisionId!==undefined||brief.approvalAction!==undefined))
     throw new TopicError('decisionId and approvalAction belong to onlyHeCan approval.');
   const decision=kind==='approval'?approvalDecision(brief.decisionId,brief.approvalAction):undefined;

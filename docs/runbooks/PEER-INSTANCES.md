@@ -127,7 +127,12 @@ The tool guard on the Mac reads the need from its run's environment and, before 
 asks the Mac owner for the need of the run holding that conversation (the newest need among the
 inputs the run took, its first message or a request steered in later). Codex turns all run on the
 shared App Server, so a per-turn environment never reaches Codex's hook; before 2026-11-03 a Codex
-session created with a mac-app need was refused as if it had none.
+session created with a mac-app need was refused as if it had none. The owner returns
+the retained reason as well as the kind, so the hook can enforce an exact app target
+when Tejas authorizes a Safari web app. For the currently authorized thnkr.ing window,
+name both its bundle ID and page ID in the `mac-app:` reason. The agent selects that
+bundle directly through Computer Use, inspects the resulting app state, and verifies
+the page before any further action. A generic Safari selector remains refused.
 
 When a website genuinely fails in the server browser, the requesting server agent records
 `--machine-need browser-fallback:<specific reason> --server-attempt-url <URL>

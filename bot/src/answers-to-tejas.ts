@@ -1,6 +1,7 @@
 import { db } from './state';
 import { approvalDecision, decisionRecord, decisionSection } from './decision-approval';
 import { getAcceptedSessionInput, humanAuthored, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { deviceQuestionNamesPhysicalPrerequisite } from './agent-reachable-app-question';
 
 /**
  * What an agent must attach before something reaches Tejas as a question or as "done".
@@ -19,7 +20,7 @@ import { getAcceptedSessionInput, humanAuthored, sessionInputProvenance, type Ac
 export const ONLY_HE_CAN = {
   'sign-in': 'sign in or approve something on one of his own accounts',
   secret: 'give a password, key or code only he has',
-  device: 'do something on his own phone or Mac, or in person',
+  device: 'unlock his device or do a physical action an agent cannot perform',
   ambiguous: 'choose between readings of his words that lead to different things that cannot be undone (which person, which account)',
   approval: 'approve an action that a permanent decision reserves for him',
 } as const;
@@ -83,6 +84,8 @@ function quoteVerdict(actorInputId: string, quote: string): Verdict {
  */
 export function questionForTejas(input: { actorInputId: string; question: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
   const kind = requireOnlyHeCan(input.onlyHeCan);
+  if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
+    throw new Error('Only-he-can device questions name a physical prerequisite, such as unlocking a Mac. App and website actions stay with an agent: try the available computer-use route first, then ask only for the exact physical prerequisite it exposed.');
   if (kind !== 'approval' && (input.decisionId !== undefined || input.approvalAction !== undefined))
     throw new Error('--decision-id and --approval-action belong to --only-he-can approval.');
   const decision = kind === 'approval' ? approvalDecision(input.decisionId, input.approvalAction) : undefined;
