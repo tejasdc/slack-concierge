@@ -520,6 +520,8 @@ if(process.platform==='linux'){
   // a bounded pass also catches a result produced while Concierge was restarting.
   sessionExecutionHost.owner.reconcileFinishedSpeechJobs();
   setInterval(()=>sessionExecutionHost.owner.reconcileFinishedSpeechJobs(),1_000);
+  // The server runs this composition; the Codex process audit's retry must start here too.
+  sessionExecutionHost.startCodexProcessAuditSweep(()=>draining);
 }
 { const {startAreaFiling}=await import('./area-filing'); startAreaFiling((admission) => sessionExecutionHost.owner.admit(admission), (body) => sessionExecutionHost.owner.search(body)); }
 sessionExecutionHost.owner.captureDeliveryStatus = () => captureDeliveryWorker?.status() ?? { available: false, reason: "Capture delivery has not started." };
