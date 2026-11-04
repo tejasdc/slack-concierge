@@ -379,9 +379,17 @@ and peer rows), so progress and final returns file under that thread and its Tim
 the dispatch, whatever input started the turn that sent it. When the dispatch itself is placed
 as a topic root, that placement owns the request and every answer to it, even if `--thread`
 named an older topic. The Conversation shows the original request text as its root message;
-the answer keeps its exact source and author. Linking a dispatch to a topic refuses a mismatch
-unless that topic contains the dispatch root or the named thread. This rule also projects
-already retained answers under their request's placed root without changing their bytes.
+the answer keeps its exact source and author. One dispatch may serve several explicit Inbox
+requests, including requests in different topics. `topics request link` records that
+association without moving the dispatch or its original answer. The owner copies the retained
+answer into each linked topic once, retaining the answering agent's identity and the original
+dispatch. A shared completion leaves each human request open for a check against its own scope;
+an agent saying the combined dispatch is done cannot silently settle all of them. The Inbox
+router closes each request with that thread's answer as evidence when it covers the whole
+request, or sends only remaining work. On restart and when a late link is recorded, the owner
+reconciles retained final answers. The request ledger is the one writer; the dispatch ID and
+per-topic answer event provide stable identities across retries. A link receipt proves
+association, while the later per-request closure proves completion.
 Moving a root to another topic is refused once a human reply from that root has been
 forwarded to an agent for its current topic. The move would silently relocate that
 reply's later answers and requested notifications. Route the exact human message

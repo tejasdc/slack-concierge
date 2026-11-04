@@ -1957,16 +1957,12 @@ export function topicsCommand(actor:TopicActor,body:any) {
         if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
         const originalRoot=(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE request_id=?').get(dispatchId)
           ??db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE request_id=?').get(dispatchId)) as {root:string|null}|null;
-        const ownRoot=`request:${dispatchId}`;
-        const ownTopic=topicOfRoot(ownRoot);
-        if(ownTopic&&ownTopic!==topic.topicId||!ownTopic&&(!originalRoot?.root||topicOfRoot(originalRoot.root)!==topic.topicId))
-          throw new TopicError('Place the dispatch itself in this topic before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISMATCH');
-        const elsewhere=db.query(`SELECT request.topic_id AS topicId FROM inbox_requests request,json_each(request.dispatches_json) dispatch
-          WHERE json_extract(dispatch.value,'$.requestId')=? AND request.topic_id<>? LIMIT 1`).get(dispatchId,topic.topicId) as {topicId:string}|null;
-        if(elsewhere)throw new TopicError('That dispatch already belongs to another topic. Nothing was linked.',409,'DISPATCH_TOPIC_MISMATCH');
+        const ownTopic=topicOfRoot(`request:${dispatchId}`)??(originalRoot?.root?topicOfRoot(originalRoot.root):null);
+        if(!ownTopic)throw new TopicError('Place the dispatch in an Inbox thread before linking its work. Nothing was linked.',409,'DISPATCH_TOPIC_MISSING');
         const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:receiveSessionFromPeer(peer.remote_session_id,peer.peer),
           targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
-          outcome:(local??peer).outcome??null,state:(local??peer).status??null};
+          outcome:(local??peer).outcome??null,state:(local??peer).status??null,
+          ...(ownTopic!==topic.topicId?{sharedAcrossTopic:true}:{})};
         const dispatches=[...request.dispatches.filter((existing:any)=>existing.requestId!==dispatchId),dispatch];
         const next={...request,dispatches,revision:request.revision+1,updatedAt:nowIso()};
         const topicNext=bumped(topic);
@@ -2517,6 +2513,14 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
     throw error;
   } finally {upkeepDepth--;}
   try {
+    mirrorLinkedAnswer({inboxSessionId:answer.inboxSessionId,sourceRoot:answer.root,sourcePostId:post,eventId:answer.eventId,
+      dispatchRequestId:answer.requestId,respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,
+      disposition,text:filedText,summary:answer.summary??null,quiet,closingLine:answer.closingLine??null});
+  } catch(error) {
+    log('error','inbox_shared_answer_filing_failed',{request_id:answer.requestId,post,message:error instanceof Error?error.message:String(error)});
+    throw error;
+  }
+  try {
     refreshRootMemo();
     const topicId=topicOfRoot(answer.root);
     if(topicId){keepThreadOpenOrClosed({topicId});keepThreadCurrent(topicId,forwardedReplies(),true);}
@@ -2524,6 +2528,48 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
     log('error','inbox_thread_upkeep_failed',{request_id:answer.requestId,thread:answer.root,message:error instanceof Error?error.message:String(error)});
   }
   return post;
+}
+
+/** One dispatch may advance requests in several threads; its answer is copied once to each
+ * linked thread, while each request keeps its own completion decision. */
+function mirrorLinkedAnswer(answer:{inboxSessionId:number;sourceRoot:string;sourcePostId:string;eventId:string;
+  dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;
+  text:string;summary:string|null;quiet:string|null;closingLine:string|null}):number {
+  // A decision is one question in the dispatch's original thread. Copy its eventual
+  // final answer, not a second question that could ring or be answered independently.
+  if(answer.disposition==='needs_decision')return 0;
+  const sourceTopic=topicOfRoot(answer.sourceRoot);
+  const rows=db.query(`SELECT request.* FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+    WHERE request.state='open' AND json_extract(dispatch.value,'$.requestId')=?
+      AND json_extract(dispatch.value,'$.sharedAcrossTopic')=1`).all(answer.dispatchRequestId) as any[];
+  const byTopic=new Map<string,StoredRequest>();
+  for(const row of rows){
+    const request=toStoredRequest(row);
+    if(request.topicId!==sourceTopic&&!byTopic.has(request.topicId))byTopic.set(request.topicId,request);
+  }
+  const original=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(answer.sourcePostId) as {payload_json:string}|null;
+  const attachments=original?JSON.parse(original.payload_json).attachments??[]:[];
+  let mirrored=0;
+  for(const [topicId,request] of byTopic){
+    const root=request.sources.map(source=>rootOf(answer.inboxSessionId,source.inputId))
+      .find(candidate=>candidate&&topicOfRoot(candidate)===topicId)
+      ??request.dispatches.map((dispatch:any)=>`request:${dispatch.requestId}`)
+        .find(candidate=>topicOfRoot(candidate)===topicId)
+      ??topicRoots(topicId)[0];
+    if(!root)continue;
+    const eventId=`shared:${answer.eventId}:${topicId}`;
+    const post=postForwardedThreadAnswer({inboxSessionId:answer.inboxSessionId,eventId,requestId:answer.dispatchRequestId,
+      root,inboxInputId:root,respondingSessionId:answer.respondingSessionId,text:answer.text,attachments,
+      stalled:false,final:true,workDisposition:answer.disposition,closingLine:answer.closingLine,
+      answerGroup:answer.sourcePostId,quiet:answer.quiet});
+    if(!post)continue;
+    fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root,postId:post,eventId,dispatchRequestId:answer.dispatchRequestId,
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle,disposition:answer.disposition,
+      text:answer.text,summary:answer.summary,quiet:answer.quiet});
+    keepThreadOpenOrClosed({topicId});
+    mirrored++;
+  }
+  return mirrored;
 }
 /**
  * An agent working on an Inbox thread that is waiting on him is one decision in that thread, with
@@ -2639,25 +2685,34 @@ export function filePeerWorkerNeedInThread(input:{requestId:string;inboxSessionI
 const sameAsk=(question:StoredQuestion,respondingSessionId:string,runId:string|null)=>!!runId&&question.kind==='decision'
   &&OPEN_QUESTION_STATES.some(state=>state===question.state)&&question.owner?.sessionId===respondingSessionId&&question.owner?.askedInRun===runId;
 
-/** Close completed topic requests whose retained answer was originally filed under another root. */
+/** Reconcile retained answers after a request is linked, including links to another thread. */
 export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
+  const inbox=inboxSession();
+  if(!inbox)return 0;
   const rows=db.query(`SELECT event_id,session_id,input_id,payload_json FROM session_owner_events
     WHERE kind='post' AND event_id >= 'post:forward:' AND event_id < 'post:forward;'
+      AND event_id NOT LIKE 'post:forward:shared:%'
       AND json_extract(payload_json,'$.replyKind')='final'
-      AND json_extract(payload_json,'$.workDisposition')='completed'
+      AND json_extract(payload_json,'$.workDisposition') IS NOT NULL
       AND (? IS NULL OR json_extract(payload_json,'$.requestId')=?)`).all(onlyRequestId??null,onlyRequestId??null) as
       {event_id:string;session_id:number;input_id:string;payload_json:string}[];
   let reconciled=0;
   for(const row of rows){
     const payload=JSON.parse(row.payload_json);
     if(typeof payload.requestId!=='string')continue;
+    const postId=row.event_id,eventId=postId.slice('post:forward:'.length);
+    reconciled+=mirrorLinkedAnswer({inboxSessionId:row.session_id,sourceRoot:row.input_id,sourcePostId:postId,eventId,
+      dispatchRequestId:payload.requestId,respondingSessionId:payload.postedBySession??'',respondingTitle:null,
+      disposition:payload.workDisposition,text:payload.text??'',summary:null,quiet:payload.quiet??null,
+      closingLine:(db.query('SELECT json_extract(payload_json,\'$.closingLine\') AS line FROM session_owner_events WHERE event_id=?')
+        .get(`post:closure:${eventId}`) as {line:string|null}|null)?.line??null});
+    if(payload.workDisposition!=='completed')continue;
     const root=inboxRequestRoot(db,payload.requestId,row.input_id);
     if(!root||root===row.input_id||!topicOfRoot(root))continue;
     const pending=db.query(`SELECT 1 FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE request.topic_id=? AND request.state='open' AND json_extract(dispatch.value,'$.requestId')=? LIMIT 1`)
       .get(topicOfRoot(root),payload.requestId);
     if(!pending)continue;
-    const postId=row.event_id,eventId=postId.slice('post:forward:'.length);
     fileAgentAnswer({inboxSessionId:row.session_id,root,postId,eventId,dispatchRequestId:payload.requestId,
       respondingSessionId:payload.postedBySession??'',respondingTitle:null,disposition:'completed',text:payload.text??'',
       quiet:'The retained answer was already notified when it first arrived.'});
@@ -2677,6 +2732,23 @@ export function reconcilePlacedRequestAnswers(onlyRequestId?:string):number {
       }
     }
     reconciled++;
+  }
+  const carried=db.query(`SELECT closure.event_id,closure.session_id,post.input_id,closure.payload_json,post.event_id AS post_id,
+      post.payload_json AS post_payload FROM session_owner_events closure INDEXED BY session_owner_events_session_kind
+    JOIN session_owner_events post ON post.event_id=json_extract(closure.payload_json,'$.postId') AND post.kind='post'
+    WHERE closure.session_id=? AND closure.kind='answer_closure' AND json_extract(post.payload_json,'$.replyKind')='partial'
+      AND post.event_id NOT LIKE 'post:forward:shared:%'
+      AND (? IS NULL OR json_extract(closure.payload_json,'$.requestId')=?)`).all(inbox.id,onlyRequestId??null,onlyRequestId??null) as
+      {event_id:string;session_id:number;input_id:string;payload_json:string;post_id:string;post_payload:string}[];
+  for(const row of carried){
+    const closure=JSON.parse(row.payload_json),post=JSON.parse(row.post_payload);
+    if(typeof closure.requestId!=='string')continue;
+    const work=workRow(closure.requestId);
+    if(!work||work.outcome!=='answered')continue;
+    reconciled+=mirrorLinkedAnswer({inboxSessionId:row.session_id,sourceRoot:row.input_id,sourcePostId:row.post_id,
+      eventId:row.event_id.slice('post:closure:'.length),dispatchRequestId:closure.requestId,
+      respondingSessionId:post.postedBySession??'',respondingTitle:null,disposition:work.disposition,
+      text:post.text??'',summary:null,quiet:post.quiet??null,closingLine:closure.closingLine??null});
   }
   return reconciled;
 }
@@ -2825,7 +2897,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
   db.transaction(()=>{
     // Done work closes the thread request it was sent for, exactly when the router could have closed it.
     if(answer.disposition==='completed') {
-      for(const request of topicRequests(topicId).filter(item=>item.state==='open'&&item.dispatches.some((dispatch:any)=>String(dispatch?.requestId??'')===answer.dispatchRequestId))) {
+      for(const request of topicRequests(topicId).filter(item=>item.state==='open'&&item.dispatches.some((dispatch:any)=>String(dispatch?.requestId??'')===answer.dispatchRequestId)
+        &&sharedAnswerPostId(answer.dispatchRequestId)===null)) {
         const eventId=`topic-close:answer:${answer.eventId}:${request.requestId}`;
         if(seen(eventId))continue;
         const topic=topicRow(topicId);
@@ -3129,12 +3202,16 @@ function linkForwardedReplies(topicId:string,forwards:Forward[]):number {
 
 type Stuck={topicId:string;topicTitle:string;requestId:string;title:string;work:string;how:string;key:string;sourceInputId:string|null;sourceRunId:string|null;sourceUncertain:boolean;stoppedByTejas:boolean;sharedAnswerPostId:string|null};
 function sharedAnswerPostId(workId:string):string|null {
-  const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
-    WHERE json_extract(dispatch.value,'$.requestId')=?`).get(workId) as {count:number};
-  if(shared.count<2)return null;
+  const inbox=inboxSession();
+  if(!inbox)return null;
+  const shared=db.query(`SELECT count(*) AS count,
+      max(CASE WHEN json_extract(dispatch.value,'$.sharedAcrossTopic')=1 THEN 1 ELSE 0 END) AS cross_topic
+    FROM inbox_requests request,json_each(request.dispatches_json) dispatch
+    WHERE request.dispatches_json LIKE ? AND json_extract(dispatch.value,'$.requestId')=?`).get(`%${workId}%`,workId) as {count:number;cross_topic:number|null};
+  if(shared.count<2&&!shared.cross_topic)return null;
   const closure=db.query(`SELECT json_extract(payload_json,'$.postId') AS post_id FROM session_owner_events
-    WHERE kind='answer_closure' AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
-    .get(workId) as {post_id:string|null}|null;
+    WHERE session_id=? AND kind='answer_closure' AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1`)
+    .get(inbox.id,workId) as {post_id:string|null}|null;
   return closure?.post_id??'';
 }
 function recoverySource(request:StoredRequest):{inputId:string;runId:string;uncertain:boolean}|null {
@@ -3212,7 +3289,10 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
     const legacyViews=topicQuestions(topicId).filter(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
       &&unlinkedQuestionImplies(question,request,openRequests)).map(question=>questionView(question,replies));
     const pendingAnswer=[...decisionViews,...legacyViews].find(question=>!!question.pendingReply)?.pendingReply;
-    const waitingOnHim=decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
+    const sharedDecisionWaiting=latest?.disposition==='needs_decision'&&request.dispatches.some((dispatch:any)=>dispatch.sharedAcrossTopic&&dispatch.requestId===latest.id)
+      &&!!db.query(`SELECT 1 FROM inbox_questions WHERE kind='decision' AND state IN ('open','partial','deferred')
+        AND context='ready' AND blocking=1 AND optional=0 AND json_extract(owner_json,'$.dispatchRequestId')=? LIMIT 1`).get(latest.id);
+    const waitingOnHim=sharedDecisionWaiting||decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))||unlinkedQuestionImplies(question,request,openRequests)));
     let disposition:string|null=null,why='';
     let completionChecked=false;
@@ -3222,7 +3302,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settl
       // The explicit completed reply accepts either a live check or an honest reason no live
       // check was possible. Its not-checked reason remains visible in the answer; the owner
       // cannot infer unfinished work from that reason alone.
-      if(completionChecked){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
+      if(completionChecked&&sharedAnswerPostId(latest.id)===null){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
     }
     if(!disposition&&waitingOnHim) {
       continue;
