@@ -28,7 +28,7 @@ import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
 import { isHisChatGpt } from './aliases';
-import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,type ChatGptObligationRow} from './chatgpt-obligations';
+import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,reconcileCanceledChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
@@ -931,7 +931,7 @@ export class SessionCommunicationCoordinator {
         })();
     }
     handleChatGptAnswer(input:{source:CommunicationSource;action_id:string;obligation_id:string;answer_event_id:string;
-        handling:'used'|'context_supplied'|'scoped';reason?:string;follow_up_request_id?:string}) {
+        handling:'used'|'context_supplied'|'scoped'|'superseded';reason?:string;follow_up_request_id?:string;successor_request_id?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         if(!actor.inputId)throw new Error('Handling a ChatGPT answer needs the exact accepted source input and run.');
@@ -939,11 +939,11 @@ export class SessionCommunicationCoordinator {
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'chatgpt-answer-handled',...receipt,reason:input.reason??null,
-                    followUpRequestId:input.follow_up_request_id??null},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.obligation_id});
+                    followUpRequestId:input.follow_up_request_id??null,successorRequestId:input.successor_request_id??null},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:input.obligation_id});
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             resolveChatGptAnswer({obligationId:input.obligation_id,askerSessionId:actor.session,answerEventId:input.answer_event_id,
                 actionId:input.action_id,handling:input.handling,reason:input.reason,followUpRequestId:input.follow_up_request_id,
-                sourceInputId:actor.inputId,now:this.now()});
+                successorRequestId:input.successor_request_id,sourceInputId:actor.inputId,now:this.now()});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             return {...receipt,duplicate:false};
         })();
@@ -1128,18 +1128,20 @@ export class SessionCommunicationCoordinator {
             throw new Error(`Provider changes keep this request intact. Run sessions handoff '${address}' --provider <alias> --reason "<why>" --source-input <this input> --source-run <this run> --action-id <A> instead.`);
         }
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.owns(input.request_id))
-            return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id);
+            return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id,input.reason);
         const row=this.row(input.request_id);
         if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
         let stoppedQueuedTarget=false;
         db.transaction(()=>{
             if(actor.inputId) {
                 const retained=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'cancel',origin:'agent',
-                    payload:{requestId:row.request_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:row.request_id});
+                    payload:{requestId:row.request_id,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
+                        ...(input.reason?{reason:input.reason}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:row.request_id});
                 if(retained.duplicate)return;
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
             }
             if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker is told to stop.');
+            withdrawCanceledChatGptAttempt(row.request_id,this.now());
             // A paused or usage-held worker can already have a queued turn. Withdrawing its
             // request revokes that turn before a later account reset or Continue can claim it.
             if(this.row(row.request_id).outcome==='canceled'&&row.target_input_id)
@@ -2869,6 +2871,7 @@ export class SessionCommunicationCoordinator {
         let current=db.query(`SELECT * FROM session_chatgpt_obligations WHERE obligation_id=? AND due_at_ms<=?
             AND state NOT IN ('resolved','withdrawn_by_tejas')`).get(row.obligation_id,now) as ChatGptObligationRow|null;
         if(!current)return;
+        if(withdrawCanceledChatGptAttempt(current.active_request_id,now))return;
         if(this.restoreChatGptAnswer(current.active_request_id))return;
         if(current.next_action==='observe_original_requeued_run'){
             const proof=db.query(`SELECT json_extract(evidence_json,'$.runId') AS run_id
@@ -2938,7 +2941,9 @@ export class SessionCommunicationCoordinator {
                     `repair:${next}`,current.state,JSON.stringify({priorInputId:prior?.id??null,requestId:current.active_request_id}),now);
             this.dependencies.owner!.admit({sessionId:source.id,inputId:`chatgpt-repair:${current.obligation_id}:${next}`,
                 origin:'service',sourceInputId:request.source_input_id,sourceRunId:nativeRunId(request.source_turn_id),
-                requestId:current.active_request_id,text:`ChatGPT answer obligation ${current.obligation_id} for ${current.task_kind}:${current.task_id} remains open. Exact question: ${current.question_text}\nActive request: ${current.active_request_id}. State: ${current.state}; next action: ${current.next_action}. ${chatGptAnswerCommand(current)} Inspect the original browser operation and retained conversation/receipt, then get the exact answer back and declare how it was handled. If the original receipt proves Send was never pressed, use sessions chatgpt-recover ${current.active_request_id} --action-id <stable-action> to requeue that original run. A timeout, generic failed turn, or ambiguous receipt does not authorize another send. If this repair attempt cannot finish, the owner will wake this same obligation again.`});
+                requestId:current.active_request_id,text:current.state==='resolution_pending'
+                    ? `ChatGPT answered question ${current.obligation_id} for ${current.task_kind}:${current.task_id}. Exact question: ${current.question_text}\n${chatGptAnswerCommand(current)} Read the returned answer and record how you handled it. The task stays open until you do.`
+                    : `ChatGPT answer obligation ${current.obligation_id} for ${current.task_kind}:${current.task_id} remains open. Exact question: ${current.question_text}\nActive request: ${current.active_request_id}. State: ${current.state}; next action: ${current.next_action}. ${chatGptAnswerCommand(current)} Inspect the original browser operation and retained conversation/receipt, then get the exact answer back and declare how it was handled. If the original request settled failed and a later received ChatGPT answer covers this question, use sessions answer ${current.obligation_id} --handling superseded --successor-request <later-request-id> --answer-event <received-event-id> --reason <coverage> <source-flags> --action-id <stable-id>. If the original receipt proves Send was never pressed, use sessions chatgpt-recover ${current.active_request_id} --action-id <stable-action> to requeue that original run. A timeout, generic failed turn, or ambiguous receipt does not authorize another send. If this repair attempt cannot finish, the owner will wake this same obligation again.`});
         })();
     }
     private async reconcile() {
@@ -2946,6 +2951,8 @@ export class SessionCommunicationCoordinator {
         if (!this.startupReconciled) {
             const legacy=migrateOpenLegacyChatGptAsks(this.now());
             if(legacy.scanned)log('info','chatgpt_legacy_reconciliation',{...legacy});
+            const withdrawn=reconcileCanceledChatGptObligations(this.now());
+            if(withdrawn)log('info','chatgpt_asker_withdrawal_reconciliation',{withdrawn});
             if (!await releaseLateRetainedReturns(() => this.stopped)) return;
             if (this.stopped) return;
             this.startupReconciled = true;

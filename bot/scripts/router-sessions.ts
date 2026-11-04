@@ -40,7 +40,7 @@ router-actions.sh sessions move <session-address> --project <project or project/
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--summary "<one line: what he must decide and the result it depends on>" (needs_you) --only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
-router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped [--follow-up-request <exact-request-id> (context_supplied)] [--reason "<narrowed claim and missing context>" (scoped)]
+router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
 router-actions.sh sessions legacy-link <historical-chatgpt-request-id> <source-flags> --action-id A --for-task <kind>:<exact-id> --provider chatgpt|other --reason "<inspected target and task evidence>"
 router-actions.sh sessions chatgpt-recover <original-chatgpt-request-id> <source-flags> --action-id A  # requeue the same original run only when its browser receipt proves Send never happened
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
@@ -142,7 +142,7 @@ ${REQUEST_PROTOCOL}
 A run that follows an interruption can still answer requests delivered to the earlier run.
 --after-request waits for the named request to settle. When it settles without confirmed success (decision needed, or an older request settled unanswered or undetermined), a request you asked before that outcome reached you stays held for your decision: cancel it with sessions cancel, or ask again. A request you ask after seeing that outcome is your decision and is delivered.
 --after-settled paces a request without making it depend on the earlier one: it is delivered once each named request settles, whatever the outcome (answered, failed or canceled), or stalls (its recipient ended twice without a final reply). Use it to keep only a few of your requests working at once; use --after-request when the later work needs the earlier one to have succeeded.
-Use sessions cancel <request-id> to withdraw your own request, for example one you have superseded; a request not yet handed to its recipient is never delivered afterwards, and a worker already holding it is told to stop.`;
+Use sessions cancel <request-id> to withdraw your own request, for example one you have superseded; a request not yet handed to its recipient is never delivered afterwards, and a worker already holding it is told to stop. A completed cancel of your own still-open ChatGPT request also withdraws its exact answer duty. A request already settled failed stays owed; use sessions answer with a received successor answer and a coverage reason, or repair its original receipt.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
@@ -160,7 +160,7 @@ export type SessionCommunicationRequest =
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; summary?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string } }
-  | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'; reason?:string; follow_up_request_id?:string } }
+  | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'|'superseded'; reason?:string; follow_up_request_id?:string; successor_request_id?:string } }
   | { operation: "legacy-link"; body: { source: Source; action_id:string; request_id:string; for_task:string; provider:'chatgpt'|'other'; reason:string } }
   | { operation: "chatgpt-recover"; body: { source: Source; action_id:string; request_id:string } }
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
@@ -728,7 +728,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--also' && operation === 'reply')
       || (flag === '--summary' && (operation === 'ask' || operation === 'reply' || operation === 'outcome'))
       || (flag === '--answer-view' && operation === 'ask')
-      || (["--answer-event","--handling","--reason","--follow-up-request"].includes(flag) && operation === 'answer');
+      || (["--answer-event","--handling","--reason","--follow-up-request","--successor-request"].includes(flag) && operation === 'answer');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
     if (!value?.trim() || value.startsWith("--")) invalid(`${flag} requires a value.`);
@@ -832,13 +832,16 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='answer') {
     if(separator>=0||content.length)invalid('answer records a handling disposition; it takes no free-form message.');
     const answerEventId=flags.get('--answer-event'),handling=flags.get('--handling');
-    if(!answerEventId||!['used','context_supplied','scoped'].includes(handling??''))
-      invalid('answer needs --answer-event <exact return event> and --handling used|context_supplied|scoped.');
+    if(!answerEventId||!['used','context_supplied','scoped','superseded'].includes(handling??''))
+      invalid('answer needs --answer-event <exact return event> and --handling used|context_supplied|scoped|superseded.');
     if(handling==='scoped'&&!flags.get('--reason'))invalid('A scoped answer needs --reason with the conclusion and missing context.');
     if(handling==='context_supplied'&&!flags.get('--follow-up-request'))invalid('Context supplied needs --follow-up-request with the exact attached follow-up.');
+    if(handling==='superseded'&&(!flags.get('--successor-request')||!flags.get('--reason')))
+      invalid('A superseded question needs --successor-request and --reason explaining coverage.');
     return {operation,body:{source,action_id:actionId,obligation_id:identity!,answer_event_id:answerEventId,
-      handling:handling as 'used'|'context_supplied'|'scoped',...(flags.has('--reason')?{reason:flags.get('--reason')!}:{}),
-      ...(flags.has('--follow-up-request')?{follow_up_request_id:flags.get('--follow-up-request')!}:{})}};
+      handling:handling as 'used'|'context_supplied'|'scoped'|'superseded',...(flags.has('--reason')?{reason:flags.get('--reason')!}:{}),
+      ...(flags.has('--follow-up-request')?{follow_up_request_id:flags.get('--follow-up-request')!}:{}),
+      ...(flags.has('--successor-request')?{successor_request_id:flags.get('--successor-request')!}:{})}};
   }
   if(operation==='outcome') {
     const textFile=flags.get('--text-file');

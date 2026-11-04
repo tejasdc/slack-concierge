@@ -45,12 +45,18 @@ the current window. Its exact originating capture, recorded `mac-app` work need,
 web-app bundle, and `exact53 retirement` purpose permit direct app selection and a fresh
 same-program passive accessibility or screenshot read. A dedicated retirement handle
 prevents a remembered Computer Use REPL variable from pointing at another app. The
-old-page grants remain available for their earlier work. File-menu interaction and a
-second window are not admitted by this read grant: the Mac agent must first read the
-returned Computer Use API and actual app accessibility tree, then prove a target-bound
-action and same-app window path before the guard can admit those separately. A shortcut
-or assumed menu coordinate is insufficient. This keeps the current window and its data
-untouched while the app-owned retirement consumer is prepared.
+old-page grants remain available for their earlier work. A recorded need naming the
+File menu, which the current one does, admits only the exact policy-supplied Computer
+Use program: it selects the bundle,
+reads a full current accessibility tree, requires one `WebAppWindow-Thinkering` window
+and exactly one `File` child of the menu bar, clicks that freshly extracted AX item
+number through the same app handle, then reads the resulting tree. If either assertion
+fails, no click runs. The returned Computer Use API documents AX item clicks but does
+not promise an atomic read and click; a UI change between those calls remains a narrow
+race. The menu may remain open after the read; rerunning this click could toggle it closed.
+The Mac agent must inspect the resulting menu before any further action. Another
+window, a shortcut, an assumed numeric item, navigation, and data mutation remain
+refused; the same-app window and storage path have not been proven.
 When Tejas answers a physical prerequisite in the same Inbox task, the Inbox's
 forwarded reply has no provider run. Its retained forward request proves the exact
 human reply, including when another agent request follows it. A later Mac request
