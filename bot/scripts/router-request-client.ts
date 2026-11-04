@@ -18,10 +18,23 @@ const NEVER_REACHED = new Set(["FailedToOpenSocket", "ECONNREFUSED", "ENOENT", "
 
 export type OwnerUnconfirmed = { ok: false; status: 0; result: { ok: false; error: "owner_unconfirmed"; detail: string; attempts: number; retry: { path: string; action_id: string | null; resend_is_safe: boolean } } };
 
-function socketPath() {
+function stateDirectory() {
   const database = process.env.CONCIERGE_STATE_DB
     || join(process.env.CONCIERGE_STATE_DIR || '/root/.local/state/concierge', 'state.db');
-  return join(realpathSync(dirname(database)), 'requests.sock');
+  return dirname(database);
+}
+
+function socketPath() {
+  return join(realpathSync(stateDirectory()), 'requests.sock');
+}
+
+/** The private code entrance hides Concierge on purpose, so its scratch state has no owner to wait
+ * for. Retrying there looked like a 75-second restart and hid the cause (2026-11-04). A check that
+ * starts its own owner under another state directory still waits for it normally. */
+function insidePrivateCodeEntrance() {
+  const scratch = process.env.CONCIERGE_PRIVATE_CODE_STATE;
+  if (!scratch) return false;
+  try { return realpathSync(stateDirectory()) === realpathSync(scratch); } catch { return false; }
 }
 
 /** Whether the owner applies this request at most once however often it is sent. */
@@ -40,6 +53,9 @@ function failureKind(error: unknown): "never-reached" | "maybe-reached" {
 export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart) {
   const serialized = body === undefined ? undefined : JSON.stringify(body);
   const safe = resendIsSafe(path, body);
+  if (insidePrivateCodeEntrance()) return { ok: false, status: 0, result: { ok: false, error: "owner_hidden_by_private_code",
+    detail: "This command runs inside Concierge's private code entrance, which hides Concierge on purpose; nothing was sent. "
+      + "Run Concierge commands and fresh Claude Code launches, such as a reviewer, from the ordinary shell instead." } } as const;
   const started = Date.now();
   for (let attempts = 1; ; attempts++) {
     let failure: unknown;

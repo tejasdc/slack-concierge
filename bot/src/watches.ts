@@ -25,7 +25,7 @@ import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { forgetWatchObservation, loadWatchObservationCursors, observationForWatch, recordWatchObservation,
   startWatchObservationWorker, stopWatchObservationWorker, waitForWatchObservationWorker } from './watch-observation';
 import { HOST_PROTOCOL_VERSION, HostConnection, executionDirectory, executionHostsEnabled, executionUnit,
-  hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
+  hostProcessorSeconds, hostSocketPath, hostSupervisorView, newExecutionId, streamJournal, releaseHost, retireHostJob, startHost, HostNotStartedError } from "./execution-host-client";
 
 export const WATCH_POLL_MS = 5_000;
 /** Three missed polls: a longer silence is a pause (a restart, a sleeping Mac) and is recorded as a gap. */
@@ -210,14 +210,25 @@ export function watchView(row: WatchRow) {
     registeredAt: iso(row.created_at_ms), deadline: iso(row.deadline_ms),
     lastObservedAt: observation.lastObservedAt ? iso(observation.lastObservedAt) : null,
     renewEveryMs: row.renew_ms, seriesId: row.series_id,
+    ...(row.kind === "command" && row.host_execution_id && isOpen(row)
+      ? { processorSeconds: hostProcessorSeconds(row.host_execution_id) } : {}),
     gaps: (JSON.parse(observation.gapsJson) as Gap[]).map(gap => ({ from: iso(gap.fromMs), to: iso(gap.toMs) })),
     terminalEvent: row.terminal_event, endedAt: row.terminal_at_ms ? iso(row.terminal_at_ms) : null,
     delivery: row.delivery_state, deliveredAs: row.delivery_input_id,
   };
 }
 
+/** This session, the Claude session it continues after usage ran out, and every continuation of either. */
+function recoveryLineage(sessionId: number): number[] {
+  const rows = db.query(`SELECT source_session_id AS id FROM provider_recovery_sessions WHERE successor_session_id=?
+    UNION SELECT successor_session_id FROM provider_recovery_sessions WHERE source_session_id IN
+      (SELECT ? UNION SELECT source_session_id FROM provider_recovery_sessions WHERE successor_session_id=?)`)
+    .all(sessionId, sessionId, sessionId) as { id: number }[];
+  return [...new Set([sessionId, ...rows.map(row => row.id)])];
+}
+
 /** Idempotent by (origin input, action id): a retry returns the first registration and never makes a second. */
-export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean } {
+export function registerWatch(input: WatchRegistration, now = Date.now()): { watch: ReturnType<typeof watchView>; duplicate: boolean; takenOverFrom?: string } {
   if (!input.actionId || input.actionId.length > 200) throw new Error("A stable action id is required.");
   const condition = input.kind === "file" ? { path: input.path } : { argv: input.argv, cwd: input.cwd };
   if (input.renew && input.kind !== "file") throw new Error("Only file watches can renew.");
@@ -232,8 +243,20 @@ export function registerWatch(input: WatchRegistration, now = Date.now()): { wat
   const deadline = parseUntil(input.until, now);
   const renewMs = input.renew ? deadline - now : null;
   if (renewMs !== null) {
-    const active = db.query(`SELECT * FROM watches WHERE session_id=? AND kind='file' AND condition_json=?
-      AND renew_ms IS NOT NULL AND state IN ('accepted','observing')`).get(input.sessionId, JSON.stringify(condition)) as WatchRow | null;
+    // A Claude session and the Codex sessions that continue its work after its allowance ran out
+    // keep one renewing series per file between them: the one registering takes the series over,
+    // so its wakes reach the session now doing the work, and cancel, listing and request waits
+    // still see one owning session. A second series on the same path woke both for one change
+    // (the email-reader batch reviewed twice into one checkout, 2026-11-03).
+    const lineage = recoveryLineage(input.sessionId);
+    const active = db.query(`SELECT * FROM watches WHERE session_id IN (${lineage.map(() => "?").join(",")}) AND kind='file'
+      AND condition_json=? AND renew_ms IS NOT NULL AND state IN ('accepted','observing')
+      ORDER BY session_id=? DESC, created_at_ms LIMIT 1`).get(...lineage, JSON.stringify(condition), input.sessionId) as WatchRow | null;
+    if (active && active.session_id !== input.sessionId) {
+      db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND state IN ('accepted','observing')").run(input.sessionId, active.watch_id);
+      log("info", "watch_series_taken_over", { watch_id: active.watch_id, from_session_id: active.session_id, to_session_id: input.sessionId });
+      return { watch: watchView({ ...active, session_id: input.sessionId }), duplicate: true, takenOverFrom: `concierge:${active.session_id}` };
+    }
     if (active) return { watch: watchView(active), duplicate: true };
   }
   let baseline: unknown, mode: string;
@@ -292,6 +315,16 @@ function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
 }
 
 /**
+ * A waiter's processor use in words, so the session that wrote it sees what its waiting cost. It
+ * runs at the lowest priority, so this is time nothing else wanted, but a waiter that polls
+ * expensively (the 2026-11-03 journal re-read) shows up here instead of only in host alerts.
+ */
+function processorText(seconds: number, fromMs: number, toMs: number) {
+  const share = toMs > fromMs ? (seconds * 1000) / (toMs - fromMs) : 0;
+  return `The command and its host used ${seconds < 120 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`} of processor time (${(share * 100).toFixed(share < 0.01 ? 2 : 1)}% of one core since registration).`;
+}
+
+/**
  * Ends a watch in one terminal event. The state change, the event, its observation and the words
  * for the session are one transaction, so a deadline and a change that race produce exactly one
  * event, and the event exists before anything is delivered.
@@ -314,7 +347,9 @@ function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancel
       : event === "expired" ? `Watch ${watchId} expired at ${iso(settlement.now)}: ${settlement.detail}.`
         : event === "failed" ? `Watch ${watchId} failed: ${settlement.detail}.`
           : `Watch ${watchId} was cancelled: ${settlement.detail}`;
+    const processor = row.kind === "command" && row.host_execution_id ? hostProcessorSeconds(row.host_execution_id) : null;
     const text = `${headline}${late} It watched ${what}, registered ${iso(row.created_at_ms)} with a deadline of ${iso(row.deadline_ms)}. ${gapsText(gaps, row, resumedAt)}${
+      processor !== null ? ` ${processorText(processor, row.created_at_ms, resumedAt)}` : ""}${
       settlement.observed && typeof (settlement.observed as any).outputTail === "string" && (settlement.observed as any).outputTail
         ? `\nLast output of the command (stdout and stderr):\n${(settlement.observed as any).outputTail}` : ""}
 You do not need to reply to this.`;
@@ -419,7 +454,7 @@ async function launchCommand(row: WatchRow, deps: WatchWorkerDeps, now: number) 
   update(row.watch_id, "host_execution_id=?, host_directory=?, host_unit=?, host_protocol=?, host_state='intended'",
     executionId, executionDirectory(deps.stateDir, executionId), executionUnit(executionId), HOST_PROTOCOL_VERSION);
   try {
-    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), manifest: {
+    const launch = await startHost({ stateDir: deps.stateDir, executionId, routerBotDir: deps.routerBotDir(), priority: "waiter", manifest: {
       executable: "/bin/sh", args: ["-c", 'exec "$@" </dev/null', "concierge-watch", ...condition.argv], cwd: condition.cwd,
       environment: commandEnvironment(), initialInput: "" } });
     update(row.watch_id, "host_script=?, host_state='live'", launch.hostScript);

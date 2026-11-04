@@ -144,6 +144,8 @@ export class PreparedTopics {
    CREATE TABLE IF NOT EXISTS presentation_topic_request_links(generation INTEGER NOT NULL,topic_id TEXT NOT NULL,input_id TEXT NOT NULL,request_id TEXT NOT NULL,
     PRIMARY KEY(generation,topic_id,input_id,request_id));`);
   prepared.exec('CREATE TABLE IF NOT EXISTS presentation_topic_event_display(generation INTEGER NOT NULL,event_sequence INTEGER NOT NULL,display_json TEXT NOT NULL,PRIMARY KEY(generation,event_sequence))');
+  prepared.exec(`DELETE FROM presentation_topic_dependencies WHERE kind='session'
+   AND dependency=(SELECT 'concierge:'||inbox_session FROM presentation_topics_meta WHERE singleton=1)`);
   prepared.exec(`CREATE TABLE IF NOT EXISTS presentation_inbox_attention(generation INTEGER NOT NULL,scope TEXT NOT NULL,event_id TEXT NOT NULL,
    topic_id TEXT,need_generation INTEGER NOT NULL,order_key TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(generation,scope,event_id));
    CREATE INDEX IF NOT EXISTS presentation_inbox_attention_page ON presentation_inbox_attention(generation,scope,order_key);
@@ -295,7 +297,14 @@ export class PreparedTopics {
   const retains=new Map<string,string>(),items:any[][]=[],questions:any[][]=[],dependencies:any[][]=[],requestLinks:any[][]=[],attentions:any[]=[];
   this.stagedRetains=retains;
   try{
-  const depend=(kind:string,key:string)=>dependencies.push([generation,kind,key,topicId]);
+  // A thread never depends on the Inbox router's own session row. The router is a reply choice
+  // and the owner of reading and recovered questions in nearly every thread, so that one row
+  // re-prepared all ~609 threads on each router turn and kept the list 5-7 minutes behind; a pin
+  // he made snapped back when the stale list was read (Tejas, 2026-11-04: "It showed as almost
+  // pinned and then went back"). A thread reads only the router's name from it, and the router's
+  // work in a thread arrives through 'inbox-work'.
+  const router=`concierge:${context.sessionId}`;
+  const depend=(kind:string,key:string)=>{if(kind==='session'&&key===router)return;dependencies.push([generation,kind,key,topicId]);};
   const itemDigest=createHash('sha256');
   const writeItem=(item:any,kind:string,index?:number)=>{
    const id=String(item.id??index),key=kind==='history'?String(index).padStart(8,'0'):`${item.createdAt}:${id}`;

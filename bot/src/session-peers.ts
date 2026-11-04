@@ -9,7 +9,7 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {meaningIndex} from './meaning-index';
-import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {heldRequestNotice,inputHold,readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,postAgentAnswer,recordSessionMessageRoute,topicOfRoot} from './session-topics';
@@ -1064,7 +1064,7 @@ export class SessionPeers {
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
         stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
         answersQuestion:declared.answersQuestion===true,workDisposition:declared.workDisposition??null,closingLine:declared.closingLine??null,
-        answerGroup:declared.answerGroup??null,
+        answerGroup:declared.answerGroup??null,summary:typeof declared.summary==='string'?declared.summary:null,
         answerSource:declared.source?.input_id&&declared.source?.run_id
           ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
         noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
@@ -1375,7 +1375,7 @@ export class SessionPeers {
   owedDeliveries(sessionId:number,runId:string,mark:{offer:string[];remind:boolean}):OwedRequest[] {
     const owed:OwedRequest[]=[];
     for(const row of db.query(`SELECT * FROM session_peer_deliveries WHERE target_session_id=? AND closed_at_ms IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY rowid`).all(sessionId,REMINDERS_SINCE_MS) as DeliveryRow[]) {
-      if(!getAcceptedSessionInput(row.target_input_id)?.turn_id)continue;
+      if(!handedToARun(row.target_input_id))continue;
       if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))continue;
       if(mark.offer.includes(row.request_id))db.query('UPDATE session_peer_deliveries SET hook_offered_run=? WHERE request_id=?').run(runId,row.request_id);
       if(mark.remind)db.query("UPDATE session_peer_deliveries SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),row.request_id,runId);

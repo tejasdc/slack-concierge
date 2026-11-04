@@ -69,6 +69,20 @@ export function executionUnit(executionId: string) {
   return process.platform === "darwin" ? `com.tejasdc.concierge.exec.${executionId}` : `concierge-exec-${executionId}`;
 }
 
+/**
+ * Processor seconds every process of an execution has used so far, read from its unit's cgroup;
+ * null when the unit is gone or the machine has no cgroups (a Mac). The cgroup stays until the
+ * host is released, so a finished command's total is still readable when its watch settles.
+ */
+export function hostProcessorSeconds(executionId: string): number | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const stat = readFileSync(`/sys/fs/cgroup/${AGENT_WORK_SLICE}/${executionUnit(executionId)}.service/cpu.stat`, "utf8");
+    const usage = /^usage_usec (\d+)$/m.exec(stat)?.[1];
+    return usage ? Number(usage) / 1e6 : null;
+  } catch { return null; }
+}
+
 export class HostUnavailableError extends Error {}
 /** The host was certainly not started: nothing to take custody of. */
 export class HostNotStartedError extends HostUnavailableError {}
@@ -221,8 +235,19 @@ async function supervisorCommand(file: string, args: string[], timeout: number) 
   }
 }
 
+/**
+ * `waiter` is a command that only waits for something (a watch): its unit gets the smallest
+ * processor weight (1 against an agent's 100) and nice 19, so it takes almost no time from agents
+ * or Concierge. On 2026-11-03 a watch that re-read 17 hours of journal every minute used about two
+ * hours of processor at normal priority during a saturated stretch, and nothing showed it. Not
+ * `CPUWeight=idle`: the host in the same unit must still answer status within seconds when the
+ * server is saturated, and an idle group gets nothing then. Disk weights are not set because the
+ * server's RAID device ignores them (see agent-work-slice).
+ */
+export type HostPriority = "agent" | "waiter";
+
 export async function startHost(input: {
-  stateDir: string; executionId: string; routerBotDir: string; runtime?: string;
+  stateDir: string; executionId: string; routerBotDir: string; runtime?: string; priority?: HostPriority;
   manifest: { executable: string; args: string[]; cwd: string; environment: Record<string, string>; initialInput: string; initialMeta?: Record<string, unknown> };
 }): Promise<HostLaunch> {
   const directory = executionDirectory(input.stateDir, input.executionId);
@@ -245,6 +270,7 @@ export async function startHost(input: {
     const result = await supervisorCommand("systemd-run", [
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group", "--property=IOAccounting=yes",
+      ...(input.priority === "waiter" ? ["--nice=19", "--property=CPUWeight=1"] : []),
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,
@@ -259,7 +285,7 @@ export async function startHost(input: {
     const launcher = macAgentHostLauncher();
     if (!launcher) throw new HostNotStartedError("this Mac's service names no agent-host launcher");
     const plist = join(directory, "job.plist");
-    try { writeFileSync(plist, launchdJob(unit, [launcher, runtime, "run", hostScript, directory], directory), { mode: 0o644, flag: "wx" }); }
+    try { writeFileSync(plist, launchdJob(unit, [launcher, runtime, "run", hostScript, directory], directory, input.priority ?? "agent"), { mode: 0o644, flag: "wx" }); }
     catch (error) { throw new HostNotStartedError(error instanceof Error ? error.message : String(error)); }
     const result = await supervisorCommand("launchctl", ["bootstrap", launchdDomain(), plist], 30_000);
     if (result.error || result.signal) throw new HostUnavailableError(`launchctl did not answer: ${String(result.error ?? result.signal)}`);
@@ -324,7 +350,7 @@ export async function retireHostJob(executionId: string): Promise<boolean> {
   return state === "missing" || (state === "stopped" && await launchdJobState(executionId) === "missing");
 }
 
-function launchdJob(label: string, programArguments: string[], directory: string) {
+function launchdJob(label: string, programArguments: string[], directory: string, priority: HostPriority) {
   const text = (value: string) => `<string>${value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</string>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -335,7 +361,7 @@ function launchdJob(label: string, programArguments: string[], directory: string
   <key>WorkingDirectory</key>${text(directory)}
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>
-  <key>ProcessType</key>${text("Interactive")}
+  <key>ProcessType</key>${text(priority === "waiter" ? "Background" : "Interactive")}
   <key>StandardOutPath</key>${text(join(directory, "host.log"))}
   <key>StandardErrorPath</key>${text(join(directory, "host.log"))}
   <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
@@ -382,8 +408,11 @@ export type HostedExecution = {
   /** Start a new execution, attach to one still running, or settle one whose host left a finished record. */
   mode: "launch" | "adopt" | "adopt-record";
   executionId: string;
-  /** The provider CLI by absolute path: the host's supervisor gives it no PATH of its own. */
-  executable: string;
+  /**
+   * The provider CLI by absolute path: the host's supervisor gives it no PATH of its own. Only a
+   * launch needs it; taking back a running execution must not depend on finding the CLI again.
+   */
+  executable?: string;
   stateDir: string;
   /** The release's helper folder the host program is taken from; by default the run's own pinned one. */
   routerBotDir?: string;
@@ -635,6 +664,7 @@ export class HostedClaudeCodeTransport implements ClaudeCodeTransport {
       const begin = async () => {
         if (execution.mode === "launch") {
           const executable = execution.executable;
+          if (!executable) throw new HostUnavailableError("the run names no provider executable to launch");
           const routerBotDir = execution.routerBotDir ?? input.environment?.CONCIERGE_ROUTER_BOT_DIR;
           if (!routerBotDir) throw new HostUnavailableError("the run names no release helper folder to start its host from");
           // From here a host may exist even if this call fails (a supervisor that accepted the start

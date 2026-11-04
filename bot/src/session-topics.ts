@@ -12,7 +12,7 @@ import {answerClosingLine} from './answer-closing-line';
 import {inboxRequestRoot} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
-import {log} from './log';
+import {errorFields,log} from './log';
 import {latestWorkerProgress} from './worker-progress';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,notSeenWorking,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -626,10 +626,21 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
       record(sessionId,saved.input.id,null,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
-      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+      // His app answers an action with the thread as it now stands, so the answer is the thread view
+      // at the revision just recorded, saved with the receipt so a retry returns the same bytes. The
+      // stored record alone had no id or messages; the app threw on it and called a saved pin
+      // pending (2026-11-04, report e0889a03).
+      // The view is the answer the app wants, never a reason to refuse an action already recorded:
+      // if it cannot be computed, the stored record answers (the app reads its revision too).
+      let answered=result;
+      if(result.topic&&typeof result.topic.topicId==='string'){
+        try{answered={...result,topic:topicView(result.topic.topicId)};}
+        catch(error){log('warn','inbox_topic_answer_view_failed',{topic_id:result.topic.topicId,...errorFields(error)});}
+      }
+      db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result:answered}),saved.input.id);
       receiptMs=performance.now()-phaseStart;
       phaseName='commit';
-      return {...result,duplicate:false};
+      return {...answered,duplicate:false};
     })();
     completed=true;
     return result;
@@ -650,6 +661,14 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
         duplicate,outcome:completed?'completed':'failed'});
     }
   }
+}
+/** One thread as the app's lists and thread view show it, computed from the ledger as it stands now. */
+function topicView(topicId:string) {
+  const session=inboxOrThrow();
+  const topic=topicRow(topicId);
+  const summary=topicSummary(topic,session,entryIndex(),workIndex(session.id),readIndex(session.id));
+  // The stored identity field stays beside the view's own, so every reader of the old answer keeps working.
+  return {...summary,topicId,closure:topic.closure,history:topicHistory(session.id,topicId)};
 }
 function bumped(topic:StoredTopic,change:Partial<StoredTopic>={}):StoredTopic {
   return {...topic,...change,revision:topic.revision+1,updatedAt:nowIso()};
@@ -2347,7 +2366,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * notification. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null}):string|null {
   if(!answer.final&&!answer.stalled&&!answer.answersQuestion&&!answer.notify)return null;
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
@@ -2366,7 +2385,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet,notify:answer.notify,
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,summary:answer.summary??null,quiet,notify:answer.notify,
       askedInRun:answer.answerSource?.runId??null});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
@@ -2652,7 +2671,7 @@ export function repairNovember4RepeatedThreadNotices():number {
   return collapsed;
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -2693,11 +2712,16 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
       if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true);
       return;
     }
-    const words=answer.text.trim();
+    // What he reads first, on his Lock Screen and in Needs you, is the agent's own one-line summary:
+    // an answer that opened with background buried "class not cancelled" in its second paragraph
+    // (Chelsea Piers, 2026-11-02, report 'Class cancellation result obscured in notification').
+    const summary=answer.summary?.trim()??'';
+    const words=summary&&!answer.text.trim().startsWith(summary)?`${summary}\n\n${answer.text.trim()}`:answer.text.trim();
+    const lead=summary||headline(words);
     const brief=decision
       ?{decision:words.slice(0,2000),why:{text:`${agent} needs this from you to go on. Reply in this thread: your reply goes straight to that agent.`,sources:[answer.postId]},
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
-      :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
+      :{decision:answer.disposition==='failed'?`Not done: ${lead}`:!fragmentReason(lead)?lead:lead?`${agent} answered: ${lead}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
     if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
       ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){

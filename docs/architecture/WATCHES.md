@@ -25,7 +25,11 @@ deadline expires, Concierge records the terminal observation and the next watch 
 transaction, before delivering the wake. The next watch starts from the observed file version and
 has a fresh deadline. A cancelled watch never renews; cancelling an earlier watch in the series
 cancels its current successor. One active renewing watch per session and file is enforced by the
-ledger. Thus an interrupted agent turn cannot leave a standing condition unwatched, and no model
+ledger. A Claude session and the Codex sessions that continue its work after Claude usage ran out
+keep one renewing series per file between them: a renewing registration from any of them takes the
+existing series over (the receipt names it in `takenOverFrom`), so wakes reach the session that
+last asked, which owns the watch for cancel, listing and request waits, and one change never wakes
+two of them. Thus an interrupted agent turn cannot leave a standing condition unwatched, and no model
 runs between observations. The deadline still wakes the model for a missed-change check; choose
 the longest acceptable fallback interval because every expiry spends one turn. The thread reader
 uses six hours. This option does not claim that a change made and undone during an observation gap
@@ -83,6 +87,15 @@ refusing it is the fact; a string in a bundle is a proxy for it.
   so it survives a Concierge restart. A command still running at the deadline is stopped (SIGTERM,
   then SIGKILL after 10 s) and the watch expires. A command watch never makes an update wait: the
   host is not a turn. Release cleanup keeps the host programs and protocols live watches use.
+- A command runs at the machine's lowest processor priority (server: nice 19 and `CPUWeight=1`
+  against an agent unit's 100; Mac: launchd `ProcessType=Background`), because it only waits and
+  should take almost no time from agents or Concierge. Not `CPUWeight=idle`, which would starve the
+  host in the same unit while the server is saturated, so its status answers would time out. On
+  the server, `sessions watch list` shows a running command's processor seconds and the terminal
+  message says how much processor time the command and its host used since registration, read
+  from its unit's cgroup. On 2026-11-03 a sign-in watch re-read 17 hours of journal every minute, used
+  about two hours of processor at normal priority while the server was saturated, and only a host
+  alert found it.
 
 ## Gaps (a deliberate simplification)
 
