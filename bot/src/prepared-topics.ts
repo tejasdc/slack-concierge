@@ -44,6 +44,7 @@ export class PreparedTopics {
    INSERT OR IGNORE INTO presentation_topics_meta(singleton) VALUES(1);
    CREATE TABLE IF NOT EXISTS presentation_topic_roots(generation INTEGER NOT NULL,root_id TEXT NOT NULL,topic_id TEXT,
     session_id INTEGER NOT NULL,sequence INTEGER NOT NULL,at TEXT NOT NULL,text TEXT NOT NULL,unfiled INTEGER NOT NULL,
+    filing_state TEXT NOT NULL DEFAULT 'waiting',
     PRIMARY KEY(generation,root_id));
    CREATE INDEX IF NOT EXISTS presentation_topic_unfiled ON presentation_topic_roots(generation,unfiled,sequence DESC,root_id);
    CREATE TABLE IF NOT EXISTS presentation_topic_sorting(generation INTEGER PRIMARY KEY,count INTEGER NOT NULL DEFAULT 0,attention_json TEXT NOT NULL DEFAULT '[]');
@@ -122,6 +123,11 @@ export class PreparedTopics {
     this.updateRoot(row.generation,row.root_id);
   })();
   prepared.exec('CREATE INDEX IF NOT EXISTS presentation_topic_incoming ON presentation_topic_roots(generation,session_id,his,first_sequence DESC,root_id)');
+  if(!(prepared.query('PRAGMA table_info(presentation_topic_roots)').all() as {name:string}[]).some(column=>column.name==='filing_state'))prepared.transaction(()=>{
+   prepared.exec("ALTER TABLE presentation_topic_roots ADD COLUMN filing_state TEXT NOT NULL DEFAULT 'waiting'");
+   for(const row of prepared.query('SELECT generation,root_id FROM presentation_topic_roots WHERE unfiled=1').all() as {generation:number;root_id:string}[])
+    this.updateRoot(row.generation,row.root_id);
+  })();
   if(!(prepared.query('PRAGMA table_info(presentation_topics)').all() as {name:string}[]).some(column=>column.name==='started_sort_key'))prepared.transaction(()=>{
    prepared.exec("ALTER TABLE presentation_topics ADD COLUMN started_sort_key TEXT NOT NULL DEFAULT ''");
    // Every row gets its start key and its summary its start and arrivals now, from the roots filled
@@ -198,6 +204,13 @@ export class PreparedTopics {
    if(!inbox)continue;
    this.prepared.query('INSERT OR IGNORE INTO presentation_topic_sorting_dirty VALUES(?,?)').run(generation,change.session_id);
    if(['session_inputs','turns','inbox_focus'].includes(change.source_table))depend('inbox-work',String(change.session_id));
+   if(change.source_table==='turns'){
+    for(const input of this.source.query(`SELECT id FROM session_inputs WHERE turn_id=?
+     UNION SELECT i.id FROM turn_steering_messages s JOIN session_inputs i ON i.steering_id=s.id WHERE s.turn_id=?`)
+     .all(Number(change.row_key),Number(change.row_key)) as {id:string}[]){
+     const root=resolveRoot(change.session_id!,input.id);if(root)roots.add(root);
+    }
+   }
    if(change.source_table==='sessions'&&this.inboxSession()!==meta(this.prepared).inbox_session)
     this.prepared.query('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics WHERE generation=?').run(generation);
    if(change.input_id){const root=resolveRoot(change.session_id!,change.input_id);if(root)roots.add(root);}
@@ -235,7 +248,8 @@ export class PreparedTopics {
    .get(generation,root) as {session_id:number;event_sequence:number;created_at:string}|null;
   if(!row){this.prepared.query('DELETE FROM presentation_topic_roots WHERE generation=? AND root_id=?').run(generation,root);return;}
   const topic=this.source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null;
-  const input=this.source.query('SELECT payload_json,origin FROM session_inputs WHERE id=?').get(root) as {payload_json:string;origin:string}|null;
+  const input=this.source.query(`SELECT i.payload_json,i.origin,COALESCE(i.turn_id,s.turn_id) AS turn_id
+   FROM session_inputs i LEFT JOIN turn_steering_messages s ON s.id=i.steering_id WHERE i.id=?`).get(root) as {payload_json:string;origin:string;turn_id:number|null}|null;
   const his=this.sentByHim(root);
   const payload=input?JSON.parse(input.payload_json):{},body=payload.firstInput??payload;
   let text=typeof body.text==='string'?body.text:'';
@@ -252,12 +266,14 @@ export class PreparedTopics {
    const description=text.slice(text.indexOf('\nDescription:\n')+'\nDescription:\n'.length).trim();
    if(description)text='Bug report: '+description;
   }
-  this.prepared.query(`INSERT INTO presentation_topic_roots(generation,root_id,topic_id,session_id,sequence,at,text,unfiled,first_sequence,first_at,his)
-   VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
+  const turn=input?.turn_id?this.source.query('SELECT status FROM turns WHERE id=?').get(input.turn_id) as {status:string}|null:null;
+  const filingState=topic?'filed':turn&&['done','error','cancelled'].includes(turn.status)?'failed':'waiting';
+  this.prepared.query(`INSERT INTO presentation_topic_roots(generation,root_id,topic_id,session_id,sequence,at,text,unfiled,first_sequence,first_at,his,filing_state)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(generation,root_id)
    DO UPDATE SET topic_id=excluded.topic_id,session_id=excluded.session_id,sequence=excluded.sequence,at=excluded.at,text=excluded.text,unfiled=excluded.unfiled,
-    first_sequence=excluded.first_sequence,first_at=excluded.first_at,his=excluded.his`)
+    first_sequence=excluded.first_sequence,first_at=excluded.first_at,his=excluded.his,filing_state=excluded.filing_state`)
    .run(generation,root,topic?.topic_id??null,row.session_id,row.event_sequence,instant(row.created_at),text.trim().slice(0,120),topic||!his?0:1,
-    first.event_sequence,instant(first.created_at),his?1:0);
+    first.event_sequence,instant(first.created_at),his?1:0,filingState);
  }
  /** Only what he sent himself waits to be filed or appears as his incoming. Agents' requests to the
   * router showed in his Inbox as raw "Session request … agent-authored input" rows, marked Being
@@ -510,7 +526,7 @@ export function readPreparedTopics(db:Database,options:{state?:State;order?:'upd
   .all(current.generation,current.inbox_session,...(old?[old.key]:[]),limit+1) as {key:string;summary_json:string}[];
  const page=rows.slice(0,limit),last=page.at(-1);
  const sortingRow=db.query('SELECT count,attention_json FROM presentation_topic_sorting WHERE generation=?').get(current.generation) as {count:number;attention_json:string}|null;
- const captures=db.query('SELECT root_id AS inputId,text,at FROM presentation_topic_roots WHERE generation=? AND unfiled=1 ORDER BY sequence DESC,root_id LIMIT 5').all(current.generation);
+ const captures=db.query('SELECT root_id AS inputId,text,at,filing_state AS filingState FROM presentation_topic_roots WHERE generation=? AND unfiled=1 ORDER BY sequence DESC,root_id LIMIT 5').all(current.generation);
  const changeHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_topic_changes WHERE generation=?').get(current.generation) as {n:number}).n;
  return {topics:page.map(row=>JSON.parse(row.summary_json)),sorting:{count:sortingRow?.count??0,captures,attention:JSON.parse(sortingRow?.attention_json??'[]')},asOf:cursor({g:current.generation,inbox:current.inbox_session,sequence:changeHead}),nextCursor:rows.length>limit&&last?
   cursor({g:current.generation,inbox:current.inbox_session,state,order,key:last.key}):null,
@@ -523,16 +539,16 @@ export function readPreparedIncoming(db:Database,options:{cursor?:string|null;li
  const old=options.cursor?decode(options.cursor):null;
  if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||!Number.isSafeInteger(old.sequence)||typeof old.root!=='string'))
   return {items:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};
- const rows=db.query(`SELECT root_id,topic_id,first_sequence,first_at,text FROM presentation_topic_roots
+ const rows=db.query(`SELECT root_id,topic_id,filing_state,first_sequence,first_at,text FROM presentation_topic_roots
   WHERE generation=? AND session_id=? AND his=1 ${old?'AND (first_sequence<? OR (first_sequence=? AND root_id>?))':''}
   ORDER BY first_sequence DESC,root_id LIMIT ?`)
-  .all(current.generation,current.inbox_session,...(old?[old.sequence,old.sequence,old.root]:[]),limit+1) as {root_id:string;topic_id:string|null;first_sequence:number;first_at:string;text:string}[];
+  .all(current.generation,current.inbox_session,...(old?[old.sequence,old.sequence,old.root]:[]),limit+1) as {root_id:string;topic_id:string|null;filing_state:string;first_sequence:number;first_at:string;text:string}[];
  const page=rows.slice(0,limit),last=page.at(-1);
  const topic=db.query('SELECT summary_json FROM presentation_topics WHERE generation=? AND topic_id=?');
  const items=page.map(row=>{
   const found=row.topic_id?topic.get(current.generation,row.topic_id) as {summary_json:string}|null:null;
   const summary=found?JSON.parse(found.summary_json):null;
-  return {inputId:row.root_id,text:row.text,at:row.first_at,
+  return {inputId:row.root_id,text:row.text,at:row.first_at,filingState:row.filing_state,
    topic:summary?{id:summary.id,title:summary.title,state:summary.state,startedAt:summary.startedAt??summary.createdAt}:null};
  });
  return {items,nextCursor:rows.length>limit&&last?cursor({g:current.generation,inbox:current.inbox_session,sequence:last.first_sequence,root:last.root_id}):null,

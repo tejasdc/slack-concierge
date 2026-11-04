@@ -1,5 +1,7 @@
 # Unified session owner wire contract v1
 
+The prepared Threads and Incoming projections attach `filingState` to a human message: `waiting` while its Inbox turn is queued or running, `failed` only after that turn ends without a topic placement, and `filed` once a topic owns the root. This state changes with the turn, not with elapsed time. A consumer must not infer a filing failure from a message's age (November 4 report `38a516a7d3fe96de439228380ce5eb1c00dd5f25056d869a52e1f04c0dc0528a`).
+
 ## Human message delivery choice
 
 The accepting owner applies one live-delivery default to people, agents and
