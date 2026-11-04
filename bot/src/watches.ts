@@ -337,10 +337,39 @@ function processorText(seconds: number, fromMs: number, toMs: number) {
  * for the session are one transaction, so a deadline and a change that race produce exactly one
  * event, and the event exists before anything is delivered.
  */
+/**
+ * Whether requests waited on this renewing series and every one of them has since closed. Such a
+ * series was registered for those requests (the request protocol has a worker watch the release
+ * link and name it with --waiting-on-watch), so renewing it after they close only wakes a session
+ * whose work is over: on 2026-11-04 four finished requests' release watches renewed at every
+ * Concierge release. A series no request ever named is a standing condition and is left alone.
+ */
+function everyWaitingRequestClosed(row: WatchRow): boolean {
+  const series = (db.query("SELECT watch_id FROM watches WHERE coalesce(series_id,watch_id)=?").all(row.series_id ?? row.watch_id) as { watch_id: string }[])
+    .map(watch => watch.watch_id);
+  const marks = series.map(() => "?").join(",");
+  const waits = db.query(`
+    SELECT request.outcome IS NULL AS open FROM session_communication_events reply
+      JOIN session_communication_requests request ON request.request_id=reply.request_id
+      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})
+    UNION ALL
+    SELECT request.closed_at_ms IS NULL AS open FROM session_peer_replies reply
+      JOIN session_peer_deliveries request ON request.request_id=reply.request_id
+      WHERE reply.kind='progress' AND json_extract(reply.payload_json,'$.waitingOnWatch') IN (${marks})`)
+    .all(...series, ...series) as { open: number }[];
+  return waits.length > 0 && waits.every(wait => !wait.open);
+}
+
 function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancelled", settlement: Settlement): boolean {
   const settled = db.transaction(() => {
     const row = db.query("SELECT * FROM watches WHERE watch_id=?").get(watchId) as WatchRow | null;
     if (!row || !isOpen(row)) return false;
+    // Ends the series quietly in place of renewing and waking: no request is left to wake it for.
+    const requestsOver = event !== "cancelled" && row.renew_ms !== null && everyWaitingRequestClosed(row);
+    if (requestsOver) {
+      settlement = { ...settlement, detail: `every request that waited on it has closed, so it ended instead of renewing and woke no one (it would have reported: ${settlement.detail})` };
+      event = "cancelled";
+    }
     const observation = observationForWatch(row);
     const gaps = JSON.parse(observation.gapsJson) as Gap[];
     const resumedAt = settlement.observedAt ?? settlement.now;
@@ -362,11 +391,12 @@ function settle(watchId: string, event: "fired" | "expired" | "failed" | "cancel
         ? `\nLast output of the command (stdout and stderr):\n${(settlement.observed as any).outputTail}` : ""}
 You do not need to reply to this.`;
     const result = db.query(`UPDATE watches SET state=?, terminal_event=?, terminal_at_ms=?, observation_json=?, message_text=?, gaps_json=?,
-        last_observed_ms=?, delivery_state='pending', delivery_input_id=?, delivery_attempts=0, delivery_next_ms=NULL
+        last_observed_ms=?, delivery_state=?, delivery_input_id=?, delivery_attempts=0, delivery_next_ms=NULL
       WHERE watch_id=? AND state IN ('accepted','observing')`)
       .run(event, event, settlement.now, JSON.stringify({ detail: settlement.detail, observedAt: settlement.observedAt ? iso(settlement.observedAt) : null, ...(settlement.observed ? { observed: settlement.observed } : {}) }),
-        text, JSON.stringify(gaps), settlement.observedAt ?? last, `watch:${watchId}:${event}`, watchId);
+        text, JSON.stringify(gaps), settlement.observedAt ?? last, requestsOver ? null : "pending", requestsOver ? null : `watch:${watchId}:${event}`, watchId);
     if (result.changes !== 1) return false;
+    if (requestsOver) log("info", "watch_series_ended_with_requests", { watch_id: watchId, series_id: row.series_id ?? row.watch_id, session_id: row.session_id });
     if (event !== "cancelled" && row.renew_ms !== null) {
       const nextId = randomBytes(6).toString("hex");
       const baseline = settlement.observed && typeof settlement.observed === "object" && "version" in settlement.observed
