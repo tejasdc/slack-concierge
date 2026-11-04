@@ -1,4 +1,4 @@
-import { forkCodexSession, ProgressCb, runCodexTurn, RunResult } from "./codex";
+import { forkCodexSession, ProgressCb, runCodexTurn, RunResult, type CodexResumeWait } from "./codex";
 import { forkClaudeCodeSession, runClaudeCodeTurn, type BackgroundReportMissing, type ClaudeBackgroundWait, type ClaudeProviderRetry } from "./claude-code";
 import { providerSelectionFromText } from "./aliases";
 import { ProviderId } from "./state";
@@ -62,6 +62,7 @@ export interface AgentProvider {
     onPreferredModel?: (model: string) => void;
     onProviderThreadStarted?: (providerThreadId: string) => void;
     onProviderTurnStarted?: (providerTurnId: string) => void;
+    onResumeUnanswered?: (wait: CodexResumeWait) => void;
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;

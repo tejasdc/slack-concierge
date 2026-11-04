@@ -230,6 +230,15 @@ function codexTransport(input: { executable?: string }) {
 
 const DEFAULT_CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long a turn's resume may go unanswered before the repair agent is told. The slowest cold
+ * load seen (a 218 MB conversation on a swapping host, 2026-11-04) took about 2.5 minutes, so ten
+ * minutes means the App Server is stuck, not loading. The turn keeps waiting either way.
+ */
+export const CODEX_RESUME_NOTICE_AFTER_MS = 10 * 60_000;
+export type CodexResumeWait = {
+  providerThreadId: string; startedAtMs: number; waitedMs: number; state: "waiting" | "ended";
+};
 /** Items of a recovered turn recorded between yields to the owner's loop. */
 const RECOVERED_ITEMS_PER_STEP = 50;
 const DEFAULT_CODEX_SHUTDOWN_GRACE_MS = 2_000;
@@ -443,6 +452,9 @@ export interface RunCodexTurnInput {
   onInputAcknowledged?: () => void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
+  /** A resume unanswered past `resumeNoticeAfterMs` ("waiting"), then its end ("ended"). */
+  onResumeUnanswered?: (wait: CodexResumeWait) => void;
+  resumeNoticeAfterMs?: number;
   executable?: string;
   requestTimeoutMs?: number;
   inactivityTimeoutMs?: number;
@@ -1137,13 +1149,42 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let stopBeforeSubmission!: (error: Error) => void;
   const stoppedBeforeSubmission = new Promise<never>((_resolve, reject) => { stopBeforeSubmission = reject; });
   void stoppedBeforeSubmission.catch(() => {});
+  const resumeNoticeAfterMs = input.resumeNoticeAfterMs ?? CODEX_RESUME_NOTICE_AFTER_MS;
+  const reportResumeWait = (wait: CodexResumeWait) => {
+    try { input.onResumeUnanswered?.(wait); }
+    catch (error) { log("error", "codex_resume_notice_failed", { provider_thread_uuid: wait.providerThreadId, ...errorFields(error) }); }
+  };
+  // A resume waits for its answer with no deadline. Logged every request period, and once past
+  // the notice bound it becomes a repair notice, so a server that holds its socket open but never
+  // answers reaches the repair agent instead of hanging unseen. Returns the wait's end.
+  // Every wait ends when the turn ends, even one whose resume never settles (a hung recovery
+  // resume when the turn is parked), so no timer outlives its turn or reports it as waiting.
+  const activeResumeWatches = new Set<() => void>();
+  const watchResume = (threadId: string) => {
+    const startedAtMs = Date.now();
+    let noticed = false;
+    const slow = setInterval(() => log("warn", "codex_resume_waiting", {
+      provider_thread_uuid: threadId, waited_ms: Date.now() - startedAtMs,
+    }), requestTimeoutMs);
+    const notice = setTimeout(() => {
+      noticed = true;
+      const waitedMs = Date.now() - startedAtMs;
+      log("error", "codex_resume_unanswered", { provider_thread_uuid: threadId, waited_ms: waitedMs });
+      reportResumeWait({ providerThreadId: threadId, startedAtMs, waitedMs, state: "waiting" });
+    }, resumeNoticeAfterMs);
+    const end = () => {
+      if (!activeResumeWatches.delete(end)) return;
+      clearInterval(slow);
+      clearTimeout(notice);
+      if (noticed) reportResumeWait({ providerThreadId: threadId, startedAtMs, waitedMs: Date.now() - startedAtMs, state: "ended" });
+    };
+    activeResumeWatches.add(end);
+    return end;
+  };
   const resumeUntilAnswered = async (threadId: string, params: unknown) => {
     await ledgerDurable();
     if (interruptionReason) throw interruptionReason;
-    const started = Date.now();
-    const slow = setInterval(() => log("warn", "codex_resume_waiting", {
-      provider_thread_uuid: threadId, waited_ms: Date.now() - started,
-    }), requestTimeoutMs);
+    const endWatch = watchResume(threadId);
     try {
       const result = await Promise.race([
         client.request("thread/resume", params, { untilDisconnect: true }),
@@ -1152,7 +1193,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       resetInactivityTimeout();
       return result;
     } finally {
-      clearInterval(slow);
+      endWatch();
     }
   };
   const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
@@ -1401,11 +1442,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
           (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
         if (turnSettled || controllerClosed) return;
         // Recovery retries this loop until it settles, so a deadline here only stacked cold loads.
+        const endWatch = watchResume(activeThreadId);
         const resumed = await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
           excludeTurns: true,
-        }, { untilDisconnect: true });
+        }, { untilDisconnect: true }).finally(endWatch);
         if (turnSettled || controllerClosed) return;
         verifyCodexConsultationPolicy(input, resumed);
         const history = await client.request("thread/read", {
@@ -1645,6 +1687,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     await turnCompletion;
   } finally {
     controllerClosed = true;
+    for (const endWatch of [...activeResumeWatches]) endWatch();
     stopInactivityTimeout();
     unsubscribeNotifications();
     unsubscribeDisconnect();
