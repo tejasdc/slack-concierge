@@ -360,8 +360,13 @@ export class PreparedTopics {
   const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.requestCount};
   for(const root of value.summary.roots)depend('root',root);
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
-  for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
-  if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  // The router is a reply choice in every thread, but all a thread reads of it is its name; its
+  // work in a thread arrives through 'inbox-work'. Depending on its session row re-prepared every
+  // thread on each router turn, which kept the list minutes behind, so a pin he made snapped back
+  // when the stale list was read (Tejas, 2026-11-04: "It showed as almost pinned and then went back").
+  const router=value.detail.replyTargets.router;
+  for(const target of value.detail.replyTargets.choices)if(target.sessionId!==router)depend('session',target.sessionId);
+  if('sessionId' in value.summary.work&&value.summary.work.sessionId&&value.summary.work.sessionId!==router)depend('session',value.summary.work.sessionId);
   const row=[generation,topicId,owner,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),
