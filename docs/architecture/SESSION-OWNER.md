@@ -54,6 +54,17 @@ do service returns or control/observation activity. `shipped` is a distinct work
 and no new input changes it automatically. Consumers use `outcome=open` for the active
 working set and use execution independently for Running or other lifecycle views.
 
+The visible latest run excludes a redundant service input withdrawn before provider
+admission and an empty turn whose input joined running work. Their turns and cancellation
+reasons remain in the ledger; the real run stays visible.
+A genuinely canceled latest run carries
+the actor and reason in exact views and prepared cards. Stop and queued-message withdrawal
+record Tejas's action at the turn boundary. A human Stop is identified by its
+retained operation for the exact run, rather than by the provider's cancellation
+error. Canceling saved work through an agent command records that agent's exact
+session address; cancellation through the authenticated app records Tejas.
+Legacy records without a reason say so.
+
 Native results and actionable setup errors, provider refusals, parked uncertainty and interrupted/delivery-parked recovery advance attention once per accepted input/dispatch attempt. The existing event ledger retains the attention marker atomically with the generation increment; successful result retention and failure projection share that marker. A retained pre-turn unavailable creation uses its accepted input with attempt zero. This updates neither outcome nor read/dismiss generations, and a stale read or dismiss cannot hide a later failure. Prior result events already prove their attention increment, so compatibility projection does not count them again.
 
 The existing session projection subscribes to native terminal facts as well as Slack facts. Installation performs one catch-up query over retained accepted inputs and their turn rows, recording only actionable native failures without an attention marker. Its cost scales with retained accepted inputs; each selected row receives one event/metadata transaction and ceases to qualify. There is no idle work, timer, provider admission or repair queue. This catches the observed already-retained ChatGPT failure and owner-death recovery without changing input bytes, execution state, provider identity or replay eligibility. Reinstallation and repeated recovery preserve read/dismiss decisions.

@@ -342,7 +342,8 @@ A full `SessionView`, a prepared session card and every message author session c
 presence, computed by one rule (`bot/src/session-presence.ts`): `provider`, `model`,
 `reasoningEffort`, `agentName` (the exact name every surface shows, from `agentDisplayName` in
 `aliases.ts`; `null` means unknown and is shown as unknown, never as another provider), and on
-views and cards `execution`, `timing` (`{startedAt,endedAt,workStartedAt,running,workMs}`) and
+views and cards `execution`, `timing` (`{startedAt,endedAt,workStartedAt,running,workMs}`),
+`cancellation` (`{by,reason}` for a genuinely canceled latest run, otherwise null) and
 `presenceRevision`. `presenceRevision` is the session's newest change-journal sequence when the
 presence was read; a client holding a card and a view of the same session shows the higher one on
 every surface. Author sessions (`author.session`, `originatingHuman.session`, `quoted.session`)

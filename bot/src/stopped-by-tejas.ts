@@ -1,6 +1,7 @@
 import { db } from './state';
 import { nativeRunId } from './session-inputs';
 import { noticeTime } from './provider-free-notice';
+import {humanStopForRun} from './stop-origin';
 
 /**
  * Whether Tejas stopped this exact run himself. His Stop is retained as a human `stop` operation
@@ -10,9 +11,7 @@ import { noticeTime } from './provider-free-notice';
  * it as news, and he was notified about an agent he had just stopped himself.
  */
 export function stoppedByTejas(turnId: number): { inputId: string; atMs: number } | null {
-  const row = db.query(`SELECT id, created_at FROM session_inputs WHERE kind='stop' AND origin='human'
-    AND json_extract(payload_json,'$.runId')=? ORDER BY created_at LIMIT 1`).get(nativeRunId(turnId)) as { id: string; created_at: string } | null;
-  return row ? { inputId: row.id, atMs: Date.parse(`${row.created_at.replace(' ', 'T')}Z`) } : null;
+  return humanStopForRun(db,nativeRunId(turnId));
 }
 
 /** The settled words for a request whose run he stopped: the asker must not report it back to him. */

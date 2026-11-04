@@ -204,8 +204,11 @@ export function updateSavedTurn(turnId:number,action:string,body:Record<string,u
     db.query(`UPDATE turns SET saved_manual_start=1,dispatch_next_attempt_ms=0,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
       WHERE id=? AND status='queued'`).run(turnId);
     } else {
-      db.query(`UPDATE turns SET status='cancelled',agent_text='Dropped by Tejas.',ended_at=CURRENT_TIMESTAMP
-        WHERE session_id=? AND status='queued'`).run(row.session_id);
+      const cancelingSessionId=body.cancelingSessionId;
+      const reason=typeof cancelingSessionId==='number'&&Number.isSafeInteger(cancelingSessionId)
+        ?`Agent session concierge:${cancelingSessionId} canceled this saved work.`:'Tejas dropped this saved work.';
+      db.query(`UPDATE turns SET status='cancelled',agent_text=?,ended_at=CURRENT_TIMESTAMP
+        WHERE session_id=? AND status='queued'`).run(reason,row.session_id);
       db.query(`UPDATE session_inputs SET receipt_json=json_set(COALESCE(receipt_json,'{}'),'$.state','canceled')
         WHERE session_id=? AND turn_id IN (SELECT id FROM turns WHERE session_id=? AND status='cancelled')`).run(row.session_id,row.session_id);
     }
