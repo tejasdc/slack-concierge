@@ -172,21 +172,9 @@ if [ -e "$guard" ] && ! grep -Fq "$marker" "$guard"; then
 fi
 write_wrapper "$guard" history-guard "Codex and Claude run this before every command; it refuses one that rewrites pushed history." "" ""
 
-# A machine-local check the host deploy may provide (remote-box installs it on the server): before
-# a command touches an agent worktree whose packages its daily cleanup removed, it reinstalls them,
-# so a resumed or new session never depends on what the cleanup took. It never refuses a command.
-# Registered only when present, so a machine without it gets exactly the hooks above.
-restore="$etc/hooks/remote-box-worktree-restore"
-restore_codex='' restore_claude=''
-if [ -x "$restore" ]; then
-  restore_codex=$(printf '%s\n' '' \
-    '# Reinstalls packages the worktree cleanup removed before a command uses that worktree' \
-    '# (remote-box scripts/worktree-restore-hook.sh). A first npm reinstall takes about 20 seconds.' \
-    '[[hooks.PreToolUse]]' '[[hooks.PreToolUse.hooks]]' 'type = "command"' \
-    "command = \"$restore\"" 'timeout = 900' \
-    "statusMessage = \"Reinstalling packages this worktree's cleanup removed\"")
-  restore_claude=',{"matcher":"Bash","hooks":[{"type":"command","command":"'"$restore"'","timeout":900}]}'
-fi
+# remote-box's package reinstall hook is no longer registered (2026-11-04): it was added on
+# 2026-10-09 without an observed failure, then caused two disk incidents. remote-box removes the
+# hook itself; an agent that needs a pruned worktree's packages installs them as usual.
 cat > "$tmp" <<EOF
 $marker Do not edit by hand.
 # Concierge's end-of-turn check for every Codex agent on this machine: an agent that tries to end
@@ -223,7 +211,6 @@ type = "command"
 command = "$guard"
 timeout = 20
 statusMessage = "Checking this does not rewrite pushed history"
-$restore_codex
 EOF
 install -m 0644 "$tmp" "$requirements"
 echo "Installed Codex managed hooks: $requirements -> $hook, $guard"
@@ -246,7 +233,7 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}'"$restore_claude"']}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"
