@@ -69,6 +69,11 @@ Starting one named app on an e-reader, watch or TV can also be a physical prereq
 for example, KOReader must be started on a Kindle before it exposes an agent connection.
 The required explanation says which route was tried and why the agent cannot do that
 step itself. A generic request to open an app or website remains refused.
+The ask is the question's first sentence, phrased "Can you unlock your iPhone?" or
+"Please unlock your iPhone."; sentences after it may only state what the agent saw or
+will do ("The device check reported it locked. I will handle the app inspection."). A
+later sentence that asks him for more (addresses him, says "then", or is a question)
+refuses the whole question, so app work never moves to him behind an unlock.
 
 The Mac session owner observes Claude and Codex tool starts in the existing provider
 progress stream. The server owner also observes tool calls that SSH to Tejas's Mac,

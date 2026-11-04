@@ -115,8 +115,17 @@ for(const question of ['Can you unlock your Mac so the agent can continue?',
   'Can you unlock your physical Mac?','Can you take a photo of the paper?',
   'Can you open KOReader once on your Kindle Oasis?',
   'Can you open KOReader on Kindle?',
-  'Could you start the companion app on the watch?'])
+  'Could you start the companion app on the watch?',
+  'Can you unlock your iPhone?','Please unlock your iPhone.',
+  'Please unlock your iPhone. The device check reached it and reported that it is locked. I will handle the app inspection; the other repair work continues.'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please unlock your iPhone. Then open the app.',
+  'Please unlock your iPhone. Open Settings and tap Save.',
+  'Please unlock your iPhone. Can you copy the notes?',
+  'Please unlock your iPhone and open the app.',
+  'Please unlock your iPhone. The app needs you to tap Save.',
+  'Please open Gmail on your iPhone.'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Can you open KOReader and copy a book on your Kindle Oasis?',
   'Can you open KOReader on your Kindle Oasis? Then send me a screenshot?'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
