@@ -4,6 +4,7 @@ import {parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
+import {peerLabRequest} from './commons-board-service';
 import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
 import {basename,dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
@@ -4126,6 +4127,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
         else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
         else if(request.method==='POST'&&parts[1]==='links'&&parts.length===2&&this.peerLinks)result=await this.peerLinks.receive(body);
+        else if(request.method==='POST'&&parts[1]==='lab'&&parts.length===2&&this.selfMachine==='cloud')result=await peerLabRequest(body);
         else if(parts[1]==='operations'&&this.projectSetup){
           if(request.method==='POST'&&parts.length===2)result=await this.projectSetup.receive(body);
           else if(request.method==='GET'&&parts.length===3)result=this.projectSetup.receipt(parts[2]!);
