@@ -54,6 +54,17 @@ do service returns or control/observation activity. `shipped` is a distinct work
 and no new input changes it automatically. Consumers use `outcome=open` for the active
 working set and use execution independently for Running or other lifecycle views.
 
+The visible latest run excludes a redundant service input withdrawn before provider
+admission and an empty turn whose input joined running work. Their turns and cancellation
+reasons remain in the ledger; the real run stays visible.
+A genuinely canceled latest run carries
+the actor and reason in exact views and prepared cards. Stop and queued-message withdrawal
+record Tejas's action at the turn boundary. A human Stop is identified by its
+retained operation for the exact run, rather than by the provider's cancellation
+error. Canceling saved work through an agent command records that agent's exact
+session address; cancellation through the authenticated app records Tejas.
+Legacy records without a reason say so.
+
 Native results and actionable setup errors, provider refusals, parked uncertainty and interrupted/delivery-parked recovery advance attention once per accepted input/dispatch attempt. The existing event ledger retains the attention marker atomically with the generation increment; successful result retention and failure projection share that marker. A retained pre-turn unavailable creation uses its accepted input with attempt zero. This updates neither outcome nor read/dismiss generations, and a stale read or dismiss cannot hide a later failure. Prior result events already prove their attention increment, so compatibility projection does not count them again.
 
 The existing session projection subscribes to native terminal facts as well as Slack facts. Installation performs one catch-up query over retained accepted inputs and their turn rows, recording only actionable native failures without an attention marker. Its cost scales with retained accepted inputs; each selected row receives one event/metadata transaction and ceases to qualify. There is no idle work, timer, provider admission or repair queue. This catches the observed already-retained ChatGPT failure and owner-death recovery without changing input bytes, execution state, provider identity or replay eligibility. Reinstallation and repeated recovery preserve read/dismiss decisions.
@@ -152,6 +163,8 @@ same exact live source input, run identity and stable action identity as request
 For an ordinary Inbox request naming a thread, the accepted request message is placed in that same thread. Its conversation display carries only the recipient and required one-line human-facing summary. Tejas's words stay in his original message, and the full brief stays in the retained request record for the working agent; the thread UI needs an explicit request-detail affordance before Tejas can open it there. This prevents command guidance and duplicated source text in the conversation while preserving exact request custody. The agent is a thread reply target from the retained dispatch. Request identity, deadlines, prompt-answer signals, final disposition and stall notices remain in the request ledger; the thread is their shared presentation and reply address. The prepared message worker projects this request placement from the retained thread address, including existing request rows, and respects an explicitly placed request root. The router needs no return or working transcript to observe ordinary answers. Explicit requester returns and final hand-backs wake it for a dependency it must act on. Requests with no Inbox thread retain the private requester return.
 
 A final `needs_decision` reply returned to an ordinary requester creates one requester-owned blocking attention item when the service return is admitted. The return input identifies both the question and its notification, so local and peer retries do not create another item. The worker's agent-origin attention is not a second push; the requester item names the worker and task, and opens the exact return in the requesting session. Later agent turns leave this decision open until Tejas answers in that session; an Inbox thread continues to own its own question and notification.
+
+An Inbox router turn may post its answer into a thread before it ends. At result retention, the owner follows the opening input through the canonical thread resolver and records a stable marker if that turn posted in the same thread. A closing-only return's owner relay records its post and marker together. The result stays in retained session history but is omitted from the Inbox conversation and prepared thread view; a turn with no post in that thread still shows its closing answer. Startup reconciles older post/result pairs through the indexed turn sequence in short batches and records completion once; a prepared-view upgrade removes their duplicate closing rows without deleting the underlying events. Both message readers use the marker rather than reimplementing thread lineage. This prevents the router's post and final narration from reading as two answers to one message.
 
 The communication and peer owners reconcile their existing durable rows with one in-flight
 pass each. Startup restores late retained returns before either owner dispatches; the root

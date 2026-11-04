@@ -11,6 +11,7 @@ import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-rece
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {routedTurnResultSql} from './inbox-routing-result';
+import {answeredByPostResultSql,postedResultMarkerId} from './inbox-posted-result';
 import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
@@ -93,6 +94,7 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     -- Routing belongs to his source message's handoff. The router's closing narration is
     -- retained in its turn, never projected as a second conversation reply.
     AND NOT (${routedTurnResultSql})
+    AND NOT (${answeredByPostResultSql})
     AND NOT (${unrequestedProgressPostSql})
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
@@ -217,6 +219,8 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    // A hidden closing result remains a valid historical reply target and thread anchor.
+    ??db.query(`${inboxRowsFrom} WHERE event.kind='result'${scope} AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??null;
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
@@ -341,6 +345,50 @@ export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' AND input_id=? LIMIT 1")
     .get(sessionId,turnId,topicRouteAnchor(db,sessionId,root)??root);
+}
+/** Record the result's display decision from the one thread resolver. This event is retained
+ * with the result, so later reads and rebuilt projections cannot make a different choice. */
+export function markResultAnsweredByPost(result:{sessionId:number;turnId:number;inputId:string}):boolean {
+  const session=db.query('SELECT * FROM sessions WHERE id=?').get(result.sessionId) as SessionRow|null;
+  if(!session||!sessionMetadata(session).inbox)return false;
+  const root=inboxThreadRoot(result.sessionId,result.inputId);
+  if(!root||!turnPostedInto(result.sessionId,result.turnId,root))return false;
+  const eventId=postedResultMarkerId(result.turnId);
+  if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+    recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,
+      kind:'result_posted',payload:{root}});
+  return true;
+}
+/** Older results predate the marker. Walk the existing turn-kind index once, then retain a
+ * completion event. Interrupted batches replay safely through stable marker IDs. */
+export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<number> {
+  const completionId='result:posted:backfill:v1';
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(completionId))return 0;
+  const head=(db.query('SELECT COALESCE(MAX(id),0) AS n FROM turns').get() as {n:number}).n;
+  let after=0,marked=0;
+  while(!stopped()){
+    const rows=db.query(`SELECT DISTINCT posted.turn_id AS turnId
+      FROM session_owner_events posted INDEXED BY session_owner_events_turn_kind
+      WHERE posted.turn_id>? AND posted.turn_id<=? AND posted.kind='post'
+      ORDER BY posted.turn_id LIMIT 25`).all(after,head) as {turnId:number}[];
+    if(!rows.length)break;
+    db.transaction(()=>{
+      for(const row of rows){
+        if(stopped())break;
+        const result=db.query('SELECT session_id AS sessionId,turn_id AS turnId,input_id AS inputId FROM session_owner_events WHERE event_id=? AND kind=\'result\'')
+          .get(`result:${row.turnId}`) as {sessionId:number;turnId:number;inputId:string}|null;
+        if(result&&markResultAnsweredByPost(result))marked++;
+      }
+    }).immediate();
+    after=rows.at(-1)!.turnId;
+    await new Promise<void>(resolve=>setImmediate(resolve));
+  }
+  if(!stopped()){
+    const inbox=db.query("SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id LIMIT 1")
+      .get() as {id:number}|null;
+    if(inbox)recordSessionEvent({eventId:completionId,sessionId:inbox.id,kind:'result_posted_backfill_complete',payload:{upToTurnId:head}});
+  }
+  return marked;
 }
 /**
  * A finished turn that owed a thread its answer and never posted has its closing text

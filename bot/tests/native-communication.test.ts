@@ -3,10 +3,11 @@ import {createHash,randomUUID} from 'node:crypto';
 import {db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput,markTurnSteeringMessageFailed,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageAmbiguous,finishTurn,getSessionById,upsertChannel,createOrGetSession,claimSlackUserInput,acquireSessionTurn,parkRunningTurnAfterProviderFailure} from '../src/state';
 import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
-import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,retainSessionInput,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
+import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
-import {inboxHistoryAfter,inboxMessage,postForwardedThreadAnswer} from '../src/session-inbox';
+import {backfillResultAnsweredByPost,inboxHistory,inboxHistoryAfter,inboxMessage,markResultAnsweredByPost,postForwardedThreadAnswer} from '../src/session-inbox';
 import {preparedInboxDisplay} from '../src/presentation-inbox-display';
+import {inboxRootResolver,sourceMessagePage} from '../src/presentation-message-source';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
 let steeringMode:'sent'|'pending',errors:unknown[];
@@ -32,6 +33,55 @@ function run(){
   acknowledgeTurnProviderInput(claim.turn_id,'fixture-owner',claim.dispatch_attempt,[]);
   return {claim,source:{input_id:claim.accepted_input_id!,run_id:nativeRunId(claim.turn_id)}};
 }
+test('a historical router post collapses its closing result while retaining both events',async()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const {claim,source}=run();
+  communication.post({source,action_id:'one-answer',thread:source.input_id,text:'The answer.'});
+  recordSessionEvent({eventId:`result:${claim.turn_id}`,sessionId:inboxId,inputId:source.input_id,
+    turnId:claim.turn_id,kind:'result',payload:{text:'The answer again.'}});
+  expect(await backfillResultAnsweredByPost(()=>false)).toBe(1);
+  expect(await backfillResultAnsweredByPost(()=>false)).toBe(0);
+  expect(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`result:${claim.turn_id}`)).toBeTruthy();
+  const direct=inboxHistory(getSessionById(inboxId)!,null,20)!.messages;
+  expect(direct.filter(message=>message.content==='The answer.')).toHaveLength(1);
+  expect(direct.some(message=>message.id===`result:${claim.turn_id}`)).toBeFalse();
+  const head=(db.query('SELECT max(sequence) AS n FROM session_owner_events').get() as {n:number}).n;
+  const prepared=sourceMessagePage(db,0,head,100,inboxRootResolver(db)).messages;
+  expect(prepared.some(message=>message.messageId===`result:${claim.turn_id}`)).toBeFalse();
+  expect(prepared.some(message=>message.messageId.startsWith('post:'))).toBeTrue();
+});
+
+test('a router result remains the thread answer when no post was made',()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const {claim,source}=run();
+  recordSessionEvent({eventId:`result:${claim.turn_id}`,sessionId:inboxId,inputId:source.input_id,
+    turnId:claim.turn_id,kind:'result',payload:{text:'The closing answer.'}});
+  expect(markResultAnsweredByPost({sessionId:inboxId,turnId:claim.turn_id,inputId:source.input_id})).toBeFalse();
+  expect(inboxHistory(getSessionById(inboxId)!,null,20)!.messages.some(message=>message.id===`result:${claim.turn_id}`)).toBeTrue();
+  const head=(db.query('SELECT max(sequence) AS n FROM session_owner_events').get() as {n:number}).n;
+  expect(sourceMessagePage(db,0,head,100,inboxRootResolver(db)).messages.some(message=>message.messageId===`result:${claim.turn_id}`)).toBeTrue();
+});
+
+test('a router reply inside a thread does not show its closing result beside its post',()=>{
+  const inbox=session(),inboxId=Number(inbox.session.id.slice(10));
+  updateSessionMetadata(inboxId,{inbox:true});
+  const {claim,source}=run();
+  const root=retainSessionInput({sessionId:inboxId,scope:'surface:thinkering',actionId:'fixture-thread-root',
+    kind:'input',origin:'human',payload:{text:'Original question'}}).input;
+  recordSessionEvent({eventId:`accepted:${root.id}`,sessionId:inboxId,inputId:root.id,
+    kind:'accepted',payload:{text:'Original question'}});
+  db.query('UPDATE session_inputs SET payload_json=? WHERE id=?').run(
+    JSON.stringify({text:'Reply in the thread',replyToMessage:{kind:'message',sessionId:inbox.session.id,messageId:root.id}}),source.input_id);
+  communication.post({source,action_id:'reply-answer',thread:root.id,text:'The answer in this thread.'});
+  recordSessionEvent({eventId:`result:${claim.turn_id}`,sessionId:inboxId,inputId:source.input_id,
+    turnId:claim.turn_id,kind:'result',payload:{text:'Answered in the thread.'}});
+  expect(markResultAnsweredByPost({sessionId:inboxId,turnId:claim.turn_id,inputId:source.input_id})).toBeTrue();
+  expect(inboxHistory(getSessionById(inboxId)!,null,20)!.messages.some(message=>message.id===`result:${claim.turn_id}`)).toBeFalse();
+  const head=(db.query('SELECT max(sequence) AS n FROM session_owner_events').get() as {n:number}).n;
+  expect(sourceMessagePage(db,0,head,100,inboxRootResolver(db)).messages.some(message=>message.messageId===`result:${claim.turn_id}`)).toBeFalse();
+});
 async function ask(source:any,target:any,action='ask',extra:any={}){return communication.ask({source,action_id:action,address:target.session.address,text:'Exact question',...extra});}
 
 test('a marked agent thread reply retained for a peer advances from its exact forwarding intent',async()=>{

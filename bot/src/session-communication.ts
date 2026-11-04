@@ -1072,12 +1072,13 @@ export class SessionCommunicationCoordinator {
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
     saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string;cursor?:string}) {
-        this.actor(input.source);
+        const actor=this.actor(input.source);
         if(input.verb==='list')return this.dependencies.owner.savedWorkList(input.cursor??null);
         if(input.verb!=='start'&&input.verb!=='cancel')throw new Error('Choose a saved work action.');
         if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
         action(input.action_id);
-        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',{clientActionId:input.action_id});
+        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',
+            {clientActionId:input.action_id,cancelingSessionId:actor.session});
     }
     async pause(input:{source:CommunicationSource;verb:'status'|'all'|'resume';action_id?:string;session_ids?:string[]}) {
         this.actor(input.source);

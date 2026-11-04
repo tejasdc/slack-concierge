@@ -2,6 +2,7 @@ import { App, LogLevel } from "@slack/bolt";
 import { runStartupPhase } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
+import {backfillResultAnsweredByPost} from './session-inbox';
 import { startRoutedRequestApi } from "./routed-request-api";
 import { peerSettings } from "./session-peers";
 import {createSessionPeerServices} from './session-peer-services';
@@ -4306,10 +4307,13 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         });
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
-        // The Inbox thread index is filled now, in short steps, rather than inside his first tap.
-        void warmEntryIndex({ stopped: () => draining })
-          .then((warmed) => log("info", "inbox_entry_index_warmed", warmed))
-          .catch((error) => log("error", "inbox_entry_index_warm_failed", errorFields(error)));
+        // Historical result markers land before the thread index reads those rows.
+        void backfillResultAnsweredByPost(() => draining)
+          .then(marked => log('info','inbox_posted_result_backfill',{marked}))
+          .catch(error => log('error','inbox_posted_result_backfill_failed',errorFields(error)))
+          .then(() => warmEntryIndex({stopped:()=>draining}))
+          .then(warmed => log('info','inbox_entry_index_warmed',warmed))
+          .catch(error => log('error','inbox_entry_index_warm_failed',errorFields(error)));
         if (captureQueueToken) {
           grafanaAlerts = new GrafanaAlerts({
             db, destinationChannel: "native:inbox", ownerId: instanceId,

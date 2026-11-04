@@ -56,7 +56,7 @@ import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {localSessionNumber} from './peer-identity';
-import {sessionInputProvenance} from './session-inputs';
+import {humanAuthored,sessionInputProvenance} from './session-inputs';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
 import {SIGNIN_WORKER,signInRenewalOf,signInWorkerActionId,signInWorkerText} from './signin-renewal';
@@ -1132,7 +1132,7 @@ export class SessionOwner {
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
-      timing:presence.timing,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
+      timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
       standingRole:standingAgentForSession(this.defaultCwd,session),
@@ -1204,7 +1204,8 @@ export class SessionOwner {
   private settledReceipts=new Map<string,ReturnType<SessionOwner['buildReceipt']>>();
   receipt(input:AcceptedSessionInput) {
     const cached=this.settledReceipts.get(input.id);
-    if(cached)return cached;
+    // Author corrections can arrive after a receipt settles; never cache send authority.
+    if(cached)return {...cached,humanAuthored:humanAuthored(input)};
     const built=this.buildReceipt(input);
     if(receiptSettled(built))this.settledReceipts.set(input.id,built);
     return built;
@@ -1227,7 +1228,7 @@ export class SessionOwner {
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
-    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
@@ -2613,7 +2614,7 @@ export class SessionOwner {
     if(saved.state==='canceled')return;
     if(saved.state||current.turn&&(current.turn.status!=='queued'||current.turn.provider_admission_intended_at||current.turn.provider_started_at||current.turn.provider_turn_id||current.turn.provider_input_acknowledged_at))throw new SessionOwnerError('Input is no longer cancelable; Stop an admitted exact run.',409,'OPERATION_NOT_CANCELABLE');
     if(target.steering_id)throw new SessionOwnerError('Input is attached to a live run; Stop its exact run.',409,'OPERATION_NOT_CANCELABLE');
-    if(target.turn_id){finishTurn(target.turn_id,'cancelled',null);settleTurnDependencies(target.turn_id);}
+    if(target.turn_id){finishTurn(target.turn_id,'cancelled','Tejas canceled this queued message.');settleTurnDependencies(target.turn_id);}
     db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({...saved,state:'canceled'}),target.id);
   }
   /** Stop settles his waiting words, while agent returns and saved work keep their own custody. */
@@ -2631,7 +2632,7 @@ export class SessionOwner {
     for(const turn of waiting){
       const couldHaveReachedProvider=!!(turn.provider_admission_intended_at||turn.provider_started_at
         ||turn.provider_turn_id||turn.provider_input_acknowledged_at);
-      finishTurn(turn.id,'cancelled',null);
+      finishTurn(turn.id,'cancelled',reason==='stop'?'Tejas pressed Stop before this message started.':'Tejas cleared the waiting queue.');
       settleTurnDependencies(turn.id);
       const prior=turn.receipt_json?JSON.parse(turn.receipt_json):{};
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
@@ -2744,7 +2745,7 @@ export class SessionOwner {
         db.query("UPDATE turns SET provider_model=? WHERE id=? AND status IN ('queued','running')").run(chosen.model,turn.id);
         db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='backoff'").run(turn.id);
       } else if(chosen&&turn.status==='queued') {
-        finishTurn(turn.id,'cancelled',null);settleTurnDependencies(turn.id);
+        finishTurn(turn.id,'cancelled','Tejas moved this queued work to a new agent session.');settleTurnDependencies(turn.id);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'canceled',movedTo:rerunSessionId}),target.id);
       }
       return {choice:input.choice,rerunSessionId};

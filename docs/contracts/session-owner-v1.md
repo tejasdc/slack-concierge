@@ -133,7 +133,7 @@ For a failed executable input, display `statusDetail.message` and retain the exi
 
 A human input whose provider keeps failing (a minute of Claude's own retries, or any failed attempt with an overloaded, 5xx or 429 answer) gets one outage offer, published as a `provider_outage` session event `{inputId, provider, model, modelLabel, status, incident, alternatives:[{alias,label}]}` and shown on its receipt as `providerOutage:{offeredAt, provider, model, modelLabel, status, incident:{name,url,updatedAt}|null, alternatives:[{alias,label,provider}], open, choice, chosenAt, rerunSessionId}`. `incident` is the open status.claude.com incident covering that model; OpenAI has no stable status feed, so Codex is told from its errors alone. Every alternative answered a tiny live request moments before it was offered (Opus 5, Sonnet 5, Fable 5.1 and GPT-5.6 Sol, minus the stuck model; the Inbox is offered Claude models only because another provider can only answer in a new conversation). `POST /sessions/:id/outage-choice {clientActionId,inputId,choice}` takes `wait` or one offered alias. A same-provider model reruns this message only, now, in the same conversation (the waiting attempt is ended and retried at once on that model; the session's own model is unchanged). Another provider starts a new conversation in the same project with the message's text and attachments and stops the stuck run, so the message cannot be answered twice. Nothing switches without that choice (Tejas, 2026-09-22).
 
-`GET /sessions/v1/operations/:operationId` returns the same durable receipt, including exact native outcome/evidence and any app-publication disposition. Read-only calls have no action ID and cannot dispatch a provider.
+`GET /sessions/v1/operations/:operationId` returns the same durable receipt, including exact native outcome/evidence and any app-publication disposition. Every operation receipt carries `humanAuthored:boolean`: true only when the owner retained a human input and has not corrected its authorship to an agent. A fresh exact read recomputes this value even for a settled receipt, because an authorship correction can arrive later; a client holding an older receipt from a change feed must fetch the operation again before using it as authority. A recipient deciding whether Tejas authorized an effect checks this field on the original human input as well as its exact words; `origin:"human"` alone is insufficient. Read-only calls have no action ID and cannot dispatch a provider.
 
 ## Surface operations
 
@@ -342,7 +342,8 @@ A full `SessionView`, a prepared session card and every message author session c
 presence, computed by one rule (`bot/src/session-presence.ts`): `provider`, `model`,
 `reasoningEffort`, `agentName` (the exact name every surface shows, from `agentDisplayName` in
 `aliases.ts`; `null` means unknown and is shown as unknown, never as another provider), and on
-views and cards `execution`, `timing` (`{startedAt,endedAt,workStartedAt,running,workMs}`) and
+views and cards `execution`, `timing` (`{startedAt,endedAt,workStartedAt,running,workMs}`),
+`cancellation` (`{by,reason}` for a genuinely canceled latest run, otherwise null) and
 `presenceRevision`. `presenceRevision` is the session's newest change-journal sequence when the
 presence was read; a client holding a card and a view of the same session shows the higher one on
 every surface. Author sessions (`author.session`, `originatingHuman.session`, `quoted.session`)
