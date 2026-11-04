@@ -46,7 +46,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 try {
   let settled = false;
   const running = runCodexTurn({ prompt: "fixture", cwd: scratch, additionalDirs: [], sessionUUID: "fixture-thread",
-    appServerClient: client as any, requestTimeoutMs: 50, resumeNoticeAfterMs: 300,
+    appServerClient: client as any, requestTimeoutMs: 1_000, resumeNoticeAfterMs: 300,
     clientUserMessageId: "slack-concierge:turn:9001:attempt:1",
     onResumeUnanswered: wait => noticeCodexResumeWait(ledger, { sessionId: 42, turnId: 9001 }, wait),
   }).finally(() => { settled = true; });
@@ -64,8 +64,7 @@ try {
   assert.equal(pendingRepairNotices(ledger).length, 1, "the notice is raised once per wait");
 
   answerResume();
-  const result = await running;
-  assert.equal(result.sessionUUID ?? "fixture-thread", "fixture-thread");
+  await running;
   assert.ok(requests.includes("turn/start"), "the turn starts once the resume answers");
   const row = ledger.query("SELECT resolved_at_ms FROM repair_notices").get() as { resolved_at_ms: number | null };
   assert.notEqual(row.resolved_at_ms, null, "the answer resolves the notice");

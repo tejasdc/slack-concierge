@@ -1157,6 +1157,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   // A resume waits for its answer with no deadline. Logged every request period, and once past
   // the notice bound it becomes a repair notice, so a server that holds its socket open but never
   // answers reaches the repair agent instead of hanging unseen. Returns the wait's end.
+  // Every wait ends when the turn ends, even one whose resume never settles (a hung recovery
+  // resume when the turn is parked), so no timer outlives its turn or reports it as waiting.
+  const activeResumeWatches = new Set<() => void>();
   const watchResume = (threadId: string) => {
     const startedAtMs = Date.now();
     let noticed = false;
@@ -1169,11 +1172,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       log("error", "codex_resume_unanswered", { provider_thread_uuid: threadId, waited_ms: waitedMs });
       reportResumeWait({ providerThreadId: threadId, startedAtMs, waitedMs, state: "waiting" });
     }, resumeNoticeAfterMs);
-    return () => {
+    const end = () => {
+      if (!activeResumeWatches.delete(end)) return;
       clearInterval(slow);
       clearTimeout(notice);
       if (noticed) reportResumeWait({ providerThreadId: threadId, startedAtMs, waitedMs: Date.now() - startedAtMs, state: "ended" });
     };
+    activeResumeWatches.add(end);
+    return end;
   };
   const resumeUntilAnswered = async (threadId: string, params: unknown) => {
     await ledgerDurable();
@@ -1681,6 +1687,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     await turnCompletion;
   } finally {
     controllerClosed = true;
+    for (const endWatch of [...activeResumeWatches]) endWatch();
     stopInactivityTimeout();
     unsubscribeNotifications();
     unsubscribeDisconnect();
