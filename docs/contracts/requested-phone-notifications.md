@@ -88,6 +88,17 @@ can establish the Inbox origin; the server still creates a new thread rather tha
 The same verified source chain carries Inbox origin through an intermediary server agent whose onward
 request has no Inbox thread address.
 
+### Concierge's own notices never ring
+
+Two notices Concierge writes about its own bookkeeping reached his phone on 2026-11-04 and gave
+him nothing to act on (Tejas: "notifications that were nothing I could actually act on"):
+the thread line "Your request is still open. Concierge has tried twice to restart its work"
+(three pushes) and "A result reached this conversation, but the agent stopped…" for a result
+nobody read (one push, from the repair agent's session). The first is now posted in the
+thread without a notification; the second is recorded as something to read (`response`), so
+it stays in Needs attention without ringing. Only a question only he can answer or a finished,
+checked answer rings.
+
 ### No automatic reminders
 
 On 2026-10-30 Concierge briefly reminded him of every question waiting on him

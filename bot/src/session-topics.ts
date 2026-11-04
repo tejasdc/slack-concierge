@@ -3196,13 +3196,15 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
           text:`The request "${item.title}" (${item.requestId}) in "${item.topicTitle}" (${item.topicId}) is still open. Its latest attempt (${item.work}) ${item.how}. ${item.sourceUncertain?'The exact source of this request is not linked; establish original authorship and task scope from the retained thread before dispatching. ':''}Inspect the exact prior attempt and its effects, then send the remaining work to its owning agent (sessions ask … --thread, then topics request link). Never replay an ambiguous or acknowledged effect. Close only after the work is completed and checked, or keep an only-he-can question open for Tejas. A failure, hand-back, cancellation or provider error cannot close his request. You do not need to reply to this.`});
       recordSessionEvent({eventId:`topic-recovery:${item.key}:${item.attempt}`,sessionId:session.id,kind:'topic_request',
         payload:{change:'flagged',topicId:item.topicId,requestId:item.requestId,work:item.work,by:OWNER_BY,recoveryInputId:inputId,reason:`Its work ${item.how}.`}});
+      // Said in his thread, never rung: Concierge retrying its own recovery gives him nothing to
+      // act on (Tejas, 2026-11-04: "notifications that were nothing I could actually act on").
       if(item.attempt>=2&&humanRequest(topicRow(item.topicId),requestRow(item.requestId))) {
         const eventId=`recovery-still-open:${item.requestId}`;
         const root=topicRoots(item.topicId)[0];
         if(root&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:forward:${eventId}`))
           postAgentAnswer({inboxSessionId:session.id,eventId,requestId:item.work,root,inboxInputId:root,
             respondingSessionId:`concierge:${session.id}`,text:'Your request is still open. Concierge has tried twice to restart its work, but no new agent attempt is linked yet. It will keep trying; you do not need to repeat it.',
-            attachments:[],stalled:false,final:false,notify:true,workDisposition:null});
+            attachments:[],stalled:false,final:false,notify:false,workDisposition:null});
       }
       flagged++;
     } catch(error) {log('error','inbox_thread_upkeep_flag_failed',{request_id:item.requestId,message:error instanceof Error?error.message:String(error)});}
