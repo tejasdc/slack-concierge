@@ -235,6 +235,7 @@ export class SessionExecutionHost {
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
+        chooseClaudeLaunch:model=>chooseClaudeDispatch(null,0,undefined,model),
         saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
         useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account),
         retryHeldUsage:()=>this.retryHeldUsage()},

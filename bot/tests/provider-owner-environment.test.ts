@@ -48,6 +48,7 @@ test("service paths override stale caller and inherited helper paths without cha
   expect(result).toEqual({
     CONCIERGE_STATE_DIR: state, CONCIERGE_STATE_DB: join(state, "state.db"),
     CONCIERGE_ROUTER_BOT_DIR: botDirectory, CONCIERGE_SLACK_CONFIG: environment.CONCIERGE_CONFIG_PATH,
+    CONCIERGE_BUN_BIN: process.execPath, PATH: `${join(botDirectory,"scripts")}:/usr/local/bin:/usr/bin:/bin`,
     CONCIERGE_RUNTIME_PROFILE: "sandbox", CONCIERGE_SLACK_ENABLED: "1",
     CONCIERGE_SOURCE_INPUT_ID: "input-exact", CONCIERGE_SOURCE_RUN_ID: "run-exact",
     CONCIERGE_COMMIT_PROVENANCE: "turn-token", CUSTOM_CONTEXT: "preserved",

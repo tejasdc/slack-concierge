@@ -3,6 +3,7 @@
   "controlBundles": {
     "control/bot/scripts/router-sessions.js": "bot/scripts/router-sessions.ts",
     "control/bot/scripts/mac-browser-fallback.js": "bot/scripts/mac-browser-fallback.ts",
+    "control/bot/scripts/agent-claude-launch.js": "bot/scripts/agent-claude-launch.ts",
     "control/bot/scripts/router-external.js": "bot/scripts/router-external.ts",
     "control/bot/scripts/usage-breakdown-reader.js": "bot/scripts/usage-breakdown-reader.ts",
     "control/bot/scripts/router-projects.js": "bot/scripts/router-projects.ts",
@@ -48,6 +49,7 @@
   },
   "controlFiles": {
     "control/bot/scripts/mac-browser-fallback.sh": "bot/scripts/mac-browser-fallback.sh",
+    "control/bot/scripts/claude": "bot/scripts/claude",
     "control/install-codex-stop-hook.sh": "scripts/install-codex-stop-hook.sh",
     "control/install-git-history-guard.sh": "scripts/install-git-history-guard.sh",
     "control/git-hooks/dispatch": "scripts/git-hooks/dispatch",
