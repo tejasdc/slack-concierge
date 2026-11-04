@@ -34,6 +34,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Protected agent code launches hide the live ledger and its disk image while allowing Thinkering's
   phone-width release check to mount its read-only data view. The
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
+- Background command watches have Concierge ownership and deadlines; completed Codex turns
+  flag other surviving server processes by exact run identity through an Inbox agent report.
+  See [execution host](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
+  and [durable watches](docs/architecture/WATCHES.md).
 - Hosted run adoption and parked-run recovery follow the
   [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
