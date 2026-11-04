@@ -45,6 +45,11 @@ The closing result filter now looks for routing evidence anywhere in the same tu
 the result is bound to its opening input while later accepted inputs can supply the routed
 source. Source attachments remain tied to each exact routed message.
 
+The live read of that test topic initially labeled its destination topic as a session route:
+topic routes retain the Inbox session as their destination session, so that field alone does
+not identify the route type. The receipt now gives the topic identity precedence and reports
+`thread`; the source message and destination identity stay the same.
+
 ## Acceptance scenario
 
 - **Seed:** A marked agent test capture in a test topic, sent to an existing agent, a new session,

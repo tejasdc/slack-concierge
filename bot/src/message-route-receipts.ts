@@ -20,7 +20,7 @@ export function messageRouteReceipts(database:Database,sourceMessageId:string):M
       ...(route.topicId?{topicId:route.topicId}:{}),
       ...(route.destinationSessionId?{sessionId:route.destinationSessionId}:{}),
       title:routeTitle(database,route.topicId,route.destinationSessionId),
-      kind:route.destinationSessionId?(brief?.provider?'new_session':'session'):'thread',
+      kind:route.topicId?'thread':route.destinationSessionId?(brief?.provider?'new_session':'session'):'thread',
       ...(typeof route.requestId==='string'?{requestId:route.requestId}:{}),
       ...(typeof summary==='string'&&summary.trim()?{summary:summary.trim().slice(0,240)}:{}),
       delivery:peer?.delivery_json?(peer.outcome?'failed':'pending'):'delivered'} as MessageRouteReceipt;
