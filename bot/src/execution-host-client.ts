@@ -236,10 +236,12 @@ async function supervisorCommand(file: string, args: string[], timeout: number) 
 }
 
 /**
- * `waiter` is a command that only waits for something (a watch): it runs at the machine's lowest
- * processor priority so it can never take time from agents or Concierge. On 2026-11-03 a watch
- * that re-read 17 hours of journal every minute used about two hours of processor at normal
- * priority during a saturated stretch, and nothing showed it. Disk weights are not set because the
+ * `waiter` is a command that only waits for something (a watch): its unit gets the smallest
+ * processor weight (1 against an agent's 100) and nice 19, so it takes almost no time from agents
+ * or Concierge. On 2026-11-03 a watch that re-read 17 hours of journal every minute used about two
+ * hours of processor at normal priority during a saturated stretch, and nothing showed it. Not
+ * `CPUWeight=idle`: the host in the same unit must still answer status within seconds when the
+ * server is saturated, and an idle group gets nothing then. Disk weights are not set because the
  * server's RAID device ignores them (see agent-work-slice).
  */
 export type HostPriority = "agent" | "waiter";
@@ -268,7 +270,7 @@ export async function startHost(input: {
     const result = await supervisorCommand("systemd-run", [
       `--unit=${unit}`, `--slice=${AGENT_WORK_SLICE}`, "--service-type=exec", "--collect", "--quiet",
       "--property=Restart=no", "--property=KillMode=control-group", "--property=IOAccounting=yes",
-      ...(input.priority === "waiter" ? ["--nice=19", "--property=CPUWeight=idle"] : []),
+      ...(input.priority === "waiter" ? ["--nice=19", "--property=CPUWeight=1"] : []),
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
       runtime, "run", hostScript, directory,

@@ -300,7 +300,7 @@ function gapsText(gaps: Gap[], row: WatchRow, endedAt: number) {
  */
 function processorText(seconds: number, fromMs: number, toMs: number) {
   const share = toMs > fromMs ? (seconds * 1000) / (toMs - fromMs) : 0;
-  return `The command used ${seconds < 120 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`} of processor time (${(share * 100).toFixed(share < 0.01 ? 2 : 1)}% of one core over its run).`;
+  return `The command and its host used ${seconds < 120 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`} of processor time (${(share * 100).toFixed(share < 0.01 ? 2 : 1)}% of one core since registration).`;
 }
 
 /**
