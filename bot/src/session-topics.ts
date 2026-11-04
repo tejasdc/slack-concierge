@@ -2295,7 +2295,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * notification. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null}):string|null {
   if(!answer.final&&!answer.stalled&&!answer.answersQuestion&&!answer.notify)return null;
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
@@ -2314,7 +2314,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   upkeepDepth++;
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
-      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,quiet,notify:answer.notify,
+      respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,summary:answer.summary??null,quiet,notify:answer.notify,
       askedInRun:answer.answerSource?.runId??null});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
@@ -2600,7 +2600,7 @@ export function repairNovember4RepeatedThreadNotices():number {
   return collapsed;
 }
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -2641,11 +2641,16 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
       if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true);
       return;
     }
-    const words=answer.text.trim();
+    // What he reads first, on his Lock Screen and in Needs you, is the agent's own one-line summary:
+    // an answer that opened with background buried "class not cancelled" in its second paragraph
+    // (Chelsea Piers, 2026-11-02, report 'Class cancellation result obscured in notification').
+    const summary=answer.summary?.trim()??'';
+    const words=summary&&!answer.text.trim().startsWith(summary)?`${summary}\n\n${answer.text.trim()}`:answer.text.trim();
+    const lead=summary||headline(words);
     const brief=decision
       ?{decision:words.slice(0,2000),why:{text:`${agent} needs this from you to go on. Reply in this thread: your reply goes straight to that agent.`,sources:[answer.postId]},
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
-      :{decision:answer.disposition==='failed'?`Not done: ${headline(words)}`:!fragmentReason(headline(words))?headline(words):headline(words)?`${agent} answered: ${headline(words)}`:'An agent answered in this thread.',
+      :{decision:answer.disposition==='failed'?`Not done: ${lead}`:!fragmentReason(lead)?lead:lead?`${agent} answered: ${lead}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
     if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
       ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
