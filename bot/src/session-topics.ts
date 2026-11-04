@@ -2933,9 +2933,10 @@ function nextRecoveryAttempt(item:Stuck):number|null {
  * Settles open requests with checked completion or an explicit human Stop. Returns all other
  * obligations with no live attempt or ready question to the router for recovery.
  */
-function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
+function settleEndedRequests(topicId:string,read:ReadIndex):{stuck:Stuck[];settled:number} {
   const stuck:Stuck[]=[];
   let settled=0;
+  const replies=latestHumanReply(read,topicRoots(topicId));
   for(const request of topicRequests(topicId).filter(item=>item.state==='open')) {
     const works=request.dispatches.map((dispatch:any)=>workRow(String(dispatch?.requestId??''))).filter((work):work is Work=>!!work);
     if(works.some(work=>work.outcome===null&&!work.stalled))continue;
@@ -2943,8 +2944,10 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
     const latest=works.at(-1);
     const topic=topicRow(topicId);
     const dispatchIds=new Set(request.dispatches.map((dispatch:any)=>String(dispatch?.requestId??'')));
-    const waitingOnHim=questionsOfRequest(topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)
-      &&questionReadiness(question)==='ready'&&(question.blocking||!question.optional))||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
+    const decisionViews=questionsOfRequest(topicId,request).filter(question=>question.kind==='decision')
+      .map(question=>questionView(question,replies));
+    const pendingAnswer=decisionViews.find(question=>!!question.pendingReply)?.pendingReply;
+    const waitingOnHim=decisionViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))));
     let disposition:string|null=null,why='';
     let completionChecked=false;
@@ -2963,14 +2966,16 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
       continue;
     }
     if(!disposition) {
-      const how=!latest?'has had no agent assigned'
+      let how=!latest?'has had no agent assigned'
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
         :latest.stalled?'stalled without a final reply'
         :latest.disposition==='failed'?'failed without finishing the task'
         :latest.outcome==='canceled'?'was cancelled without a replacement'
+        :pendingAnswer?'has Tejas’s answer to its question but no resumed work'
         :latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
         :latest.outcome==='unanswered'?'never answered':latest.outcome==='undetermined'?'ended without saying whether it was done'
         :latest.outcome==='dependency_failed'?'was held behind work that did not succeed':`ended as ${latest.outcome}`;
+      if(pendingAnswer)how+=`; Tejas's answer ${pendingAnswer.inputId} is waiting to be processed`;
       const source=recoverySource(request);
       stuck.push({topicId,topicTitle:topic.title,requestId:request.requestId,title:request.title,work:latest?.id??'unassigned',how,
         key:`${request.requestId}:${request.revision}:${latest?.id??'unassigned'}`,sourceInputId:source?.inputId??null,sourceRunId:source?.runId??null,sourceUncertain:!source||source.uncertain});
@@ -2990,10 +2995,10 @@ function settleEndedRequests(topicId:string):{stuck:Stuck[];settled:number} {
  * Links his replies, settles ended requests and closes the thread when that left nothing in it.
  * `answered` marks an agent's final answer having just arrived here, itself an ending.
  */
-function keepThreadCurrent(topicId:string,forwards=forwardedReplies(),answered=false):Stuck[] {
+function keepThreadCurrent(topicId:string,forwards=forwardedReplies(),answered=false,read=readIndex(inboxOrThrow().id)):Stuck[] {
   return db.transaction(()=>{
     linkForwardedReplies(topicId,forwards);
-    const {stuck,settled}=settleEndedRequests(topicId);
+    const {stuck,settled}=settleEndedRequests(topicId,read);
     if(settled||answered)closeThreadIfFinished(topicId,answered?'answer':'settled');
     return stuck;
   })();
@@ -3028,6 +3033,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
   refreshRootMemo();
   const forwards=forwardedReplies();
+  const read=readIndex(session.id);
   const running=new Set(forwards.filter(forward=>forward.outcome===null&&forward.root).map(forward=>topicOfRoot(forward.root!)).filter((id):id is string=>!!id));
   const open=(db.query("SELECT topic_id FROM inbox_topics WHERE session_id=? AND state='open'").all(session.id) as {topic_id:string}[]).map(row=>row.topic_id);
   const closedWithOpenRequests=(db.query(`SELECT DISTINCT request.topic_id FROM inbox_requests request
@@ -3039,7 +3045,7 @@ export function keepThreadsCurrent(admit?:(input:{sessionId:number;inputId:strin
   const openRequestsBefore=(db.query("SELECT count(*) AS count FROM inbox_requests WHERE state='open'").get() as {count:number}).count;
   const stuck:Stuck[]=[];
   for(const topicId of new Set([...open,...running,...closedWithOpenRequests])) {
-    try{stuck.push(...keepThreadCurrent(topicId,forwards));}
+    try{stuck.push(...keepThreadCurrent(topicId,forwards,false,read));}
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
   }
   const fresh=stuck.flatMap(item=>{const attempt=nextRecoveryAttempt(item);return attempt===null?[]:[{...item,attempt}];});

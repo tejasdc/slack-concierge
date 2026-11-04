@@ -417,7 +417,9 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   expire a live decision question. That question must be carried to the replacement or
   explicitly settled with a proven replacement question. A question only he can answer
   remains open in its thread. A question still being prepared by an agent is recovery work,
-  not a reason to leave the task waiting on Tejas.
+  not a reason to leave the task waiting on Tejas. When Tejas has replied to a question but
+  the router has not reconciled that answer, the question no longer counts as waiting on him;
+  the task returns to the router with his pending reply as the next thing to process.
 - When the router itself completes a human request without dispatching another agent, it
   names the later answer in that same thread as evidence. A bare completion claim with no
   linked work or answer is refused. Verification-only agent test reports remain distinct
