@@ -30,13 +30,49 @@ import {parseMachineNeed,type MachineNeed} from './machine-need';
 import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT,CANVAS_AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
 import {endedWorkInPlainWords} from './provider-failures';
 
+/** Follow owner-recorded continuations back to the work request that forwarded a human reply. */
+export function forwardedHumanWorkInput(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>) {
+  let current=sourceInput;
+  const seen=new Set<string>();
+  while(current&&current.session_id===actor.session&&!seen.has(current.id)) {
+    seen.add(current.id);
+    if(current.kind==='input'&&current.origin==='agent'&&!current.source_run_id)return current;
+    if(current.origin!=='service'||!current.source_input_id||!current.source_run_id)return null;
+    const parent=getAcceptedSessionInput(current.source_input_id);
+    if(!parent||parent.session_id!==actor.session||!parent.turn_id||nativeRunId(parent.turn_id)!==current.source_run_id)return null;
+    if(current.id.startsWith('watch:')) {
+      const watch=db.query(`SELECT 1 FROM watches WHERE delivery_input_id=? AND session_id=?
+        AND origin_input_id=? AND origin_run_id=? AND state='fired'`).get(current.id,actor.session,parent.id,current.source_run_id);
+      if(!watch)return null;
+    } else if(current.id.startsWith('return:')) {
+      const peerEvent=db.query(`SELECT 1 FROM session_peer_events event
+        JOIN session_peer_requests request ON request.request_id=event.request_id
+        WHERE event.event_id=? AND event.kind='final' AND event.accepted_input_id=? AND request.request_id=?
+          AND request.source_session_id=? AND request.source_input_id=? AND request.source_turn_id=?
+          AND json_extract(request.payload_json,'$.requestedEffect')='work'`)
+        .get(current.id.slice('return:'.length),current.id,current.request_id,actor.session,parent.id,parent.turn_id);
+      const localEvent=peerEvent?null:db.query(`SELECT 1 FROM session_communication_events event
+        JOIN session_communication_requests request ON request.request_id=event.request_id
+        WHERE event.event_id=? AND event.kind='final' AND event.accepted_input_id=? AND request.request_id=?
+          AND request.source_session_id=? AND request.source_input_id=? AND request.source_turn_id=?
+          AND json_extract(request.payload_json,'$.requestedEffect')='work'`)
+        .get(current.id.slice('return:'.length),current.id,current.request_id,actor.session,parent.id,parent.turn_id);
+      if(!peerEvent&&!localEvent)return null;
+    } else return null;
+    current=parent;
+  }
+  return null;
+}
+
 /** The original human grant survives a physical-device reply only within its recorded task. */
 function continuedWebAppAuthorization(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>,provenance:ReturnType<typeof sessionInputProvenance>,input:{peer:string;address?:string;machineNeed?:MachineNeed}) {
   const need=input.machineNeed;
   if(input.peer!=='mac'||!input.address||need?.kind!=='mac-app'||!need.why.includes(AUTHORIZED_WEB_APP)||!need.why.includes(AUTHORIZED_PAGE)
-    ||!sourceInput||!provenance?.originatingHuman||sourceInput.kind!=='input')return null;
+    ||!sourceInput||!provenance?.originatingHuman)return null;
+  const forwardedInput=forwardedHumanWorkInput(actor,sourceInput);
+  if(!forwardedInput)return null;
   const forwarded=db.query(`SELECT source_input_id,source_session_id,thread_root_input_id,payload_json FROM session_communication_requests
-    WHERE target_input_id=? AND target_session_id=? AND source_input_id=?`).get(sourceInput.id,actor.session,sourceInput.source_input_id) as
+    WHERE target_input_id=? AND target_session_id=? AND source_input_id=?`).get(forwardedInput.id,actor.session,forwardedInput.source_input_id) as
     {source_input_id:string;source_session_id:number;thread_root_input_id:string|null;payload_json:string}|null;
   const humanReply=forwarded?getAcceptedSessionInput(forwarded.source_input_id):null;
   if(!forwarded||!humanReply||!humanAuthored(humanReply)||humanReply.session_id!==forwarded.source_session_id
