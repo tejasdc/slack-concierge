@@ -213,7 +213,43 @@ export function withdrawChatGptTasksForStoppedTurnByTejas(input:{turnId:number;h
 /** Conservatively classify old asks serving still-open exact tasks. No row here sends a
  * provider input. Ambiguous membership or recipient identity stays pending for inspection. */
 export function migrateOpenLegacyChatGptAsks(now:number) {
-  const summary={scanned:0,linked:0,pending:0,excludedKnownNonChatGpt:0};
+  const summary={scanned:0,linked:0,pending:0,excludedKnownNonChatGpt:0,excludedNoEligibleTask:0};
+  // A candidate must have existed when the historical question was asked and
+  // must still be open. Otherwise an old direct question can hold unrelated
+  // work admitted to the same session weeks later.
+  const eligible=(askerSessionId:number,askedAt:number,task:ChatGptTask):boolean=>{
+    if(!chatGptTaskHeldBy(askerSessionId,task))return false;
+    if(task.kind==='direct_input')return true;
+    const row=task.kind==='local_request'
+      ?db.query('SELECT created_at_ms FROM session_communication_requests WHERE request_id=?').get(task.id)
+      :task.kind==='external_request'
+        ?db.query('SELECT created_at_ms FROM session_external_requests WHERE request_id=?').get(task.id)
+        :db.query('SELECT created_at_ms FROM session_peer_deliveries WHERE peer=? AND request_id=?')
+          .get(task.id.slice(0,task.id.indexOf(':')),task.id.slice(task.id.indexOf(':')+1));
+    return !!row&&(row as {created_at_ms:number}).created_at_ms<=askedAt;
+  };
+  // Pending rows outlive the open parent request that caused the first scan.
+  // Recheck the retained rows themselves, even when that parent has since closed.
+  const pendingRows=db.query(`SELECT source_kind,request_id,source_input_id,candidate_tasks_json,reason
+    FROM session_chatgpt_legacy_reconciliation WHERE state='pending'`).all() as Array<{
+      source_kind:'local'|'peer';request_id:string;source_input_id:string;candidate_tasks_json:string;reason:string}>;
+  for(const pending of pendingRows)db.transaction(()=>{
+    const original=(pending.source_kind==='local'
+      ?db.query('SELECT source_session_id,created_at_ms FROM session_communication_requests WHERE request_id=? AND source_input_id=?')
+      :db.query('SELECT source_session_id,created_at_ms FROM session_peer_requests WHERE request_id=? AND source_input_id=?'))
+      .get(pending.request_id,pending.source_input_id) as {source_session_id:number;created_at_ms:number}|null;
+    if(!original)return;
+    const recorded=JSON.parse(pending.candidate_tasks_json) as ChatGptTask[];
+    const retained=recorded.filter(task=>eligible(original.source_session_id,original.created_at_ms,task));
+    if(retained.length===recorded.length&&retained.length)return;
+    if(!retained.length)summary.excludedNoEligibleTask++;
+    db.query(`UPDATE session_chatgpt_legacy_reconciliation SET candidate_tasks_json=?,state=?,reason=?
+      WHERE source_kind=? AND request_id=? AND state='pending'`).run(JSON.stringify(retained),
+        retained.length?'pending':'linked',
+        retained.length?`${pending.reason} Candidates admitted later or since closed were removed.`
+          :'Excluded: no still-open task existed when this historical question was asked.',
+        pending.source_kind,pending.request_id);
+  })();
   const asks=db.query(`SELECT 'local' AS source_kind,ask.request_id,ask.source_input_id,ask.source_session_id AS asker_session_id,
       ask.target_session_id,ask.payload_json,ask.outcome,ask.result_json,ask.created_at_ms,NULL AS peer,NULL AS remote_session_id
       FROM session_communication_requests ask JOIN sessions target ON target.id=ask.target_session_id
@@ -236,9 +272,8 @@ export function migrateOpenLegacyChatGptAsks(now:number) {
   for(const ask of asks)db.transaction(()=>{
     summary.scanned++;
     if(db.query('SELECT 1 FROM session_chatgpt_obligations WHERE obligation_id=?').get(ask.request_id))return;
-    const prior=db.query('SELECT 1 FROM session_chatgpt_legacy_reconciliation WHERE source_kind=? AND request_id=?')
-      .get(ask.source_kind,ask.request_id);
-    if(prior)return;
+    if(db.query('SELECT 1 FROM session_chatgpt_legacy_reconciliation WHERE source_kind=? AND request_id=?')
+      .get(ask.source_kind,ask.request_id))return;
     const payload=JSON.parse(ask.payload_json);
     if(ask.source_kind==='peer'&&payload.address&&ask.remote_session_id){
       const view=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?')
@@ -277,20 +312,24 @@ export function migrateOpenLegacyChatGptAsks(now:number) {
       for(const parent of db.query('SELECT request_id FROM session_external_requests WHERE target_session_id=? AND outcome IS NULL')
         .all(ask.asker_session_id) as {request_id:string}[])candidates.push({kind:'external_request',id:parent.request_id});
     }
-    const distinct=Array.from(new Map(candidates.map(task=>[`${task.kind}:${task.id}`,task])).values());
+    const distinct=Array.from(new Map(candidates.map(task=>[`${task.kind}:${task.id}`,task])).values())
+      .filter(task=>eligible(ask.asker_session_id,ask.created_at_ms,task));
     // A catalogue view may have changed since the old send. Only immutable ask payload
     // provider selection can justify automatic historical binding.
     const providerKnown=ask.source_kind==='local'||payload.provider==='chatgpt';
     const target=ask.source_kind==='local'?`concierge:${ask.target_session_id}`
       :ask.remote_session_id?`${ask.peer}/${ask.remote_session_id}`:`${ask.peer}/request:${ask.request_id}`;
     const autoLink=exactCandidateCount===1&&distinct.length===1&&source?.origin!=='human'&&providerKnown;
-    const reason=distinct.length!==1?'Exact accepted source input has multiple or no open task candidates.'
+    const noOpenTask=distinct.length===0;
+    const reason=noOpenTask?'Excluded: no still-open task existed when this historical question was asked.'
+      :distinct.length!==1?'Exact accepted source input has multiple open task candidates.'
       :distinct[0]?.kind==='direct_input'?'A historical direct task needs explicit owner-recorded selection.'
       :!providerKnown?'Addressed peer provider identity is not confirmed as ChatGPT.'
       :!autoLink?'The historical source does not prove the task by exact delivery custody.':'Exact custody established.';
     db.query(`INSERT INTO session_chatgpt_legacy_reconciliation(source_kind,request_id,source_input_id,candidate_tasks_json,state,reason,created_at_ms)
       VALUES(?,?,?,?,?,?,?)`).run(ask.source_kind,ask.request_id,ask.source_input_id,JSON.stringify(distinct),
-        autoLink?'linked':'pending',reason,now);
+        noOpenTask||autoLink?'linked':'pending',reason,now);
+    if(noOpenTask){summary.excludedNoEligibleTask++;return;}
     if(!autoLink){summary.pending++;return;}
     summary.linked++;
     const task=distinct[0]!;
