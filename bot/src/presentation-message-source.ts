@@ -3,6 +3,7 @@ import {inboxRequestRoot} from './inbox-request-root';
 import {firstInboxAcceptanceSql} from './inbox-message-identity';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {routedTurnResultSql} from './inbox-routing-result';
+import {unrequestedProgressPostSql} from './inbox-progress-post';
 
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
@@ -16,6 +17,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   CASE WHEN event.kind='result' THEN COALESCE(length(json_extract(event.payload_json,'$.text')),length(turn.agent_text),0)>0 ELSE 0 END AS has_result_text,
   CASE WHEN event.kind='result' THEN json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0 ELSE 0 END AS has_attachments,
   CASE WHEN ${routedTurnResultSql} THEN 1 ELSE 0 END AS routed_result,
+  CASE WHEN ${unrequestedProgressPostSql} THEN 1 ELSE 0 END AS unrequested_progress_post,
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
     THEN json_extract(event.payload_json,'$.topicId') END AS topic_id,
   CASE WHEN event.kind='message' THEN json_extract(event.payload_json,'$.message.id') END AS owner_message_id
@@ -27,7 +29,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
   input_origin:string|null;
-  is_inbox:number|null;has_capture:number;already_posted_in_thread:number;agent_request:number;has_result_text:number;has_attachments:number;routed_result:number;topic_id:string|null;owner_message_id:string|null};
+  is_inbox:number|null;has_capture:number;already_posted_in_thread:number;agent_request:number;has_result_text:number;has_attachments:number;routed_result:number;unrequested_progress_post:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
   return row.kind==='result'||row.kind==='post'||row.kind==='request'||row.kind==='topic_route'?row.event_id:row.input_id;
 }
@@ -98,7 +100,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
   const rows=db.query(`${inboxMessageSourceSql} AND event.sequence>? AND event.sequence<=? ORDER BY event.sequence LIMIT ?`)
     .all(after,head,limit) as SourceRow[];
   const messages=rows.flatMap(row=>{
-    if(!row.is_inbox||row.agent_request)return [];
+    if(!row.is_inbox||row.agent_request||row.unrequested_progress_post)return [];
     if(row.kind==='post'&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
       .get(`post:collapse:${row.event_id}`))return [];
     if(row.kind==='post'&&canceledRequestNotice(db,row.event_id))return [];

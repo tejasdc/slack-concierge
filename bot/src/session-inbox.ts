@@ -11,6 +11,7 @@ import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-rece
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {routedTurnResultSql} from './inbox-routing-result';
+import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
 
@@ -92,6 +93,7 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     -- Routing belongs to his source message's handoff. The router's closing narration is
     -- retained in its turn, never projected as a second conversation reply.
     AND NOT (${routedTurnResultSql})
+    AND NOT (${unrequestedProgressPostSql})
     -- A turn that said nothing of its own is not a message: its thread shows no reply rather
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
@@ -428,7 +430,7 @@ export function forwardedReplyFraming(requestId:string,text:string,origin:'human
  * nothing here wakes the router. A bodyless final refers to this request's earlier prompt-answer
  * post by request identity. Its closing facts are an append-only event projected beneath that post.
  */
-export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;answerSource?:{inputId:string;runId:string}|null;noticeGroup?:string|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
+export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:string;requestId:string;root:string;inboxInputId:string;respondingSessionId:string;text:string;attachments:string[];stalled:boolean;final:boolean;answersQuestion?:boolean;notify?:boolean;workDisposition:string|null;closingLine?:string|null;answerGroup?:string|null;answerSource?:{inputId:string;runId:string}|null;noticeGroup?:string|null;hisInputId?:string|null;quiet?:string|null;messageThreadRootId?:string|null;alsoMainThread?:boolean}):string|null {
   const text=answer.text.trim();
   const postId=`post:forward:${answer.eventId}`;
   const answersQuestion=!answer.stalled&&(answer.final||answer.answersQuestion===true);
@@ -508,7 +510,7 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
             ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
             ...(answer.answerSource?{answerSource:answer.answerSource}:{}),
             ...(answer.noticeGroup?{noticeGroup:answer.noticeGroup}:{}),
-            replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
+            replyKind:answer.final?'final':'partial',...(answersQuestion?{answersQuestion:true}:{}),...(answer.notify?{requestedNotification:true}:{}),...(answer.final&&answer.workDisposition?{workDisposition:answer.workDisposition}:{}),
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service',postedBySession:answer.respondingSessionId}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;

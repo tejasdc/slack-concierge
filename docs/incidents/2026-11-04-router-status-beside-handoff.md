@@ -50,6 +50,16 @@ topic routes retain the Inbox session as their destination session, so that fiel
 not identify the route type. The receipt now gives the topic identity precedence and reports
 `thread`; the source message and destination identity stay the same.
 
+The installed multi-destination probe `capture:0b733f61fc523449979a1d00544d623170b9301c2ed359527e87d0111fc42e91`
+showed the source route and request `23404259-f098-49d7-bef4-5b76253420a1`, whose exact
+accepted instruction was “Acknowledge this marked test only; do not modify files.” The test
+recipient's answer appeared as its own post; no router status post appeared. Reading Tejas's
+original report afterwards exposed progress-only partials from the delegated implementation
+request as separate `post:forward:` conversation messages. Those are request progress, not
+answers to him. Progress-only partials now remain on the Work receipt, while prompt answers,
+explicitly notified partials, and final answers still post. The prepared-message upgrade removes
+older unnotified progress posts from Conversation without deleting their request evidence.
+
 ## Acceptance scenario
 
 - **Seed:** A marked agent test capture in a test topic, sent to an existing agent, a new session,

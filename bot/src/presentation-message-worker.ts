@@ -9,6 +9,7 @@ import {PreparedSearchIndex} from './prepared-search';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {routedTurnResultSql} from './inbox-routing-result';
+import {unrequestedProgressPostSql} from './inbox-progress-post';
 import {PreparedSessionCards} from './prepared-session-cards';
 import {PreparedReceipts} from './prepared-receipts';
 import {PreparedTopics} from './prepared-topics';
@@ -238,7 +239,7 @@ async function upgradeAnswerClosures(generation:number){
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
   const version=(prepared.query('SELECT request_roots_version AS version FROM presentation_message_meta WHERE singleton=1').get() as {version:number}).version;
-  if(version>=6)return;
+  if(version>=7)return;
   const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
   let after=0;
   while(true){
@@ -255,7 +256,8 @@ async function upgradeRequestRoots(generation:number){
       for(const row of rows){
         const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
           .get(generation,row.sequence) as {root:string}|null;
-        if(row.kind==='post'&&canceledRequestNotice(source,row.messageId)){
+        const unrequestedProgress=row.kind==='post'&&!!source.query(`SELECT 1 FROM session_owner_events event WHERE event.event_id=? AND (${unrequestedProgressPostSql})`).get(row.messageId);
+        if(row.kind==='post'&&(canceledRequestNotice(source,row.messageId)||unrequestedProgress)){
           if(prior){
             changedRoots.add(prior.root);
             prepared.query('DELETE FROM presentation_messages WHERE generation=? AND event_sequence=?').run(generation,row.sequence);
@@ -292,7 +294,7 @@ async function upgradeRequestRoots(generation:number){
   }
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
-  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=6 WHERE singleton=1').run();})();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=7 WHERE singleton=1').run();})();
 }
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
@@ -530,7 +532,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=6,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=7,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(generation,startHead);
