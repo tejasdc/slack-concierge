@@ -27,6 +27,9 @@ A step-asking question names its to-do (`--todo <id>` or `--todo none`). The rou
 reads that to-do from thnkr.ing before accepting the question and refuses one whose to-do is done
 or dropped; an accepted question records the to-do and closes when he ticks it off. The Inbox
 router separately reads a to-do's state before dispatching follow-up work on it.
+For a question queued before he completes the to-do, the owner also rechecks its exact ID before
+returning attention and question views. Its attention event carries that ID so thnkr.ing can
+veto the pending phone notification against current status just before delivery.
 
 ## Acceptance scenario
 
@@ -36,3 +39,6 @@ router separately reads a to-do's state before dispatching follow-up work on it.
   exist. With an open to-do the question files; ticking the to-do off settles it as answered
   within one reading cycle and the worker receives a notice.
 - **Replayable offline:** no (needs thnkr.ing's to-do capability socket)
+- **Queued ask:** file a marked question while its exact to-do is open, finish the to-do before
+  the pending notification dispatch, and confirm the question is absent from fresh attention and
+  no phone notification is sent. Reopen the same to-do and confirm a new question can be asked.
