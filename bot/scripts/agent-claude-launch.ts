@@ -1,11 +1,14 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
 import {accessSync,constants,existsSync,realpathSync,readlinkSync,watch} from 'node:fs';
-import {dirname,delimiter,isAbsolute,join,resolve} from 'node:path';
+import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
 
 const args=process.argv.slice(2);
 const wrapper=realpathSync(join(import.meta.dir,'claude'));
+if(process.env.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID===String(process.ppid)){
+  throw new Error('A Concierge Claude launcher tried to start another Concierge Claude launcher.');
+}
 function candidates():string[] {
   const specified=process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE;
   if(specified){
@@ -17,7 +20,10 @@ function candidates():string[] {
 function discoverClaude(paths:string[]):string|null {
   for(const candidate of paths){
     try {
-      if(realpathSync(candidate)===wrapper)continue;
+      const resolved=realpathSync(candidate);
+      // Agent shells can retain an earlier installed release in PATH. Every
+      // release has its own wrapper path, and none is the Claude executable.
+      if(resolved===wrapper||resolved.endsWith(`${sep}bot${sep}scripts${sep}claude`))continue;
       accessSync(candidate,constants.X_OK);
       return candidate;
     }catch{}
@@ -89,6 +95,9 @@ const model=(()=>{for(let i=0;i<args.length;i++){
   if(args[i]?.startsWith('--model='))return args[i]!.slice('--model='.length);
 }return null;})();
 const environment={...process.env};
+// Scope the guard to our immediate child. Claude Code may later launch its own
+// nested agent command, which must remain allowed under a different parent.
+environment.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID=String(process.pid);
 if(!passthrough){
   for(const name of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
