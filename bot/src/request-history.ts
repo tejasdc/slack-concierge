@@ -26,11 +26,12 @@ export type Answerability=(sessionId:number)=>string;
 export type EarlierWork={text:string;requests:number;sessions:number;cases:number;omissions:string[]};
 
 /**
- * One question embedding serves both comparisons. Measured on the server 2026-11-04: the meaning
- * search's embedding takes 1.3 s at the median and up to 6 s under load, so two separate 1.5 s
- * bounds missed nearly every lookup in the first live test.
+ * One question embedding, at search priority, serves both comparisons. Measured on the server
+ * 2026-11-04: the meaning search's embedding takes 1.3 s at the median and 4.5-7 s while the index
+ * catches up after a restart; 1.5 s and then 4 s bounds missed the live tests. Ten seconds is
+ * unnoticeable beside an agent run of minutes, and a later answer is named as not consulted.
  */
-const MEANING_WAIT_MS=4_000;
+const MEANING_WAIT_MS=10_000;
 const MIN_MEANING=0.55;
 const MAX_REQUESTS=8,MAX_SESSIONS=6,MAX_CASES=3;
 const CLAIM_CHARS=360;
@@ -158,7 +159,7 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const compare=async():Promise<Compared|null>=>{
     const index=meaningIndex();
     if(!index?.installed){omissions.push('Earlier sessions and the failure ledger were not compared: the meaning index is not installed on this machine.');return null;}
-    const [vector]=await index.queryVectors([query]);
+    const vector=await index.questionVector(query);
     return {sessions:closestSessions(vector!),cases:await closestCases(vector!)};
   };
   const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions and the failure ledger could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
