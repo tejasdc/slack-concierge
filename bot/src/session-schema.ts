@@ -628,6 +628,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_attachments','transcript_engine','transcript_engine TEXT');
       add('session_attachments','transcript_engine_version','transcript_engine_version TEXT');
       add('session_attachments','duration_ms','duration_ms INTEGER');
+      // Keep the camera original and a prepared, broadly readable photo in one custody record.
+      add('session_attachments','display_name','display_name TEXT');
+      add('session_attachments','display_content_type','display_content_type TEXT');
+      add('session_attachments','display_sha256','display_sha256 TEXT');
+      add('session_attachments','display_bytes','display_bytes BLOB');
       // A forwarded copy of a recording finds its original's words by the bytes' hash.
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.

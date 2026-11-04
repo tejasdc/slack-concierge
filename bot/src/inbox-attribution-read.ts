@@ -196,7 +196,7 @@ export function inboxAttribution(db:Database){
       const {author,text}=acceptedAuthor(input);
       const ids=Array.isArray(payload.attachments)?payload.attachments:[];
       const attachments=ids.flatMap((id:string)=>{
-        const attachment=db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id);
+        const attachment=db.query('SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id);
         return attachment?[attachment]:[];
       });
       return {...display,author,content:typeof text==='string'?text:payload.text,submissionId:input.id,

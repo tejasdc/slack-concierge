@@ -1,5 +1,23 @@
 # Unified session owner wire contract v1
 
+## Photo attachments
+
+The attachment upload keeps the exact camera bytes, content type, name and digest in the
+custody row. For HEIC, HEIF and DNG photos, it also prepares a JPEG in that same row.
+Message history and agent input use the JPEG's name, type, digest and bytes. The ordinary
+attachment read returns that JPEG; `GET /sessions/v1/attachments/<id>/original` returns
+the retained camera original. Both reads verify the digest before returning bytes.
+The attachment ID and accepted message action stay unchanged, including when an older
+retained photo is prepared on its first read. A Live Photo's motion file remains a
+separate attachment. This keeps a browser or agent from needing the camera codec while
+preserving the original for later reprocessing.
+
+The server's decoder uses libheif with HEVC support for HEIC/HEIF and dcraw's embedded
+preview for DNG; the Mac owner uses the system image converter. A conversion failure
+refuses the upload so the device keeps its pending file for retry rather than silently
+posting an image that neither the browser nor agent can read. Historical originals
+that predate this contract are prepared when accessed, then stored for later reads.
+
 ## Human message delivery choice
 
 The accepting owner applies one live-delivery default to people, agents and

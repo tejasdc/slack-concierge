@@ -10,7 +10,7 @@ export function projectAcceptedInput(message:ProviderHistoryMessage,input:Accept
   if(typeof payload?.text!=='string')return {...message,author:{kind:'unknown' as const}};
   const {author,text}=acceptedInputAuthor(input);
   const attachments=(payload.attachments??[]).flatMap((id:string)=>{
-    const attachment=db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id);
+    const attachment=db.query('SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id);
     return attachment?[attachment]:[];
   }) as NonNullable<ProviderHistoryMessage['attachments']>;
   if(payload.routedFrom&&typeof payload.routedFrom.originalText==='string'){

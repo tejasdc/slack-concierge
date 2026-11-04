@@ -4,6 +4,7 @@ import {parseMachineNeed} from './machine-need';
 import {askAsideOnce} from './session-asides';
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
+import {preparePhotoPresentation} from './photo-presentation';
 import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
 import {basename,dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
@@ -1811,7 +1812,7 @@ export class SessionOwner {
     if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)
       throw new SessionOwnerError('Attachments must name unique retained custody IDs.');
     if(!ids.length)return [];
-    const rows=db.query(`SELECT id,name,content_type AS contentType,sha256 FROM session_attachments
+    const rows=db.query(`SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType,COALESCE(display_sha256,sha256) AS sha256 FROM session_attachments
       WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as {id:string;name:string;contentType:string;sha256:string}[];
     const byId=new Map(rows.map(row=>[row.id,row]));
     return ids.map(id=>{const row=byId.get(id);if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);return row;});
@@ -3320,26 +3321,46 @@ export class SessionOwner {
     const bytes=Buffer.from(input.base64,'base64');
     if(bytes.toString('base64')!==input.base64)throw new SessionOwnerError('Attachment base64 is malformed.');
     const digest=createHash('sha256').update(bytes).digest('hex');
+    const existing=db.query('SELECT * FROM session_attachments WHERE action_id=?').get(action) as any;
+    if(existing){if(existing.name!==input.name||existing.content_type!==input.contentType||existing.sha256!==digest)throw new SessionOwnerError('Attachment action conflict.',409);const retained=this.prepareRetainedPhoto(existing);return {attachment:{id:retained.id,name:retained.display_name??retained.name,contentType:retained.display_content_type??retained.content_type,sha256:retained.display_sha256??retained.sha256}};}
+    const presentation=preparePhotoPresentation(input.name,input.contentType,bytes);
     const attachment=db.transaction(()=>{
       const old=db.query('SELECT * FROM session_attachments WHERE action_id=?').get(action) as any;
       if(old){if(old.name!==input.name||old.content_type!==input.contentType||old.sha256!==digest)throw new SessionOwnerError('Attachment action conflict.',409);return old;}
-      const id=randomUUID();db.query('INSERT INTO session_attachments(id,action_id,name,content_type,sha256,bytes) VALUES(?,?,?,?,?,?)').run(id,action,input.name,input.contentType,digest,bytes);
-      return {id,name:input.name,content_type:input.contentType,sha256:digest};
+      const id=randomUUID();db.query('INSERT INTO session_attachments(id,action_id,name,content_type,sha256,bytes,display_name,display_content_type,display_sha256,display_bytes) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,action,input.name,input.contentType,digest,bytes,presentation?.name??null,presentation?.contentType??null,presentation?createHash('sha256').update(presentation.bytes).digest('hex'):null,presentation?.bytes??null);
+      return {id,name:input.name,content_type:input.contentType,sha256:digest,display_name:presentation?.name,display_content_type:presentation?.contentType,display_sha256:presentation?createHash('sha256').update(presentation.bytes).digest('hex'):null};
     })();
-    return {attachment:{id:attachment.id,name:attachment.name,contentType:attachment.content_type,sha256:attachment.sha256}};
+    return {attachment:{id:attachment.id,name:attachment.display_name??attachment.name,contentType:attachment.display_content_type??attachment.content_type,sha256:attachment.display_sha256??attachment.sha256}};
+  }
+  private prepareRetainedPhoto(row:any){
+    if(row.display_bytes||!/\.(heic|heif|dng)$/i.test(row.name)&&!['image/heic','image/heif','image/dng','image/x-adobe-dng'].includes(row.content_type))return row;
+    const presentation=preparePhotoPresentation(row.name,row.content_type,row.bytes);
+    if(!presentation)return row;
+    const digest=createHash('sha256').update(presentation.bytes).digest('hex');
+    db.query('UPDATE session_attachments SET display_name=?,display_content_type=?,display_sha256=?,display_bytes=? WHERE id=? AND display_bytes IS NULL').run(presentation.name,presentation.contentType,digest,presentation.bytes,row.id);
+    return {...row,display_name:presentation.name,display_content_type:presentation.contentType,display_sha256:digest,display_bytes:presentation.bytes};
   }
   attachments(ids:unknown) {
     if(ids===undefined)return [];
     if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)throw new SessionOwnerError('Attachments must name unique retained custody IDs.');
     return ids.map(id=>{
-      const row=db.query('SELECT * FROM session_attachments WHERE id=?').get(id) as any;if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+      let row=db.query('SELECT * FROM session_attachments WHERE id=?').get(id) as any;if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
       if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained attachment bytes failed verification.',409);
+      row=this.prepareRetainedPhoto(row);
+      const served=row.display_bytes??row.bytes,servedDigest=row.display_sha256??row.sha256;
+      if(createHash('sha256').update(served).digest('hex')!==servedDigest)throw new SessionOwnerError('Prepared attachment bytes failed verification.',409);
       // A forwarded recording is a new custody copy of the same bytes. Identical audio has one
       // transcript, so a copy reuses the words its original already has (the phone's own, usually)
       // instead of being transcribed again on this server (Tejas, September 21, 2026).
       const transcriptText=(row.transcript_text??(row.content_type.startsWith('audio/')?(db.query('SELECT transcript_text FROM session_attachments WHERE sha256=? AND transcript_text IS NOT NULL ORDER BY created_at LIMIT 1').get(row.sha256) as {transcript_text:string}|null)?.transcript_text:null)??null) as string|null;
-      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText};
+      return {id:row.id,name:row.display_name??row.name,contentType:row.display_content_type??row.content_type,sha256:servedDigest,base64:Buffer.from(served).toString('base64'),transcriptText};
     });
+  }
+  originalAttachment(id:string){
+    const row=db.query('SELECT name,content_type,sha256,bytes FROM session_attachments WHERE id=?').get(id) as any;
+    if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+    if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained attachment bytes failed verification.',409);
+    return {name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64')};
   }
   attachment(id:string) {
     const {id:_,...attachment}=this.attachments([id])[0]!;
@@ -4044,6 +4065,7 @@ export class SessionOwner {
         result={events:page.events,nextCursor:page.nextCursor??url.searchParams.get('after')??null,hasMore:page.hasMore};
       }
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
+      else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='original'&&parts.length===3)result=this.originalAttachment(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
       else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);

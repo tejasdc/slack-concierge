@@ -25,6 +25,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/files',purpose:'one explicitly named workspace file; size still capped',maxResponseBytes:32*MiB,kind:'control'},
  {path:'/saved-work/settings',purpose:'one saved-work settings record',maxResponseBytes:MiB,kind:'control'},
  {path:'/attachments/:id',purpose:'one retained attachment; size still capped',maxResponseBytes:64*MiB,kind:'control'},
+ {path:'/attachments/:id/original',purpose:'original camera bytes for one retained attachment',maxResponseBytes:64*MiB,kind:'control'},
  {path:'/attachments/:id/transcription',purpose:'one attachment transcription status',maxResponseBytes:MiB,kind:'control'},
  {path:'/operations/:id',purpose:'one exact operation receipt',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/runs/:id',purpose:'one exact run status',maxResponseBytes:MiB,kind:'control'},

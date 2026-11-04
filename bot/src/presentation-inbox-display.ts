@@ -37,7 +37,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     if(!original)return null;
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
-    const attachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    const attachments=ids.map(id=>database.query('SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
     const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
       ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
@@ -55,7 +55,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const attachmentIds=result||post?event.attachments:payload.attachments;
   const ids=Array.isArray(attachmentIds)?attachmentIds.filter((id:unknown):id is string=>typeof id==='string'):[];
   const attachments=ids.map(id=>database.query(
-    'SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    'SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   let link:{thread:string;routedBy:unknown;attached:boolean}|null=null;
   if(!agent&&row.input_id){

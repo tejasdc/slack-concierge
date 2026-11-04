@@ -116,7 +116,7 @@ export function inboxMessage(row:any) {
     const source=getAcceptedSessionInput(route.sourceMessageId);
     const original=source?JSON.parse(source.payload_json):{};
     const originalPayload=original.firstInput??original;
-    const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
     return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
       ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
@@ -136,7 +136,7 @@ export function inboxMessage(row:any) {
   // the retained result payload does. A human capture or a returned answer carries the
   // attachments of its accepted input.
   const attachments=(((result||post)?eventPayload.attachments:payload.attachments)??[])
-    .map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    .map((id:string)=>db.query('SELECT id,COALESCE(display_name,name) AS name,COALESCE(display_content_type,content_type) AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   // A result names the input it answers, so an Inbox thread is one request plus the
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
   // A post carries its thread's root input the same way.
